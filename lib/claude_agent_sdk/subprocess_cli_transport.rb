@@ -162,23 +162,14 @@ module ClaudeAgentSDK
       should_pipe_stderr = @options.stderr || @options.extra_args.key?('debug-to-stderr')
 
       begin
-        # Start process
-        @process = Async::Process::Child.new(
-          *cmd,
-          stdin: :pipe,
-          stdout: :pipe,
-          stderr: should_pipe_stderr ? :pipe : nil,
-          chdir: @cwd&.to_s,
-          env: process_env
-        )
+        # Start process using Open3
+        opts = { chdir: @cwd&.to_s }.compact
 
-        @stdout = @process.stdout
-        @stdin = @process.stdin if @is_streaming
+        @stdin, @stdout, @stderr, @process = Open3.popen3(process_env, *cmd, opts)
 
         # Handle stderr if piped
-        if should_pipe_stderr && @process.stderr
-          @stderr = @process.stderr
-          @stderr_task = Async do
+        if should_pipe_stderr && @stderr
+          @stderr_task = Thread.new do
             handle_stderr
           rescue StandardError
             # Ignore errors during stderr reading
@@ -186,7 +177,8 @@ module ClaudeAgentSDK
         end
 
         # Close stdin for non-streaming mode
-        @process.stdin.close unless @is_streaming
+        @stdin.close unless @is_streaming
+        @stdin = nil unless @is_streaming
 
         @ready = true
       rescue Errno::ENOENT => e
@@ -223,12 +215,20 @@ module ClaudeAgentSDK
       @ready = false
       return unless @process
 
-      # Cancel stderr task
-      @stderr_task&.stop
+      # Kill stderr thread
+      if @stderr_task&.alive?
+        @stderr_task.kill
+        @stderr_task.join(1) rescue nil
+      end
 
       # Close streams
       begin
         @stdin&.close
+      rescue StandardError
+        # Ignore
+      end
+      begin
+        @stdout&.close
       rescue StandardError
         # Ignore
       end
@@ -240,8 +240,8 @@ module ClaudeAgentSDK
 
       # Terminate process
       begin
-        @process.terminate
-        @process.wait
+        Process.kill('TERM', @process.pid) if @process.alive?
+        @process.value
       rescue StandardError
         # Ignore
       end
@@ -250,12 +250,13 @@ module ClaudeAgentSDK
       @stdout = nil
       @stdin = nil
       @stderr = nil
+      @stderr_task = nil
       @exit_error = nil
     end
 
     def write(data)
       raise CLIConnectionError, 'ProcessTransport is not ready for writing' unless @ready && @stdin
-      raise CLIConnectionError, "Cannot write to terminated process" if @process && @process.status
+      raise CLIConnectionError, "Cannot write to terminated process" if @process && !@process.alive?
 
       raise CLIConnectionError, "Cannot write to process that exited with error: #{@exit_error}" if @exit_error
 
@@ -326,7 +327,7 @@ module ClaudeAgentSDK
       end
 
       # Check process completion
-      status = @process.wait
+      status = @process.value
       returncode = status.exitstatus
 
       if returncode && returncode != 0
