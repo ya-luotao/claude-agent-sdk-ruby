@@ -90,7 +90,104 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 ## Client
 
-`ClaudeAgentSDK::Client` supports bidirectional, interactive conversations with Claude Code. Unlike `query()`, `Client` enables **hooks** and **permission callbacks**, both of which can be defined as Ruby procs/lambdas. See [lib/claude_agent_sdk.rb](lib/claude_agent_sdk.rb).
+`ClaudeAgentSDK::Client` supports bidirectional, interactive conversations with Claude Code. Unlike `query()`, `Client` enables **custom tools**, **hooks**, and **permission callbacks**, all of which can be defined as Ruby procs/lambdas. See [lib/claude_agent_sdk.rb](lib/claude_agent_sdk.rb).
+
+### Custom Tools (SDK MCP Servers)
+
+A **custom tool** is a Ruby proc/lambda that you can offer to Claude, for Claude to invoke as needed.
+
+Custom tools are implemented as in-process MCP servers that run directly within your Ruby application, eliminating the need for separate processes that regular MCP servers require.
+
+For a complete example, see [examples/mcp_calculator.rb](examples/mcp_calculator.rb).
+
+#### Creating a Simple Tool
+
+```ruby
+require 'claude_agent_sdk'
+require 'async'
+
+# Define a tool using create_tool
+greet_tool = ClaudeAgentSDK.create_tool('greet', 'Greet a user', { name: :string }) do |args|
+  { content: [{ type: 'text', text: "Hello, #{args[:name]}!" }] }
+end
+
+# Create an SDK MCP server
+server = ClaudeAgentSDK.create_sdk_mcp_server(
+  name: 'my-tools',
+  version: '1.0.0',
+  tools: [greet_tool]
+)
+
+# Use it with Claude
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  mcp_servers: { tools: server },
+  allowed_tools: ['mcp__tools__greet']
+)
+
+Async do
+  client = ClaudeAgentSDK::Client.new(options: options)
+  client.connect
+
+  client.query("Greet Alice")
+  client.receive_response { |msg| puts msg }
+
+  client.disconnect
+end.wait
+```
+
+#### Benefits Over External MCP Servers
+
+- **No subprocess management** - Runs in the same process as your application
+- **Better performance** - No IPC overhead for tool calls
+- **Simpler deployment** - Single Ruby process instead of multiple
+- **Easier debugging** - All code runs in the same process
+- **Direct access** - Tools can directly access your application's state
+
+#### Calculator Example
+
+```ruby
+# Define calculator tools
+add_tool = ClaudeAgentSDK.create_tool('add', 'Add two numbers', { a: :number, b: :number }) do |args|
+  result = args[:a] + args[:b]
+  { content: [{ type: 'text', text: "#{args[:a]} + #{args[:b]} = #{result}" }] }
+end
+
+divide_tool = ClaudeAgentSDK.create_tool('divide', 'Divide numbers', { a: :number, b: :number }) do |args|
+  if args[:b] == 0
+    { content: [{ type: 'text', text: 'Error: Division by zero' }], is_error: true }
+  else
+    result = args[:a] / args[:b]
+    { content: [{ type: 'text', text: "Result: #{result}" }] }
+  end
+end
+
+# Create server
+calculator = ClaudeAgentSDK.create_sdk_mcp_server(
+  name: 'calculator',
+  tools: [add_tool, divide_tool]
+)
+
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  mcp_servers: { calc: calculator },
+  allowed_tools: ['mcp__calc__add', 'mcp__calc__divide']
+)
+```
+
+#### Mixed Server Support
+
+You can use both SDK and external MCP servers together:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  mcp_servers: {
+    internal: sdk_server,      # In-process SDK server
+    external: {                # External subprocess server
+      type: 'stdio',
+      command: 'external-server'
+    }
+  }
+)
+```
 
 ### Basic Client Usage
 
@@ -314,6 +411,7 @@ See the following examples for complete working code:
 
 - [examples/quick_start.rb](examples/quick_start.rb) - Basic `query()` usage with options
 - [examples/client_example.rb](examples/client_example.rb) - Interactive Client usage
+- [examples/mcp_calculator.rb](examples/mcp_calculator.rb) - Custom tools with SDK MCP servers
 - [examples/hooks_example.rb](examples/hooks_example.rb) - Using hooks to control tool execution
 - [examples/permission_callback_example.rb](examples/permission_callback_example.rb) - Dynamic tool permission control
 

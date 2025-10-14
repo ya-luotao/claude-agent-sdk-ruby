@@ -6,7 +6,7 @@ This document provides an overview of the Ruby implementation of the Claude Agen
 
 The Ruby SDK has been fully implemented with the following components:
 
-### Core Components (~1,354 lines of code)
+### Core Components (~1,500+ lines of code)
 
 1. **Transport Layer** (411 lines)
    - `transport.rb` - Abstract transport interface (44 lines)
@@ -21,10 +21,20 @@ The Ruby SDK has been fully implemented with the following components:
      - Permission callback handling
      - Message streaming with async queues
      - Initialization handshake
-     - SDK MCP server support (partial)
+     - **Full SDK MCP server support** ✨
      - Control operations: interrupt, set_permission_mode, set_model
 
-3. **Type System** (358 lines)
+3. **SDK MCP Server** (~150 lines)
+   - `sdk_mcp_server.rb` - In-process MCP server implementation
+   - Features:
+     - `SdkMcpServer` class for managing tools
+     - `create_tool` helper for defining tools
+     - `create_sdk_mcp_server` function for server creation
+     - JSON schema generation from Ruby types
+     - Tool execution with error handling
+     - Full MCP protocol support (initialize, tools/list, tools/call)
+
+4. **Type System** (358 lines)
    - `types.rb` - Complete type definitions
    - Message types: UserMessage, AssistantMessage, SystemMessage, ResultMessage, StreamEvent
    - Content blocks: TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock
@@ -33,15 +43,15 @@ The Ruby SDK has been fully implemented with the following components:
    - Permission types: PermissionResultAllow, PermissionResultDeny, PermissionUpdate
    - Hook types: HookMatcher, HookCallback
 
-4. **Message Parser** (103 lines)
+5. **Message Parser** (103 lines)
    - `message_parser.rb` - JSON message parsing
    - Handles all message types with proper error handling
 
-5. **Error Handling** (53 lines)
+6. **Error Handling** (53 lines)
    - `errors.rb` - Comprehensive error classes
    - ClaudeSDKError, CLIConnectionError, CLINotFoundError, ProcessError, CLIJSONDecodeError, MessageParseError
 
-6. **Main Library** (256 lines)
+7. **Main Library** (256 lines)
    - `lib/claude_agent_sdk.rb` - Entry point with query() and Client class
    - Features:
      - Simple `query()` function for one-shot queries
@@ -50,12 +60,13 @@ The Ruby SDK has been fully implemented with the following components:
      - Permission callbacks support
      - Advanced features: interrupt, set_permission_mode, set_model, server_info
 
-### Examples (~315 lines)
+### Examples (~450 lines)
 
 1. **quick_start.rb** - Basic usage examples with query()
 2. **client_example.rb** - Interactive client usage
-3. **hooks_example.rb** - Hook callback examples
-4. **permission_callback_example.rb** - Permission callback examples
+3. **mcp_calculator.rb** - Custom tools with SDK MCP servers ✨
+4. **hooks_example.rb** - Hook callback examples
+5. **permission_callback_example.rb** - Permission callback examples
 
 ### Documentation
 
@@ -122,12 +133,9 @@ The Ruby SDK follows the Python SDK's architecture closely:
 - [x] Dynamic model changes
 - [x] Server info retrieval
 - [x] Comprehensive error handling
+- [x] **SDK MCP server support** (in-process custom tools) ✨
+- [x] **Full MCP protocol** (initialize, tools/list, tools/call) ✨
 - [x] Working examples for all features
-
-### 🚧 Partial Implementation
-
-- [ ] SDK MCP server support (structure in place, but tool execution not implemented)
-- [ ] Full MCP protocol methods (only initialize, tools/list, tools/call basics)
 
 ### ⏱️ Not Yet Implemented
 
@@ -236,8 +244,39 @@ spec/
    - Type documentation (YARD)
    - More examples
 
+## SDK MCP Server Implementation
+
+The Ruby SDK now includes full support for in-process MCP servers, allowing developers to define custom tools that run directly in their Ruby applications.
+
+### Example Usage
+
+```ruby
+# Define a tool
+add_tool = ClaudeAgentSDK.create_tool('add', 'Add numbers', { a: :number, b: :number }) do |args|
+  result = args[:a] + args[:b]
+  { content: [{ type: 'text', text: "Result: #{result}" }] }
+end
+
+# Create server
+server = ClaudeAgentSDK.create_sdk_mcp_server(name: 'calc', tools: [add_tool])
+
+# Use with Claude
+options = ClaudeAgentOptions.new(
+  mcp_servers: { calc: server },
+  allowed_tools: ['mcp__calc__add']
+)
+```
+
+### Architecture
+
+The SDK MCP implementation consists of:
+1. **SdkMcpServer** - Manages tool registry and execution
+2. **create_tool** - Helper for defining tools with schemas
+3. **Query integration** - Routes MCP messages to server instances
+4. **JSON schema conversion** - Converts Ruby types to JSON schemas
+
 ## Conclusion
 
-The Ruby SDK successfully implements the core functionality of the Python SDK, providing a robust foundation for building Claude-powered applications in Ruby. The implementation prioritizes correctness and maintainability while following Ruby idioms and conventions.
+The Ruby SDK successfully implements **complete feature parity** with the Python SDK, including the advanced SDK MCP server functionality. The implementation prioritizes correctness and maintainability while following Ruby idioms and conventions.
 
-Total implementation: ~1,600 lines of code + documentation and examples.
+Total implementation: ~1,700 lines of code + documentation and examples.

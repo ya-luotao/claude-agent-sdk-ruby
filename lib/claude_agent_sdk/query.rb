@@ -347,22 +347,40 @@ module ClaudeAgentSDK
     end
 
     def handle_mcp_tools_list(server, message)
-      # This would need the MCP server interface
-      # For now, return empty list
+      # List tools from the SDK MCP server
+      tools_data = server.list_tools
       {
         jsonrpc: '2.0',
         id: message[:id],
-        result: { tools: [] }
+        result: { tools: tools_data }
       }
     end
 
     def handle_mcp_tools_call(server, message, params)
-      # This would need the MCP server interface
-      # For now, return error
+      # Execute tool on the SDK MCP server
+      tool_name = params[:name]
+      arguments = params[:arguments] || {}
+
+      # Call the tool
+      result = server.call_tool(tool_name, arguments)
+
+      # Format response
+      content = []
+      if result[:content]
+        result[:content].each do |item|
+          if item[:type] == 'text'
+            content << { type: 'text', text: item[:text] }
+          end
+        end
+      end
+
+      response_data = { content: content }
+      response_data[:is_error] = true if result[:is_error]
+
       {
         jsonrpc: '2.0',
         id: message[:id],
-        error: { code: -32603, message: 'MCP tool execution not yet implemented in Ruby SDK' }
+        result: response_data
       }
     end
 

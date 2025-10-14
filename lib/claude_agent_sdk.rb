@@ -7,6 +7,7 @@ require_relative 'claude_agent_sdk/transport'
 require_relative 'claude_agent_sdk/subprocess_cli_transport'
 require_relative 'claude_agent_sdk/message_parser'
 require_relative 'claude_agent_sdk/query'
+require_relative 'claude_agent_sdk/sdk_mcp_server'
 require 'async'
 require 'securerandom'
 
