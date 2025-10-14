@@ -6,6 +6,8 @@
 
 Ruby SDK for Claude Agent. See the [Claude Agent SDK documentation](https://docs.anthropic.com/en/docs/claude-code/sdk) for more information.
 
+[![Gem Version](https://badge.fury.io/rb/claude-agent-sdk.svg?icon=si%3Arubygems)](https://badge.fury.io/rb/claude-agent-sdk)
+
 ## Installation
 
 Add this line to your application's Gemfile:
