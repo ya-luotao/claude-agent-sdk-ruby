@@ -1,0 +1,23 @@
+AllCops:
+  TargetRubyVersion: 3.0
+  NewCops: enable
+  Exclude:
+    - 'vendor/**/*'
+    - 'tmp/**/*'
+
+Style/Documentation:
+  Enabled: false
+
+Metrics/MethodLength:
+  Max: 30
+
+Metrics/ClassLength:
+  Max: 250
+
+Metrics/BlockLength:
+  Exclude:
+    - 'spec/**/*'
+    - '*.gemspec'
+
+Layout/LineLength:
+  Max: 120
