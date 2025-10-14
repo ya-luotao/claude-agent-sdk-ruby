@@ -35,6 +35,7 @@ module ClaudeAgentSDK
 
       # Try common locations
       locations = [
+        File.join(Dir.home, '.claude/local/claude'),  # Claude Code default install location
         File.join(Dir.home, '.npm-global/bin/claude'),
         '/usr/local/bin/claude',
         File.join(Dir.home, '.local/bin/claude'),
