@@ -32,7 +32,11 @@ module ClaudeAgentSDK
 
     def self.parse_user_message(data)
       parent_tool_use_id = data[:parent_tool_use_id]
-      content = data.dig(:message, :content)
+      message_data = data[:message]
+      raise MessageParseError.new("Missing message field in user message", data: data) unless message_data
+
+      content = message_data[:content]
+      raise MessageParseError.new("Missing content in user message", data: data) unless content
 
       if content.is_a?(Array)
         content_blocks = content.map { |block| parse_content_block(block) }
@@ -43,7 +47,10 @@ module ClaudeAgentSDK
     end
 
     def self.parse_assistant_message(data)
-      content_blocks = data.dig(:message, :content).map { |block| parse_content_block(block) }
+      content = data.dig(:message, :content)
+      raise MessageParseError.new("Missing content in assistant message", data: data) unless content
+
+      content_blocks = content.map { |block| parse_content_block(block) }
       AssistantMessage.new(
         content: content_blocks,
         model: data.dig(:message, :model),

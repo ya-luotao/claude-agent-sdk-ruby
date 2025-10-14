@@ -5,11 +5,11 @@ require_relative 'lib/claude_agent_sdk/version'
 Gem::Specification.new do |spec|
   spec.name = 'claude-agent-sdk'
   spec.version = ClaudeAgentSDK::VERSION
-  spec.authors = ['Anthropic']
-  spec.email = ['support@anthropic.com']
+  spec.authors = ['Community Contributors']
+  spec.email = []
 
-  spec.summary = 'Ruby SDK for Claude Agent'
-  spec.description = 'Ruby SDK for interacting with Claude Code, supporting bidirectional conversations, custom tools, and hooks'
+  spec.summary = 'Unofficial Ruby SDK for Claude Agent'
+  spec.description = 'Unofficial Ruby SDK for interacting with Claude Code, supporting bidirectional conversations, custom tools, and hooks. Not officially maintained by Anthropic.'
   spec.homepage = 'https://github.com/anthropics/claude-agent-sdk-ruby'
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 3.0.0'
@@ -25,7 +25,6 @@ Gem::Specification.new do |spec|
 
   # Runtime dependencies
   spec.add_dependency 'async', '~> 2.0'
-  spec.add_dependency 'async-io', '~> 1.0'
 
   # Development dependencies
   spec.add_development_dependency 'bundler', '~> 2.0'

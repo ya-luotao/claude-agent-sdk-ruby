@@ -1,9 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
-require 'async'
-require 'async/io/stream'
-require 'async/process'
+require 'open3'
 require_relative 'transport'
 require_relative 'errors'
 require_relative 'version'
