@@ -1,6 +1,6 @@
 # Claude Agent SDK for Ruby
 
-> **⚠️ DISCLAIMER**: This is an **unofficial, community-maintained** Ruby SDK for Claude Agent. It is not officially supported or maintained by Anthropic. For official SDK support, please refer to the [Python SDK](https://github.com/anthropics/claude-code/tree/main/agent-sdk/python).
+> **⚠️ DISCLAIMER**: This is an **unofficial, community-maintained** Ruby SDK for Claude Agent. It is not officially supported or maintained by Anthropic. For official SDK support, please refer to the [Python SDK](https://docs.claude.com/en/api/agent-sdk/python).
 >
 > This implementation is based on the official Python SDK and aims to provide feature parity for Ruby developers. Use at your own risk.
 
@@ -424,10 +424,6 @@ See the following examples for complete working code:
 ## Development
 
 After checking out the repo, run `bundle install` to install dependencies. Then, run `bundle exec rspec` to run the tests.
-
-## Contributing
-
-Bug reports and pull requests are welcome on GitHub at https://github.com/anthropics/claude-agent-sdk-ruby.
 
 ## License
 
