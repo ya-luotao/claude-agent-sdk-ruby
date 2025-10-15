@@ -143,10 +143,10 @@ The Ruby SDK follows the Python SDK's architecture closely:
 - [x] Agent definitions support
 - [x] Setting sources control
 - [x] Partial messages streaming support
+- [x] **Streaming input support** (Enumerator-based prompts) ✨
 
 ### ⏱️ Not Yet Implemented
 
-- [ ] Streaming input support (async iterables for prompt)
 - [ ] Resource and prompt support for MCP servers
 
 ## Comparison with Python SDK
@@ -236,7 +236,6 @@ PROFILE=1 bundle exec rspec         # Show slowest tests
    - MCP server lifecycle management
 
 2. **Additional Features**
-   - Streaming input support (async iterables for prompt)
    - Connection pooling for multiple queries
 
 3. **Performance**

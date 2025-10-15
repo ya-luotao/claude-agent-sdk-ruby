@@ -8,6 +8,7 @@ require_relative 'claude_agent_sdk/subprocess_cli_transport'
 require_relative 'claude_agent_sdk/message_parser'
 require_relative 'claude_agent_sdk/query'
 require_relative 'claude_agent_sdk/sdk_mcp_server'
+require_relative 'claude_agent_sdk/streaming'
 require 'async'
 require 'securerandom'
 
@@ -18,7 +19,7 @@ module ClaudeAgentSDK
   # This function is ideal for simple, stateless queries where you don't need
   # bidirectional communication or conversation management.
   #
-  # @param prompt [String] The prompt to send to Claude
+  # @param prompt [String, Enumerator] The prompt to send to Claude, or an Enumerator for streaming input
   # @param options [ClaudeAgentOptions] Optional configuration
   # @yield [Message] Each message from the conversation
   # @return [Enumerator] if no block given
@@ -40,6 +41,12 @@ module ClaudeAgentSDK
   #       end
   #     end
   #   end
+  #
+  # @example Streaming input
+  #   messages = Streaming.from_array(['Hello', 'What is 2+2?', 'Thanks!'])
+  #   ClaudeAgentSDK.query(prompt: messages) do |message|
+  #     puts message
+  #   end
   def self.query(prompt:, options: nil, &block)
     return enum_for(:query, prompt: prompt, options: options) unless block
 
@@ -50,6 +57,21 @@ module ClaudeAgentSDK
       transport = SubprocessCLITransport.new(prompt, options)
       begin
         transport.connect
+
+        # If prompt is an Enumerator, write each message to stdin
+        if prompt.is_a?(Enumerator) || prompt.respond_to?(:each)
+          Async do
+            begin
+              prompt.each do |message_json|
+                transport.write(message_json)
+              end
+            ensure
+              transport.end_input
+            end
+          end
+        end
+
+        # Read and yield messages
         transport.read_messages do |data|
           message = MessageParser.parse(data)
           block.call(message)

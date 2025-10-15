@@ -94,6 +94,41 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
+### Streaming Input
+
+The `query()` function supports streaming input, allowing you to send multiple messages dynamically instead of a single prompt string.
+
+```ruby
+require 'claude_agent_sdk'
+
+# Create a stream of messages
+messages = ['Hello!', 'What is 2+2?', 'Thanks!']
+stream = ClaudeAgentSDK::Streaming.from_array(messages)
+
+# Query with streaming input
+ClaudeAgentSDK.query(prompt: stream) do |message|
+  puts message if message.is_a?(ClaudeAgentSDK::AssistantMessage)
+end
+```
+
+You can also create custom streaming enumerators:
+
+```ruby
+# Dynamic message generation
+stream = Enumerator.new do |yielder|
+  yielder << ClaudeAgentSDK::Streaming.user_message("First message")
+  # Do some processing...
+  yielder << ClaudeAgentSDK::Streaming.user_message("Second message")
+  yielder << ClaudeAgentSDK::Streaming.user_message("Third message")
+end
+
+ClaudeAgentSDK.query(prompt: stream) do |message|
+  # Process responses
+end
+```
+
+For a complete example, see [examples/streaming_input_example.rb](examples/streaming_input_example.rb).
+
 ## Client
 
 `ClaudeAgentSDK::Client` supports bidirectional, interactive conversations with Claude Code. Unlike `query()`, `Client` enables **custom tools**, **hooks**, and **permission callbacks**, all of which can be defined as Ruby procs/lambdas. See [lib/claude_agent_sdk.rb](lib/claude_agent_sdk.rb).
@@ -417,6 +452,7 @@ See the following examples for complete working code:
 
 - [examples/quick_start.rb](examples/quick_start.rb) - Basic `query()` usage with options
 - [examples/client_example.rb](examples/client_example.rb) - Interactive Client usage
+- [examples/streaming_input_example.rb](examples/streaming_input_example.rb) - Streaming input for multi-turn conversations
 - [examples/mcp_calculator.rb](examples/mcp_calculator.rb) - Custom tools with SDK MCP servers
 - [examples/hooks_example.rb](examples/hooks_example.rb) - Using hooks to control tool execution
 - [examples/permission_callback_example.rb](examples/permission_callback_example.rb) - Dynamic tool permission control
