@@ -355,4 +355,29 @@ module ClaudeAgentSDK
       @handler = handler
     end
   end
+
+  # SDK MCP Resource definition
+  class SdkMcpResource
+    attr_accessor :uri, :name, :description, :mime_type, :reader
+
+    def initialize(uri:, name:, description: nil, mime_type: nil, reader:)
+      @uri = uri
+      @name = name
+      @description = description
+      @mime_type = mime_type
+      @reader = reader
+    end
+  end
+
+  # SDK MCP Prompt definition
+  class SdkMcpPrompt
+    attr_accessor :name, :description, :arguments, :generator
+
+    def initialize(name:, description: nil, arguments: nil, generator:)
+      @name = name
+      @description = description
+      @arguments = arguments
+      @generator = generator
+    end
+  end
 end

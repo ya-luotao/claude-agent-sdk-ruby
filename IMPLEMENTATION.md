@@ -144,10 +144,12 @@ The Ruby SDK follows the Python SDK's architecture closely:
 - [x] Setting sources control
 - [x] Partial messages streaming support
 - [x] **Streaming input support** (Enumerator-based prompts) ✨
+- [x] **MCP resource support** (Data sources for SDK servers) ✨
+- [x] **MCP prompt support** (Reusable prompt templates) ✨
 
 ### ⏱️ Not Yet Implemented
 
-- [ ] Resource and prompt support for MCP servers
+All major features have been implemented! The SDK has complete feature parity with the Python SDK.
 
 ## Comparison with Python SDK
 
@@ -231,12 +233,13 @@ PROFILE=1 bundle exec rspec         # Show slowest tests
 ## Future Enhancements
 
 1. **Additional MCP Features**
-   - Resource support for MCP servers
-   - Prompt support for MCP servers
-   - MCP server lifecycle management
+   - MCP server lifecycle management (start/stop/restart)
+   - Resource subscriptions (watch for changes)
+   - Sampling support
 
 2. **Additional Features**
    - Connection pooling for multiple queries
+   - Session persistence and replay
 
 3. **Performance**
    - Optimize message parsing

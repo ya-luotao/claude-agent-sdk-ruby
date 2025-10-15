@@ -314,6 +314,14 @@ module ClaudeAgentSDK
         handle_mcp_tools_list(server, message)
       when 'tools/call'
         handle_mcp_tools_call(server, message, params)
+      when 'resources/list'
+        handle_mcp_resources_list(server, message)
+      when 'resources/read'
+        handle_mcp_resources_read(server, message, params)
+      when 'prompts/list'
+        handle_mcp_prompts_list(server, message)
+      when 'prompts/get'
+        handle_mcp_prompts_get(server, message, params)
       when 'notifications/initialized'
         { jsonrpc: '2.0', result: {} }
       else
@@ -332,12 +340,17 @@ module ClaudeAgentSDK
     end
 
     def handle_mcp_initialize(server, message)
+      capabilities = {}
+      capabilities[:tools] = {} if server.tools && !server.tools.empty?
+      capabilities[:resources] = {} if server.resources && !server.resources.empty?
+      capabilities[:prompts] = {} if server.prompts && !server.prompts.empty?
+
       {
         jsonrpc: '2.0',
         id: message[:id],
         result: {
           protocolVersion: '2024-11-05',
-          capabilities: { tools: {} },
+          capabilities: capabilities,
           serverInfo: {
             name: server.name,
             version: server.version || '1.0.0'
@@ -381,6 +394,58 @@ module ClaudeAgentSDK
         jsonrpc: '2.0',
         id: message[:id],
         result: response_data
+      }
+    end
+
+    def handle_mcp_resources_list(server, message)
+      # List resources from the SDK MCP server
+      resources_data = server.list_resources
+      {
+        jsonrpc: '2.0',
+        id: message[:id],
+        result: { resources: resources_data }
+      }
+    end
+
+    def handle_mcp_resources_read(server, message, params)
+      # Read a resource from the SDK MCP server
+      uri = params[:uri]
+      raise 'Missing uri parameter for resources/read' unless uri
+
+      # Read the resource
+      result = server.read_resource(uri)
+
+      {
+        jsonrpc: '2.0',
+        id: message[:id],
+        result: result
+      }
+    end
+
+    def handle_mcp_prompts_list(server, message)
+      # List prompts from the SDK MCP server
+      prompts_data = server.list_prompts
+      {
+        jsonrpc: '2.0',
+        id: message[:id],
+        result: { prompts: prompts_data }
+      }
+    end
+
+    def handle_mcp_prompts_get(server, message, params)
+      # Get a prompt from the SDK MCP server
+      name = params[:name]
+      raise 'Missing name parameter for prompts/get' unless name
+
+      arguments = params[:arguments] || {}
+
+      # Get the prompt
+      result = server.get_prompt(name, arguments)
+
+      {
+        jsonrpc: '2.0',
+        id: message[:id],
+        result: result
       }
     end
 

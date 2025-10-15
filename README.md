@@ -230,6 +230,58 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
+#### MCP Resources and Prompts
+
+SDK MCP servers can also expose **resources** (data sources) and **prompts** (reusable templates):
+
+```ruby
+# Create a resource (data source Claude can read)
+config_resource = ClaudeAgentSDK.create_resource(
+  uri: 'config://app/settings',
+  name: 'Application Settings',
+  description: 'Current app configuration',
+  mime_type: 'application/json'
+) do
+  config_data = { app_name: 'MyApp', version: '1.0.0' }
+  {
+    contents: [{
+      uri: 'config://app/settings',
+      mimeType: 'application/json',
+      text: JSON.pretty_generate(config_data)
+    }]
+  }
+end
+
+# Create a prompt template
+review_prompt = ClaudeAgentSDK.create_prompt(
+  name: 'code_review',
+  description: 'Review code for best practices',
+  arguments: [
+    { name: 'code', description: 'Code to review', required: true }
+  ]
+) do |args|
+  {
+    messages: [{
+      role: 'user',
+      content: {
+        type: 'text',
+        text: "Review this code: #{args[:code]}"
+      }
+    }]
+  }
+end
+
+# Create server with tools, resources, and prompts
+server = ClaudeAgentSDK.create_sdk_mcp_server(
+  name: 'dev-tools',
+  tools: [my_tool],
+  resources: [config_resource],
+  prompts: [review_prompt]
+)
+```
+
+For complete examples, see [examples/mcp_resources_prompts_example.rb](examples/mcp_resources_prompts_example.rb).
+
 ### Basic Client Usage
 
 ```ruby
@@ -454,6 +506,7 @@ See the following examples for complete working code:
 - [examples/client_example.rb](examples/client_example.rb) - Interactive Client usage
 - [examples/streaming_input_example.rb](examples/streaming_input_example.rb) - Streaming input for multi-turn conversations
 - [examples/mcp_calculator.rb](examples/mcp_calculator.rb) - Custom tools with SDK MCP servers
+- [examples/mcp_resources_prompts_example.rb](examples/mcp_resources_prompts_example.rb) - MCP resources and prompts
 - [examples/hooks_example.rb](examples/hooks_example.rb) - Using hooks to control tool execution
 - [examples/permission_callback_example.rb](examples/permission_callback_example.rb) - Dynamic tool permission control
 
