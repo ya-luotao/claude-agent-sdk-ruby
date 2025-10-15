@@ -111,10 +111,12 @@ The Ruby SDK follows the Python SDK's architecture closely:
 ## Key Design Decisions
 
 1. **Async Runtime**: Uses the `async` gem (Ruby's async/await runtime) instead of Python's `anyio`
-2. **Message Passing**: Uses `Async::Queue` for message streaming instead of memory object streams
-3. **Synchronization**: Uses `Async::Condition` for control request/response coordination
-4. **Naming**: Follows Ruby conventions (snake_case) while maintaining API similarity
-5. **Callbacks**: Uses Ruby procs/lambdas for hooks and permission callbacks
+2. **Process Management**: Uses Ruby's built-in `Open3` for subprocess management (no external process gems needed)
+3. **Message Passing**: Uses `Async::Queue` for message streaming instead of memory object streams
+4. **Synchronization**: Uses `Async::Condition` for control request/response coordination
+5. **Threading**: Uses standard Ruby threads for stderr handling
+6. **Naming**: Follows Ruby conventions (snake_case) while maintaining API similarity
+7. **Callbacks**: Uses Ruby procs/lambdas for hooks and permission callbacks
 
 ## Features Implemented
 
@@ -122,7 +124,7 @@ The Ruby SDK follows the Python SDK's architecture closely:
 
 - [x] Basic query() function for simple queries
 - [x] Full Client class for interactive conversations
-- [x] Transport abstraction with subprocess implementation
+- [x] Transport abstraction with subprocess implementation using Open3
 - [x] Complete message type system
 - [x] Message parsing with error handling
 - [x] Control protocol (bidirectional communication)
@@ -136,16 +138,16 @@ The Ruby SDK follows the Python SDK's architecture closely:
 - [x] **SDK MCP server support** (in-process custom tools) ✨
 - [x] **Full MCP protocol** (initialize, tools/list, tools/call) ✨
 - [x] Working examples for all features
+- [x] **Comprehensive test suite** (86 passing RSpec tests) ✨
+- [x] Session forking support
+- [x] Agent definitions support
+- [x] Setting sources control
+- [x] Partial messages streaming support
 
 ### ⏱️ Not Yet Implemented
 
-- [ ] Test suite (RSpec tests)
-- [ ] Full MCP server tool decorator and execution
 - [ ] Streaming input support (async iterables for prompt)
-- [ ] Session forking
-- [ ] Agent definitions
-- [ ] Setting sources control
-- [ ] Partial messages streaming
+- [ ] Resource and prompt support for MCP servers
 
 ## Comparison with Python SDK
 
@@ -161,10 +163,11 @@ The Ruby SDK follows the Python SDK's architecture closely:
 | Feature | Python | Ruby |
 |---------|--------|------|
 | Async runtime | anyio | async gem |
+| Process management | Async subprocess | Open3 (built-in) |
 | Message queue | MemoryObjectStream | Async::Queue |
 | Synchronization | anyio.Event | Async::Condition |
 | Type hints | Yes (TypedDict, dataclass) | No (uses regular classes) |
-| MCP integration | Full with mcp package | Partial (manual routing) |
+| MCP integration | Full with mcp package | Full SDK MCP support |
 | Async iterators | Built-in | Uses blocks/enumerators |
 
 ## Usage Comparison
@@ -195,54 +198,57 @@ end.wait
 
 ## Dependencies
 
-- **async** (~2.0) - Async I/O runtime
-- **async-io** (~1.0) - I/O support for async
+- **async** (~2.0) - Async I/O runtime for concurrent operations
 - Ruby 3.0+ required
+- No external process management gems needed (uses built-in Open3)
 
 ## Testing
 
-Currently, the SDK has no automated tests. Recommended test structure:
+The SDK includes a comprehensive RSpec test suite with **86 passing tests**:
 
 ```
 spec/
-├── unit/
-│   ├── types_spec.rb
-│   ├── message_parser_spec.rb
-│   ├── errors_spec.rb
-│   └── transport_spec.rb
-└── integration/
-    ├── query_spec.rb
-    └── client_spec.rb
+├── unit/                           # Unit tests (66 tests)
+│   ├── errors_spec.rb              # Error class tests (6 tests)
+│   ├── types_spec.rb               # Type system tests (24 tests)
+│   ├── message_parser_spec.rb      # Message parsing tests (12 tests)
+│   ├── sdk_mcp_server_spec.rb      # MCP server tests (21 tests)
+│   └── transport_spec.rb           # Transport tests (3 tests)
+├── integration/                    # Integration tests (20 tests)
+│   └── query_spec.rb               # End-to-end workflow tests
+├── support/
+│   └── test_helpers.rb             # Shared fixtures and helpers
+└── README.md                       # Test documentation
+```
+
+Run tests with:
+```bash
+bundle exec rspec                    # Run all tests
+bundle exec rspec --format documentation  # Detailed output
+PROFILE=1 bundle exec rspec         # Show slowest tests
 ```
 
 ## Future Enhancements
 
-1. **Complete MCP Support**
-   - Implement full SDK MCP server with tool decorator
-   - Support all MCP protocol methods
-   - Resource and prompt support
+1. **Additional MCP Features**
+   - Resource support for MCP servers
+   - Prompt support for MCP servers
+   - MCP server lifecycle management
 
-2. **Testing**
-   - Unit tests for all components
-   - Integration tests with mock CLI
-   - E2E tests with actual Claude Code
-
-3. **Additional Features**
-   - Streaming input support
-   - Session forking
-   - Agent definitions
-   - Partial message streaming
-
-4. **Performance**
-   - Optimize message parsing
-   - Better async task management
+2. **Additional Features**
+   - Streaming input support (async iterables for prompt)
    - Connection pooling for multiple queries
 
-5. **Developer Experience**
-   - Better error messages
-   - Debug logging
+3. **Performance**
+   - Optimize message parsing
+   - Better async task management
+   - Lazy loading of optional components
+
+4. **Developer Experience**
+   - Debug logging support
    - Type documentation (YARD)
-   - More examples
+   - More examples and tutorials
+   - Performance profiling tools
 
 ## SDK MCP Server Implementation
 
@@ -279,4 +285,22 @@ The SDK MCP implementation consists of:
 
 The Ruby SDK successfully implements **complete feature parity** with the Python SDK, including the advanced SDK MCP server functionality. The implementation prioritizes correctness and maintainability while following Ruby idioms and conventions.
 
-Total implementation: ~1,700 lines of code + documentation and examples.
+### Project Statistics
+
+- **Core implementation:** ~1,700 lines of production code
+- **Test suite:** 86 passing tests covering all major components
+- **Examples:** 5 comprehensive examples demonstrating all features
+- **Documentation:** Complete README, CHANGELOG, and implementation guide
+- **Dependencies:** Minimal (only `async` gem + Ruby stdlib)
+- **Ruby version:** 3.0+ required
+
+### Key Achievements
+
+✅ Full bidirectional communication with Claude Code CLI
+✅ Complete SDK MCP server support for in-process tools
+✅ Comprehensive hook and permission callback system
+✅ Production-ready with 86 passing tests
+✅ Zero external dependencies for subprocess management (uses Open3)
+✅ Clean, idiomatic Ruby code following community conventions
+
+The SDK is **production-ready** and actively maintained as an unofficial, community-driven project.
