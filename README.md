@@ -131,7 +131,11 @@ For a complete example, see [examples/streaming_input_example.rb](examples/strea
 
 ## Client
 
-`ClaudeAgentSDK::Client` supports bidirectional, interactive conversations with Claude Code. Unlike `query()`, `Client` enables **custom tools**, **hooks**, and **permission callbacks**, all of which can be defined as Ruby procs/lambdas. See [lib/claude_agent_sdk.rb](lib/claude_agent_sdk.rb).
+`ClaudeAgentSDK::Client` supports bidirectional, interactive conversations with Claude Code. Unlike `query()`, `Client` enables **custom tools**, **hooks**, and **permission callbacks**, all of which can be defined as Ruby procs/lambdas.
+
+**The Client class automatically uses streaming mode** for bidirectional communication, allowing you to send multiple queries dynamically during a single session without closing the connection. This matches the Python SDK's `ClaudeSDKClient` behavior.
+
+See [lib/claude_agent_sdk.rb](lib/claude_agent_sdk.rb) for implementation details.
 
 ### Custom Tools (SDK MCP Servers)
 
@@ -292,6 +296,7 @@ Async do
   client = ClaudeAgentSDK::Client.new
 
   begin
+    # Connect automatically uses streaming mode for bidirectional communication
     client.connect
 
     # Send a query

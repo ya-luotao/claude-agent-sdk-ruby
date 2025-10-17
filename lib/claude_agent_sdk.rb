@@ -86,11 +86,12 @@ module ClaudeAgentSDK
   #
   # This client provides full control over the conversation flow with support
   # for streaming, hooks, permission callbacks, and dynamic message sending.
+  # The Client class always uses streaming mode for bidirectional communication.
   #
   # @example Basic usage
   #   Async do
   #     client = ClaudeAgentSDK::Client.new
-  #     client.connect
+  #     client.connect  # No arguments needed - automatically uses streaming mode
   #
   #     client.query("What is the capital of France?")
   #     client.receive_response do |msg|
@@ -150,8 +151,10 @@ module ClaudeAgentSDK
         configured_options = @options.dup_with(permission_prompt_tool_name: 'stdio')
       end
 
-      # Create transport
-      actual_prompt = prompt || ''
+      # Auto-connect with empty enumerator if no prompt is provided
+      # This matches the Python SDK pattern where ClaudeSDKClient always uses streaming mode
+      # An empty enumerator keeps stdin open for bidirectional communication
+      actual_prompt = prompt || [].to_enum
       @transport = SubprocessCLITransport.new(actual_prompt, configured_options)
       @transport.connect
 
