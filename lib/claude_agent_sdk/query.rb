@@ -292,7 +292,10 @@ module ClaudeAgentSDK
     end
 
     def handle_sdk_mcp_request(server_name, message)
-      unless @sdk_mcp_servers.key?(server_name)
+      # Convert server_name to symbol if needed for hash lookup
+      server_key = @sdk_mcp_servers.key?(server_name) ? server_name : server_name.to_sym
+
+      unless @sdk_mcp_servers.key?(server_key)
         return {
           jsonrpc: '2.0',
           id: message[:id],
@@ -303,7 +306,7 @@ module ClaudeAgentSDK
         }
       end
 
-      server = @sdk_mcp_servers[server_name]
+      server = @sdk_mcp_servers[server_key]
       method = message[:method]
       params = message[:params] || {}
 

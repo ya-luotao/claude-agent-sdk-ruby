@@ -152,12 +152,20 @@ module ClaudeAgentSDK
           class << self
             attr_reader :tool_def
 
-            def description
+            def name_value
+              @tool_def.name
+            end
+
+            def description_value
               @tool_def.description
             end
 
-            def input_schema
-              convert_schema(@tool_def.input_schema)
+            def input_schema_value
+              schema = convert_schema(@tool_def.input_schema)
+              MCP::Tool::InputSchema.new(
+                properties: schema[:properties] || {},
+                required: schema[:required] || []
+              )
             end
 
             def call(server_context: nil, **args)
@@ -218,9 +226,6 @@ module ClaudeAgentSDK
               end
             end
           end
-
-          # Set the tool name
-          define_singleton_method(:name) { @tool_def.name }
         end
       end
     end
