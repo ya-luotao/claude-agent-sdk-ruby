@@ -13,7 +13,7 @@ Ruby SDK for Claude Agent. See the [Claude Agent SDK documentation](https://docs
 Add this line to your application's Gemfile:
 
 ```ruby
-gem 'claude-agent-sdk', '~> 0.2.0'
+gem 'claude-agent-sdk', '~> 0.2.1'
 ```
 
 And then execute:
