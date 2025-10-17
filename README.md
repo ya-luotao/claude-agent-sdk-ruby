@@ -29,7 +29,7 @@ gem install claude-agent-sdk
 ```
 
 **Prerequisites:**
-- Ruby 3.0+
+- Ruby 3.2+
 - Node.js
 - Claude Code 2.0.0+: `npm install -g @anthropic-ai/claude-code`
 
@@ -142,6 +142,8 @@ See [lib/claude_agent_sdk.rb](lib/claude_agent_sdk.rb) for implementation detail
 A **custom tool** is a Ruby proc/lambda that you can offer to Claude, for Claude to invoke as needed.
 
 Custom tools are implemented as in-process MCP servers that run directly within your Ruby application, eliminating the need for separate processes that regular MCP servers require.
+
+**Implementation**: This SDK uses the [official Ruby MCP SDK](https://github.com/modelcontextprotocol/ruby-sdk) (`mcp` gem) internally, providing full protocol compliance while offering a simpler block-based API for tool definition.
 
 For a complete example, see [examples/mcp_calculator.rb](examples/mcp_calculator.rb).
 

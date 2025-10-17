@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.description = 'Unofficial Ruby SDK for interacting with Claude Code, supporting bidirectional conversations, custom tools, and hooks. Not officially maintained by Anthropic.'
   spec.homepage = 'https://github.com/ya-luotao/claude-agent-sdk-ruby'
   spec.license = 'MIT'
-  spec.required_ruby_version = '>= 3.0.0'
+  spec.required_ruby_version = '>= 3.2.0'
 
   spec.metadata['homepage_uri'] = spec.homepage
   spec.metadata['source_code_uri'] = 'https://github.com/ya-luotao/claude-agent-sdk-ruby'
@@ -25,6 +25,7 @@ Gem::Specification.new do |spec|
 
   # Runtime dependencies
   spec.add_dependency 'async', '~> 2.0'
+  spec.add_dependency 'mcp', '~> 0.4'
 
   # Development dependencies
   spec.add_development_dependency 'bundler', '~> 2.0'

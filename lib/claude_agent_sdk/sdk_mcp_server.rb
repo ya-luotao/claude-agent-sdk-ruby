@@ -1,18 +1,18 @@
 # frozen_string_literal: true
 
+require 'mcp'
+
 module ClaudeAgentSDK
-  # SDK MCP Server - runs in-process within your Ruby application
+  # SDK MCP Server - wraps official MCP::Server with block-based API
   #
   # Unlike external MCP servers that run as separate processes, SDK MCP servers
   # run directly in your application's process, providing better performance
   # and simpler deployment.
   #
-  # Supports:
-  # - Tools: Executable functions that Claude can call
-  # - Resources: Data sources that can be read (files, databases, APIs, etc.)
-  # - Prompts: Reusable prompt templates with arguments
+  # This class wraps the official MCP Ruby SDK and provides a simpler block-based
+  # API for defining tools, resources, and prompts.
   class SdkMcpServer
-    attr_reader :name, :version, :tools, :resources, :prompts
+    attr_reader :name, :version, :tools, :resources, :prompts, :mcp_server
 
     def initialize(name:, version: '1.0.0', tools: [], resources: [], prompts: [])
       @name = name
@@ -20,12 +20,34 @@ module ClaudeAgentSDK
       @tools = tools
       @resources = resources
       @prompts = prompts
-      @tool_map = tools.each_with_object({}) { |tool, hash| hash[tool.name] = tool }
-      @resource_map = resources.each_with_object({}) { |res, hash| hash[res.uri] = res }
-      @prompt_map = prompts.each_with_object({}) { |prompt, hash| hash[prompt.name] = prompt }
+
+      # Create dynamic Tool classes from tool definitions
+      tool_classes = create_tool_classes(tools)
+
+      # Create dynamic Resource classes from resource definitions
+      resource_classes = create_resource_classes(resources)
+
+      # Create dynamic Prompt classes from prompt definitions
+      prompt_classes = create_prompt_classes(prompts)
+
+      # Create the official MCP::Server instance
+      @mcp_server = MCP::Server.new(
+        name: name,
+        version: version,
+        tools: tool_classes,
+        resources: resource_classes,
+        prompts: prompt_classes
+      )
     end
 
-    # List all available tools
+    # Handle a JSON-RPC request
+    # @param json_string [String] JSON-RPC request
+    # @return [String] JSON-RPC response
+    def handle_json(json_string)
+      @mcp_server.handle_json(json_string)
+    end
+
+    # List all available tools (for backward compatibility)
     # @return [Array<Hash>] Array of tool definitions
     def list_tools
       @tools.map do |tool|
@@ -37,12 +59,12 @@ module ClaudeAgentSDK
       end
     end
 
-    # Execute a tool by name
+    # Execute a tool by name (for backward compatibility)
     # @param name [String] Tool name
     # @param arguments [Hash] Tool arguments
     # @return [Hash] Tool result
     def call_tool(name, arguments)
-      tool = @tool_map[name]
+      tool = @tools.find { |t| t.name == name }
       raise "Tool '#{name}' not found" unless tool
 
       # Call the tool's handler
@@ -56,7 +78,7 @@ module ClaudeAgentSDK
       result
     end
 
-    # List all available resources
+    # List all available resources (for backward compatibility)
     # @return [Array<Hash>] Array of resource definitions
     def list_resources
       @resources.map do |resource|
@@ -69,11 +91,11 @@ module ClaudeAgentSDK
       end
     end
 
-    # Read a resource by URI
+    # Read a resource by URI (for backward compatibility)
     # @param uri [String] Resource URI
     # @return [Hash] Resource content
     def read_resource(uri)
-      resource = @resource_map[uri]
+      resource = @resources.find { |r| r.uri == uri }
       raise "Resource '#{uri}' not found" unless resource
 
       # Call the resource's reader
@@ -87,7 +109,7 @@ module ClaudeAgentSDK
       content
     end
 
-    # List all available prompts
+    # List all available prompts (for backward compatibility)
     # @return [Array<Hash>] Array of prompt definitions
     def list_prompts
       @prompts.map do |prompt|
@@ -99,12 +121,12 @@ module ClaudeAgentSDK
       end
     end
 
-    # Get a prompt by name
+    # Get a prompt by name (for backward compatibility)
     # @param name [String] Prompt name
     # @param arguments [Hash] Arguments to fill in the prompt template
     # @return [Hash] Prompt with filled-in arguments
     def get_prompt(name, arguments = {})
-      prompt = @prompt_map[name]
+      prompt = @prompts.find { |p| p.name == name }
       raise "Prompt '#{name}' not found" unless prompt
 
       # Call the prompt's generator
@@ -119,6 +141,172 @@ module ClaudeAgentSDK
     end
 
     private
+
+    # Create dynamic Tool classes from tool definitions
+    def create_tool_classes(tools)
+      tools.map do |tool_def|
+        # Create a new class that extends MCP::Tool
+        Class.new(MCP::Tool) do
+          @tool_def = tool_def
+
+          class << self
+            attr_reader :tool_def
+
+            def description
+              @tool_def.description
+            end
+
+            def input_schema
+              convert_schema(@tool_def.input_schema)
+            end
+
+            def call(server_context: nil, **args)
+              # Filter out server_context and pass remaining args to handler
+              result = @tool_def.handler.call(args)
+
+              # Convert result to MCP::Tool::Response format
+              content = result[:content].map do |item|
+                {
+                  type: item[:type],
+                  text: item[:text]
+                }
+              end
+
+              MCP::Tool::Response.new(content)
+            end
+
+            private
+
+            def convert_schema(schema)
+              # If it's already a proper JSON schema, return it
+              if schema.is_a?(Hash) && schema[:type] && schema[:properties]
+                return schema
+              end
+
+              # Simple schema: hash mapping parameter names to types
+              if schema.is_a?(Hash)
+                properties = {}
+                schema.each do |param_name, param_type|
+                  properties[param_name] = type_to_json_schema(param_type)
+                end
+
+                return {
+                  type: 'object',
+                  properties: properties,
+                  required: properties.keys.map(&:to_s)
+                }
+              end
+
+              # Default fallback
+              { type: 'object', properties: {} }
+            end
+
+            def type_to_json_schema(type)
+              case type
+              when :string, String
+                { type: 'string' }
+              when :integer, Integer
+                { type: 'integer' }
+              when :float, Float
+                { type: 'number' }
+              when :boolean, TrueClass, FalseClass
+                { type: 'boolean' }
+              when :number
+                { type: 'number' }
+              else
+                { type: 'string' } # Default fallback
+              end
+            end
+          end
+
+          # Set the tool name
+          define_singleton_method(:name) { @tool_def.name }
+        end
+      end
+    end
+
+    # Create dynamic Resource classes from resource definitions
+    def create_resource_classes(resources)
+      resources.map do |resource_def|
+        # Create a new class that extends MCP::Resource
+        Class.new(MCP::Resource) do
+          @resource_def = resource_def
+
+          class << self
+            attr_reader :resource_def
+
+            def uri
+              @resource_def.uri
+            end
+
+            def name
+              @resource_def.name
+            end
+
+            def description
+              @resource_def.description
+            end
+
+            def mime_type
+              @resource_def.mime_type
+            end
+
+            def read
+              result = @resource_def.reader.call
+
+              # Convert to MCP format
+              result[:contents].map do |content|
+                MCP::ResourceContents.new(
+                  uri: content[:uri],
+                  mime_type: content[:mimeType] || content[:mime_type],
+                  text: content[:text]
+                )
+              end
+            end
+          end
+        end
+      end
+    end
+
+    # Create dynamic Prompt classes from prompt definitions
+    def create_prompt_classes(prompts)
+      prompts.map do |prompt_def|
+        # Create a new class that extends MCP::Prompt
+        Class.new(MCP::Prompt) do
+          @prompt_def = prompt_def
+
+          class << self
+            attr_reader :prompt_def
+
+            def name
+              @prompt_def.name
+            end
+
+            def description
+              @prompt_def.description
+            end
+
+            def arguments
+              @prompt_def.arguments || []
+            end
+
+            def get(**args)
+              result = @prompt_def.generator.call(args)
+
+              # Convert to MCP format
+              {
+                messages: result[:messages].map do |msg|
+                  {
+                    role: msg[:role],
+                    content: msg[:content]
+                  }
+                end
+              }
+            end
+          end
+        end
+      end
+    end
 
     def convert_input_schema(schema)
       # If it's already a proper JSON schema, return it
