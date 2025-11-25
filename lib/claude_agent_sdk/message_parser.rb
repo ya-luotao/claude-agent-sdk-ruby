@@ -54,7 +54,8 @@ module ClaudeAgentSDK
       AssistantMessage.new(
         content: content_blocks,
         model: data.dig(:message, :model),
-        parent_tool_use_id: data[:parent_tool_use_id]
+        parent_tool_use_id: data[:parent_tool_use_id],
+        error: data[:error] # authentication_failed, billing_error, rate_limit, invalid_request, server_error, unknown
       )
     end
 
@@ -75,7 +76,8 @@ module ClaudeAgentSDK
         session_id: data[:session_id],
         total_cost_usd: data[:total_cost_usd],
         usage: data[:usage],
-        result: data[:result]
+        result: data[:result],
+        structured_output: data[:structured_output] # Structured output when output_format is specified
       )
     end
 

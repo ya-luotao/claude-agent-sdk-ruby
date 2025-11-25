@@ -103,6 +103,23 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(thinking).to be_a(ClaudeAgentSDK::ThinkingBlock)
         expect(thinking.thinking).to eq('Let me think...')
       end
+
+      it 'parses error field' do
+        data = {
+          type: 'assistant',
+          message: {
+            model: 'claude-sonnet-4',
+            content: [
+              { type: 'text', text: 'Error occurred' }
+            ]
+          },
+          error: 'rate_limit'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::AssistantMessage)
+        expect(msg.error).to eq('rate_limit')
+      end
     end
 
     context 'system messages' do
@@ -143,6 +160,23 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         msg = described_class.parse(data)
         expect(msg.total_cost_usd).to be_nil
         expect(msg.usage).to be_nil
+      end
+
+      it 'parses structured_output' do
+        data = {
+          type: 'result',
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'test',
+          structured_output: { name: 'John', age: 30, active: true }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::ResultMessage)
+        expect(msg.structured_output).to eq({ name: 'John', age: 30, active: true })
       end
     end
 

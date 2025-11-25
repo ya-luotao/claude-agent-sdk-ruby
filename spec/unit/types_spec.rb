@@ -62,6 +62,20 @@ RSpec.describe ClaudeAgentSDK do
         expect(msg.content).to eq(blocks)
         expect(msg.model).to eq('claude-sonnet-4')
       end
+
+      it 'stores error field' do
+        blocks = [ClaudeAgentSDK::TextBlock.new(text: 'Error')]
+        msg = described_class.new(content: blocks, model: 'claude-sonnet-4', error: 'rate_limit')
+        expect(msg.error).to eq('rate_limit')
+      end
+
+      it 'accepts all valid error types' do
+        blocks = [ClaudeAgentSDK::TextBlock.new(text: 'Error')]
+        %w[authentication_failed billing_error rate_limit invalid_request server_error unknown].each do |error_type|
+          msg = described_class.new(content: blocks, model: 'claude-sonnet-4', error: error_type)
+          expect(msg.error).to eq(error_type)
+        end
+      end
     end
 
     describe ClaudeAgentSDK::SystemMessage do
@@ -89,6 +103,20 @@ RSpec.describe ClaudeAgentSDK do
         expect(msg.duration_ms).to eq(1000)
         expect(msg.is_error).to eq(false)
         expect(msg.total_cost_usd).to eq(0.01)
+      end
+
+      it 'stores structured_output' do
+        msg = described_class.new(
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'session_123',
+          structured_output: { name: 'John', age: 30 }
+        )
+
+        expect(msg.structured_output).to eq({ name: 'John', age: 30 })
       end
     end
 
@@ -140,6 +168,12 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.allowed_tools).to eq([])
         expect(options.mcp_servers).to eq({})
         expect(options.continue_conversation).to eq(false)
+        expect(options.output_format).to be_nil
+        expect(options.max_budget_usd).to be_nil
+        expect(options.max_thinking_tokens).to be_nil
+        expect(options.fallback_model).to be_nil
+        expect(options.plugins).to be_nil
+        expect(options.debug_stderr).to be_nil
       end
 
       it 'accepts configuration' do
@@ -152,6 +186,33 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.allowed_tools).to eq(['Read', 'Write'])
         expect(options.permission_mode).to eq('acceptEdits')
         expect(options.max_turns).to eq(5)
+      end
+
+      it 'accepts new Python SDK options' do
+        output_schema = {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            age: { type: 'integer' }
+          }
+        }
+        plugin = ClaudeAgentSDK::SdkPluginConfig.new(path: '/plugin')
+
+        options = described_class.new(
+          output_format: output_schema,
+          max_budget_usd: 10.0,
+          max_thinking_tokens: 5000,
+          fallback_model: 'claude-haiku-3',
+          plugins: [plugin],
+          debug_stderr: '/tmp/debug.log'
+        )
+
+        expect(options.output_format).to eq(output_schema)
+        expect(options.max_budget_usd).to eq(10.0)
+        expect(options.max_thinking_tokens).to eq(5000)
+        expect(options.fallback_model).to eq('claude-haiku-3')
+        expect(options.plugins).to eq([plugin])
+        expect(options.debug_stderr).to eq('/tmp/debug.log')
       end
 
       it 'can duplicate with changes' do
@@ -170,6 +231,94 @@ RSpec.describe ClaudeAgentSDK do
 
         expect(matcher.matcher).to eq('Bash')
         expect(matcher.hooks).to eq([hook_fn])
+      end
+
+      it 'stores timeout' do
+        matcher = described_class.new(matcher: 'Bash', timeout: 30)
+        expect(matcher.timeout).to eq(30)
+      end
+    end
+
+    describe ClaudeAgentSDK::HookContext do
+      it 'stores signal' do
+        context = described_class.new(signal: :test_signal)
+        expect(context.signal).to eq(:test_signal)
+      end
+    end
+
+    describe ClaudeAgentSDK::PreToolUseHookInput do
+      it 'stores hook input fields' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          session_id: 'sess_123',
+          cwd: '/home/user'
+        )
+
+        expect(input.hook_event_name).to eq('PreToolUse')
+        expect(input.tool_name).to eq('Bash')
+        expect(input.tool_input).to eq({ command: 'ls' })
+        expect(input.session_id).to eq('sess_123')
+        expect(input.cwd).to eq('/home/user')
+      end
+    end
+
+    describe ClaudeAgentSDK::PostToolUseHookInput do
+      it 'stores hook input with tool response' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          tool_response: 'file1.txt\nfile2.txt'
+        )
+
+        expect(input.hook_event_name).to eq('PostToolUse')
+        expect(input.tool_response).to eq('file1.txt\nfile2.txt')
+      end
+    end
+
+    describe ClaudeAgentSDK::PreToolUseHookSpecificOutput do
+      it 'converts to CLI format' do
+        output = described_class.new(
+          permission_decision: 'deny',
+          permission_decision_reason: 'Command not allowed'
+        )
+
+        hash = output.to_h
+        expect(hash[:hookEventName]).to eq('PreToolUse')
+        expect(hash[:permissionDecision]).to eq('deny')
+        expect(hash[:permissionDecisionReason]).to eq('Command not allowed')
+      end
+    end
+
+    describe ClaudeAgentSDK::SyncHookJSONOutput do
+      it 'converts to CLI format' do
+        specific = ClaudeAgentSDK::PreToolUseHookSpecificOutput.new(
+          permission_decision: 'allow'
+        )
+        output = described_class.new(
+          continue: true,
+          suppress_output: false,
+          hook_specific_output: specific
+        )
+
+        hash = output.to_h
+        expect(hash[:continue]).to eq(true)
+        expect(hash[:hookSpecificOutput][:hookEventName]).to eq('PreToolUse')
+      end
+    end
+
+    describe ClaudeAgentSDK::SdkPluginConfig do
+      it 'stores plugin path' do
+        plugin = described_class.new(path: '/path/to/plugin')
+        expect(plugin.type).to eq('plugin')
+        expect(plugin.path).to eq('/path/to/plugin')
+      end
+
+      it 'converts to hash' do
+        plugin = described_class.new(path: '/path/to/plugin')
+        hash = plugin.to_h
+        expect(hash[:type]).to eq('plugin')
+        expect(hash[:path]).to eq('/path/to/plugin')
       end
     end
 

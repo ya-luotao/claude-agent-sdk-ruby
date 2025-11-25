@@ -217,14 +217,71 @@ module ClaudeAgentSDK
       callback = @hook_callbacks[callback_id]
       raise "No hook callback found for ID: #{callback_id}" unless callback
 
+      # Parse input data into typed HookInput object
+      input_data = request_data[:input] || {}
+      hook_input = parse_hook_input(input_data)
+
+      # Create typed HookContext
+      context = HookContext.new(signal: nil)
+
       hook_output = callback.call(
-        request_data[:input],
+        hook_input,
         request_data[:tool_use_id],
-        { signal: nil }
+        context
       )
 
       # Convert Ruby-safe field names to CLI-expected names
       convert_hook_output_for_cli(hook_output)
+    end
+
+    def parse_hook_input(input_data)
+      event_name = input_data[:hook_event_name] || input_data['hook_event_name']
+      base_args = {
+        session_id: input_data[:session_id],
+        transcript_path: input_data[:transcript_path],
+        cwd: input_data[:cwd],
+        permission_mode: input_data[:permission_mode]
+      }
+
+      case event_name
+      when 'PreToolUse'
+        PreToolUseHookInput.new(
+          tool_name: input_data[:tool_name],
+          tool_input: input_data[:tool_input],
+          **base_args
+        )
+      when 'PostToolUse'
+        PostToolUseHookInput.new(
+          tool_name: input_data[:tool_name],
+          tool_input: input_data[:tool_input],
+          tool_response: input_data[:tool_response],
+          **base_args
+        )
+      when 'UserPromptSubmit'
+        UserPromptSubmitHookInput.new(
+          prompt: input_data[:prompt],
+          **base_args
+        )
+      when 'Stop'
+        StopHookInput.new(
+          stop_hook_active: input_data[:stop_hook_active],
+          **base_args
+        )
+      when 'SubagentStop'
+        SubagentStopHookInput.new(
+          stop_hook_active: input_data[:stop_hook_active],
+          **base_args
+        )
+      when 'PreCompact'
+        PreCompactHookInput.new(
+          trigger: input_data[:trigger],
+          custom_instructions: input_data[:custom_instructions],
+          **base_args
+        )
+      else
+        # Return base input for unknown event types
+        BaseHookInput.new(**base_args)
+      end
     end
 
     def handle_mcp_message(request_data)
@@ -238,6 +295,13 @@ module ClaudeAgentSDK
     end
 
     def convert_hook_output_for_cli(hook_output)
+      # Handle typed output objects
+      if hook_output.respond_to?(:to_h) && !hook_output.is_a?(Hash)
+        return hook_output.to_h
+      end
+
+      return {} unless hook_output.is_a?(Hash)
+
       # Convert Ruby hash with symbol keys to CLI format
       # Handle special keywords that might be Ruby-safe versions
       converted = {}
@@ -245,9 +309,21 @@ module ClaudeAgentSDK
         converted_key = case key
                         when :async_, 'async_' then 'async'
                         when :continue_, 'continue_' then 'continue'
-                        else key.to_s.gsub('_', '')
+                        when :hook_specific_output then 'hookSpecificOutput'
+                        when :suppress_output then 'suppressOutput'
+                        when :stop_reason then 'stopReason'
+                        when :system_message then 'systemMessage'
+                        when :async_timeout then 'asyncTimeout'
+                        else key.to_s
                         end
-        converted[converted_key] = value
+
+        # Recursively convert nested objects
+        converted_value = if value.respond_to?(:to_h) && !value.is_a?(Hash)
+                            value.to_h
+                          else
+                            value
+                          end
+        converted[converted_key] = converted_value
       end
       converted
     end

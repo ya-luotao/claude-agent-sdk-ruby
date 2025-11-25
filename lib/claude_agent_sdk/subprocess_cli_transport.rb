@@ -75,11 +75,22 @@ module ClaudeAgentSDK
       cmd.concat(['--max-turns', @options.max_turns.to_s]) if @options.max_turns
       cmd.concat(['--disallowedTools', @options.disallowed_tools.join(',')]) unless @options.disallowed_tools.empty?
       cmd.concat(['--model', @options.model]) if @options.model
+      cmd.concat(['--fallback-model', @options.fallback_model]) if @options.fallback_model
       cmd.concat(['--permission-prompt-tool', @options.permission_prompt_tool_name]) if @options.permission_prompt_tool_name
       cmd.concat(['--permission-mode', @options.permission_mode]) if @options.permission_mode
       cmd << '--continue' if @options.continue_conversation
       cmd.concat(['--resume', @options.resume]) if @options.resume
       cmd.concat(['--settings', @options.settings]) if @options.settings
+
+      # New options to match Python SDK
+      cmd.concat(['--max-budget-usd', @options.max_budget_usd.to_s]) if @options.max_budget_usd
+      cmd.concat(['--max-thinking-tokens', @options.max_thinking_tokens.to_s]) if @options.max_thinking_tokens
+
+      # Output format for structured output
+      if @options.output_format
+        output_format_json = @options.output_format.is_a?(String) ? @options.output_format : JSON.generate(@options.output_format)
+        cmd.concat(['--output-format', output_format_json])
+      end
 
       # Add directories
       @options.add_dirs.each do |dir|
@@ -121,6 +132,14 @@ module ClaudeAgentSDK
         cmd.concat(['--agents', JSON.generate(agents_dict)])
       end
 
+      # Plugins
+      if @options.plugins && !@options.plugins.empty?
+        plugins_config = @options.plugins.map do |plugin|
+          plugin.is_a?(SdkPluginConfig) ? plugin.to_h : plugin
+        end
+        cmd.concat(['--plugins', JSON.generate(plugins_config)])
+      end
+
       # Setting sources
       sources_value = @options.setting_sources ? @options.setting_sources.join(',') : ''
       cmd.concat(['--setting-sources', sources_value])
@@ -159,7 +178,7 @@ module ClaudeAgentSDK
       process_env['PWD'] = @cwd.to_s if @cwd
 
       # Determine stderr handling
-      should_pipe_stderr = @options.stderr || @options.extra_args.key?('debug-to-stderr')
+      should_pipe_stderr = @options.stderr || @options.debug_stderr || @options.extra_args.key?('debug-to-stderr')
 
       begin
         # Start process using Open3
@@ -205,7 +224,17 @@ module ClaudeAgentSDK
         line_str = line.chomp
         next if line_str.empty?
 
+        # Call stderr callback if provided
         @options.stderr&.call(line_str)
+
+        # Write to debug_stderr file/IO if provided
+        if @options.debug_stderr
+          if @options.debug_stderr.respond_to?(:puts)
+            @options.debug_stderr.puts(line_str)
+          elsif @options.debug_stderr.is_a?(String)
+            File.open(@options.debug_stderr, 'a') { |f| f.puts(line_str) }
+          end
+        end
       end
     rescue StandardError
       # Ignore errors during stderr reading
