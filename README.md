@@ -1,12 +1,25 @@
 # Claude Agent SDK for Ruby
 
-> **⚠️ DISCLAIMER**: This is an **unofficial, community-maintained** Ruby SDK for Claude Agent. It is not officially supported or maintained by Anthropic. For official SDK support, please refer to the [Python SDK](https://docs.claude.com/en/api/agent-sdk/python).
+> **Disclaimer**: This is an **unofficial, community-maintained** Ruby SDK for Claude Agent. It is not officially supported by Anthropic. For official SDK support, see the [Python SDK](https://docs.claude.com/en/api/agent-sdk/python).
 >
 > This implementation is based on the official Python SDK and aims to provide feature parity for Ruby developers. Use at your own risk.
 
-Ruby SDK for Claude Agent. See the [Claude Agent SDK documentation](https://docs.anthropic.com/en/docs/claude-code/sdk) for more information.
-
 [![Gem Version](https://badge.fury.io/rb/claude-agent-sdk.svg?icon=si%3Arubygems)](https://badge.fury.io/rb/claude-agent-sdk)
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Basic Usage: query()](#basic-usage-query)
+- [Client](#client)
+- [Custom Tools (SDK MCP Servers)](#custom-tools-sdk-mcp-servers)
+- [Hooks](#hooks)
+- [Permission Callbacks](#permission-callbacks)
+- [Types](#types)
+- [Error Handling](#error-handling)
+- [Examples](#examples)
+- [Development](#development)
+- [License](#license)
 
 ## Installation
 
@@ -45,7 +58,7 @@ end
 
 ## Basic Usage: query()
 
-`query()` is a function for querying Claude Code. It yields response messages to a block. See [lib/claude_agent_sdk.rb](lib/claude_agent_sdk.rb).
+`query()` is a function for querying Claude Code. It yields response messages to a block.
 
 ```ruby
 require 'claude_agent_sdk'
@@ -133,11 +146,66 @@ For a complete example, see [examples/streaming_input_example.rb](examples/strea
 
 `ClaudeAgentSDK::Client` supports bidirectional, interactive conversations with Claude Code. Unlike `query()`, `Client` enables **custom tools**, **hooks**, and **permission callbacks**, all of which can be defined as Ruby procs/lambdas.
 
-**The Client class automatically uses streaming mode** for bidirectional communication, allowing you to send multiple queries dynamically during a single session without closing the connection. This matches the Python SDK's `ClaudeSDKClient` behavior.
+**The Client class automatically uses streaming mode** for bidirectional communication, allowing you to send multiple queries dynamically during a single session without closing the connection.
 
-See [lib/claude_agent_sdk.rb](lib/claude_agent_sdk.rb) for implementation details.
+### Basic Client Usage
 
-### Custom Tools (SDK MCP Servers)
+```ruby
+require 'claude_agent_sdk'
+require 'async'
+
+Async do
+  client = ClaudeAgentSDK::Client.new
+
+  begin
+    # Connect automatically uses streaming mode for bidirectional communication
+    client.connect
+
+    # Send a query
+    client.query("What is the capital of France?")
+
+    # Receive the response
+    client.receive_response do |msg|
+      if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
+        msg.content.each do |block|
+          puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
+        end
+      elsif msg.is_a?(ClaudeAgentSDK::ResultMessage)
+        puts "Cost: $#{msg.total_cost_usd}" if msg.total_cost_usd
+      end
+    end
+
+  ensure
+    client.disconnect
+  end
+end.wait
+```
+
+### Advanced Client Features
+
+```ruby
+Async do
+  client = ClaudeAgentSDK::Client.new
+  client.connect
+
+  # Send interrupt signal
+  client.interrupt
+
+  # Change permission mode during conversation
+  client.set_permission_mode('acceptEdits')
+
+  # Change AI model during conversation
+  client.set_model('claude-sonnet-4-5')
+
+  # Get server initialization info
+  info = client.server_info
+  puts "Available commands: #{info}"
+
+  client.disconnect
+end.wait
+```
+
+## Custom Tools (SDK MCP Servers)
 
 A **custom tool** is a Ruby proc/lambda that you can offer to Claude, for Claude to invoke as needed.
 
@@ -145,9 +213,7 @@ Custom tools are implemented as in-process MCP servers that run directly within 
 
 **Implementation**: This SDK uses the [official Ruby MCP SDK](https://github.com/modelcontextprotocol/ruby-sdk) (`mcp` gem) internally, providing full protocol compliance while offering a simpler block-based API for tool definition.
 
-For a complete example, see [examples/mcp_calculator.rb](examples/mcp_calculator.rb).
-
-#### Creating a Simple Tool
+### Creating a Simple Tool
 
 ```ruby
 require 'claude_agent_sdk'
@@ -182,7 +248,7 @@ Async do
 end.wait
 ```
 
-#### Benefits Over External MCP Servers
+### Benefits Over External MCP Servers
 
 - **No subprocess management** - Runs in the same process as your application
 - **Better performance** - No IPC overhead for tool calls
@@ -190,7 +256,7 @@ end.wait
 - **Easier debugging** - All code runs in the same process
 - **Direct access** - Tools can directly access your application's state
 
-#### Calculator Example
+### Calculator Example
 
 ```ruby
 # Define calculator tools
@@ -220,7 +286,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
-#### Mixed Server Support
+### Mixed Server Support
 
 You can use both SDK and external MCP servers together:
 
@@ -236,7 +302,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
-#### MCP Resources and Prompts
+### MCP Resources and Prompts
 
 SDK MCP servers can also expose **resources** (data sources) and **prompts** (reusable templates):
 
@@ -286,48 +352,13 @@ server = ClaudeAgentSDK.create_sdk_mcp_server(
 )
 ```
 
-For complete examples, see [examples/mcp_resources_prompts_example.rb](examples/mcp_resources_prompts_example.rb).
+For complete examples, see [examples/mcp_calculator.rb](examples/mcp_calculator.rb) and [examples/mcp_resources_prompts_example.rb](examples/mcp_resources_prompts_example.rb).
 
-### Basic Client Usage
-
-```ruby
-require 'claude_agent_sdk'
-require 'async'
-
-Async do
-  client = ClaudeAgentSDK::Client.new
-
-  begin
-    # Connect automatically uses streaming mode for bidirectional communication
-    client.connect
-
-    # Send a query
-    client.query("What is the capital of France?")
-
-    # Receive the response
-    client.receive_response do |msg|
-      if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
-        msg.content.each do |block|
-          puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
-        end
-      elsif msg.is_a?(ClaudeAgentSDK::ResultMessage)
-        puts "Cost: $#{msg.total_cost_usd}" if msg.total_cost_usd
-      end
-    end
-
-  ensure
-    client.disconnect
-  end
-end.wait
-```
-
-### Hooks
+## Hooks
 
 A **hook** is a Ruby proc/lambda that the Claude Code *application* (*not* Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Claude Code Hooks Reference](https://docs.anthropic.com/en/docs/claude-code/hooks).
 
-For more examples, see [examples/hooks_example.rb](examples/hooks_example.rb).
-
-#### Example
+### Example
 
 ```ruby
 require 'claude_agent_sdk'
@@ -383,13 +414,13 @@ Async do
 end.wait
 ```
 
-### Permission Callbacks
+For more examples, see [examples/hooks_example.rb](examples/hooks_example.rb).
+
+## Permission Callbacks
 
 A **permission callback** is a Ruby proc/lambda that allows you to programmatically control tool execution. This gives you fine-grained control over what tools Claude can use and with what inputs.
 
-For more examples, see [examples/permission_callback_example.rb](examples/permission_callback_example.rb).
-
-#### Example
+### Example
 
 ```ruby
 require 'claude_agent_sdk'
@@ -440,38 +471,39 @@ Async do
 end.wait
 ```
 
-### Advanced Client Features
-
-The Client class supports several advanced features:
-
-```ruby
-Async do
-  client = ClaudeAgentSDK::Client.new
-  client.connect
-
-  # Send interrupt signal
-  client.interrupt
-
-  # Change permission mode during conversation
-  client.set_permission_mode('acceptEdits')
-
-  # Change AI model during conversation
-  client.set_model('claude-sonnet-4-5')
-
-  # Get server initialization info
-  info = client.server_info
-  puts "Available commands: #{info}"
-
-  client.disconnect
-end.wait
-```
+For more examples, see [examples/permission_callback_example.rb](examples/permission_callback_example.rb).
 
 ## Types
 
 See [lib/claude_agent_sdk/types.rb](lib/claude_agent_sdk/types.rb) for complete type definitions:
-- `ClaudeAgentOptions` - Configuration options
-- `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage` - Message types
-- `TextBlock`, `ToolUseBlock`, `ToolResultBlock` - Content blocks
+
+### Message Types
+
+| Type | Description |
+|------|-------------|
+| `AssistantMessage` | Response from Claude with content blocks |
+| `UserMessage` | User input message |
+| `SystemMessage` | System metadata message |
+| `ResultMessage` | Final result with cost and usage information |
+| `StreamEvent` | Partial message updates during streaming |
+
+### Content Blocks
+
+| Type | Description |
+|------|-------------|
+| `TextBlock` | Text content with `text` attribute |
+| `ThinkingBlock` | Claude's reasoning with `thinking` and `signature` |
+| `ToolUseBlock` | Tool invocation with `id`, `name`, and `input` |
+| `ToolResultBlock` | Tool execution result |
+
+### Configuration
+
+| Type | Description |
+|------|-------------|
+| `ClaudeAgentOptions` | Main configuration for queries and clients |
+| `HookMatcher` | Hook configuration with matcher pattern |
+| `PermissionResultAllow` | Permission callback result to allow tool use |
+| `PermissionResultDeny` | Permission callback result to deny tool use |
 
 ## Error Handling
 
@@ -491,13 +523,16 @@ rescue ClaudeAgentSDK::CLIJSONDecodeError => e
 end
 ```
 
-Error types:
-- `ClaudeSDKError` - Base error
-- `CLINotFoundError` - Claude Code not installed
-- `CLIConnectionError` - Connection issues
-- `ProcessError` - Process failed
-- `CLIJSONDecodeError` - JSON parsing issues
-- `MessageParseError` - Message parsing issues
+### Error Types
+
+| Error | Description |
+|-------|-------------|
+| `ClaudeSDKError` | Base error for all SDK errors |
+| `CLINotFoundError` | Claude Code not installed |
+| `CLIConnectionError` | Connection issues |
+| `ProcessError` | Process failed (includes `exit_code` and `stderr`) |
+| `CLIJSONDecodeError` | JSON parsing issues |
+| `MessageParseError` | Message parsing issues |
 
 See [lib/claude_agent_sdk/errors.rb](lib/claude_agent_sdk/errors.rb) for all error types.
 
@@ -507,15 +542,15 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 
 ## Examples
 
-See the following examples for complete working code:
-
-- [examples/quick_start.rb](examples/quick_start.rb) - Basic `query()` usage with options
-- [examples/client_example.rb](examples/client_example.rb) - Interactive Client usage
-- [examples/streaming_input_example.rb](examples/streaming_input_example.rb) - Streaming input for multi-turn conversations
-- [examples/mcp_calculator.rb](examples/mcp_calculator.rb) - Custom tools with SDK MCP servers
-- [examples/mcp_resources_prompts_example.rb](examples/mcp_resources_prompts_example.rb) - MCP resources and prompts
-- [examples/hooks_example.rb](examples/hooks_example.rb) - Using hooks to control tool execution
-- [examples/permission_callback_example.rb](examples/permission_callback_example.rb) - Dynamic tool permission control
+| Example | Description |
+|---------|-------------|
+| [examples/quick_start.rb](examples/quick_start.rb) | Basic `query()` usage with options |
+| [examples/client_example.rb](examples/client_example.rb) | Interactive Client usage |
+| [examples/streaming_input_example.rb](examples/streaming_input_example.rb) | Streaming input for multi-turn conversations |
+| [examples/mcp_calculator.rb](examples/mcp_calculator.rb) | Custom tools with SDK MCP servers |
+| [examples/mcp_resources_prompts_example.rb](examples/mcp_resources_prompts_example.rb) | MCP resources and prompts |
+| [examples/hooks_example.rb](examples/hooks_example.rb) | Using hooks to control tool execution |
+| [examples/permission_callback_example.rb](examples/permission_callback_example.rb) | Dynamic tool permission control |
 
 ## Development
 
