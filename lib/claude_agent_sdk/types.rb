@@ -1,6 +1,24 @@
 # frozen_string_literal: true
 
 module ClaudeAgentSDK
+  # Type constants for permission modes
+  PERMISSION_MODES = %w[default acceptEdits plan bypassPermissions].freeze
+
+  # Type constants for setting sources
+  SETTING_SOURCES = %w[user project local].freeze
+
+  # Type constants for permission update destinations
+  PERMISSION_UPDATE_DESTINATIONS = %w[userSettings projectSettings localSettings session].freeze
+
+  # Type constants for permission behaviors
+  PERMISSION_BEHAVIORS = %w[allow deny ask].freeze
+
+  # Type constants for hook events
+  HOOK_EVENTS = %w[PreToolUse PostToolUse UserPromptSubmit Stop SubagentStop PreCompact].freeze
+
+  # Type constants for assistant message errors
+  ASSISTANT_MESSAGE_ERRORS = %w[authentication_failed billing_error rate_limit invalid_request server_error unknown].freeze
+
   # Content Blocks
 
   # Text content block
@@ -58,12 +76,13 @@ module ClaudeAgentSDK
 
   # Assistant message with content blocks
   class AssistantMessage
-    attr_accessor :content, :model, :parent_tool_use_id
+    attr_accessor :content, :model, :parent_tool_use_id, :error
 
-    def initialize(content:, model:, parent_tool_use_id: nil)
+    def initialize(content:, model:, parent_tool_use_id: nil, error: nil)
       @content = content
       @model = model
       @parent_tool_use_id = parent_tool_use_id
+      @error = error # One of: authentication_failed, billing_error, rate_limit, invalid_request, server_error, unknown
     end
   end
 
@@ -80,10 +99,10 @@ module ClaudeAgentSDK
   # Result message with cost and usage information
   class ResultMessage
     attr_accessor :subtype, :duration_ms, :duration_api_ms, :is_error,
-                  :num_turns, :session_id, :total_cost_usd, :usage, :result
+                  :num_turns, :session_id, :total_cost_usd, :usage, :result, :structured_output
 
     def initialize(subtype:, duration_ms:, duration_api_ms:, is_error:,
-                   num_turns:, session_id:, total_cost_usd: nil, usage: nil, result: nil)
+                   num_turns:, session_id:, total_cost_usd: nil, usage: nil, result: nil, structured_output: nil)
       @subtype = subtype
       @duration_ms = duration_ms
       @duration_api_ms = duration_api_ms
@@ -93,6 +112,7 @@ module ClaudeAgentSDK
       @total_cost_usd = total_cost_usd
       @usage = usage
       @result = result
+      @structured_output = structured_output # Structured output when output_format is specified
     end
   end
 
@@ -201,11 +221,215 @@ module ClaudeAgentSDK
 
   # Hook matcher configuration
   class HookMatcher
-    attr_accessor :matcher, :hooks
+    attr_accessor :matcher, :hooks, :timeout
 
-    def initialize(matcher: nil, hooks: [])
+    def initialize(matcher: nil, hooks: [], timeout: nil)
       @matcher = matcher
       @hooks = hooks
+      @timeout = timeout # Timeout in seconds for hook execution
+    end
+  end
+
+  # Hook context passed to hook callbacks
+  class HookContext
+    attr_accessor :signal
+
+    def initialize(signal: nil)
+      @signal = signal
+    end
+  end
+
+  # Base hook input with common fields
+  class BaseHookInput
+    attr_accessor :session_id, :transcript_path, :cwd, :permission_mode
+
+    def initialize(session_id: nil, transcript_path: nil, cwd: nil, permission_mode: nil)
+      @session_id = session_id
+      @transcript_path = transcript_path
+      @cwd = cwd
+      @permission_mode = permission_mode
+    end
+  end
+
+  # PreToolUse hook input
+  class PreToolUseHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :tool_name, :tool_input
+
+    def initialize(hook_event_name: 'PreToolUse', tool_name: nil, tool_input: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @tool_name = tool_name
+      @tool_input = tool_input
+    end
+  end
+
+  # PostToolUse hook input
+  class PostToolUseHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_response
+
+    def initialize(hook_event_name: 'PostToolUse', tool_name: nil, tool_input: nil, tool_response: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @tool_name = tool_name
+      @tool_input = tool_input
+      @tool_response = tool_response
+    end
+  end
+
+  # UserPromptSubmit hook input
+  class UserPromptSubmitHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :prompt
+
+    def initialize(hook_event_name: 'UserPromptSubmit', prompt: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @prompt = prompt
+    end
+  end
+
+  # Stop hook input
+  class StopHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :stop_hook_active
+
+    def initialize(hook_event_name: 'Stop', stop_hook_active: false, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @stop_hook_active = stop_hook_active
+    end
+  end
+
+  # SubagentStop hook input
+  class SubagentStopHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :stop_hook_active
+
+    def initialize(hook_event_name: 'SubagentStop', stop_hook_active: false, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @stop_hook_active = stop_hook_active
+    end
+  end
+
+  # PreCompact hook input
+  class PreCompactHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :trigger, :custom_instructions
+
+    def initialize(hook_event_name: 'PreCompact', trigger: nil, custom_instructions: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @trigger = trigger
+      @custom_instructions = custom_instructions
+    end
+  end
+
+  # PreToolUse hook specific output
+  class PreToolUseHookSpecificOutput
+    attr_accessor :hook_event_name, :permission_decision, :permission_decision_reason, :updated_input
+
+    def initialize(permission_decision: nil, permission_decision_reason: nil, updated_input: nil)
+      @hook_event_name = 'PreToolUse'
+      @permission_decision = permission_decision # 'allow', 'deny', or 'ask'
+      @permission_decision_reason = permission_decision_reason
+      @updated_input = updated_input
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:permissionDecision] = @permission_decision if @permission_decision
+      result[:permissionDecisionReason] = @permission_decision_reason if @permission_decision_reason
+      result[:updatedInput] = @updated_input if @updated_input
+      result
+    end
+  end
+
+  # PostToolUse hook specific output
+  class PostToolUseHookSpecificOutput
+    attr_accessor :hook_event_name, :additional_context
+
+    def initialize(additional_context: nil)
+      @hook_event_name = 'PostToolUse'
+      @additional_context = additional_context
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:additionalContext] = @additional_context if @additional_context
+      result
+    end
+  end
+
+  # UserPromptSubmit hook specific output
+  class UserPromptSubmitHookSpecificOutput
+    attr_accessor :hook_event_name, :additional_context
+
+    def initialize(additional_context: nil)
+      @hook_event_name = 'UserPromptSubmit'
+      @additional_context = additional_context
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:additionalContext] = @additional_context if @additional_context
+      result
+    end
+  end
+
+  # SessionStart hook specific output
+  class SessionStartHookSpecificOutput
+    attr_accessor :hook_event_name, :additional_context
+
+    def initialize(additional_context: nil)
+      @hook_event_name = 'SessionStart'
+      @additional_context = additional_context
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:additionalContext] = @additional_context if @additional_context
+      result
+    end
+  end
+
+  # Async hook JSON output
+  class AsyncHookJSONOutput
+    attr_accessor :async, :async_timeout
+
+    def initialize(async: true, async_timeout: nil)
+      @async = async
+      @async_timeout = async_timeout
+    end
+
+    def to_h
+      result = { async: @async }
+      result[:asyncTimeout] = @async_timeout if @async_timeout
+      result
+    end
+  end
+
+  # Sync hook JSON output
+  class SyncHookJSONOutput
+    attr_accessor :continue, :suppress_output, :stop_reason, :decision,
+                  :system_message, :reason, :hook_specific_output
+
+    def initialize(continue: true, suppress_output: false, stop_reason: nil, decision: nil,
+                   system_message: nil, reason: nil, hook_specific_output: nil)
+      @continue = continue
+      @suppress_output = suppress_output
+      @stop_reason = stop_reason
+      @decision = decision
+      @system_message = system_message
+      @reason = reason
+      @hook_specific_output = hook_specific_output
+    end
+
+    def to_h
+      result = { continue: @continue }
+      result[:suppressOutput] = @suppress_output if @suppress_output
+      result[:stopReason] = @stop_reason if @stop_reason
+      result[:decision] = @decision if @decision
+      result[:systemMessage] = @system_message if @system_message
+      result[:reason] = @reason if @reason
+      result[:hookSpecificOutput] = @hook_specific_output.to_h if @hook_specific_output
+      result
     end
   end
 
@@ -274,6 +498,20 @@ module ClaudeAgentSDK
     end
   end
 
+  # SDK Plugin configuration
+  class SdkPluginConfig
+    attr_accessor :type, :path
+
+    def initialize(path:)
+      @type = 'plugin'
+      @path = path
+    end
+
+    def to_h
+      { type: @type, path: @path }
+    end
+  end
+
   # Claude Agent Options for configuring queries
   class ClaudeAgentOptions
     attr_accessor :allowed_tools, :system_prompt, :mcp_servers, :permission_mode,
@@ -281,7 +519,10 @@ module ClaudeAgentSDK
                   :model, :permission_prompt_tool_name, :cwd, :cli_path, :settings,
                   :add_dirs, :env, :extra_args, :max_buffer_size, :stderr,
                   :can_use_tool, :hooks, :user, :include_partial_messages,
-                  :fork_session, :agents, :setting_sources
+                  :fork_session, :agents, :setting_sources,
+                  # New options added to match Python SDK
+                  :output_format, :max_budget_usd, :max_thinking_tokens,
+                  :fallback_model, :plugins, :debug_stderr
 
     def initialize(
       allowed_tools: [],
@@ -308,7 +549,14 @@ module ClaudeAgentSDK
       include_partial_messages: false,
       fork_session: false,
       agents: nil,
-      setting_sources: nil
+      setting_sources: nil,
+      # New options added to match Python SDK
+      output_format: nil,
+      max_budget_usd: nil,
+      max_thinking_tokens: nil,
+      fallback_model: nil,
+      plugins: nil,
+      debug_stderr: nil
     )
       @allowed_tools = allowed_tools
       @system_prompt = system_prompt
@@ -335,6 +583,13 @@ module ClaudeAgentSDK
       @fork_session = fork_session
       @agents = agents
       @setting_sources = setting_sources
+      # New options added to match Python SDK
+      @output_format = output_format # JSON schema for structured output
+      @max_budget_usd = max_budget_usd # Spending cap in dollars
+      @max_thinking_tokens = max_thinking_tokens # Extended thinking token budget
+      @fallback_model = fallback_model # Backup model if primary unavailable
+      @plugins = plugins # Array of SdkPluginConfig
+      @debug_stderr = debug_stderr # Debug output file object/path
     end
 
     def dup_with(**changes)
