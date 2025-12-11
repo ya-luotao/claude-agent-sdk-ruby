@@ -87,8 +87,18 @@ module ClaudeAgentSDK
       # Note: max_thinking_tokens is stored in options but not yet supported by Claude CLI
 
       # JSON schema for structured output
+      # Accepts either:
+      # 1. Direct schema: { type: 'object', properties: {...} }
+      # 2. Wrapped format: { type: 'json_schema', schema: {...} }
       if @options.output_format
-        schema_json = @options.output_format.is_a?(String) ? @options.output_format : JSON.generate(@options.output_format)
+        schema = if @options.output_format.is_a?(Hash) && @options.output_format[:type] == 'json_schema'
+                   @options.output_format[:schema]
+                 elsif @options.output_format.is_a?(Hash) && @options.output_format['type'] == 'json_schema'
+                   @options.output_format['schema']
+                 else
+                   @options.output_format
+                 end
+        schema_json = schema.is_a?(String) ? schema : JSON.generate(schema)
         cmd.concat(['--json-schema', schema_json])
       end
 

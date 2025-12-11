@@ -8,6 +8,10 @@ require 'json'
 # Example: Using output_format for structured JSON output
 # This feature allows you to specify a JSON schema and receive structured data
 # that conforms to that schema in the result.
+#
+# output_format accepts two formats:
+# 1. Direct schema: { type: 'object', properties: {...} }
+# 2. Wrapped format (official SDK style): { type: 'json_schema', schema: {...} }
 
 puts "=== Structured Output Example ==="
 puts "Requesting structured data with a JSON schema\n\n"
@@ -35,9 +39,12 @@ person_schema = {
   required: %w[name age occupation skills]
 }
 
-# Create options with output_format
+# Create options with output_format (using wrapped format like Python/TS SDKs)
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  output_format: person_schema,
+  output_format: {
+    type: 'json_schema',
+    schema: person_schema
+  },
   max_turns: 1
 )
 
@@ -99,7 +106,10 @@ tasks_schema = {
 }
 
 options_tasks = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  output_format: tasks_schema,
+  output_format: {
+    type: 'json_schema',
+    schema: tasks_schema
+  },
   max_turns: 1
 )
 
