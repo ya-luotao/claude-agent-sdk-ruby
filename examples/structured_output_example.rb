@@ -94,14 +94,15 @@ if structured_data
   puts "\n--- Structured Output ---"
   puts JSON.pretty_generate(structured_data)
 
+  # Note: Keys are symbols from JSON parser (symbolize_names: true)
   puts "\nExtracted data:"
-  puts "  Name: #{structured_data['name']}"
-  puts "  Age: #{structured_data['age']}"
-  puts "  Occupation: #{structured_data['occupation']}"
-  puts "  Skills: #{structured_data['skills']&.join(', ')}"
-  if structured_data['contact']
-    puts "  Email: #{structured_data['contact']['email']}"
-    puts "  Phone: #{structured_data['contact']['phone']}"
+  puts "  Name: #{structured_data[:name]}"
+  puts "  Age: #{structured_data[:age]}"
+  puts "  Occupation: #{structured_data[:occupation]}"
+  puts "  Skills: #{structured_data[:skills]&.join(', ')}"
+  if structured_data[:contact]
+    puts "  Email: #{structured_data[:contact][:email]}"
+    puts "  Phone: #{structured_data[:contact][:phone]}"
   end
 end
 
@@ -161,10 +162,11 @@ ClaudeAgentSDK.query(
   end
 end
 
-if tasks_data && tasks_data['tasks']
+# Note: Keys are symbols from JSON parser (symbolize_names: true)
+if tasks_data && tasks_data[:tasks]
   puts "\n--- Task List (Structured) ---"
-  tasks_data['tasks'].each do |task|
-    puts "  [#{task['priority']&.upcase}] ##{task['id']}: #{task['title']}"
-    puts "    Estimated: #{task['estimated_hours']} hours" if task['estimated_hours']
+  tasks_data[:tasks].each do |task|
+    puts "  [#{task[:priority]&.upcase}] ##{task[:id]}: #{task[:title]}"
+    puts "    Estimated: #{task[:estimated_hours]} hours" if task[:estimated_hours]
   end
 end
