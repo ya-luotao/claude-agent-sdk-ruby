@@ -15,6 +15,9 @@
 - [Custom Tools (SDK MCP Servers)](#custom-tools-sdk-mcp-servers)
 - [Hooks](#hooks)
 - [Permission Callbacks](#permission-callbacks)
+- [Structured Output](#structured-output)
+- [Budget Control](#budget-control)
+- [Fallback Model](#fallback-model)
 - [Types](#types)
 - [Error Handling](#error-handling)
 - [Examples](#examples)
@@ -26,7 +29,7 @@
 Add this line to your application's Gemfile:
 
 ```ruby
-gem 'claude-agent-sdk', '~> 0.2.1'
+gem 'claude-agent-sdk', '~> 0.3.0'
 ```
 
 And then execute:
@@ -473,6 +476,93 @@ end.wait
 
 For more examples, see [examples/permission_callback_example.rb](examples/permission_callback_example.rb).
 
+## Structured Output
+
+Use `output_format` to get validated JSON responses matching a schema. The Claude CLI returns structured output via a `StructuredOutput` tool use block.
+
+```ruby
+require 'claude_agent_sdk'
+require 'json'
+
+# Define a JSON schema
+schema = {
+  type: 'object',
+  properties: {
+    name: { type: 'string' },
+    age: { type: 'integer' },
+    skills: { type: 'array', items: { type: 'string' } }
+  },
+  required: %w[name age skills]
+}
+
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  output_format: { type: 'json_schema', schema: schema },
+  max_turns: 3
+)
+
+structured_data = nil
+
+ClaudeAgentSDK.query(
+  prompt: "Create a profile for a software engineer",
+  options: options
+) do |message|
+  if message.is_a?(ClaudeAgentSDK::AssistantMessage)
+    message.content.each do |block|
+      # Structured output comes via StructuredOutput tool use
+      if block.is_a?(ClaudeAgentSDK::ToolUseBlock) && block.name == 'StructuredOutput'
+        structured_data = block.input
+      end
+    end
+  end
+end
+
+if structured_data
+  puts "Name: #{structured_data[:name]}"
+  puts "Age: #{structured_data[:age]}"
+  puts "Skills: #{structured_data[:skills].join(', ')}"
+end
+```
+
+For complete examples, see [examples/structured_output_example.rb](examples/structured_output_example.rb).
+
+## Budget Control
+
+Use `max_budget_usd` to set a spending cap for your queries:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  max_budget_usd: 0.10,  # Cap at $0.10
+  max_turns: 3
+)
+
+ClaudeAgentSDK.query(prompt: "Explain recursion", options: options) do |message|
+  if message.is_a?(ClaudeAgentSDK::ResultMessage)
+    puts "Cost: $#{message.total_cost_usd}"
+  end
+end
+```
+
+For complete examples, see [examples/budget_control_example.rb](examples/budget_control_example.rb).
+
+## Fallback Model
+
+Use `fallback_model` to specify a backup model if the primary is unavailable:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  model: 'claude-sonnet-4-20250514',
+  fallback_model: 'claude-3-5-haiku-20241022'
+)
+
+ClaudeAgentSDK.query(prompt: "Hello", options: options) do |message|
+  if message.is_a?(ClaudeAgentSDK::AssistantMessage)
+    puts "Model used: #{message.model}"
+  end
+end
+```
+
+For complete examples, see [examples/fallback_model_example.rb](examples/fallback_model_example.rb).
+
 ## Types
 
 See [lib/claude_agent_sdk/types.rb](lib/claude_agent_sdk/types.rb) for complete type definitions:
@@ -506,6 +596,33 @@ See [lib/claude_agent_sdk/types.rb](lib/claude_agent_sdk/types.rb) for complete 
 | `PermissionResultDeny` | Permission callback result to deny tool use |
 
 ## Error Handling
+
+### AssistantMessage Errors
+
+`AssistantMessage` includes an `error` field for API-level errors:
+
+```ruby
+ClaudeAgentSDK.query(prompt: "Hello") do |message|
+  if message.is_a?(ClaudeAgentSDK::AssistantMessage) && message.error
+    case message.error
+    when 'rate_limit'
+      puts "Rate limited - retry after delay"
+    when 'authentication_failed'
+      puts "Check your API key"
+    when 'billing_error'
+      puts "Check your billing status"
+    when 'invalid_request'
+      puts "Invalid request format"
+    when 'server_error'
+      puts "Server error - retry later"
+    end
+  end
+end
+```
+
+For complete examples, see [examples/error_handling_example.rb](examples/error_handling_example.rb).
+
+### Exception Handling
 
 ```ruby
 require 'claude_agent_sdk'
@@ -551,6 +668,12 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 | [examples/mcp_resources_prompts_example.rb](examples/mcp_resources_prompts_example.rb) | MCP resources and prompts |
 | [examples/hooks_example.rb](examples/hooks_example.rb) | Using hooks to control tool execution |
 | [examples/permission_callback_example.rb](examples/permission_callback_example.rb) | Dynamic tool permission control |
+| [examples/structured_output_example.rb](examples/structured_output_example.rb) | JSON schema structured output |
+| [examples/budget_control_example.rb](examples/budget_control_example.rb) | Budget control with `max_budget_usd` |
+| [examples/fallback_model_example.rb](examples/fallback_model_example.rb) | Fallback model configuration |
+| [examples/advanced_hooks_example.rb](examples/advanced_hooks_example.rb) | Typed hook inputs/outputs |
+| [examples/error_handling_example.rb](examples/error_handling_example.rb) | Error handling with `AssistantMessage.error` |
+| [examples/extended_thinking_example.rb](examples/extended_thinking_example.rb) | Extended thinking (API parity) |
 
 ## Development
 
