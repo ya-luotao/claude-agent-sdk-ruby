@@ -74,21 +74,28 @@ end
 
 puts "\n" + "=" * 50 + "\n"
 
-# Example 2: Array output schema
-puts "\n=== Example 2: Array Output Schema ==="
+# Example 2: Object with array property
+# Note: JSON schema root must be 'object' type, so we wrap arrays in an object
+puts "\n=== Example 2: Task List Schema ==="
 
 tasks_schema = {
-  type: 'array',
-  items: {
-    type: 'object',
-    properties: {
-      id: { type: 'integer' },
-      title: { type: 'string' },
-      priority: { type: 'string', enum: %w[low medium high] },
-      estimated_hours: { type: 'number' }
-    },
-    required: %w[id title priority]
-  }
+  type: 'object',
+  properties: {
+    tasks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          title: { type: 'string' },
+          priority: { type: 'string', enum: %w[low medium high] },
+          estimated_hours: { type: 'number' }
+        },
+        required: %w[id title priority]
+      }
+    }
+  },
+  required: ['tasks']
 }
 
 options_tasks = ClaudeAgentSDK::ClaudeAgentOptions.new(
@@ -106,9 +113,9 @@ ClaudeAgentSDK.query(
       puts "Claude: #{block.text}" if block.is_a?(ClaudeAgentSDK::TextBlock)
     end
   when ClaudeAgentSDK::ResultMessage
-    if message.structured_output
+    if message.structured_output && message.structured_output['tasks']
       puts "\n--- Task List (Structured) ---"
-      message.structured_output.each do |task|
+      message.structured_output['tasks'].each do |task|
         puts "  [#{task['priority']&.upcase}] ##{task['id']}: #{task['title']}"
         puts "    Estimated: #{task['estimated_hours']} hours" if task['estimated_hours']
       end
