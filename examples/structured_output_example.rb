@@ -7,11 +7,26 @@ require 'json'
 
 # Example: Using output_format for structured JSON output
 # This feature allows you to specify a JSON schema and receive structured data
-# that conforms to that schema in the result.
+# that conforms to that schema.
+#
+# The Claude CLI returns structured output via a ToolUseBlock named "StructuredOutput".
+# The structured data is in the tool's input field, matching your schema's properties.
 #
 # output_format accepts two formats:
 # 1. Direct schema: { type: 'object', properties: {...} }
 # 2. Wrapped format (official SDK style): { type: 'json_schema', schema: {...} }
+
+# Helper to extract structured output from messages
+def extract_structured_output(message)
+  return nil unless message.is_a?(ClaudeAgentSDK::AssistantMessage)
+
+  message.content.each do |block|
+    if block.is_a?(ClaudeAgentSDK::ToolUseBlock) && block.name == 'StructuredOutput'
+      return block.input
+    end
+  end
+  nil
+end
 
 puts "=== Structured Output Example ==="
 puts "Requesting structured data with a JSON schema\n\n"
@@ -31,7 +46,7 @@ person_schema = {
     contact: {
       type: 'object',
       properties: {
-        email: { type: 'string', format: 'email' },
+        email: { type: 'string' },
         phone: { type: 'string' }
       }
     }
@@ -45,8 +60,10 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
     type: 'json_schema',
     schema: person_schema
   },
-  max_turns: 1
+  max_turns: 3
 )
+
+structured_data = nil
 
 # Query Claude and expect structured output
 ClaudeAgentSDK.query(
@@ -55,27 +72,36 @@ ClaudeAgentSDK.query(
 ) do |message|
   case message
   when ClaudeAgentSDK::AssistantMessage
-    message.content.each do |block|
-      puts "Claude: #{block.text}" if block.is_a?(ClaudeAgentSDK::TextBlock)
+    # Check for structured output in tool use blocks
+    data = extract_structured_output(message)
+    if data
+      structured_data = data
+      puts "Received structured output!"
+    else
+      message.content.each do |block|
+        puts "Claude: #{block.text}" if block.is_a?(ClaudeAgentSDK::TextBlock)
+      end
     end
   when ClaudeAgentSDK::ResultMessage
     puts "\n--- Result ---"
     puts "Cost: $#{message.total_cost_usd}" if message.total_cost_usd
     puts "Turns: #{message.num_turns}"
+  end
+end
 
-    # Access the structured output
-    if message.structured_output
-      puts "\n--- Structured Output ---"
-      puts JSON.pretty_generate(message.structured_output)
+# Display the structured output
+if structured_data
+  puts "\n--- Structured Output ---"
+  puts JSON.pretty_generate(structured_data)
 
-      # You can now work with the data programmatically
-      data = message.structured_output
-      puts "\nExtracted data:"
-      puts "  Name: #{data['name']}"
-      puts "  Age: #{data['age']}"
-      puts "  Occupation: #{data['occupation']}"
-      puts "  Skills: #{data['skills']&.join(', ')}"
-    end
+  puts "\nExtracted data:"
+  puts "  Name: #{structured_data['name']}"
+  puts "  Age: #{structured_data['age']}"
+  puts "  Occupation: #{structured_data['occupation']}"
+  puts "  Skills: #{structured_data['skills']&.join(', ')}"
+  if structured_data['contact']
+    puts "  Email: #{structured_data['contact']['email']}"
+    puts "  Phone: #{structured_data['contact']['phone']}"
   end
 end
 
@@ -110,8 +136,10 @@ options_tasks = ClaudeAgentSDK::ClaudeAgentOptions.new(
     type: 'json_schema',
     schema: tasks_schema
   },
-  max_turns: 1
+  max_turns: 3
 )
+
+tasks_data = nil
 
 ClaudeAgentSDK.query(
   prompt: "Generate a list of 3 tasks for building a simple web application.",
@@ -119,16 +147,24 @@ ClaudeAgentSDK.query(
 ) do |message|
   case message
   when ClaudeAgentSDK::AssistantMessage
-    message.content.each do |block|
-      puts "Claude: #{block.text}" if block.is_a?(ClaudeAgentSDK::TextBlock)
-    end
-  when ClaudeAgentSDK::ResultMessage
-    if message.structured_output && message.structured_output['tasks']
-      puts "\n--- Task List (Structured) ---"
-      message.structured_output['tasks'].each do |task|
-        puts "  [#{task['priority']&.upcase}] ##{task['id']}: #{task['title']}"
-        puts "    Estimated: #{task['estimated_hours']} hours" if task['estimated_hours']
+    data = extract_structured_output(message)
+    if data
+      tasks_data = data
+      puts "Received structured output!"
+    else
+      message.content.each do |block|
+        puts "Claude: #{block.text}" if block.is_a?(ClaudeAgentSDK::TextBlock)
       end
     end
+  when ClaudeAgentSDK::ResultMessage
+    puts "\nCost: $#{message.total_cost_usd}" if message.total_cost_usd
+  end
+end
+
+if tasks_data && tasks_data['tasks']
+  puts "\n--- Task List (Structured) ---"
+  tasks_data['tasks'].each do |task|
+    puts "  [#{task['priority']&.upcase}] ##{task['id']}: #{task['title']}"
+    puts "    Estimated: #{task['estimated_hours']} hours" if task['estimated_hours']
   end
 end
