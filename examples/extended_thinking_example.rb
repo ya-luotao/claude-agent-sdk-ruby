@@ -7,6 +7,10 @@ require 'claude_agent_sdk'
 # Example: Using max_thinking_tokens for extended thinking
 # This feature allows Claude to use extended thinking for complex reasoning tasks.
 # Extended thinking gives Claude more "thinking time" before responding.
+#
+# NOTE: This option is defined in ClaudeAgentOptions for API parity with Python SDK,
+# but is not yet supported by the Claude Code CLI. This example demonstrates the
+# intended usage and how to handle ThinkingBlock content when the feature becomes available.
 
 puts "=== Extended Thinking Example ==="
 puts "Demonstrating max_thinking_tokens for complex reasoning\n\n"

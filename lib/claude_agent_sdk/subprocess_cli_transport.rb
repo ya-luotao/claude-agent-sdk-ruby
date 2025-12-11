@@ -84,12 +84,12 @@ module ClaudeAgentSDK
 
       # New options to match Python SDK
       cmd.concat(['--max-budget-usd', @options.max_budget_usd.to_s]) if @options.max_budget_usd
-      cmd.concat(['--max-thinking-tokens', @options.max_thinking_tokens.to_s]) if @options.max_thinking_tokens
+      # Note: max_thinking_tokens is stored in options but not yet supported by Claude CLI
 
-      # Output format for structured output
+      # JSON schema for structured output
       if @options.output_format
-        output_format_json = @options.output_format.is_a?(String) ? @options.output_format : JSON.generate(@options.output_format)
-        cmd.concat(['--output-format', output_format_json])
+        schema_json = @options.output_format.is_a?(String) ? @options.output_format : JSON.generate(@options.output_format)
+        cmd.concat(['--json-schema', schema_json])
       end
 
       # Add directories
