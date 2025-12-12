@@ -565,35 +565,167 @@ For complete examples, see [examples/fallback_model_example.rb](examples/fallbac
 
 ## Types
 
-See [lib/claude_agent_sdk/types.rb](lib/claude_agent_sdk/types.rb) for complete type definitions:
+See [lib/claude_agent_sdk/types.rb](lib/claude_agent_sdk/types.rb) for complete type definitions.
 
 ### Message Types
 
-| Type | Description |
-|------|-------------|
-| `AssistantMessage` | Response from Claude with content blocks |
-| `UserMessage` | User input message |
-| `SystemMessage` | System metadata message |
-| `ResultMessage` | Final result with cost and usage information |
-| `StreamEvent` | Partial message updates during streaming |
+```ruby
+# Union type of all possible messages
+Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage
+```
 
-### Content Blocks
+#### UserMessage
 
-| Type | Description |
-|------|-------------|
-| `TextBlock` | Text content with `text` attribute |
-| `ThinkingBlock` | Claude's reasoning with `thinking` and `signature` |
-| `ToolUseBlock` | Tool invocation with `id`, `name`, and `input` |
-| `ToolResultBlock` | Tool execution result |
+User input message.
 
-### Configuration
+```ruby
+class UserMessage
+  attr_accessor :content,           # String | Array<ContentBlock>
+                :parent_tool_use_id # String | nil
+end
+```
+
+#### AssistantMessage
+
+Assistant response message with content blocks.
+
+```ruby
+class AssistantMessage
+  attr_accessor :content,           # Array<ContentBlock>
+                :model,             # String
+                :parent_tool_use_id,# String | nil
+                :error              # String | nil ('authentication_failed', 'billing_error', 'rate_limit', 'invalid_request', 'server_error', 'unknown')
+end
+```
+
+#### SystemMessage
+
+System message with metadata.
+
+```ruby
+class SystemMessage
+  attr_accessor :subtype,  # String ('init', etc.)
+                :data      # Hash
+end
+```
+
+#### ResultMessage
+
+Final result message with cost and usage information.
+
+```ruby
+class ResultMessage
+  attr_accessor :subtype,           # String
+                :duration_ms,       # Integer
+                :duration_api_ms,   # Integer
+                :is_error,          # Boolean
+                :num_turns,         # Integer
+                :session_id,        # String
+                :total_cost_usd,    # Float | nil
+                :usage,             # Hash | nil
+                :result,            # String | nil (final text result)
+                :structured_output  # Hash | nil (when using output_format)
+end
+```
+
+### Content Block Types
+
+```ruby
+# Union type of all content blocks
+ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
+```
+
+#### TextBlock
+
+Text content block.
+
+```ruby
+class TextBlock
+  attr_accessor :text  # String
+end
+```
+
+#### ThinkingBlock
+
+Thinking content block (for models with extended thinking capability).
+
+```ruby
+class ThinkingBlock
+  attr_accessor :thinking,  # String
+                :signature  # String
+end
+```
+
+#### ToolUseBlock
+
+Tool use request block.
+
+```ruby
+class ToolUseBlock
+  attr_accessor :id,    # String
+                :name,  # String
+                :input  # Hash
+end
+```
+
+#### ToolResultBlock
+
+Tool execution result block.
+
+```ruby
+class ToolResultBlock
+  attr_accessor :tool_use_id,  # String
+                :content,      # String | Array<Hash> | nil
+                :is_error      # Boolean | nil
+end
+```
+
+### Error Types
+
+```ruby
+# Base exception class for all SDK errors
+class ClaudeSDKError < StandardError; end
+
+# Raised when Claude Code CLI is not found
+class CLINotFoundError < CLIConnectionError
+  # @param message [String] Error message (default: "Claude Code not found")
+  # @param cli_path [String, nil] Optional path to the CLI that was not found
+end
+
+# Raised when connection to Claude Code fails
+class CLIConnectionError < ClaudeSDKError; end
+
+# Raised when the Claude Code process fails
+class ProcessError < ClaudeSDKError
+  attr_reader :exit_code,  # Integer | nil
+              :stderr      # String | nil
+end
+
+# Raised when JSON parsing fails
+class CLIJSONDecodeError < ClaudeSDKError
+  attr_reader :line,           # String - The line that failed to parse
+              :original_error  # Exception - The original JSON decode exception
+end
+
+# Raised when message parsing fails
+class MessageParseError < ClaudeSDKError
+  attr_reader :data  # Hash | nil
+end
+```
+
+### Configuration Types
 
 | Type | Description |
 |------|-------------|
 | `ClaudeAgentOptions` | Main configuration for queries and clients |
-| `HookMatcher` | Hook configuration with matcher pattern |
+| `HookMatcher` | Hook configuration with matcher pattern and timeout |
 | `PermissionResultAllow` | Permission callback result to allow tool use |
 | `PermissionResultDeny` | Permission callback result to deny tool use |
+| `AgentDefinition` | Agent definition with description, prompt, tools, model |
+| `McpStdioServerConfig` | MCP server config for stdio transport |
+| `McpSSEServerConfig` | MCP server config for SSE transport |
+| `McpHttpServerConfig` | MCP server config for HTTP transport |
+| `SdkPluginConfig` | SDK plugin configuration |
 
 ## Error Handling
 
