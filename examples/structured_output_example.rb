@@ -5,168 +5,271 @@ require 'bundler/setup'
 require 'claude_agent_sdk'
 require 'json'
 
-# Example: Using output_format for structured JSON output
-# This feature allows you to specify a JSON schema and receive structured data
-# that conforms to that schema.
+# Structured Outputs in the Ruby SDK
 #
-# The Claude CLI returns structured output via a ToolUseBlock named "StructuredOutput".
-# The structured data is in the tool's input field, matching your schema's properties.
+# Get validated JSON results from agent workflows. The Agent SDK supports
+# structured outputs through JSON Schemas, ensuring your agents return data
+# in exactly the format you need.
 #
-# output_format accepts two formats:
-# 1. Direct schema: { type: 'object', properties: {...} }
-# 2. Wrapped format (official SDK style): { type: 'json_schema', schema: {...} }
+# WHEN TO USE STRUCTURED OUTPUTS:
+# Use structured outputs when you need validated JSON after an agent completes
+# a multi-turn workflow with tools (file searches, command execution, etc.).
+#
+# WHY USE STRUCTURED OUTPUTS:
+# - Validated structure: Always receive valid JSON matching your schema
+# - Simplified integration: No parsing or validation code needed
+# - Type safety: Use with Ruby type checkers (Sorbet, dry-types) for safety
+# - Clean separation: Define output requirements separately from task instructions
+# - Tool autonomy: Agent chooses which tools to use while guaranteeing output format
 
-# Helper to extract structured output from messages
-def extract_structured_output(message)
-  return nil unless message.is_a?(ClaudeAgentSDK::AssistantMessage)
+puts "=" * 60
+puts "=== Quick Start: Company Research ==="
+puts "=" * 60
+puts
 
-  message.content.each do |block|
-    if block.is_a?(ClaudeAgentSDK::ToolUseBlock) && block.name == 'StructuredOutput'
-      return block.input
-    end
-  end
-  nil
-end
-
-puts "=== Structured Output Example ==="
-puts "Requesting structured data with a JSON schema\n\n"
-
-# Define a JSON schema for the expected output
-person_schema = {
+# Define a JSON schema for company information
+schema = {
   type: 'object',
   properties: {
-    name: { type: 'string', description: 'Full name of the person' },
-    age: { type: 'integer', description: 'Age in years' },
-    occupation: { type: 'string', description: 'Current job or profession' },
-    skills: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'List of professional skills'
-    },
-    contact: {
-      type: 'object',
-      properties: {
-        email: { type: 'string' },
-        phone: { type: 'string' }
-      }
-    }
+    company_name: { type: 'string' },
+    founded_year: { type: 'number' },
+    headquarters: { type: 'string' }
   },
-  required: %w[name age occupation skills]
+  required: ['company_name']
 }
 
-# Create options with output_format (using wrapped format like Python/TS SDKs)
-options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  output_format: {
-    type: 'json_schema',
-    schema: person_schema
-  },
-  max_turns: 3
-)
-
-structured_data = nil
-
-# Query Claude and expect structured output
 ClaudeAgentSDK.query(
-  prompt: "Create a fictional software engineer profile with name, age, occupation, skills, and contact info.",
-  options: options
+  prompt: 'Research Anthropic and provide key company information',
+  options: ClaudeAgentSDK::ClaudeAgentOptions.new(
+    output_format: {
+      type: 'json_schema',
+      schema: schema
+    }
+  )
 ) do |message|
-  case message
-  when ClaudeAgentSDK::AssistantMessage
-    # Check for structured output in tool use blocks
-    data = extract_structured_output(message)
-    if data
-      structured_data = data
-      puts "Received structured output!"
-    else
-      message.content.each do |block|
-        puts "Claude: #{block.text}" if block.is_a?(ClaudeAgentSDK::TextBlock)
-      end
-    end
-  when ClaudeAgentSDK::ResultMessage
-    puts "\n--- Result ---"
-    puts "Cost: $#{message.total_cost_usd}" if message.total_cost_usd
-    puts "Turns: #{message.num_turns}"
+  if message.is_a?(ClaudeAgentSDK::ResultMessage) && message.structured_output
+    puts "Structured output:"
+    puts JSON.pretty_generate(message.structured_output)
+    # { company_name: "Anthropic", founded_year: 2021, headquarters: "San Francisco, CA" }
   end
 end
 
-# Display the structured output
-if structured_data
-  puts "\n--- Structured Output ---"
-  puts JSON.pretty_generate(structured_data)
+puts "\n" + "=" * 60
+puts "=== Example: TODO Tracking Agent ==="
+puts "=" * 60
+puts
+puts "Agent uses Grep to find TODOs, Bash to get git blame info\n\n"
 
-  # Note: Keys are symbols from JSON parser (symbolize_names: true)
-  puts "\nExtracted data:"
-  puts "  Name: #{structured_data[:name]}"
-  puts "  Age: #{structured_data[:age]}"
-  puts "  Occupation: #{structured_data[:occupation]}"
-  puts "  Skills: #{structured_data[:skills]&.join(', ')}"
-  if structured_data[:contact]
-    puts "  Email: #{structured_data[:contact][:email]}"
-    puts "  Phone: #{structured_data[:contact][:phone]}"
-  end
-end
-
-puts "\n" + "=" * 50 + "\n"
-
-# Example 2: Object with array property
-# Note: JSON schema root must be 'object' type, so we wrap arrays in an object
-puts "\n=== Example 2: Task List Schema ==="
-
-tasks_schema = {
+# Define structure for TODO extraction
+todo_schema = {
   type: 'object',
   properties: {
-    tasks: {
+    todos: {
       type: 'array',
       items: {
         type: 'object',
         properties: {
-          id: { type: 'integer' },
-          title: { type: 'string' },
-          priority: { type: 'string', enum: %w[low medium high] },
-          estimated_hours: { type: 'number' }
+          text: { type: 'string' },
+          file: { type: 'string' },
+          line: { type: 'number' },
+          author: { type: 'string' },
+          date: { type: 'string' }
         },
-        required: %w[id title priority]
+        required: %w[text file line]
       }
-    }
+    },
+    total_count: { type: 'number' }
   },
-  required: ['tasks']
+  required: %w[todos total_count]
 }
 
-options_tasks = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  output_format: {
-    type: 'json_schema',
-    schema: tasks_schema
-  },
-  max_turns: 3
-)
+ClaudeAgentSDK.query(
+  prompt: 'Find all TODO comments in this directory and identify who added them',
+  options: ClaudeAgentSDK::ClaudeAgentOptions.new(
+    output_format: {
+      type: 'json_schema',
+      schema: todo_schema
+    }
+  )
+) do |message|
+  if message.is_a?(ClaudeAgentSDK::ResultMessage) && message.structured_output
+    data = message.structured_output
+    puts "Found #{data[:total_count]} TODOs"
+    data[:todos]&.each do |todo|
+      puts "#{todo[:file]}:#{todo[:line]} - #{todo[:text]}"
+      puts "  Added by #{todo[:author]} on #{todo[:date]}" if todo[:author]
+    end
+  end
+end
 
-tasks_data = nil
+puts "\n" + "=" * 60
+puts "=== Example: Code Analysis with Nested Schema ==="
+puts "=" * 60
+puts
+
+# More complex schema with nested objects and enums
+analysis_schema = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: %w[low medium high] },
+          description: { type: 'string' },
+          file: { type: 'string' }
+        },
+        required: %w[severity description file]
+      }
+    },
+    score: { type: 'number', minimum: 0, maximum: 100 }
+  },
+  required: %w[summary issues score]
+}
 
 ClaudeAgentSDK.query(
-  prompt: "Generate a list of 3 tasks for building a simple web application.",
-  options: options_tasks
+  prompt: 'Analyze the codebase for potential improvements',
+  options: ClaudeAgentSDK::ClaudeAgentOptions.new(
+    output_format: {
+      type: 'json_schema',
+      schema: analysis_schema
+    }
+  )
 ) do |message|
-  case message
-  when ClaudeAgentSDK::AssistantMessage
-    data = extract_structured_output(message)
-    if data
-      tasks_data = data
-      puts "Received structured output!"
-    else
-      message.content.each do |block|
-        puts "Claude: #{block.text}" if block.is_a?(ClaudeAgentSDK::TextBlock)
-      end
+  if message.is_a?(ClaudeAgentSDK::ResultMessage) && message.structured_output
+    data = message.structured_output
+    puts "Score: #{data[:score]}/100"
+    puts "Summary: #{data[:summary]}"
+    puts "\nIssues found: #{data[:issues]&.length || 0}"
+    data[:issues]&.each do |issue|
+      puts "  [#{issue[:severity]&.upcase}] #{issue[:file]}: #{issue[:description]}"
     end
-  when ClaudeAgentSDK::ResultMessage
-    puts "\nCost: $#{message.total_cost_usd}" if message.total_cost_usd
   end
 end
 
-# Note: Keys are symbols from JSON parser (symbolize_names: true)
-if tasks_data && tasks_data[:tasks]
-  puts "\n--- Task List (Structured) ---"
-  tasks_data[:tasks].each do |task|
-    puts "  [#{task[:priority]&.upcase}] ##{task[:id]}: #{task[:title]}"
-    puts "    Estimated: #{task[:estimated_hours]} hours" if task[:estimated_hours]
+puts "\n" + "=" * 60
+puts "=== Error Handling ==="
+puts "=" * 60
+puts
+
+# If the agent cannot produce valid output matching your schema,
+# you'll receive an error result
+ClaudeAgentSDK.query(
+  prompt: 'What is 2+2?',
+  options: ClaudeAgentSDK::ClaudeAgentOptions.new(
+    output_format: {
+      type: 'json_schema',
+      schema: {
+        type: 'object',
+        properties: {
+          answer: { type: 'string' }
+        },
+        required: ['answer']
+      }
+    }
+  )
+) do |message|
+  if message.is_a?(ClaudeAgentSDK::ResultMessage)
+    if message.subtype == 'success' && message.structured_output
+      puts "Success: #{message.structured_output.inspect}"
+    elsif message.subtype == 'error_max_structured_output_retries'
+      puts "Error: Could not produce valid output"
+    else
+      puts "Result: #{message.subtype}"
+      puts "Structured output: #{message.structured_output.inspect}" if message.structured_output
+    end
   end
 end
+
+puts "\n" + "=" * 60
+puts "=== Type-Safe Schemas with dry-struct (Optional) ==="
+puts "=" * 60
+puts <<~EXAMPLE
+
+  For Ruby projects wanting type safety similar to Zod (TypeScript) or
+  Pydantic (Python), consider using dry-struct:
+
+  ```ruby
+  require 'dry-struct'
+  require 'dry-types'
+
+  module Types
+    include Dry.Types()
+  end
+
+  class Issue < Dry::Struct
+    attribute :severity, Types::String.enum('low', 'medium', 'high')
+    attribute :description, Types::String
+    attribute :file, Types::String
+  end
+
+  class AnalysisResult < Dry::Struct
+    attribute :summary, Types::String
+    attribute :issues, Types::Array.of(Issue)
+    attribute :score, Types::Integer.constrained(gteq: 0, lteq: 100)
+  end
+
+  # Use in query
+  ClaudeAgentSDK.query(
+    prompt: 'Analyze the codebase',
+    options: ClaudeAgentSDK::ClaudeAgentOptions.new(
+      output_format: {
+        type: 'json_schema',
+        schema: {
+          type: 'object',
+          properties: {
+            summary: { type: 'string' },
+            issues: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  severity: { type: 'string', enum: ['low', 'medium', 'high'] },
+                  description: { type: 'string' },
+                  file: { type: 'string' }
+                },
+                required: ['severity', 'description', 'file']
+              }
+            },
+            score: { type: 'integer', minimum: 0, maximum: 100 }
+          },
+          required: ['summary', 'issues', 'score']
+        }
+      }
+    )
+  ) do |message|
+    if message.is_a?(ClaudeAgentSDK::ResultMessage) && message.structured_output
+      # Validate with dry-struct
+      result = AnalysisResult.new(message.structured_output)
+      puts "Score: \#{result.score}"
+      result.issues.each { |i| puts "[\#{i.severity}] \#{i.description}" }
+    end
+  end
+  ```
+
+EXAMPLE
+
+puts "=" * 60
+puts "=== Tips ==="
+puts "=" * 60
+puts <<~TIPS
+
+  1. SCHEMA ROOT: JSON schema root must be 'object' type.
+     Wrap arrays in an object property.
+
+  2. ACCESS DATA: Structured output is available in:
+     - message.structured_output on ResultMessage
+
+  3. KEYS ARE SYMBOLS: JSON parser uses symbolize_names: true,
+     so access data with symbols: data[:name], not data['name']
+
+  4. RAILS INTEGRATION: The SDK works in Rails applications.
+     No special configuration needed.
+
+  5. SUPPORTED FEATURES: All basic JSON Schema types supported:
+     object, array, string, integer, number, boolean, null
+     Also: enum, const, required, minimum, maximum, etc.
+
+TIPS
