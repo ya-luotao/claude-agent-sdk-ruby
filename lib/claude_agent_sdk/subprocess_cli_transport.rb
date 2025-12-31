@@ -80,11 +80,70 @@ module ClaudeAgentSDK
       cmd.concat(['--permission-mode', @options.permission_mode]) if @options.permission_mode
       cmd << '--continue' if @options.continue_conversation
       cmd.concat(['--resume', @options.resume]) if @options.resume
-      cmd.concat(['--settings', @options.settings]) if @options.settings
 
-      # New options to match Python SDK
+      # Settings handling with sandbox merge (v0.1.11+)
+      # Sandbox settings are merged into the main settings JSON
+      if @options.settings || @options.sandbox
+        settings_hash = {}
+
+        # Parse existing settings if provided
+        if @options.settings
+          if @options.settings.is_a?(String)
+            begin
+              settings_hash = JSON.parse(@options.settings)
+            rescue JSON::ParserError
+              # If not valid JSON, pass as-is
+              cmd.concat(['--settings', @options.settings])
+              settings_hash = nil
+            end
+          elsif @options.settings.is_a?(Hash)
+            settings_hash = @options.settings.dup
+          end
+        end
+
+        # Merge sandbox settings if provided
+        if settings_hash && @options.sandbox
+          sandbox_hash = if @options.sandbox.is_a?(SandboxSettings)
+                           @options.sandbox.to_h
+                         else
+                           @options.sandbox
+                         end
+          settings_hash[:sandbox] = sandbox_hash unless sandbox_hash.empty?
+        end
+
+        # Output merged settings
+        if settings_hash && !settings_hash.empty?
+          cmd.concat(['--settings', JSON.generate(settings_hash)])
+        end
+      end
+
+      # Options to match Python SDK
       cmd.concat(['--max-budget-usd', @options.max_budget_usd.to_s]) if @options.max_budget_usd
       # Note: max_thinking_tokens is stored in options but not yet supported by Claude CLI
+
+      # Betas option (v0.1.12+)
+      if @options.betas && !@options.betas.empty?
+        cmd.concat(['--betas', @options.betas.join(',')])
+      end
+
+      # Tools option for base tools selection (v0.1.12+)
+      if @options.tools
+        if @options.tools.is_a?(Array)
+          cmd.concat(['--tools', @options.tools.join(',')])
+        elsif @options.tools.is_a?(ToolsPreset)
+          cmd.concat(['--tools', JSON.generate(@options.tools.to_h)])
+        elsif @options.tools.is_a?(Hash)
+          cmd.concat(['--tools', JSON.generate(@options.tools)])
+        end
+      end
+
+      # Append allowed tools option (v0.1.12+)
+      if @options.append_allowed_tools && !@options.append_allowed_tools.empty?
+        cmd.concat(['--append-allowed-tools', @options.append_allowed_tools.join(',')])
+      end
+
+      # File checkpointing for rewind support (v0.1.15+)
+      cmd << '--enable-file-checkpointing' if @options.enable_file_checkpointing
 
       # JSON schema for structured output
       # Accepts either:

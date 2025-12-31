@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-12-31
+
+### Added - Python SDK v0.1.18 Feature Parity
+
+#### File Checkpointing & Rewind (v0.1.15+)
+- `enable_file_checkpointing` option in `ClaudeAgentOptions` for enabling file state checkpointing
+- `rewind_files(user_message_uuid)` method on `Query` and `Client` classes
+- `uuid` field on `UserMessage` for tracking message identifiers for rewind support
+
+#### Beta Features Support (v0.1.12+)
+- `SDK_BETAS` constant with available beta features (e.g., `"context-1m-2025-08-07"`)
+- `betas` option in `ClaudeAgentOptions` for enabling beta features
+
+#### Tools Configuration (v0.1.12+)
+- `tools` option for base tools selection (separate from `allowed_tools`)
+- Supports array of tool names, empty array `[]`, or `ToolsPreset` object
+- `ToolsPreset` class for preset-based tool configuration
+- `append_allowed_tools` option to append tools to the allowed list
+
+#### Sandbox Settings (v0.1.11+)
+- `SandboxSettings` class for isolated command execution configuration
+- `SandboxNetworkConfig` class for network isolation settings
+- `SandboxIgnoreViolations` class for configuring violation handling
+- `sandbox` option in `ClaudeAgentOptions` for sandbox configuration
+- Automatic merging of sandbox settings into the main settings JSON
+
+#### Additional Types
+- `SystemPromptPreset` class for preset-based system prompts
+
+### Technical Details
+- All new CLI flags properly passed to Claude Code subprocess
+- Sandbox settings merged into `--settings` JSON for CLI compatibility
+- UserMessage UUID parsed from CLI output for rewind support
+
 ## [0.2.0] - 2025-10-17
 
 ### Changed

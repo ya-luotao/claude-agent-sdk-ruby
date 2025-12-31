@@ -18,6 +18,10 @@
 - [Structured Output](#structured-output)
 - [Budget Control](#budget-control)
 - [Fallback Model](#fallback-model)
+- [Beta Features](#beta-features)
+- [Tools Configuration](#tools-configuration)
+- [Sandbox Settings](#sandbox-settings)
+- [File Checkpointing & Rewind](#file-checkpointing--rewind)
 - [Types](#types)
 - [Error Handling](#error-handling)
 - [Examples](#examples)
@@ -29,7 +33,7 @@
 Add this line to your application's Gemfile:
 
 ```ruby
-gem 'claude-agent-sdk', '~> 0.3.0'
+gem 'claude-agent-sdk', '~> 0.4.0'
 ```
 
 And then execute:
@@ -563,6 +567,105 @@ end
 
 For complete examples, see [examples/fallback_model_example.rb](examples/fallback_model_example.rb).
 
+## Beta Features
+
+Enable experimental features using the `betas` option:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  betas: ['context-1m-2025-08-07']  # Extended context window
+)
+
+ClaudeAgentSDK.query(prompt: "Analyze this large document...", options: options) do |message|
+  puts message
+end
+```
+
+Available beta features are listed in the `SDK_BETAS` constant.
+
+## Tools Configuration
+
+Configure base tools separately from allowed tools:
+
+```ruby
+# Using an array of tool names
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  tools: ['Read', 'Edit', 'Bash']  # Base tools available
+)
+
+# Using a preset
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  tools: ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code')
+)
+
+# Appending to allowed tools
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  append_allowed_tools: ['Write', 'Bash']
+)
+```
+
+## Sandbox Settings
+
+Run commands in an isolated sandbox for additional security:
+
+```ruby
+sandbox = ClaudeAgentSDK::SandboxSettings.new(
+  enabled: true,
+  auto_allow_bash_if_sandboxed: true,
+  network: ClaudeAgentSDK::SandboxNetworkConfig.new(
+    allow_local_binding: true
+  )
+)
+
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  sandbox: sandbox,
+  permission_mode: 'acceptEdits'
+)
+
+ClaudeAgentSDK.query(prompt: "Run some commands", options: options) do |message|
+  puts message
+end
+```
+
+## File Checkpointing & Rewind
+
+Enable file checkpointing to revert file changes to a previous state:
+
+```ruby
+require 'async'
+
+Async do
+  options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+    enable_file_checkpointing: true,
+    permission_mode: 'acceptEdits'
+  )
+
+  client = ClaudeAgentSDK::Client.new(options: options)
+  client.connect
+
+  # Track user message UUIDs for potential rewind
+  user_message_uuids = []
+
+  client.query("Create a test.rb file with some code")
+  client.receive_response do |message|
+    if message.is_a?(ClaudeAgentSDK::UserMessage) && message.uuid
+      user_message_uuids << message.uuid
+    end
+  end
+
+  # Make more changes...
+  client.query("Modify the test.rb file")
+  client.receive_response { |msg| }
+
+  # Rewind to the first checkpoint
+  if user_message_uuids.first
+    client.rewind_files(user_message_uuids.first)
+  end
+
+  client.disconnect
+end
+```
+
 ## Types
 
 See [lib/claude_agent_sdk/types.rb](lib/claude_agent_sdk/types.rb) for complete type definitions.
@@ -581,6 +684,7 @@ User input message.
 ```ruby
 class UserMessage
   attr_accessor :content,           # String | Array<ContentBlock>
+                :uuid,              # String | nil - Unique ID for rewind support (v0.1.17+)
                 :parent_tool_use_id # String | nil
 end
 ```
@@ -726,6 +830,21 @@ end
 | `McpSSEServerConfig` | MCP server config for SSE transport |
 | `McpHttpServerConfig` | MCP server config for HTTP transport |
 | `SdkPluginConfig` | SDK plugin configuration |
+| `SandboxSettings` | Sandbox settings for isolated command execution (v0.1.11+) |
+| `SandboxNetworkConfig` | Network configuration for sandbox |
+| `SandboxIgnoreViolations` | Configure which sandbox violations to ignore |
+| `SystemPromptPreset` | System prompt preset configuration |
+| `ToolsPreset` | Tools preset configuration for base tools selection |
+
+### Constants
+
+| Constant | Description |
+|----------|-------------|
+| `SDK_BETAS` | Available beta features (e.g., `"context-1m-2025-08-07"`) |
+| `PERMISSION_MODES` | Available permission modes |
+| `SETTING_SOURCES` | Available setting sources |
+| `HOOK_EVENTS` | Available hook events |
+| `ASSISTANT_MESSAGE_ERRORS` | Possible error types in AssistantMessage |
 
 ## Error Handling
 
