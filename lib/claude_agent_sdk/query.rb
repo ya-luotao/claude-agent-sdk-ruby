@@ -551,6 +551,17 @@ module ClaudeAgentSDK
                            })
     end
 
+    # Rewind files to a previous checkpoint (v0.1.15+)
+    # Restores file state to what it was at the given user message
+    # Requires enable_file_checkpointing to be true in options
+    # @param user_message_uuid [String] The UUID of the UserMessage to rewind to
+    def rewind_files(user_message_uuid)
+      send_control_request({
+                             subtype: 'rewind_files',
+                             userMessageUuid: user_message_uuid
+                           })
+    end
+
     # Stream input messages to transport
     def stream_input(stream)
       stream.each do |message|

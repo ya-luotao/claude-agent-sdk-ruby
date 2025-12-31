@@ -19,6 +19,10 @@ module ClaudeAgentSDK
   # Type constants for assistant message errors
   ASSISTANT_MESSAGE_ERRORS = %w[authentication_failed billing_error rate_limit invalid_request server_error unknown].freeze
 
+  # Type constants for SDK beta features
+  # Available beta features that can be enabled via the betas option
+  SDK_BETAS = %w[context-1m-2025-08-07].freeze
+
   # Content Blocks
 
   # Text content block
@@ -66,10 +70,11 @@ module ClaudeAgentSDK
 
   # User message
   class UserMessage
-    attr_accessor :content, :parent_tool_use_id
+    attr_accessor :content, :uuid, :parent_tool_use_id
 
-    def initialize(content:, parent_tool_use_id: nil)
+    def initialize(content:, uuid: nil, parent_tool_use_id: nil)
       @content = content
+      @uuid = uuid # Unique identifier for rewind support (v0.1.17+)
       @parent_tool_use_id = parent_tool_use_id
     end
   end
@@ -512,6 +517,125 @@ module ClaudeAgentSDK
     end
   end
 
+  # Sandbox network configuration
+  class SandboxNetworkConfig
+    attr_accessor :allow_unix_sockets, :allow_all_unix_sockets, :allow_local_binding,
+                  :http_proxy_port, :socks_proxy_port
+
+    def initialize(
+      allow_unix_sockets: nil,
+      allow_all_unix_sockets: nil,
+      allow_local_binding: nil,
+      http_proxy_port: nil,
+      socks_proxy_port: nil
+    )
+      @allow_unix_sockets = allow_unix_sockets
+      @allow_all_unix_sockets = allow_all_unix_sockets
+      @allow_local_binding = allow_local_binding
+      @http_proxy_port = http_proxy_port
+      @socks_proxy_port = socks_proxy_port
+    end
+
+    def to_h
+      result = {}
+      result[:allowUnixSockets] = @allow_unix_sockets unless @allow_unix_sockets.nil?
+      result[:allowAllUnixSockets] = @allow_all_unix_sockets unless @allow_all_unix_sockets.nil?
+      result[:allowLocalBinding] = @allow_local_binding unless @allow_local_binding.nil?
+      result[:httpProxyPort] = @http_proxy_port if @http_proxy_port
+      result[:socksProxyPort] = @socks_proxy_port if @socks_proxy_port
+      result
+    end
+  end
+
+  # Sandbox ignore violations configuration
+  class SandboxIgnoreViolations
+    attr_accessor :file, :network
+
+    def initialize(file: nil, network: nil)
+      @file = file # Array of file paths to ignore
+      @network = network # Array of network patterns to ignore
+    end
+
+    def to_h
+      result = {}
+      result[:file] = @file if @file
+      result[:network] = @network if @network
+      result
+    end
+  end
+
+  # Sandbox settings for isolated command execution
+  class SandboxSettings
+    attr_accessor :enabled, :auto_allow_bash_if_sandboxed, :excluded_commands,
+                  :allow_unsandboxed_commands, :network, :ignore_violations,
+                  :enable_weaker_nested_sandbox
+
+    def initialize(
+      enabled: nil,
+      auto_allow_bash_if_sandboxed: nil,
+      excluded_commands: nil,
+      allow_unsandboxed_commands: nil,
+      network: nil,
+      ignore_violations: nil,
+      enable_weaker_nested_sandbox: nil
+    )
+      @enabled = enabled
+      @auto_allow_bash_if_sandboxed = auto_allow_bash_if_sandboxed
+      @excluded_commands = excluded_commands # Array of commands to exclude
+      @allow_unsandboxed_commands = allow_unsandboxed_commands
+      @network = network # SandboxNetworkConfig instance
+      @ignore_violations = ignore_violations # SandboxIgnoreViolations instance
+      @enable_weaker_nested_sandbox = enable_weaker_nested_sandbox
+    end
+
+    def to_h
+      result = {}
+      result[:enabled] = @enabled unless @enabled.nil?
+      result[:autoAllowBashIfSandboxed] = @auto_allow_bash_if_sandboxed unless @auto_allow_bash_if_sandboxed.nil?
+      result[:excludedCommands] = @excluded_commands if @excluded_commands
+      result[:allowUnsandboxedCommands] = @allow_unsandboxed_commands unless @allow_unsandboxed_commands.nil?
+      if @network
+        result[:network] = @network.is_a?(SandboxNetworkConfig) ? @network.to_h : @network
+      end
+      if @ignore_violations
+        result[:ignoreViolations] = @ignore_violations.is_a?(SandboxIgnoreViolations) ? @ignore_violations.to_h : @ignore_violations
+      end
+      result[:enableWeakerNestedSandbox] = @enable_weaker_nested_sandbox unless @enable_weaker_nested_sandbox.nil?
+      result
+    end
+  end
+
+  # System prompt preset configuration
+  class SystemPromptPreset
+    attr_accessor :type, :preset, :append
+
+    def initialize(preset:, append: nil)
+      @type = 'preset'
+      @preset = preset
+      @append = append
+    end
+
+    def to_h
+      result = { type: @type, preset: @preset }
+      result[:append] = @append if @append
+      result
+    end
+  end
+
+  # Tools preset configuration
+  class ToolsPreset
+    attr_accessor :type, :preset
+
+    def initialize(preset:)
+      @type = 'preset'
+      @preset = preset
+    end
+
+    def to_h
+      { type: @type, preset: @preset }
+    end
+  end
+
   # Claude Agent Options for configuring queries
   class ClaudeAgentOptions
     attr_accessor :allowed_tools, :system_prompt, :mcp_servers, :permission_mode,
@@ -520,9 +644,11 @@ module ClaudeAgentSDK
                   :add_dirs, :env, :extra_args, :max_buffer_size, :stderr,
                   :can_use_tool, :hooks, :user, :include_partial_messages,
                   :fork_session, :agents, :setting_sources,
-                  # New options added to match Python SDK
+                  # Options added to match Python SDK
                   :output_format, :max_budget_usd, :max_thinking_tokens,
-                  :fallback_model, :plugins, :debug_stderr
+                  :fallback_model, :plugins, :debug_stderr,
+                  # New options from Python SDK v0.1.12+
+                  :betas, :tools, :sandbox, :enable_file_checkpointing, :append_allowed_tools
 
     def initialize(
       allowed_tools: [],
@@ -550,13 +676,19 @@ module ClaudeAgentSDK
       fork_session: false,
       agents: nil,
       setting_sources: nil,
-      # New options added to match Python SDK
+      # Options added to match Python SDK
       output_format: nil,
       max_budget_usd: nil,
       max_thinking_tokens: nil,
       fallback_model: nil,
       plugins: nil,
-      debug_stderr: nil
+      debug_stderr: nil,
+      # New options from Python SDK v0.1.12+
+      betas: nil,
+      tools: nil,
+      sandbox: nil,
+      enable_file_checkpointing: false,
+      append_allowed_tools: nil
     )
       @allowed_tools = allowed_tools
       @system_prompt = system_prompt
@@ -583,13 +715,19 @@ module ClaudeAgentSDK
       @fork_session = fork_session
       @agents = agents
       @setting_sources = setting_sources
-      # New options added to match Python SDK
+      # Options added to match Python SDK
       @output_format = output_format # JSON schema for structured output
       @max_budget_usd = max_budget_usd # Spending cap in dollars
       @max_thinking_tokens = max_thinking_tokens # Extended thinking token budget
       @fallback_model = fallback_model # Backup model if primary unavailable
       @plugins = plugins # Array of SdkPluginConfig
       @debug_stderr = debug_stderr # Debug output file object/path
+      # New options from Python SDK v0.1.12+
+      @betas = betas # Array of beta feature strings (e.g., ["context-1m-2025-08-07"])
+      @tools = tools # Base tools selection: Array, empty array [], or ToolsPreset
+      @sandbox = sandbox # SandboxSettings instance for isolated command execution
+      @enable_file_checkpointing = enable_file_checkpointing # Enable file checkpointing for rewind support
+      @append_allowed_tools = append_allowed_tools # Array of tools to append to allowed_tools
     end
 
     def dup_with(**changes)
