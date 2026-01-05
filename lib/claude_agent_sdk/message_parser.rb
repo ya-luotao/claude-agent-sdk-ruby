@@ -32,7 +32,7 @@ module ClaudeAgentSDK
 
     def self.parse_user_message(data)
       parent_tool_use_id = data[:parent_tool_use_id]
-      uuid = data[:uuid] # UUID for rewind support (v0.1.17+)
+      uuid = data[:uuid] # UUID for rewind support
       message_data = data[:message]
       raise MessageParseError.new("Missing message field in user message", data: data) unless message_data
 

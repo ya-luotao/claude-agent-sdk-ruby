@@ -646,25 +646,41 @@ Async do
   # Track user message UUIDs for potential rewind
   user_message_uuids = []
 
+  # First query - create a file
   client.query("Create a test.rb file with some code")
   client.receive_response do |message|
-    if message.is_a?(ClaudeAgentSDK::UserMessage) && message.uuid
-      user_message_uuids << message.uuid
+    # Process all message types as needed
+    case message
+    when ClaudeAgentSDK::UserMessage
+      # Capture UUID for rewind capability
+      user_message_uuids << message.uuid if message.uuid
+    when ClaudeAgentSDK::AssistantMessage
+      # Handle assistant responses
+      message.content.each do |block|
+        puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
+      end
+    when ClaudeAgentSDK::ResultMessage
+      puts "Query completed (cost: $#{message.total_cost_usd})"
     end
   end
 
-  # Make more changes...
-  client.query("Modify the test.rb file")
-  client.receive_response { |msg| }
+  # Second query - modify the file
+  client.query("Modify the test.rb file to add error handling")
+  client.receive_response do |message|
+    user_message_uuids << message.uuid if message.is_a?(ClaudeAgentSDK::UserMessage) && message.uuid
+  end
 
-  # Rewind to the first checkpoint
+  # Rewind to the first checkpoint (undoes the second query's changes)
   if user_message_uuids.first
+    puts "Rewinding to checkpoint: #{user_message_uuids.first}"
     client.rewind_files(user_message_uuids.first)
   end
 
   client.disconnect
 end
 ```
+
+> **Note:** The `uuid` field on `UserMessage` is populated by the CLI and represents checkpoint identifiers. Rewinding to a UUID restores file state to what it was at that point in the conversation.
 
 ## Types
 
@@ -684,7 +700,7 @@ User input message.
 ```ruby
 class UserMessage
   attr_accessor :content,           # String | Array<ContentBlock>
-                :uuid,              # String | nil - Unique ID for rewind support (v0.1.17+)
+                :uuid,              # String | nil - Unique ID for rewind support
                 :parent_tool_use_id # String | nil
 end
 ```
@@ -830,7 +846,7 @@ end
 | `McpSSEServerConfig` | MCP server config for SSE transport |
 | `McpHttpServerConfig` | MCP server config for HTTP transport |
 | `SdkPluginConfig` | SDK plugin configuration |
-| `SandboxSettings` | Sandbox settings for isolated command execution (v0.1.11+) |
+| `SandboxSettings` | Sandbox settings for isolated command execution |
 | `SandboxNetworkConfig` | Network configuration for sandbox |
 | `SandboxIgnoreViolations` | Configure which sandbox violations to ignore |
 | `SystemPromptPreset` | System prompt preset configuration |

@@ -74,7 +74,7 @@ module ClaudeAgentSDK
 
     def initialize(content:, uuid: nil, parent_tool_use_id: nil)
       @content = content
-      @uuid = uuid # Unique identifier for rewind support (v0.1.17+)
+      @uuid = uuid # Unique identifier for rewind support
       @parent_tool_use_id = parent_tool_use_id
     end
   end
@@ -644,10 +644,8 @@ module ClaudeAgentSDK
                   :add_dirs, :env, :extra_args, :max_buffer_size, :stderr,
                   :can_use_tool, :hooks, :user, :include_partial_messages,
                   :fork_session, :agents, :setting_sources,
-                  # Options added to match Python SDK
                   :output_format, :max_budget_usd, :max_thinking_tokens,
                   :fallback_model, :plugins, :debug_stderr,
-                  # New options from Python SDK v0.1.12+
                   :betas, :tools, :sandbox, :enable_file_checkpointing, :append_allowed_tools
 
     def initialize(
@@ -676,14 +674,12 @@ module ClaudeAgentSDK
       fork_session: false,
       agents: nil,
       setting_sources: nil,
-      # Options added to match Python SDK
       output_format: nil,
       max_budget_usd: nil,
       max_thinking_tokens: nil,
       fallback_model: nil,
       plugins: nil,
       debug_stderr: nil,
-      # New options from Python SDK v0.1.12+
       betas: nil,
       tools: nil,
       sandbox: nil,
@@ -715,14 +711,12 @@ module ClaudeAgentSDK
       @fork_session = fork_session
       @agents = agents
       @setting_sources = setting_sources
-      # Options added to match Python SDK
       @output_format = output_format # JSON schema for structured output
       @max_budget_usd = max_budget_usd # Spending cap in dollars
       @max_thinking_tokens = max_thinking_tokens # Extended thinking token budget
       @fallback_model = fallback_model # Backup model if primary unavailable
       @plugins = plugins # Array of SdkPluginConfig
       @debug_stderr = debug_stderr # Debug output file object/path
-      # New options from Python SDK v0.1.12+
       @betas = betas # Array of beta feature strings (e.g., ["context-1m-2025-08-07"])
       @tools = tools # Base tools selection: Array, empty array [], or ToolsPreset
       @sandbox = sandbox # SandboxSettings instance for isolated command execution
