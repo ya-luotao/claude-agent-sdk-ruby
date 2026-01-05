@@ -22,6 +22,7 @@
 - [Tools Configuration](#tools-configuration)
 - [Sandbox Settings](#sandbox-settings)
 - [File Checkpointing & Rewind](#file-checkpointing--rewind)
+- [Rails Integration](#rails-integration)
 - [Types](#types)
 - [Error Handling](#error-handling)
 - [Examples](#examples)
@@ -682,6 +683,159 @@ end
 
 > **Note:** The `uuid` field on `UserMessage` is populated by the CLI and represents checkpoint identifiers. Rewinding to a UUID restores file state to what it was at that point in the conversation.
 
+## Rails Integration
+
+The SDK integrates well with Rails applications. Here are common patterns:
+
+### ActionCable Streaming
+
+Stream Claude responses to the frontend in real-time:
+
+```ruby
+# app/jobs/chat_agent_job.rb
+class ChatAgentJob < ApplicationJob
+  queue_as :claude_agents
+
+  def perform(chat_id, message_content)
+    Async do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        system_prompt: { type: 'preset', preset: 'claude_code' },
+        permission_mode: 'bypassPermissions'
+      )
+
+      client = ClaudeAgentSDK::Client.new(options: options)
+
+      begin
+        client.connect
+        client.query(message_content)
+
+        client.receive_response do |message|
+          case message
+          when ClaudeAgentSDK::AssistantMessage
+            text = extract_text(message)
+            ChatChannel.broadcast_to(chat_id, { type: 'chunk', content: text })
+
+          when ClaudeAgentSDK::ResultMessage
+            ChatChannel.broadcast_to(chat_id, {
+              type: 'complete',
+              content: message.result,
+              cost: message.total_cost_usd
+            })
+          end
+        end
+      ensure
+        client.disconnect
+      end
+    end.wait
+  end
+
+  private
+
+  def extract_text(message)
+    message.content
+      .select { |b| b.is_a?(ClaudeAgentSDK::TextBlock) }
+      .map(&:text)
+      .join("\n\n")
+  end
+end
+```
+
+### Session Resumption
+
+Persist Claude sessions for multi-turn conversations:
+
+```ruby
+# app/models/chat_session.rb
+class ChatSession < ApplicationRecord
+  # Columns: id, claude_session_id, user_id, created_at, updated_at
+
+  def send_message(content)
+    options = build_options
+    client = ClaudeAgentSDK::Client.new(options: options)
+
+    Async do
+      client.connect
+      client.query(content, session_id: claude_session_id ? nil : generate_session_id)
+
+      client.receive_response do |message|
+        if message.is_a?(ClaudeAgentSDK::ResultMessage)
+          # Save session ID for next message
+          update!(claude_session_id: message.session_id)
+        end
+      end
+    ensure
+      client.disconnect
+    end.wait
+  end
+
+  private
+
+  def build_options
+    opts = {
+      permission_mode: 'bypassPermissions',
+      setting_sources: []
+    }
+    opts[:resume] = claude_session_id if claude_session_id.present?
+    ClaudeAgentSDK::ClaudeAgentOptions.new(**opts)
+  end
+
+  def generate_session_id
+    "chat_#{id}_#{Time.current.to_i}"
+  end
+end
+```
+
+### Background Jobs with Error Handling
+
+```ruby
+class ClaudeAgentJob < ApplicationJob
+  queue_as :claude_agents
+  retry_on ClaudeAgentSDK::ProcessError, wait: :polynomially_longer, attempts: 3
+
+  def perform(task_id)
+    task = Task.find(task_id)
+
+    Async do
+      execute_agent(task)
+    end.wait
+
+  rescue ClaudeAgentSDK::CLINotFoundError => e
+    task.update!(status: 'failed', error: 'Claude CLI not installed')
+    raise
+  end
+
+  private
+
+  def execute_agent(task)
+    # ... agent execution
+  end
+end
+```
+
+### HTTP MCP Servers
+
+Connect to remote tool services:
+
+```ruby
+mcp_servers = {
+  'api_tools' => ClaudeAgentSDK::McpHttpServerConfig.new(
+    url: ENV['MCP_SERVER_URL'],
+    headers: { 'Authorization' => "Bearer #{ENV['MCP_TOKEN']}" }
+  ).to_h
+}
+
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  mcp_servers: mcp_servers,
+  permission_mode: 'bypassPermissions'
+)
+```
+
+For complete examples, see:
+- [examples/rails_actioncable_example.rb](examples/rails_actioncable_example.rb)
+- [examples/rails_background_job_example.rb](examples/rails_background_job_example.rb)
+- [examples/session_resumption_example.rb](examples/session_resumption_example.rb)
+- [examples/http_mcp_server_example.rb](examples/http_mcp_server_example.rb)
+
 ## Types
 
 See [lib/claude_agent_sdk/types.rb](lib/claude_agent_sdk/types.rb) for complete type definitions.
@@ -926,21 +1080,47 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 
 ## Examples
 
+### Core Examples
+
 | Example | Description |
 |---------|-------------|
 | [examples/quick_start.rb](examples/quick_start.rb) | Basic `query()` usage with options |
 | [examples/client_example.rb](examples/client_example.rb) | Interactive Client usage |
 | [examples/streaming_input_example.rb](examples/streaming_input_example.rb) | Streaming input for multi-turn conversations |
+| [examples/session_resumption_example.rb](examples/session_resumption_example.rb) | Multi-turn conversations with session persistence |
+| [examples/structured_output_example.rb](examples/structured_output_example.rb) | JSON schema structured output |
+| [examples/error_handling_example.rb](examples/error_handling_example.rb) | Error handling with `AssistantMessage.error` |
+
+### MCP Server Examples
+
+| Example | Description |
+|---------|-------------|
 | [examples/mcp_calculator.rb](examples/mcp_calculator.rb) | Custom tools with SDK MCP servers |
 | [examples/mcp_resources_prompts_example.rb](examples/mcp_resources_prompts_example.rb) | MCP resources and prompts |
+| [examples/http_mcp_server_example.rb](examples/http_mcp_server_example.rb) | HTTP/SSE MCP server configuration |
+
+### Hooks & Permissions
+
+| Example | Description |
+|---------|-------------|
 | [examples/hooks_example.rb](examples/hooks_example.rb) | Using hooks to control tool execution |
+| [examples/advanced_hooks_example.rb](examples/advanced_hooks_example.rb) | Typed hook inputs/outputs |
 | [examples/permission_callback_example.rb](examples/permission_callback_example.rb) | Dynamic tool permission control |
-| [examples/structured_output_example.rb](examples/structured_output_example.rb) | JSON schema structured output |
+
+### Advanced Features
+
+| Example | Description |
+|---------|-------------|
 | [examples/budget_control_example.rb](examples/budget_control_example.rb) | Budget control with `max_budget_usd` |
 | [examples/fallback_model_example.rb](examples/fallback_model_example.rb) | Fallback model configuration |
-| [examples/advanced_hooks_example.rb](examples/advanced_hooks_example.rb) | Typed hook inputs/outputs |
-| [examples/error_handling_example.rb](examples/error_handling_example.rb) | Error handling with `AssistantMessage.error` |
 | [examples/extended_thinking_example.rb](examples/extended_thinking_example.rb) | Extended thinking (API parity) |
+
+### Rails Integration
+
+| Example | Description |
+|---------|-------------|
+| [examples/rails_actioncable_example.rb](examples/rails_actioncable_example.rb) | ActionCable streaming to frontend |
+| [examples/rails_background_job_example.rb](examples/rails_background_job_example.rb) | Background jobs with session resumption |
 
 ## Development
 
