@@ -61,6 +61,28 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         msg = described_class.parse(data)
         expect(msg.parent_tool_use_id).to eq('tool_123')
       end
+
+      it 'parses uuid for rewind support' do
+        data = {
+          type: 'user',
+          message: { content: 'Hello' },
+          uuid: 'user_msg_abc123'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::UserMessage)
+        expect(msg.uuid).to eq('user_msg_abc123')
+      end
+
+      it 'handles missing uuid gracefully' do
+        data = {
+          type: 'user',
+          message: { content: 'Hello' }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg.uuid).to be_nil
+      end
     end
 
     context 'assistant messages' do

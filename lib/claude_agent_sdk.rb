@@ -244,6 +244,15 @@ module ClaudeAgentSDK
       @query_handler.set_model(model)
     end
 
+    # Rewind files to a previous checkpoint (v0.1.15+)
+    # Restores file state to what it was at the given user message
+    # Requires enable_file_checkpointing to be true in options
+    # @param user_message_uuid [String] The UUID of the UserMessage to rewind to
+    def rewind_files(user_message_uuid)
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.rewind_files(user_message_uuid)
+    end
+
     # Get server initialization info
     # @return [Hash, nil] Server info or nil
     def server_info

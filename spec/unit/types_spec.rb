@@ -53,6 +53,16 @@ RSpec.describe ClaudeAgentSDK do
         msg = described_class.new(content: 'Hello', parent_tool_use_id: 'tool_123')
         expect(msg.parent_tool_use_id).to eq('tool_123')
       end
+
+      it 'optionally stores uuid for rewind support' do
+        msg = described_class.new(content: 'Hello', uuid: 'user_msg_abc123')
+        expect(msg.uuid).to eq('user_msg_abc123')
+      end
+
+      it 'has nil uuid by default' do
+        msg = described_class.new(content: 'Hello')
+        expect(msg.uuid).to be_nil
+      end
     end
 
     describe ClaudeAgentSDK::AssistantMessage do
@@ -335,6 +345,197 @@ RSpec.describe ClaudeAgentSDK do
         expect(tool.name).to eq('test_tool')
         expect(tool.description).to eq('A test tool')
         expect(tool.handler).to eq(handler)
+      end
+    end
+
+    describe ClaudeAgentSDK::SandboxNetworkConfig do
+      it 'stores network configuration' do
+        config = described_class.new(
+          allow_unix_sockets: ['/tmp/socket'],
+          allow_local_binding: true,
+          http_proxy_port: 8080
+        )
+
+        expect(config.allow_unix_sockets).to eq(['/tmp/socket'])
+        expect(config.allow_local_binding).to eq(true)
+        expect(config.http_proxy_port).to eq(8080)
+      end
+
+      it 'converts to hash with camelCase keys' do
+        config = described_class.new(
+          allow_local_binding: true,
+          http_proxy_port: 8080
+        )
+
+        hash = config.to_h
+        expect(hash[:allowLocalBinding]).to eq(true)
+        expect(hash[:httpProxyPort]).to eq(8080)
+      end
+
+      it 'omits nil values in hash' do
+        config = described_class.new(allow_local_binding: true)
+        hash = config.to_h
+
+        expect(hash.key?(:allowLocalBinding)).to eq(true)
+        expect(hash.key?(:allowUnixSockets)).to eq(false)
+      end
+    end
+
+    describe ClaudeAgentSDK::SandboxIgnoreViolations do
+      it 'stores file and network patterns' do
+        config = described_class.new(
+          file: ['/tmp/*'],
+          network: ['localhost:*']
+        )
+
+        expect(config.file).to eq(['/tmp/*'])
+        expect(config.network).to eq(['localhost:*'])
+      end
+
+      it 'converts to hash' do
+        config = described_class.new(file: ['/tmp/*'])
+        hash = config.to_h
+
+        expect(hash[:file]).to eq(['/tmp/*'])
+        expect(hash.key?(:network)).to eq(false)
+      end
+    end
+
+    describe ClaudeAgentSDK::SandboxSettings do
+      it 'stores sandbox configuration' do
+        sandbox = described_class.new(
+          enabled: true,
+          auto_allow_bash_if_sandboxed: true,
+          excluded_commands: ['rm', 'sudo']
+        )
+
+        expect(sandbox.enabled).to eq(true)
+        expect(sandbox.auto_allow_bash_if_sandboxed).to eq(true)
+        expect(sandbox.excluded_commands).to eq(['rm', 'sudo'])
+      end
+
+      it 'converts to hash with nested configs' do
+        network = ClaudeAgentSDK::SandboxNetworkConfig.new(allow_local_binding: true)
+        sandbox = described_class.new(
+          enabled: true,
+          network: network
+        )
+
+        hash = sandbox.to_h
+        expect(hash[:enabled]).to eq(true)
+        expect(hash[:network][:allowLocalBinding]).to eq(true)
+      end
+
+      it 'handles all configuration options' do
+        network = ClaudeAgentSDK::SandboxNetworkConfig.new(allow_local_binding: true)
+        ignore = ClaudeAgentSDK::SandboxIgnoreViolations.new(file: ['/tmp/*'])
+
+        sandbox = described_class.new(
+          enabled: true,
+          auto_allow_bash_if_sandboxed: true,
+          excluded_commands: ['rm'],
+          allow_unsandboxed_commands: false,
+          network: network,
+          ignore_violations: ignore,
+          enable_weaker_nested_sandbox: false
+        )
+
+        hash = sandbox.to_h
+        expect(hash[:enabled]).to eq(true)
+        expect(hash[:autoAllowBashIfSandboxed]).to eq(true)
+        expect(hash[:excludedCommands]).to eq(['rm'])
+        expect(hash[:allowUnsandboxedCommands]).to eq(false)
+        expect(hash[:network]).to be_a(Hash)
+        expect(hash[:ignoreViolations]).to be_a(Hash)
+        expect(hash[:enableWeakerNestedSandbox]).to eq(false)
+      end
+    end
+
+    describe ClaudeAgentSDK::ToolsPreset do
+      it 'stores preset name' do
+        preset = described_class.new(preset: 'claude_code')
+        expect(preset.type).to eq('preset')
+        expect(preset.preset).to eq('claude_code')
+      end
+
+      it 'converts to hash' do
+        preset = described_class.new(preset: 'claude_code')
+        hash = preset.to_h
+
+        expect(hash[:type]).to eq('preset')
+        expect(hash[:preset]).to eq('claude_code')
+      end
+    end
+
+    describe ClaudeAgentSDK::SystemPromptPreset do
+      it 'stores preset and append' do
+        preset = described_class.new(preset: 'default', append: 'Extra instructions')
+        expect(preset.type).to eq('preset')
+        expect(preset.preset).to eq('default')
+        expect(preset.append).to eq('Extra instructions')
+      end
+
+      it 'converts to hash' do
+        preset = described_class.new(preset: 'default', append: 'Extra')
+        hash = preset.to_h
+
+        expect(hash[:type]).to eq('preset')
+        expect(hash[:preset]).to eq('default')
+        expect(hash[:append]).to eq('Extra')
+      end
+
+      it 'omits append if nil' do
+        preset = described_class.new(preset: 'default')
+        hash = preset.to_h
+
+        expect(hash.key?(:append)).to eq(false)
+      end
+    end
+
+    describe 'ClaudeAgentOptions new options' do
+      it 'accepts betas option' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          betas: ['context-1m-2025-08-07']
+        )
+        expect(options.betas).to eq(['context-1m-2025-08-07'])
+      end
+
+      it 'accepts tools option as array' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          tools: ['Read', 'Edit', 'Bash']
+        )
+        expect(options.tools).to eq(['Read', 'Edit', 'Bash'])
+      end
+
+      it 'accepts tools option as ToolsPreset' do
+        preset = ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code')
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: preset)
+        expect(options.tools).to eq(preset)
+      end
+
+      it 'accepts sandbox option' do
+        sandbox = ClaudeAgentSDK::SandboxSettings.new(enabled: true)
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(sandbox: sandbox)
+        expect(options.sandbox).to eq(sandbox)
+      end
+
+      it 'accepts enable_file_checkpointing option' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          enable_file_checkpointing: true
+        )
+        expect(options.enable_file_checkpointing).to eq(true)
+      end
+
+      it 'defaults enable_file_checkpointing to false' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new
+        expect(options.enable_file_checkpointing).to eq(false)
+      end
+
+      it 'accepts append_allowed_tools option' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          append_allowed_tools: ['Write', 'Bash']
+        )
+        expect(options.append_allowed_tools).to eq(['Write', 'Bash'])
       end
     end
   end

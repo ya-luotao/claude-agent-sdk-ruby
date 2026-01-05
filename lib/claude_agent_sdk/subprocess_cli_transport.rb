@@ -80,11 +80,76 @@ module ClaudeAgentSDK
       cmd.concat(['--permission-mode', @options.permission_mode]) if @options.permission_mode
       cmd << '--continue' if @options.continue_conversation
       cmd.concat(['--resume', @options.resume]) if @options.resume
-      cmd.concat(['--settings', @options.settings]) if @options.settings
 
-      # New options to match Python SDK
+      # Settings handling with sandbox merge
+      # Sandbox settings are merged into the main settings JSON
+      if @options.settings || @options.sandbox
+        settings_hash = {}
+        settings_is_path = false
+
+        # Parse existing settings if provided
+        if @options.settings
+          if @options.settings.is_a?(String)
+            begin
+              settings_hash = JSON.parse(@options.settings)
+            rescue JSON::ParserError
+              # If not valid JSON, treat as file path and pass as-is
+              settings_is_path = true
+              cmd.concat(['--settings', @options.settings])
+              if @options.sandbox
+                warn "Warning: Cannot merge sandbox settings when settings is a file path. " \
+                     "Sandbox settings will be ignored. Use a Hash or JSON string for settings " \
+                     "to enable sandbox merging."
+              end
+            end
+          elsif @options.settings.is_a?(Hash)
+            settings_hash = @options.settings.dup
+          end
+        end
+
+        # Merge sandbox settings if provided (only when settings is not a file path)
+        if !settings_is_path && @options.sandbox
+          sandbox_hash = if @options.sandbox.is_a?(SandboxSettings)
+                           @options.sandbox.to_h
+                         else
+                           @options.sandbox
+                         end
+          settings_hash[:sandbox] = sandbox_hash unless sandbox_hash.empty?
+        end
+
+        # Output merged settings (only when settings is not a file path)
+        if !settings_is_path && !settings_hash.empty?
+          cmd.concat(['--settings', JSON.generate(settings_hash)])
+        end
+      end
+
+      # Budget limit option
       cmd.concat(['--max-budget-usd', @options.max_budget_usd.to_s]) if @options.max_budget_usd
       # Note: max_thinking_tokens is stored in options but not yet supported by Claude CLI
+
+      # Betas option for enabling experimental features
+      if @options.betas && !@options.betas.empty?
+        cmd.concat(['--betas', @options.betas.join(',')])
+      end
+
+      # Tools option for base tools selection
+      if @options.tools
+        if @options.tools.is_a?(Array)
+          cmd.concat(['--tools', @options.tools.join(',')])
+        elsif @options.tools.is_a?(ToolsPreset)
+          cmd.concat(['--tools', JSON.generate(@options.tools.to_h)])
+        elsif @options.tools.is_a?(Hash)
+          cmd.concat(['--tools', JSON.generate(@options.tools)])
+        end
+      end
+
+      # Append allowed tools option
+      if @options.append_allowed_tools && !@options.append_allowed_tools.empty?
+        cmd.concat(['--append-allowed-tools', @options.append_allowed_tools.join(',')])
+      end
+
+      # File checkpointing for rewind support
+      cmd << '--enable-file-checkpointing' if @options.enable_file_checkpointing
 
       # JSON schema for structured output
       # Accepts either:
