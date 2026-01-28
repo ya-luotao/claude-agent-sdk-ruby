@@ -4,7 +4,7 @@ Configure the SDK via `ClaudeAgentSDK::ClaudeAgentOptions.new(...)`. Set only wh
 
 ## Core knobs
 
-- `system_prompt`: Set an overall instruction (string or preset hash, depending on your usage).
+- `system_prompt`: Set an overall instruction as a string, or use `ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: '...')` to extend a preset prompt.
 - `model`: Select the model.
 - `fallback_model`: Use when the primary model is unavailable.
 - `max_turns`: Cap the number of turns.
@@ -32,6 +32,14 @@ Important constraints:
 ## Hooks
 
 Use `hooks:` with hook event names (for example `PreToolUse`, `PostToolUse`) and `ClaudeAgentSDK::HookMatcher` instances.
+
+```ruby
+ClaudeAgentSDK::HookMatcher.new(
+  matcher: 'Bash',           # Tool name to match (string or regex)
+  hooks: [my_callback],      # Array of callback lambdas
+  timeout: 5                 # Optional: timeout in seconds
+)
+```
 
 Hook callbacks receive typed input objects (for example `ClaudeAgentSDK::PreToolUseHookInput`) and a `ClaudeAgentSDK::HookContext`. Access fields via Ruby accessors like `input.tool_name` and `input.tool_input`.
 
