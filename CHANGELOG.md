@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Improved
 - Better long-term maintenance by leveraging official SDK updates
 - Aligned with Python SDK implementation pattern (using official MCP library)
-- All 86 tests passing with full backward compatibility maintained
+- All tests passing with full backward compatibility maintained
 
 ### Technical Details
 - Creates dynamic `MCP::Tool`, `MCP::Resource`, and `MCP::Prompt` classes from block-based definitions
@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Critical:** Replaced `Async::Process` with Ruby's built-in `Open3` for subprocess management
 - Fixed "uninitialized constant Async::Process" error that prevented the gem from working
 - Process management now uses standard Ruby threads instead of async tasks
-- All 86 tests passing
+- All tests passing
 
 ## [0.1.1] - 2025-10-14
 
@@ -84,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed issue where SDK couldn't find Claude Code when accessed via shell alias
 
 ### Added
-- Comprehensive test suite with 86 passing tests
+- Comprehensive test suite (RSpec)
 - Test documentation in spec/README.md
 
 ### Changed

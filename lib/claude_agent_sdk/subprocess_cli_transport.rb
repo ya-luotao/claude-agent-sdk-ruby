@@ -64,10 +64,17 @@ module ClaudeAgentSDK
       if @options.system_prompt
         if @options.system_prompt.is_a?(String)
           cmd.concat(['--system-prompt', @options.system_prompt])
-        elsif @options.system_prompt.is_a?(Hash) &&
-              @options.system_prompt[:type] == 'preset' &&
-              @options.system_prompt[:append]
-          cmd.concat(['--append-system-prompt', @options.system_prompt[:append]])
+        elsif @options.system_prompt.is_a?(SystemPromptPreset)
+          cmd.concat(['--system-prompt-preset', @options.system_prompt.preset]) if @options.system_prompt.preset
+          cmd.concat(['--append-system-prompt', @options.system_prompt.append]) if @options.system_prompt.append
+        elsif @options.system_prompt.is_a?(Hash)
+          prompt_type = @options.system_prompt[:type] || @options.system_prompt['type']
+          if prompt_type == 'preset'
+            preset = @options.system_prompt[:preset] || @options.system_prompt['preset']
+            append = @options.system_prompt[:append] || @options.system_prompt['append']
+            cmd.concat(['--system-prompt-preset', preset]) if preset
+            cmd.concat(['--append-system-prompt', append]) if append
+          end
         end
       end
 
@@ -446,7 +453,8 @@ module ClaudeAgentSDK
 
     def check_claude_version
       begin
-        output = `#{@cli_path} -v 2>&1`.strip
+        stdout, stderr, = Open3.capture3(@cli_path.to_s, '-v')
+        output = (stdout.to_s + stderr.to_s).strip
         if match = output.match(/([0-9]+\.[0-9]+\.[0-9]+)/)
           version = match[1]
           version_parts = version.split('.').map(&:to_i)

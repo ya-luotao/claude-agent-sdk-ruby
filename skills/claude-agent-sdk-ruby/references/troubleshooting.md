@@ -20,7 +20,7 @@ Checks:
 
 Checks:
 - Use `ClaudeAgentSDK::Client` (streaming mode).
-- Do not pass a plain string prompt to `Client#connect` when using `can_use_tool`.
+- `ClaudeAgentSDK.query` does not support `can_use_tool` (use `ClaudeAgentSDK::Client`).
 - Do not combine `can_use_tool` with `permission_prompt_tool_name`.
 
 ## No assistant text printed

@@ -72,42 +72,42 @@ Test configuration is managed in `spec_helper.rb`:
 
 The test suite covers:
 
-### Error Handling (6 tests)
+### Error Handling
 - All error class instantiation and attributes
 - Error inheritance hierarchy
 - Error message formatting
 
-### Type System (24 tests)
+### Type System
 - Content blocks (TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock)
 - Messages (UserMessage, AssistantMessage, SystemMessage, ResultMessage, StreamEvent)
 - ClaudeAgentOptions with all configuration fields
 - Permission types (PermissionResultAllow, PermissionResultDeny, PermissionUpdate)
 - Hook matchers
 
-### Message Parser (12 tests)
+### Message Parser
 - Parsing all message types from JSON
 - Content block parsing
 - Validation and error handling for malformed messages
 - Missing required field detection
 
-### SDK MCP Server (21 tests)
+### SDK MCP Server
 - Tool creation with schemas
 - Server configuration
 - Tool execution and error handling
 - JSON schema generation from Ruby types
 
-### Transport (3 tests)
+### Transport
 - Abstract base class interface
 - NotImplementedError for unimplemented methods
 
-### Integration (20 tests)
+### Integration
 - Component interaction verification
 - SDK MCP server integration
 - Hook configuration and execution
 - Permission callback handling
 - End-to-end workflow simulation
 
-**Total: 86 tests**
+**Total:** Run `bundle exec rspec` to see the current example count.
 
 ## Writing New Tests
 

@@ -129,19 +129,24 @@ module ClaudeAgentSDK
       ENV['CLAUDE_CODE_ENTRYPOINT'] = 'sdk-rb-client'
     end
 
-    # Connect to Claude with optional initial prompt
+    # Connect to Claude with optional initial prompt.
+    #
+    # Client always uses streaming mode for bidirectional communication. If you
+    # pass a String, it will be sent as an initial user message after the
+    # connection is established. If you pass an Enumerator, it should yield
+    # JSONL messages (e.g., from ClaudeAgentSDK::Streaming.user_message).
+    #
     # @param prompt [String, Enumerator, nil] Initial prompt or message stream
     def connect(prompt = nil)
       return if @connected
 
+      unless prompt.nil? || prompt.is_a?(String) || prompt.respond_to?(:each)
+        raise ArgumentError, "prompt must be a String, an Enumerator, or nil (got #{prompt.class})"
+      end
+
       # Validate and configure permission settings
       configured_options = @options
       if @options.can_use_tool
-        # can_use_tool requires streaming mode
-        if prompt.is_a?(String)
-          raise ArgumentError, 'can_use_tool callback requires streaming mode'
-        end
-
         # can_use_tool and permission_prompt_tool_name are mutually exclusive
         if @options.permission_prompt_tool_name
           raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name'
@@ -151,11 +156,8 @@ module ClaudeAgentSDK
         configured_options = @options.dup_with(permission_prompt_tool_name: 'stdio')
       end
 
-      # Auto-connect with empty enumerator if no prompt is provided
-      # This matches the Python SDK pattern where ClaudeSDKClient always uses streaming mode
-      # An empty enumerator keeps stdin open for bidirectional communication
-      actual_prompt = prompt || [].to_enum
-      @transport = SubprocessCLITransport.new(actual_prompt, configured_options)
+      # Client always uses streaming mode; keep stdin open for bidirectional communication.
+      @transport = SubprocessCLITransport.new([].to_enum, configured_options)
       @transport.connect
 
       # Extract SDK MCP servers
@@ -183,6 +185,20 @@ module ClaudeAgentSDK
       @query_handler.initialize_protocol
 
       @connected = true
+
+      # Optionally send initial prompt/messages after connection is ready.
+      case prompt
+      when nil
+        nil
+      when String
+        query(prompt)
+      else
+        prompt.each do |message_json|
+          message_json = message_json.to_s
+          message_json += "\n" unless message_json.end_with?("\n")
+          @transport.write(message_json)
+        end
+      end
     end
 
     # Send a query to Claude
@@ -278,10 +294,12 @@ module ClaudeAgentSDK
       hooks.each do |event, matchers|
         internal_hooks[event.to_s] = []
         matchers.each do |matcher|
-          internal_hooks[event.to_s] << {
+          config = {
             matcher: matcher.matcher,
             hooks: matcher.hooks
           }
+          config[:timeout] = matcher.timeout if matcher.timeout
+          internal_hooks[event.to_s] << config
         end
       end
       internal_hooks

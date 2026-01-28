@@ -26,12 +26,14 @@ Use `can_use_tool:` to control tool execution from Ruby.
 - Use `ClaudeAgentSDK::PermissionResultDeny.new(message: ..., interrupt: ...)` to deny.
 
 Important constraints:
-- Use `can_use_tool` only in streaming mode (use `Client`; do not pass a plain string prompt to `Client#connect`).
+- Use `can_use_tool` only with `ClaudeAgentSDK::Client` (streaming mode); it is not supported by `ClaudeAgentSDK.query`.
 - Do not use `can_use_tool` together with `permission_prompt_tool_name`.
 
 ## Hooks
 
 Use `hooks:` with hook event names (for example `PreToolUse`, `PostToolUse`) and `ClaudeAgentSDK::HookMatcher` instances.
+
+Hook callbacks receive typed input objects (for example `ClaudeAgentSDK::PreToolUseHookInput`) and a `ClaudeAgentSDK::HookContext`. Access fields via Ruby accessors like `input.tool_name` and `input.tool_input`.
 
 Hook callbacks should return a hash. Only top-level keys are auto-converted; use CLI-style camelCase for nested keys.
 

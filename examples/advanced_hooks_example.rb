@@ -20,22 +20,15 @@ Async do
   # Example 1: PreToolUse hook with typed output
   puts "--- Example 1: PreToolUse Hook with Input Modification ---"
 
-  pre_tool_hook = lambda do |input, tool_use_id, context|
-    # Create a typed hook input for better structure
-    hook_input = ClaudeAgentSDK::PreToolUseHookInput.new(
-      tool_name: input[:tool_name],
-      tool_input: input[:tool_input],
-      session_id: input[:session_id],
-      cwd: input[:cwd]
-    )
-
+  pre_tool_hook = lambda do |input, _tool_use_id, _context|
     puts "PreToolUse hook triggered:"
-    puts "  Tool: #{hook_input.tool_name}"
-    puts "  Session: #{hook_input.session_id}"
+    puts "  Tool: #{input.tool_name}"
+    puts "  Session: #{input.session_id}"
 
     # Example: Modify Bash commands to add safety prefix
-    if hook_input.tool_name == 'Bash'
-      original_command = hook_input.tool_input[:command] || ''
+    if input.tool_name == 'Bash'
+      tool_input = input.tool_input || {}
+      original_command = tool_input[:command] || tool_input['command'] || ''
 
       # Check for dangerous patterns
       if original_command.match?(/rm\s+-rf|sudo\s+rm/)
@@ -62,21 +55,14 @@ Async do
   end
 
   # Example 2: PostToolUse hook with context addition
-  post_tool_hook = lambda do |input, tool_use_id, context|
-    hook_input = ClaudeAgentSDK::PostToolUseHookInput.new(
-      tool_name: input[:tool_name],
-      tool_input: input[:tool_input],
-      tool_response: input[:tool_response],
-      session_id: input[:session_id]
-    )
-
+  post_tool_hook = lambda do |input, _tool_use_id, _context|
     puts "PostToolUse hook triggered:"
-    puts "  Tool: #{hook_input.tool_name}"
-    puts "  Response length: #{hook_input.tool_response&.to_s&.length || 0} chars"
+    puts "  Tool: #{input.tool_name}"
+    puts "  Response length: #{input.tool_response&.to_s&.length || 0} chars"
 
     # Add context after tool execution
     output = ClaudeAgentSDK::PostToolUseHookSpecificOutput.new(
-      additional_context: "Tool '#{hook_input.tool_name}' executed at #{Time.now}"
+      additional_context: "Tool '#{input.tool_name}' executed at #{Time.now}"
     )
 
     # Wrap in SyncHookJSONOutput for full control
@@ -90,19 +76,14 @@ Async do
   end
 
   # Example 3: UserPromptSubmit hook
-  prompt_hook = lambda do |input, context|
-    hook_input = ClaudeAgentSDK::UserPromptSubmitHookInput.new(
-      prompt: input[:prompt],
-      session_id: input[:session_id],
-      cwd: input[:cwd]
-    )
-
+  prompt_hook = lambda do |input, _tool_use_id, _context|
     puts "UserPromptSubmit hook triggered:"
-    puts "  Prompt preview: #{hook_input.prompt[0..50]}..."
+    prompt = input.prompt.to_s
+    puts "  Prompt preview: #{prompt[0..50]}..."
 
     # Add context to the prompt
     output = ClaudeAgentSDK::UserPromptSubmitHookSpecificOutput.new(
-      additional_context: "User is working in: #{hook_input.cwd}"
+      additional_context: "User is working in: #{input.cwd}"
     )
 
     { hookSpecificOutput: output.to_h }
@@ -195,13 +176,11 @@ puts "\n--- Example 4: Hook with Context Signal ---"
 puts "HookContext provides access to abort signals for long-running hooks\n"
 
 hook_with_context = lambda do |input, tool_use_id, context|
-  # HookContext provides signal for cooperative cancellation
-  hook_context = ClaudeAgentSDK::HookContext.new(signal: context[:signal])
-
-  # In a real scenario, you might check hook_context.signal periodically
+  # HookContext provides a cooperative cancellation signal.
+  # In a real scenario, you might check context.signal periodically
   # during long-running operations to allow graceful cancellation
 
-  puts "Hook context signal available: #{!hook_context.signal.nil?}"
+  puts "Hook context signal available: #{!context.signal.nil?}"
 
   # Return allow decision
   ClaudeAgentSDK::PreToolUseHookSpecificOutput.new(

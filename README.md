@@ -384,13 +384,12 @@ require 'async'
 
 Async do
   # Define a hook that blocks dangerous bash commands
-  bash_hook = lambda do |input, tool_use_id, context|
-    tool_name = input[:tool_name]
-    tool_input = input[:tool_input]
+  bash_hook = lambda do |input, _tool_use_id, _context|
+    # Hook inputs are typed objects (e.g., PreToolUseHookInput) with Ruby-style accessors
+    return {} unless input.respond_to?(:tool_name) && input.tool_name == 'Bash'
 
-    return {} unless tool_name == 'Bash'
-
-    command = tool_input[:command] || ''
+    tool_input = input.tool_input || {}
+    command = tool_input[:command] || tool_input['command'] || ''
     block_patterns = ['rm -rf', 'foo.sh']
 
     block_patterns.each do |pattern|

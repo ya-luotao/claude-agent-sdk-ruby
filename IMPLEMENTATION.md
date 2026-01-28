@@ -138,7 +138,7 @@ The Ruby SDK follows the Python SDK's architecture closely:
 - [x] **SDK MCP server support** (in-process custom tools) ✨
 - [x] **Full MCP protocol** (initialize, tools/list, tools/call) ✨
 - [x] Working examples for all features
-- [x] **Comprehensive test suite** (86 passing RSpec tests) ✨
+- [x] **Comprehensive RSpec test suite** ✨
 - [x] Session forking support
 - [x] Agent definitions support
 - [x] Setting sources control
@@ -201,27 +201,12 @@ end.wait
 ## Dependencies
 
 - **async** (~2.0) - Async I/O runtime for concurrent operations
-- Ruby 3.0+ required
+- Ruby 3.2+ required
 - No external process management gems needed (uses built-in Open3)
 
 ## Testing
 
-The SDK includes a comprehensive RSpec test suite with **86 passing tests**:
-
-```
-spec/
-├── unit/                           # Unit tests (66 tests)
-│   ├── errors_spec.rb              # Error class tests (6 tests)
-│   ├── types_spec.rb               # Type system tests (24 tests)
-│   ├── message_parser_spec.rb      # Message parsing tests (12 tests)
-│   ├── sdk_mcp_server_spec.rb      # MCP server tests (21 tests)
-│   └── transport_spec.rb           # Transport tests (3 tests)
-├── integration/                    # Integration tests (20 tests)
-│   └── query_spec.rb               # End-to-end workflow tests
-├── support/
-│   └── test_helpers.rb             # Shared fixtures and helpers
-└── README.md                       # Test documentation
-```
+The SDK includes a comprehensive RSpec test suite (unit + integration). See `spec/README.md` for how to run and extend it.
 
 Run tests with:
 ```bash
@@ -290,18 +275,18 @@ The Ruby SDK successfully implements **complete feature parity** with the Python
 ### Project Statistics
 
 - **Core implementation:** ~1,700 lines of production code
-- **Test suite:** 86 passing tests covering all major components
-- **Examples:** 5 comprehensive examples demonstrating all features
+- **Test suite:** RSpec coverage for major components
+- **Examples:** Multiple runnable scripts under `examples/`
 - **Documentation:** Complete README, CHANGELOG, and implementation guide
 - **Dependencies:** Minimal (only `async` gem + Ruby stdlib)
-- **Ruby version:** 3.0+ required
+- **Ruby version:** 3.2+ required
 
 ### Key Achievements
 
 ✅ Full bidirectional communication with Claude Code CLI
 ✅ Complete SDK MCP server support for in-process tools
 ✅ Comprehensive hook and permission callback system
-✅ Production-ready with 86 passing tests
+✅ Production-ready with a comprehensive test suite
 ✅ Zero external dependencies for subprocess management (uses Open3)
 ✅ Clean, idiomatic Ruby code following community conventions
 

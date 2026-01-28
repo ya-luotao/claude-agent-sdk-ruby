@@ -30,8 +30,10 @@ module ClaudeAgentSDK
       @pending_control_responses = {}
       @pending_control_results = {}
       @hook_callbacks = {}
+      @hook_callback_timeouts = {}
       @next_callback_id = 0
       @request_counter = 0
+      @inflight_control_request_tasks = {}
 
       # Message stream
       @message_queue = Async::Queue.new
@@ -59,6 +61,7 @@ module ClaudeAgentSDK
               callback_id = "hook_#{@next_callback_id}"
               @next_callback_id += 1
               @hook_callbacks[callback_id] = callback
+              @hook_callback_timeouts[callback_id] = matcher[:timeout] if matcher[:timeout]
               callback_ids << callback_id
             end
             hooks_config[event] << {
@@ -103,9 +106,19 @@ module ClaudeAgentSDK
         when 'control_response'
           handle_control_response(message)
         when 'control_request'
-          Async { handle_control_request(message) }
+          request_id = message[:request_id]
+          task = Async do
+            begin
+              handle_control_request(message)
+            ensure
+              @inflight_control_request_tasks.delete(request_id) if request_id
+            end
+          end
+          @inflight_control_request_tasks[request_id] = task if request_id
         when 'control_cancel_request'
-          # TODO: Implement cancellation support
+          request_id = message[:request_id] || message[:requestId]
+          task = request_id ? @inflight_control_request_tasks[request_id] : nil
+          task&.stop
           next
         else
           # Regular SDK messages go to the queue
@@ -163,6 +176,17 @@ module ClaudeAgentSDK
         }
       }
       @transport.write(JSON.generate(success_response) + "\n")
+    rescue Async::Stop
+      # Cancellation requested; respond with an error so the CLI can unblock.
+      cancelled_response = {
+        type: 'control_response',
+        response: {
+          subtype: 'error',
+          request_id: request_id,
+          error: 'Cancelled'
+        }
+      }
+      @transport.write(JSON.generate(cancelled_response) + "\n")
     rescue StandardError => e
       # Send error response
       error_response = {
@@ -228,7 +252,17 @@ module ClaudeAgentSDK
         hook_input,
         request_data[:tool_use_id],
         context
-      )
+      ) unless @hook_callback_timeouts[callback_id]
+
+      if (timeout = @hook_callback_timeouts[callback_id])
+        hook_output = Async::Task.current.with_timeout(timeout) do
+          callback.call(
+            hook_input,
+            request_data[:tool_use_id],
+            context
+          )
+        end
+      end
 
       # Convert Ruby-safe field names to CLI-expected names
       convert_hook_output_for_cli(hook_output)
