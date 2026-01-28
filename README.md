@@ -54,15 +54,15 @@ gem install claude-agent-sdk
 - Node.js
 - Claude Code 2.0.0+: `npm install -g @anthropic-ai/claude-code`
 
-### Claude Code Skill
+### Agentic Coding Skill
 
-If you're using [Claude Code](https://claude.ai/claude-code), you can install the SDK skill to help Claude understand this SDK:
+If you're using [Claude Code](https://claude.ai/claude-code) or another agentic coding tool that supports [skills](https://skills.sh), you can install the SDK skill:
 
 ```bash
 npx skills add https://github.com/ya-luotao/claude-agent-sdk-ruby --skill claude-agent-sdk-ruby
 ```
 
-This skill teaches Claude Code about the SDK's APIs, patterns, and best practices, making it easier to get help writing code that uses this SDK.
+This skill teaches your AI coding assistant about the SDK's APIs, patterns, and best practices, making it easier to get help writing code that uses this SDK.
 
 ## Quick Start
 
