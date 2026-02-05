@@ -275,6 +275,20 @@ module ClaudeAgentSDK
       @query_handler&.instance_variable_get(:@initialization_result)
     end
 
+    # Get current MCP server connection status (only works with streaming mode)
+    # @return [Hash] MCP status information, including mcpServers list
+    def get_mcp_status
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.get_mcp_status
+    end
+
+    # Get server initialization info including available commands and output styles
+    # @return [Hash] Server info
+    def get_server_info
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      server_info
+    end
+
     # Disconnect from Claude
     def disconnect
       return unless @connected

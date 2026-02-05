@@ -286,6 +286,84 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::PostToolUseFailureHookInput do
+      it 'stores hook input fields' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          tool_input: { command: 'rm -rf /' },
+          tool_use_id: 'toolu_123',
+          error: 'Command blocked',
+          is_interrupt: true,
+          session_id: 'sess_123'
+        )
+
+        expect(input.hook_event_name).to eq('PostToolUseFailure')
+        expect(input.tool_name).to eq('Bash')
+        expect(input.tool_input).to eq({ command: 'rm -rf /' })
+        expect(input.tool_use_id).to eq('toolu_123')
+        expect(input.error).to eq('Command blocked')
+        expect(input.is_interrupt).to eq(true)
+        expect(input.session_id).to eq('sess_123')
+      end
+    end
+
+    describe ClaudeAgentSDK::NotificationHookInput do
+      it 'stores notification fields' do
+        input = described_class.new(
+          message: 'Hello',
+          title: 'Greeting',
+          notification_type: 'info'
+        )
+
+        expect(input.hook_event_name).to eq('Notification')
+        expect(input.message).to eq('Hello')
+        expect(input.title).to eq('Greeting')
+        expect(input.notification_type).to eq('info')
+      end
+    end
+
+    describe ClaudeAgentSDK::SubagentStartHookInput do
+      it 'stores subagent fields' do
+        input = described_class.new(agent_id: 'agent_1', agent_type: 'coder')
+
+        expect(input.hook_event_name).to eq('SubagentStart')
+        expect(input.agent_id).to eq('agent_1')
+        expect(input.agent_type).to eq('coder')
+      end
+    end
+
+    describe ClaudeAgentSDK::PermissionRequestHookInput do
+      it 'stores permission request fields' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          permission_suggestions: [{ type: 'setMode', mode: 'default' }]
+        )
+
+        expect(input.hook_event_name).to eq('PermissionRequest')
+        expect(input.tool_name).to eq('Bash')
+        expect(input.tool_input).to eq({ command: 'ls' })
+        expect(input.permission_suggestions).to eq([{ type: 'setMode', mode: 'default' }])
+      end
+    end
+
+    describe ClaudeAgentSDK::SubagentStopHookInput do
+      it 'stores subagent stop fields' do
+        input = described_class.new(
+          stop_hook_active: true,
+          agent_id: 'agent_1',
+          agent_transcript_path: '/tmp/agent.jsonl',
+          agent_type: 'coder'
+        )
+
+        expect(input.hook_event_name).to eq('SubagentStop')
+        expect(input.stop_hook_active).to eq(true)
+        expect(input.agent_id).to eq('agent_1')
+        expect(input.agent_transcript_path).to eq('/tmp/agent.jsonl')
+        expect(input.agent_type).to eq('coder')
+      end
+    end
+
     describe ClaudeAgentSDK::PreToolUseHookSpecificOutput do
       it 'converts to CLI format' do
         output = described_class.new(
@@ -297,6 +375,56 @@ RSpec.describe ClaudeAgentSDK do
         expect(hash[:hookEventName]).to eq('PreToolUse')
         expect(hash[:permissionDecision]).to eq('deny')
         expect(hash[:permissionDecisionReason]).to eq('Command not allowed')
+      end
+    end
+
+    describe ClaudeAgentSDK::PostToolUseHookSpecificOutput do
+      it 'converts to CLI format with updatedMCPToolOutput' do
+        output = described_class.new(
+          additional_context: 'ok',
+          updated_mcp_tool_output: { content: [{ type: 'text', text: 'patched' }] }
+        )
+
+        hash = output.to_h
+        expect(hash[:hookEventName]).to eq('PostToolUse')
+        expect(hash[:additionalContext]).to eq('ok')
+        expect(hash[:updatedMCPToolOutput]).to eq({ content: [{ type: 'text', text: 'patched' }] })
+      end
+    end
+
+    describe ClaudeAgentSDK::PostToolUseFailureHookSpecificOutput do
+      it 'converts to CLI format' do
+        output = described_class.new(additional_context: 'failed')
+        hash = output.to_h
+        expect(hash[:hookEventName]).to eq('PostToolUseFailure')
+        expect(hash[:additionalContext]).to eq('failed')
+      end
+    end
+
+    describe ClaudeAgentSDK::NotificationHookSpecificOutput do
+      it 'converts to CLI format' do
+        output = described_class.new(additional_context: 'shown')
+        hash = output.to_h
+        expect(hash[:hookEventName]).to eq('Notification')
+        expect(hash[:additionalContext]).to eq('shown')
+      end
+    end
+
+    describe ClaudeAgentSDK::SubagentStartHookSpecificOutput do
+      it 'converts to CLI format' do
+        output = described_class.new(additional_context: 'started')
+        hash = output.to_h
+        expect(hash[:hookEventName]).to eq('SubagentStart')
+        expect(hash[:additionalContext]).to eq('started')
+      end
+    end
+
+    describe ClaudeAgentSDK::PermissionRequestHookSpecificOutput do
+      it 'converts to CLI format' do
+        output = described_class.new(decision: { behavior: 'deny', message: 'nope' })
+        hash = output.to_h
+        expect(hash[:hookEventName]).to eq('PermissionRequest')
+        expect(hash[:decision]).to eq({ behavior: 'deny', message: 'nope' })
       end
     end
 

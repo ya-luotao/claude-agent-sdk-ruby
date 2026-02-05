@@ -78,5 +78,46 @@ RSpec.describe ClaudeAgentSDK::Client do
 
     expect(received_options.permission_prompt_tool_name).to eq('stdio')
   end
-end
 
+  it 'raises when requesting MCP status while not connected' do
+    client = described_class.new
+    expect { client.get_mcp_status }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+  end
+
+  it 'delegates MCP status request when connected' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(
+      ClaudeAgentSDK::Query,
+      start: true,
+      initialize_protocol: true,
+      get_mcp_status: { mcpServers: [{ name: 'tools', status: 'connected' }] }
+    )
+
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    client = described_class.new
+    client.connect
+
+    expect(client.get_mcp_status).to eq({ mcpServers: [{ name: 'tools', status: 'connected' }] })
+  end
+
+  it 'raises when requesting server info while not connected' do
+    client = described_class.new
+    expect { client.get_server_info }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+  end
+
+  it 'returns initialization info via get_server_info when connected' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    client = described_class.new
+    client.connect
+
+    query_handler.instance_variable_set(:@initialization_result, { commands: ['help'] })
+    expect(client.get_server_info).to eq({ commands: ['help'] })
+  end
+end

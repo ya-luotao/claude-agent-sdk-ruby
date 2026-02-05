@@ -215,8 +215,16 @@ Async do
   # Change AI model during conversation
   client.set_model('claude-sonnet-4-5')
 
+  # Get MCP server connection status
+  status = client.get_mcp_status
+  puts "MCP status: #{status}"
+
   # Get server initialization info
   info = client.server_info
+  puts "Available commands: #{info}"
+
+  # (Parity alias) Get server initialization info
+  info = client.get_server_info
   puts "Available commands: #{info}"
 
   client.disconnect
@@ -375,6 +383,21 @@ For complete examples, see [examples/mcp_calculator.rb](examples/mcp_calculator.
 ## Hooks
 
 A **hook** is a Ruby proc/lambda that the Claude Code *application* (*not* Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Claude Code Hooks Reference](https://docs.anthropic.com/en/docs/claude-code/hooks).
+
+### Supported Events
+
+All hook input objects include common fields like `session_id`, `transcript_path`, `cwd`, and `permission_mode`.
+
+- `PreToolUse` → `PreToolUseHookInput` (`tool_name`, `tool_input`)
+- `PostToolUse` → `PostToolUseHookInput` (`tool_name`, `tool_input`, `tool_response`)
+- `PostToolUseFailure` → `PostToolUseFailureHookInput` (`tool_name`, `tool_input`, `tool_use_id`, `error`, `is_interrupt`)
+- `UserPromptSubmit` → `UserPromptSubmitHookInput` (`prompt`)
+- `Stop` → `StopHookInput` (`stop_hook_active`)
+- `SubagentStop` → `SubagentStopHookInput` (`stop_hook_active`, `agent_id`, `agent_transcript_path`, `agent_type`)
+- `PreCompact` → `PreCompactHookInput` (`trigger`, `custom_instructions`)
+- `Notification` → `NotificationHookInput` (`message`, `title`, `notification_type`)
+- `SubagentStart` → `SubagentStartHookInput` (`agent_id`, `agent_type`)
+- `PermissionRequest` → `PermissionRequestHookInput` (`tool_name`, `tool_input`, `permission_suggestions`)
 
 ### Example
 

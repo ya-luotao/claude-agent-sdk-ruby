@@ -270,46 +270,79 @@ module ClaudeAgentSDK
 
     def parse_hook_input(input_data)
       event_name = input_data[:hook_event_name] || input_data['hook_event_name']
+      fetch = ->(key) { input_data[key] || input_data[key.to_s] }
       base_args = {
-        session_id: input_data[:session_id],
-        transcript_path: input_data[:transcript_path],
-        cwd: input_data[:cwd],
-        permission_mode: input_data[:permission_mode]
+        session_id: fetch.call(:session_id),
+        transcript_path: fetch.call(:transcript_path),
+        cwd: fetch.call(:cwd),
+        permission_mode: fetch.call(:permission_mode)
       }
 
       case event_name
       when 'PreToolUse'
         PreToolUseHookInput.new(
-          tool_name: input_data[:tool_name],
-          tool_input: input_data[:tool_input],
+          tool_name: fetch.call(:tool_name),
+          tool_input: fetch.call(:tool_input),
           **base_args
         )
       when 'PostToolUse'
         PostToolUseHookInput.new(
-          tool_name: input_data[:tool_name],
-          tool_input: input_data[:tool_input],
-          tool_response: input_data[:tool_response],
+          tool_name: fetch.call(:tool_name),
+          tool_input: fetch.call(:tool_input),
+          tool_response: fetch.call(:tool_response),
+          **base_args
+        )
+      when 'PostToolUseFailure'
+        PostToolUseFailureHookInput.new(
+          tool_name: fetch.call(:tool_name),
+          tool_input: fetch.call(:tool_input),
+          tool_use_id: fetch.call(:tool_use_id),
+          error: fetch.call(:error),
+          is_interrupt: fetch.call(:is_interrupt),
           **base_args
         )
       when 'UserPromptSubmit'
         UserPromptSubmitHookInput.new(
-          prompt: input_data[:prompt],
+          prompt: fetch.call(:prompt),
           **base_args
         )
       when 'Stop'
         StopHookInput.new(
-          stop_hook_active: input_data[:stop_hook_active],
+          stop_hook_active: fetch.call(:stop_hook_active),
           **base_args
         )
       when 'SubagentStop'
         SubagentStopHookInput.new(
-          stop_hook_active: input_data[:stop_hook_active],
+          stop_hook_active: fetch.call(:stop_hook_active),
+          agent_id: fetch.call(:agent_id),
+          agent_transcript_path: fetch.call(:agent_transcript_path),
+          agent_type: fetch.call(:agent_type),
+          **base_args
+        )
+      when 'Notification'
+        NotificationHookInput.new(
+          message: fetch.call(:message),
+          title: fetch.call(:title),
+          notification_type: fetch.call(:notification_type),
+          **base_args
+        )
+      when 'SubagentStart'
+        SubagentStartHookInput.new(
+          agent_id: fetch.call(:agent_id),
+          agent_type: fetch.call(:agent_type),
+          **base_args
+        )
+      when 'PermissionRequest'
+        PermissionRequestHookInput.new(
+          tool_name: fetch.call(:tool_name),
+          tool_input: fetch.call(:tool_input),
+          permission_suggestions: fetch.call(:permission_suggestions),
           **base_args
         )
       when 'PreCompact'
         PreCompactHookInput.new(
-          trigger: input_data[:trigger],
-          custom_instructions: input_data[:custom_instructions],
+          trigger: fetch.call(:trigger),
+          custom_instructions: fetch.call(:custom_instructions),
           **base_args
         )
       else
@@ -563,6 +596,12 @@ module ClaudeAgentSDK
     end
 
     public
+
+    # Get current MCP server connection status (only works with streaming mode)
+    # @return [Hash] MCP status information, including mcpServers list
+    def get_mcp_status
+      send_control_request({ subtype: 'mcp_status' })
+    end
 
     # Send interrupt control request
     def interrupt

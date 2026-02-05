@@ -14,7 +14,18 @@ module ClaudeAgentSDK
   PERMISSION_BEHAVIORS = %w[allow deny ask].freeze
 
   # Type constants for hook events
-  HOOK_EVENTS = %w[PreToolUse PostToolUse UserPromptSubmit Stop SubagentStop PreCompact].freeze
+  HOOK_EVENTS = %w[
+    PreToolUse
+    PostToolUse
+    PostToolUseFailure
+    UserPromptSubmit
+    Stop
+    SubagentStop
+    PreCompact
+    Notification
+    SubagentStart
+    PermissionRequest
+  ].freeze
 
   # Type constants for assistant message errors
   ASSISTANT_MESSAGE_ERRORS = %w[authentication_failed billing_error rate_limit invalid_request server_error unknown].freeze
@@ -305,12 +316,71 @@ module ClaudeAgentSDK
 
   # SubagentStop hook input
   class SubagentStopHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :stop_hook_active
+    attr_accessor :hook_event_name, :stop_hook_active, :agent_id, :agent_transcript_path, :agent_type
 
-    def initialize(hook_event_name: 'SubagentStop', stop_hook_active: false, **base_args)
+    def initialize(hook_event_name: 'SubagentStop', stop_hook_active: false, agent_id: nil,
+                   agent_transcript_path: nil, agent_type: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @stop_hook_active = stop_hook_active
+      @agent_id = agent_id
+      @agent_transcript_path = agent_transcript_path
+      @agent_type = agent_type
+    end
+  end
+
+  # PostToolUseFailure hook input
+  class PostToolUseFailureHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id, :error, :is_interrupt
+
+    def initialize(hook_event_name: 'PostToolUseFailure', tool_name: nil, tool_input: nil, tool_use_id: nil,
+                   error: nil, is_interrupt: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @tool_name = tool_name
+      @tool_input = tool_input
+      @tool_use_id = tool_use_id
+      @error = error
+      @is_interrupt = is_interrupt
+    end
+  end
+
+  # Notification hook input
+  class NotificationHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :message, :title, :notification_type
+
+    def initialize(hook_event_name: 'Notification', message: nil, title: nil, notification_type: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @message = message
+      @title = title
+      @notification_type = notification_type
+    end
+  end
+
+  # SubagentStart hook input
+  class SubagentStartHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :agent_id, :agent_type
+
+    def initialize(hook_event_name: 'SubagentStart', agent_id: nil, agent_type: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @agent_id = agent_id
+      @agent_type = agent_type
+    end
+  end
+
+  # PermissionRequest hook input
+  class PermissionRequestHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :permission_suggestions
+
+    def initialize(hook_event_name: 'PermissionRequest', tool_name: nil, tool_input: nil, permission_suggestions: nil,
+                   **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @tool_name = tool_name
+      @tool_input = tool_input
+      @permission_suggestions = permission_suggestions
     end
   end
 
@@ -348,10 +418,28 @@ module ClaudeAgentSDK
 
   # PostToolUse hook specific output
   class PostToolUseHookSpecificOutput
+    attr_accessor :hook_event_name, :additional_context, :updated_mcp_tool_output
+
+    def initialize(additional_context: nil, updated_mcp_tool_output: nil)
+      @hook_event_name = 'PostToolUse'
+      @additional_context = additional_context
+      @updated_mcp_tool_output = updated_mcp_tool_output
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:additionalContext] = @additional_context if @additional_context
+      result[:updatedMCPToolOutput] = @updated_mcp_tool_output if @updated_mcp_tool_output
+      result
+    end
+  end
+
+  # PostToolUseFailure hook specific output
+  class PostToolUseFailureHookSpecificOutput
     attr_accessor :hook_event_name, :additional_context
 
     def initialize(additional_context: nil)
-      @hook_event_name = 'PostToolUse'
+      @hook_event_name = 'PostToolUseFailure'
       @additional_context = additional_context
     end
 
@@ -374,6 +462,54 @@ module ClaudeAgentSDK
     def to_h
       result = { hookEventName: @hook_event_name }
       result[:additionalContext] = @additional_context if @additional_context
+      result
+    end
+  end
+
+  # Notification hook specific output
+  class NotificationHookSpecificOutput
+    attr_accessor :hook_event_name, :additional_context
+
+    def initialize(additional_context: nil)
+      @hook_event_name = 'Notification'
+      @additional_context = additional_context
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:additionalContext] = @additional_context if @additional_context
+      result
+    end
+  end
+
+  # SubagentStart hook specific output
+  class SubagentStartHookSpecificOutput
+    attr_accessor :hook_event_name, :additional_context
+
+    def initialize(additional_context: nil)
+      @hook_event_name = 'SubagentStart'
+      @additional_context = additional_context
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:additionalContext] = @additional_context if @additional_context
+      result
+    end
+  end
+
+  # PermissionRequest hook specific output
+  class PermissionRequestHookSpecificOutput
+    attr_accessor :hook_event_name, :decision
+
+    def initialize(decision: nil)
+      @hook_event_name = 'PermissionRequest'
+      @decision = decision
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:decision] = @decision if @decision
       result
     end
   end
