@@ -34,7 +34,11 @@
 Add this line to your application's Gemfile:
 
 ```ruby
-gem 'claude-agent-sdk', '~> 0.4.1'
+# Recommended: Use the latest from GitHub for newest features
+gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'
+
+# Or use a stable version from RubyGems
+gem 'claude-agent-sdk', '~> 0.4.0'
 ```
 
 And then execute:
@@ -43,7 +47,7 @@ And then execute:
 bundle install
 ```
 
-Or install it yourself as:
+Or install directly from RubyGems:
 
 ```bash
 gem install claude-agent-sdk
