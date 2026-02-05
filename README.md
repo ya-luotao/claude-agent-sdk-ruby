@@ -34,7 +34,7 @@
 Add this line to your application's Gemfile:
 
 ```ruby
-gem 'claude-agent-sdk', '~> 0.4.0'
+gem 'claude-agent-sdk', '~> 0.4.1'
 ```
 
 And then execute:
