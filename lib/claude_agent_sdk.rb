@@ -2,6 +2,7 @@
 
 require_relative 'claude_agent_sdk/version'
 require_relative 'claude_agent_sdk/errors'
+require_relative 'claude_agent_sdk/configuration'
 require_relative 'claude_agent_sdk/types'
 require_relative 'claude_agent_sdk/transport'
 require_relative 'claude_agent_sdk/subprocess_cli_transport'

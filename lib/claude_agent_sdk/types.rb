@@ -784,86 +784,55 @@ module ClaudeAgentSDK
                   :fallback_model, :plugins, :debug_stderr,
                   :betas, :tools, :sandbox, :enable_file_checkpointing, :append_allowed_tools
 
-    def initialize(
-      allowed_tools: [],
-      system_prompt: nil,
-      mcp_servers: {},
-      permission_mode: nil,
-      continue_conversation: false,
-      resume: nil,
-      max_turns: nil,
-      disallowed_tools: [],
-      model: nil,
-      permission_prompt_tool_name: nil,
-      cwd: nil,
-      cli_path: nil,
-      settings: nil,
-      add_dirs: [],
-      env: {},
-      extra_args: {},
-      max_buffer_size: nil,
-      stderr: nil,
-      can_use_tool: nil,
-      hooks: nil,
-      user: nil,
-      include_partial_messages: false,
-      fork_session: false,
-      agents: nil,
-      setting_sources: nil,
-      output_format: nil,
-      max_budget_usd: nil,
-      max_thinking_tokens: nil,
-      fallback_model: nil,
-      plugins: nil,
-      debug_stderr: nil,
-      betas: nil,
-      tools: nil,
-      sandbox: nil,
-      enable_file_checkpointing: false,
-      append_allowed_tools: nil
-    )
-      @allowed_tools = allowed_tools
-      @system_prompt = system_prompt
-      @mcp_servers = mcp_servers
-      @permission_mode = permission_mode
-      @continue_conversation = continue_conversation
-      @resume = resume
-      @max_turns = max_turns
-      @disallowed_tools = disallowed_tools
-      @model = model
-      @permission_prompt_tool_name = permission_prompt_tool_name
-      @cwd = cwd
-      @cli_path = cli_path
-      @settings = settings
-      @add_dirs = add_dirs
-      @env = env
-      @extra_args = extra_args
-      @max_buffer_size = max_buffer_size
-      @stderr = stderr
-      @can_use_tool = can_use_tool
-      @hooks = hooks
-      @user = user
-      @include_partial_messages = include_partial_messages
-      @fork_session = fork_session
-      @agents = agents
-      @setting_sources = setting_sources
-      @output_format = output_format # JSON schema for structured output
-      @max_budget_usd = max_budget_usd # Spending cap in dollars
-      @max_thinking_tokens = max_thinking_tokens # Extended thinking token budget
-      @fallback_model = fallback_model # Backup model if primary unavailable
-      @plugins = plugins # Array of SdkPluginConfig
-      @debug_stderr = debug_stderr # Debug output file object/path
-      @betas = betas # Array of beta feature strings (e.g., ["context-1m-2025-08-07"])
-      @tools = tools # Base tools selection: Array, empty array [], or ToolsPreset
-      @sandbox = sandbox # SandboxSettings instance for isolated command execution
-      @enable_file_checkpointing = enable_file_checkpointing # Enable file checkpointing for rewind support
-      @append_allowed_tools = append_allowed_tools # Array of tools to append to allowed_tools
+    # Non-nil defaults for options that need them.
+    # Keys absent from here default to nil.
+    OPTION_DEFAULTS = {
+      allowed_tools: [], disallowed_tools: [], add_dirs: [],
+      mcp_servers: {}, env: {}, extra_args: {},
+      continue_conversation: false, include_partial_messages: false,
+      fork_session: false, enable_file_checkpointing: false
+    }.freeze
+
+    # Using **kwargs lets us distinguish "caller passed allowed_tools: []"
+    # from "caller omitted allowed_tools" — critical for correct merge with
+    # configured defaults.
+    def initialize(**kwargs)
+      merged = merge_with_defaults(kwargs)
+      OPTION_DEFAULTS.merge(merged).each do |key, value|
+        instance_variable_set(:"@#{key}", value)
+      end
     end
 
     def dup_with(**changes)
       new_options = self.dup
-      changes.each { |key, value| new_options.send("#{key}=", value) }
+      changes.each { |key, value| new_options.send(:"#{key}=", value) }
       new_options
+    end
+
+    private
+
+    # Merge caller-provided kwargs with configured defaults.
+    # Only keys the caller explicitly passed are treated as overrides;
+    # method-signature defaults ([], {}, false) are NOT in kwargs unless the caller wrote them.
+    def merge_with_defaults(kwargs)
+      return OPTION_DEFAULTS.merge(kwargs) unless defined?(ClaudeAgentSDK) && ClaudeAgentSDK.respond_to?(:default_options)
+
+      defaults = ClaudeAgentSDK.default_options
+      return OPTION_DEFAULTS.merge(kwargs) unless defaults.any?
+
+      # Start from configured defaults (deep dup hashes to prevent mutation)
+      result = defaults.transform_values { |v| v.is_a?(Hash) ? v.dup : v }
+      kwargs.each do |key, value|
+        default_val = result[key]
+        result[key] = if value.nil?
+                        default_val # nil means "no preference" — keep the configured default
+                      elsif default_val.is_a?(Hash) && value.is_a?(Hash)
+                        default_val.merge(value)
+                      else
+                        value
+                      end
+      end
+      OPTION_DEFAULTS.merge(result)
     end
   end
 
