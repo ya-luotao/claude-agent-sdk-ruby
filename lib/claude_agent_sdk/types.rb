@@ -793,10 +793,16 @@ module ClaudeAgentSDK
       fork_session: false, enable_file_checkpointing: false
     }.freeze
 
+    # Valid option names derived from attr_accessor declarations.
+    VALID_OPTIONS = instance_methods.grep(/=\z/).map { |m| m.to_s.chomp('=').to_sym }.freeze
+
     # Using **kwargs lets us distinguish "caller passed allowed_tools: []"
     # from "caller omitted allowed_tools" — critical for correct merge with
     # configured defaults.
     def initialize(**kwargs)
+      unknown = kwargs.keys - VALID_OPTIONS
+      raise ArgumentError, "unknown keyword#{'s' if unknown.size > 1}: #{unknown.join(', ')}" if unknown.any?
+
       merged = merge_with_defaults(kwargs)
       OPTION_DEFAULTS.merge(merged).each do |key, value|
         instance_variable_set(:"@#{key}", value)

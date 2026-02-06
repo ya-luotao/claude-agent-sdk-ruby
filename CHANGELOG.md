@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-07
+
+### Added
+- **Default configuration:** `ClaudeAgentSDK.configure` block for setting default options that merge with every `ClaudeAgentOptions` instance, ideal for Rails initializers (PR #8)
+- `ClaudeAgentSDK.reset_configuration` for resetting defaults (useful in tests)
+- Deep merge for `env` and `mcp_servers` hashes; provided values override configured defaults
+- `OPTION_DEFAULTS` constant on `ClaudeAgentOptions` for introspectable non-nil defaults
+
+### Changed
+- `ClaudeAgentOptions#initialize` now uses `**kwargs` internally to correctly distinguish caller-provided values from method signature defaults
+
 ## [0.4.2] - 2026-02-07
 
 ### Fixed
