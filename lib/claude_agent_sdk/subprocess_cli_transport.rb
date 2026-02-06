@@ -253,7 +253,9 @@ module ClaudeAgentSDK
       cmd = build_command
 
       # Build environment
-      process_env = ENV.to_h.merge(@options.env).merge(
+      # Convert symbol keys to strings for spawn compatibility
+      custom_env = @options.env.transform_keys { |k| k.to_s }
+      process_env = ENV.to_h.merge(custom_env).merge(
         'CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb',
         'CLAUDE_AGENT_SDK_VERSION' => VERSION
       )
