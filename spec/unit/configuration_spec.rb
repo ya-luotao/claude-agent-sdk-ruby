@@ -162,6 +162,125 @@ RSpec.describe ClaudeAgentSDK do
         # server3 from provided
         expect(options.mcp_servers[:server3]).to eq({ type: 'stdio', command: 'cmd3' })
       end
+
+      # Shallow merge behavior for mcp_servers with nested configs
+      context 'with nested hashes in mcp_servers' do
+        before do
+          ClaudeAgentSDK.configure do |config|
+            config.default_options = {
+              mcp_servers: {
+                server1: {
+                  type: 'stdio',
+                  command: 'cmd1',
+                  args: ['--verbose', '--log-level=debug'],
+                  env: { 'DEBUG' => 'true' }
+                }
+              }
+            }
+          end
+        end
+
+        it 'performs shallow merge - provided value replaces entire nested config' do
+          options = described_class.new(
+            mcp_servers: {
+              server1: { type: 'http', url: 'http://localhost' }
+            }
+          )
+
+          # Shallow merge: provided server config completely replaces default
+          # Nested args and env from defaults are not preserved
+          expect(options.mcp_servers[:server1]).to eq({
+            type: 'http',
+            url: 'http://localhost'
+          })
+          # To preserve args/env, include them in the provided config:
+          # mcp_servers: {
+          #   server1: {
+          #     type: 'http',
+          #     url: 'http://localhost',
+          #     args: ['--verbose', '--log-level=debug'],
+          #     env: { 'DEBUG' => 'true' }
+          #   }
+          # }
+        end
+      end
+
+      # Test nil behavior for hashes and arrays
+      context 'nil behavior for different types' do
+        before do
+          ClaudeAgentSDK.configure do |config|
+            config.default_options = {
+              model: 'sonnet',
+              env: { 'DEFAULT_KEY' => 'value' },
+              allowed_tools: ['Read', 'Write']
+            }
+          end
+        end
+
+        it 'uses default for scalar when nil is provided' do
+          options = described_class.new(model: nil)
+          expect(options.model).to eq('sonnet')
+        end
+
+        # Current behavior: nil for hash does NOT use default (inconsistent with scalars)
+        it 'keeps nil for hash when nil is provided' do
+          options = described_class.new(env: nil)
+          expect(options.env).to be_nil
+        end
+
+        it 'replaces with empty array when empty array is provided' do
+          options = described_class.new(allowed_tools: [])
+          expect(options.allowed_tools).to eq([])
+        end
+
+        # Current behavior: empty hash merges with defaults, keeping defaults
+        it 'merges empty hash with defaults' do
+          options = described_class.new(env: {})
+          # Empty hash merges, so defaults are kept
+          expect(options.env).to eq({ 'DEFAULT_KEY' => 'value' })
+        end
+
+        # To replace defaults with empty hash, you would need to explicitly override all keys
+        # This is a limitation of the current merge strategy
+      end
+
+      # Test for env hash mutation
+      context 'env hash isolation from defaults' do
+        before do
+          ClaudeAgentSDK.configure do |config|
+            config.default_options = {
+              env: { 'API_KEY' => 'secret', 'DEBUG' => 'false' }
+            }
+          end
+        end
+
+        it 'isolates provided env from defaults' do
+          options = described_class.new
+          original_env = options.env.dup
+
+          # Mutate the returned env
+          options.env['NEW_KEY'] = 'new_value'
+          options.env['API_KEY'] = 'modified'
+
+          # Create new options - should have original defaults
+          new_options = described_class.new
+          expect(new_options.env['API_KEY']).to eq('secret')
+          expect(new_options.env).not_to have_key('NEW_KEY')
+        end
+
+        it 'isolates merged env from defaults' do
+          options = described_class.new(env: { 'PROVIDED_KEY' => 'provided' })
+
+          # Mutate the merged env
+          options.env['PROVIDED_KEY'] = 'modified'
+          options.env['API_KEY'] = 'also_modified'
+
+          # Defaults should be unchanged
+          new_options = described_class.new
+          expect(new_options.env['API_KEY']).to eq('secret')
+          expect(new_options.env).not_to have_key('PROVIDED_KEY')
+        end
+      end
     end
 
     context 'when no default options are configured' do

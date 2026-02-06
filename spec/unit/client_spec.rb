@@ -144,4 +144,59 @@ RSpec.describe ClaudeAgentSDK::Client do
     query_handler.instance_variable_set(:@initialization_result, { commands: ['help'] })
     expect(client.get_server_info).to eq({ commands: ['help'] })
   end
+
+  context 'with default configuration' do
+    after { ClaudeAgentSDK.reset_configuration }
+
+    before do
+      ClaudeAgentSDK.configure do |config|
+        config.default_options = {
+          model: 'sonnet',
+          permission_mode: 'bypassPermissions',
+          env: { 'API_KEY' => 'configured_key' }
+        }
+      end
+    end
+
+    it 'uses configured defaults when no options provided' do
+      client = described_class.new
+      options = client.instance_variable_get(:@options)
+
+      expect(options.model).to eq('sonnet')
+      expect(options.permission_mode).to eq('bypassPermissions')
+      expect(options.env['API_KEY']).to eq('configured_key')
+    end
+
+    it 'merges provided options with defaults' do
+      override_options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        model: 'opus',
+        env: { 'OVERRIDE_KEY' => 'override_value' }
+      )
+      client = described_class.new(options: override_options)
+      options = client.instance_variable_get(:@options)
+
+      expect(options.model).to eq('opus')  # override
+      expect(options.permission_mode).to eq('bypassPermissions')  # from default
+      expect(options.env['API_KEY']).to eq('configured_key')  # from default
+      expect(options.env['OVERRIDE_KEY']).to eq('override_value')  # from provided
+    end
+
+    it 'passes merged options to transport' do
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+
+      received_options = nil
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |_prompt, options|
+        received_options = options
+        transport
+      end
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      client = described_class.new
+      client.connect
+
+      expect(received_options.model).to eq('sonnet')
+      expect(received_options.permission_mode).to eq('bypassPermissions')
+    end
+  end
 end
