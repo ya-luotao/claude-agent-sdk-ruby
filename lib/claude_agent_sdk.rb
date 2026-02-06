@@ -51,7 +51,7 @@ module ClaudeAgentSDK
     return enum_for(:query, prompt: prompt, options: options) unless block
 
     options ||= ClaudeAgentOptions.new
-    ENV['CLAUDE_CODE_ENTRYPOINT'] = 'sdk-rb'
+    options = options.dup_with(env: (options.env || {}).merge('CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb'))
 
     Async do
       transport = SubprocessCLITransport.new(prompt, options)
@@ -126,7 +126,6 @@ module ClaudeAgentSDK
       @transport = nil
       @query_handler = nil
       @connected = false
-      ENV['CLAUDE_CODE_ENTRYPOINT'] = 'sdk-rb-client'
     end
 
     # Connect to Claude with optional initial prompt.
@@ -140,21 +139,21 @@ module ClaudeAgentSDK
     def connect(prompt = nil)
       return if @connected
 
-      unless prompt.nil? || prompt.is_a?(String) || prompt.respond_to?(:each)
-        raise ArgumentError, "prompt must be a String, an Enumerator, or nil (got #{prompt.class})"
-      end
+      raise ArgumentError, "prompt must be a String, an Enumerator, or nil (got #{prompt.class})" unless prompt.nil? || prompt.is_a?(String) || prompt.respond_to?(:each)
 
       # Validate and configure permission settings
       configured_options = @options
       if @options.can_use_tool
         # can_use_tool and permission_prompt_tool_name are mutually exclusive
-        if @options.permission_prompt_tool_name
-          raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name'
-        end
+        raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name' if @options.permission_prompt_tool_name
 
         # Set permission_prompt_tool_name to stdio for control protocol
         configured_options = @options.dup_with(permission_prompt_tool_name: 'stdio')
       end
+
+      configured_options = configured_options.dup_with(
+        env: (configured_options.env || {}).merge('CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb-client')
+      )
 
       # Client always uses streaming mode; keep stdin open for bidirectional communication.
       @transport = SubprocessCLITransport.new([].to_enum, configured_options)

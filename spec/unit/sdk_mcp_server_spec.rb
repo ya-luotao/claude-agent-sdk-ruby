@@ -155,6 +155,39 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
         .to raise_error(/must return a hash with :content key/)
     end
   end
+
+  describe '#handle_json' do
+    it 'propagates tool errors and non-text content in MCP responses' do
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'fail_with_image',
+        description: 'Return a tool error',
+        input_schema: {},
+        handler: lambda do |_|
+          {
+            content: [
+              { type: 'text', text: 'tool failed' },
+              { type: 'image', data: 'abc123', mimeType: 'image/png' }
+            ],
+            is_error: true
+          }
+        end
+      )
+      server = described_class.new(name: 'test', tools: [tool])
+
+      request = {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'fail_with_image', arguments: {} }
+      }
+      response = JSON.parse(server.handle_json(JSON.generate(request)), symbolize_names: true)
+
+      expect(response.dig(:result, :isError)).to eq(true)
+      expect(response.dig(:result, :content, 0, :type)).to eq('text')
+      expect(response.dig(:result, :content, 1, :type)).to eq('image')
+      expect(response.dig(:result, :content, 1, :mimeType)).to eq('image/png')
+    end
+  end
 end
 
 RSpec.describe ClaudeAgentSDK, '.create_tool' do

@@ -255,10 +255,8 @@ module ClaudeAgentSDK
       # Build environment
       # Convert symbol keys to strings for spawn compatibility
       custom_env = @options.env.transform_keys { |k| k.to_s }
-      process_env = ENV.to_h.merge(custom_env).merge(
-        'CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb',
-        'CLAUDE_AGENT_SDK_VERSION' => VERSION
-      )
+      process_env = ENV.to_h.merge('CLAUDE_AGENT_SDK_VERSION' => VERSION).merge(custom_env)
+      process_env['CLAUDE_CODE_ENTRYPOINT'] ||= 'sdk-rb'
       process_env['PWD'] = @cwd.to_s if @cwd
 
       # Determine stderr handling

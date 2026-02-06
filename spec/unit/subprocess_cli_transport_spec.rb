@@ -78,6 +78,28 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(captured_env['SYMBOL_KEY']).to eq('value')
       expect(captured_env['STRING_KEY']).to eq('value2')
       expect(captured_env.key?(:SYMBOL_KEY)).to be false
+      expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb')
+    end
+
+    it 'preserves a caller-provided CLAUDE_CODE_ENTRYPOINT value' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        env: { 'CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb-client' }
+      )
+      transport = described_class.new('hi', options)
+
+      stdin = instance_double(IO)
+      captured_env = nil
+      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(Open3).to receive(:popen3) do |env, *_args|
+        captured_env = env
+        [stdin, instance_double(IO), instance_double(IO), instance_double(Process::Waiter)]
+      end
+      allow(stdin).to receive(:close)
+
+      transport.connect
+
+      expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb-client')
     end
   end
 end

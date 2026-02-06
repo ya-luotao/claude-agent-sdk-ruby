@@ -46,6 +46,7 @@ Unit tests verify individual components in isolation:
 Integration tests verify how components work together:
 
 - **query_spec.rb** - End-to-end workflow tests demonstrating component interaction
+- **real_cli_integration_spec.rb** - Real Claude CLI end-to-end tests (opt-in only)
 
 **Note:** Integration tests are tagged with `:integration` and are skipped by default. To run them:
 
@@ -54,6 +55,12 @@ RUN_INTEGRATION=1 bundle exec rspec
 ```
 
 Integration tests that actually connect to Claude Code CLI require it to be installed.
+
+To run real Claude CLI integration tests (live API call):
+
+```bash
+RUN_INTEGRATION=1 RUN_REAL_INTEGRATION=1 ANTHROPIC_API_KEY=... bundle exec rspec spec/integration/real_cli_integration_spec.rb
+```
 
 ### Test Helpers (`spec/support/`)
 

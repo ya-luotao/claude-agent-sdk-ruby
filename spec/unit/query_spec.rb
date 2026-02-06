@@ -216,6 +216,58 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'SDK MCP tool responses' do
+    it 'preserves non-text content and maps is_error to isError' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      tool_result = {
+        content: [
+          { type: 'text', text: 'ok' },
+          { type: 'image', data: 'abc123', mimeType: 'image/png' }
+        ],
+        is_error: true
+      }
+      server = instance_double('SdkMcpServer')
+      allow(server).to receive(:call_tool).with('mixed_content', {}).and_return(tool_result)
+
+      response = query.send(
+        :handle_mcp_tools_call,
+        server,
+        { id: 1 },
+        { name: 'mixed_content', arguments: {} }
+      )
+
+      expect(response.dig(:result, :content)).to eq(tool_result[:content])
+      expect(response.dig(:result, :isError)).to eq(true)
+    end
+
+    it 'accepts camelCase keys from server results' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      server = instance_double('SdkMcpServer')
+      allow(server).to receive(:call_tool).with('tool', {}).and_return(
+        {
+          'content' => [{ 'type' => 'text', 'text' => 'done' }],
+          'isError' => false,
+          'structuredContent' => { 'status' => 'ok' }
+        }
+      )
+
+      response = query.send(
+        :handle_mcp_tools_call,
+        server,
+        { id: 2 },
+        { name: 'tool', arguments: {} }
+      )
+
+      expect(response.dig(:result, :content)).to eq([{ 'type' => 'text', 'text' => 'done' }])
+      expect(response.dig(:result, :isError)).to eq(false)
+      expect(response.dig(:result, :structuredContent)).to eq({ 'status' => 'ok' })
+    end
+  end
+
   describe 'control request cancellation' do
     it 'writes a cancelled response when stopped' do
       writes = []

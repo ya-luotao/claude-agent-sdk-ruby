@@ -23,6 +23,7 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(received_prompt).not_to be_a(String)
     expect(received_prompt).to respond_to(:each)
     expect(received_options).to be_a(ClaudeAgentSDK::ClaudeAgentOptions)
+    expect(received_options.env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb-client')
   end
 
   it 'sends an initial String prompt as a user message after connecting' do
@@ -77,6 +78,29 @@ RSpec.describe ClaudeAgentSDK::Client do
     client.connect
 
     expect(received_options.permission_prompt_tool_name).to eq('stdio')
+    expect(received_options.env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb-client')
+  end
+
+  it 'does not mutate global CLAUDE_CODE_ENTRYPOINT' do
+    original_entrypoint = ENV['CLAUDE_CODE_ENTRYPOINT']
+    ENV.delete('CLAUDE_CODE_ENTRYPOINT')
+
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    client = described_class.new
+    client.connect
+
+    expect(ENV['CLAUDE_CODE_ENTRYPOINT']).to be_nil
+  ensure
+    if original_entrypoint.nil?
+      ENV.delete('CLAUDE_CODE_ENTRYPOINT')
+    else
+      ENV['CLAUDE_CODE_ENTRYPOINT'] = original_entrypoint
+    end
   end
 
   it 'raises when requesting MCP status while not connected' do

@@ -522,19 +522,20 @@ module ClaudeAgentSDK
 
       # Call the tool
       result = server.call_tool(tool_name, arguments)
-
-      # Format response
-      content = []
-      if result[:content]
-        result[:content].each do |item|
-          if item[:type] == 'text'
-            content << { type: 'text', text: item[:text] }
-          end
-        end
-      end
-
+      content = result[:content] || result['content'] || []
       response_data = { content: content }
-      response_data[:is_error] = true if result[:is_error]
+
+      is_error = result[:isError]
+      is_error = result['isError'] if is_error.nil?
+      is_error = result[:is_error] if is_error.nil?
+      is_error = result['is_error'] if is_error.nil?
+      response_data[:isError] = !!is_error unless is_error.nil?
+
+      structured_content = result[:structuredContent]
+      structured_content = result['structuredContent'] if structured_content.nil?
+      structured_content = result[:structured_content] if structured_content.nil?
+      structured_content = result['structured_content'] if structured_content.nil?
+      response_data[:structuredContent] = structured_content unless structured_content.nil?
 
       {
         jsonrpc: '2.0',
