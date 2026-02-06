@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-02-07
+
+### Fixed
+- **MCP response fidelity:** Non-text content (images, binary data) is now preserved in SDK MCP tool responses instead of being silently dropped
+- **MCP error key:** Tool error flag is now sent as `isError` (camelCase) matching the JSON-RPC spec, instead of `is_error` which the CLI ignored
+- **MCP structured content:** `structuredContent` is now passed through in tool responses
+- **ENV pollution:** `query()` and `Client.connect` no longer mutate the global `ENV`; entrypoint is passed via transport options
+- **Symbol key env:** Fixed symbol keys in `env` option causing spawn failures (PR #7)
+
+### Added
+- `ClaudeAgentSDK.flexible_fetch` helper for tolerant hash key lookup (symbol/string, camelCase/snake_case)
+- Gated real CLI integration tests (`RUN_REAL_INTEGRATION=1`) with budget cap
+- `CLAUDE.md` architecture guide for contributors
+
 ## [0.4.1] - 2026-02-05
 
 ### Added
