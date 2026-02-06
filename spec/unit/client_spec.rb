@@ -175,10 +175,10 @@ RSpec.describe ClaudeAgentSDK::Client do
       client = described_class.new(options: override_options)
       options = client.instance_variable_get(:@options)
 
-      expect(options.model).to eq('opus')  # override
-      expect(options.permission_mode).to eq('bypassPermissions')  # from default
-      expect(options.env['API_KEY']).to eq('configured_key')  # from default
-      expect(options.env['OVERRIDE_KEY']).to eq('override_value')  # from provided
+      expect(options.model).to eq('opus') # override
+      expect(options.permission_mode).to eq('bypassPermissions') # from default
+      expect(options.env['API_KEY']).to eq('configured_key') # from default
+      expect(options.env['OVERRIDE_KEY']).to eq('override_value') # from provided
     end
 
     it 'passes merged options to transport' do

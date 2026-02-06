@@ -190,9 +190,9 @@ RSpec.describe ClaudeAgentSDK do
           # Shallow merge: provided server config completely replaces default
           # Nested args and env from defaults are not preserved
           expect(options.mcp_servers[:server1]).to eq({
-            type: 'http',
-            url: 'http://localhost'
-          })
+                                                        type: 'http',
+                                                        url: 'http://localhost'
+                                                      })
           # To preserve args/env, include them in the provided config:
           # mcp_servers: {
           #   server1: {
@@ -205,14 +205,13 @@ RSpec.describe ClaudeAgentSDK do
         end
       end
 
-      # Test nil behavior for hashes and arrays
       context 'nil behavior for different types' do
         before do
           ClaudeAgentSDK.configure do |config|
             config.default_options = {
               model: 'sonnet',
               env: { 'DEFAULT_KEY' => 'value' },
-              allowed_tools: ['Read', 'Write']
+              allowed_tools: %w[Read Write]
             }
           end
         end
@@ -222,10 +221,9 @@ RSpec.describe ClaudeAgentSDK do
           expect(options.model).to eq('sonnet')
         end
 
-        # Current behavior: nil for hash does NOT use default (inconsistent with scalars)
-        it 'keeps nil for hash when nil is provided' do
+        it 'uses default for hash when nil is provided' do
           options = described_class.new(env: nil)
-          expect(options.env).to be_nil
+          expect(options.env).to eq({ 'DEFAULT_KEY' => 'value' })
         end
 
         it 'replaces with empty array when empty array is provided' do
@@ -233,15 +231,15 @@ RSpec.describe ClaudeAgentSDK do
           expect(options.allowed_tools).to eq([])
         end
 
-        # Current behavior: empty hash merges with defaults, keeping defaults
         it 'merges empty hash with defaults' do
           options = described_class.new(env: {})
-          # Empty hash merges, so defaults are kept
           expect(options.env).to eq({ 'DEFAULT_KEY' => 'value' })
         end
 
-        # To replace defaults with empty hash, you would need to explicitly override all keys
-        # This is a limitation of the current merge strategy
+        it 'uses configured array default when not explicitly provided' do
+          options = described_class.new
+          expect(options.allowed_tools).to eq(%w[Read Write])
+        end
       end
 
       # Test for env hash mutation
@@ -256,7 +254,7 @@ RSpec.describe ClaudeAgentSDK do
 
         it 'isolates provided env from defaults' do
           options = described_class.new
-          original_env = options.env.dup
+          options.env.dup
 
           # Mutate the returned env
           options.env['NEW_KEY'] = 'new_value'
