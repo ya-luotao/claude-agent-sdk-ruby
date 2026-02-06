@@ -714,7 +714,7 @@ Async do
   end
 
   client.disconnect
-end
+end.wait
 ```
 
 > **Note:** The `uuid` field on `UserMessage` is populated by the CLI and represents checkpoint identifiers. Rewinding to a UUID restores file state to what it was at that point in the conversation.
