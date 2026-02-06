@@ -822,48 +822,118 @@ module ClaudeAgentSDK
       enable_file_checkpointing: false,
       append_allowed_tools: nil
     )
-      @allowed_tools = allowed_tools
-      @system_prompt = system_prompt
-      @mcp_servers = mcp_servers
-      @permission_mode = permission_mode
-      @continue_conversation = continue_conversation
-      @resume = resume
-      @max_turns = max_turns
-      @disallowed_tools = disallowed_tools
-      @model = model
-      @permission_prompt_tool_name = permission_prompt_tool_name
-      @cwd = cwd
-      @cli_path = cli_path
-      @settings = settings
-      @add_dirs = add_dirs
-      @env = env
-      @extra_args = extra_args
-      @max_buffer_size = max_buffer_size
-      @stderr = stderr
-      @can_use_tool = can_use_tool
-      @hooks = hooks
-      @user = user
-      @include_partial_messages = include_partial_messages
-      @fork_session = fork_session
-      @agents = agents
-      @setting_sources = setting_sources
-      @output_format = output_format # JSON schema for structured output
-      @max_budget_usd = max_budget_usd # Spending cap in dollars
-      @max_thinking_tokens = max_thinking_tokens # Extended thinking token budget
-      @fallback_model = fallback_model # Backup model if primary unavailable
-      @plugins = plugins # Array of SdkPluginConfig
-      @debug_stderr = debug_stderr # Debug output file object/path
-      @betas = betas # Array of beta feature strings (e.g., ["context-1m-2025-08-07"])
-      @tools = tools # Base tools selection: Array, empty array [], or ToolsPreset
-      @sandbox = sandbox # SandboxSettings instance for isolated command execution
-      @enable_file_checkpointing = enable_file_checkpointing # Enable file checkpointing for rewind support
-      @append_allowed_tools = append_allowed_tools # Array of tools to append to allowed_tools
+      # Merge with configured defaults if available
+      merged = merge_with_defaults(
+        allowed_tools: allowed_tools,
+        system_prompt: system_prompt,
+        mcp_servers: mcp_servers,
+        permission_mode: permission_mode,
+        continue_conversation: continue_conversation,
+        resume: resume,
+        max_turns: max_turns,
+        disallowed_tools: disallowed_tools,
+        model: model,
+        permission_prompt_tool_name: permission_prompt_tool_name,
+        cwd: cwd,
+        cli_path: cli_path,
+        settings: settings,
+        add_dirs: add_dirs,
+        env: env,
+        extra_args: extra_args,
+        max_buffer_size: max_buffer_size,
+        stderr: stderr,
+        can_use_tool: can_use_tool,
+        hooks: hooks,
+        user: user,
+        include_partial_messages: include_partial_messages,
+        fork_session: fork_session,
+        agents: agents,
+        setting_sources: setting_sources,
+        output_format: output_format,
+        max_budget_usd: max_budget_usd,
+        max_thinking_tokens: max_thinking_tokens,
+        fallback_model: fallback_model,
+        plugins: plugins,
+        debug_stderr: debug_stderr,
+        betas: betas,
+        tools: tools,
+        sandbox: sandbox,
+        enable_file_checkpointing: enable_file_checkpointing,
+        append_allowed_tools: append_allowed_tools
+      )
+
+      @allowed_tools = merged[:allowed_tools]
+      @system_prompt = merged[:system_prompt]
+      @mcp_servers = merged[:mcp_servers]
+      @permission_mode = merged[:permission_mode]
+      @continue_conversation = merged[:continue_conversation]
+      @resume = merged[:resume]
+      @max_turns = merged[:max_turns]
+      @disallowed_tools = merged[:disallowed_tools]
+      @model = merged[:model]
+      @permission_prompt_tool_name = merged[:permission_prompt_tool_name]
+      @cwd = merged[:cwd]
+      @cli_path = merged[:cli_path]
+      @settings = merged[:settings]
+      @add_dirs = merged[:add_dirs]
+      @env = merged[:env]
+      @extra_args = merged[:extra_args]
+      @max_buffer_size = merged[:max_buffer_size]
+      @stderr = merged[:stderr]
+      @can_use_tool = merged[:can_use_tool]
+      @hooks = merged[:hooks]
+      @user = merged[:user]
+      @include_partial_messages = merged[:include_partial_messages]
+      @fork_session = merged[:fork_session]
+      @agents = merged[:agents]
+      @setting_sources = merged[:setting_sources]
+      @output_format = merged[:output_format]
+      @max_budget_usd = merged[:max_budget_usd]
+      @max_thinking_tokens = merged[:max_thinking_tokens]
+      @fallback_model = merged[:fallback_model]
+      @plugins = merged[:plugins]
+      @debug_stderr = merged[:debug_stderr]
+      @betas = merged[:betas]
+      @tools = merged[:tools]
+      @sandbox = merged[:sandbox]
+      @enable_file_checkpointing = merged[:enable_file_checkpointing]
+      @append_allowed_tools = merged[:append_allowed_tools]
     end
 
     def dup_with(**changes)
       new_options = self.dup
       changes.each { |key, value| new_options.send("#{key}=", value) }
       new_options
+    end
+
+    private
+
+    # Merge provided arguments with configured defaults
+    # Provided values take precedence over defaults
+    def merge_with_defaults(**kwargs)
+      # Check if ClaudeAgentSDK is loaded and has defaults configured
+      return kwargs unless defined?(ClaudeAgentSDK) && ClaudeAgentSDK.respond_to?(:default_options)
+
+      defaults = ClaudeAgentSDK.default_options
+      return kwargs unless defaults.any?
+
+      # Merge defaults with provided values
+      defaults.merge(kwargs) do |_key, default_val, provided_val|
+        case default_val
+        when Hash
+          if provided_val.is_a?(Hash)
+            # Deep merge for env and mcp_servers
+            default_val.merge(provided_val)
+          else
+            provided_val
+          end
+        when Array
+          provided_val  # Provided arrays replace defaults
+        else
+          # For scalars: use provided value if not nil, otherwise use default
+          provided_val.nil? ? default_val : provided_val
+        end
+      end
     end
   end
 
