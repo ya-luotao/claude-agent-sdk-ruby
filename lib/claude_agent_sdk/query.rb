@@ -522,19 +522,13 @@ module ClaudeAgentSDK
 
       # Call the tool
       result = server.call_tool(tool_name, arguments)
-      content = result[:content] || result['content'] || []
+      content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content') || []
       response_data = { content: content }
 
-      is_error = result[:isError]
-      is_error = result['isError'] if is_error.nil?
-      is_error = result[:is_error] if is_error.nil?
-      is_error = result['is_error'] if is_error.nil?
+      is_error = ClaudeAgentSDK.flexible_fetch(result, 'isError', 'is_error')
       response_data[:isError] = !!is_error unless is_error.nil?
 
-      structured_content = result[:structuredContent]
-      structured_content = result['structuredContent'] if structured_content.nil?
-      structured_content = result[:structured_content] if structured_content.nil?
-      structured_content = result['structured_content'] if structured_content.nil?
+      structured_content = ClaudeAgentSDK.flexible_fetch(result, 'structuredContent', 'structured_content')
       response_data[:structuredContent] = structured_content unless structured_content.nil?
 
       {

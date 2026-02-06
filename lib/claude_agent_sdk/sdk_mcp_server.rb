@@ -172,21 +172,13 @@ module ClaudeAgentSDK
               # Filter out server_context and pass remaining args to handler
               result = @tool_def.handler.call(args)
 
-              unless result.is_a?(Hash) && (result[:content] || result['content'])
+              content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content')
+              unless result.is_a?(Hash) && content
                 raise "Tool '#{@tool_def.name}' must return a hash with :content key"
               end
 
-              content = result[:content] || result['content']
-
-              is_error = result[:isError]
-              is_error = result['isError'] if is_error.nil?
-              is_error = result[:is_error] if is_error.nil?
-              is_error = result['is_error'] if is_error.nil?
-
-              structured_content = result[:structuredContent]
-              structured_content = result['structuredContent'] if structured_content.nil?
-              structured_content = result[:structured_content] if structured_content.nil?
-              structured_content = result['structured_content'] if structured_content.nil?
+              is_error = ClaudeAgentSDK.flexible_fetch(result, 'isError', 'is_error')
+              structured_content = ClaudeAgentSDK.flexible_fetch(result, 'structuredContent', 'structured_content')
 
               MCP::Tool::Response.new(
                 content,

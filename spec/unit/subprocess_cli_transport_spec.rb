@@ -60,7 +60,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     it 'converts symbol keys in env to strings for spawn compatibility' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
-        env: { SYMBOL_KEY: 'value', 'STRING_KEY' => 'value2' }
+        env: { SYMBOL_KEY: 'value', 'STRING_KEY' => 'value2', 'CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb' }
       )
       transport = described_class.new('hi', options)
 

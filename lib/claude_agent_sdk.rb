@@ -14,6 +14,16 @@ require 'securerandom'
 
 # Claude Agent SDK for Ruby
 module ClaudeAgentSDK
+  # Look up a value in a hash that may use symbol or string keys in camelCase or snake_case.
+  # Returns the first non-nil value found, preserving false as a meaningful value.
+  def self.flexible_fetch(hash, camel_key, snake_key)
+    val = hash[camel_key.to_sym]
+    val = hash[camel_key.to_s] if val.nil?
+    val = hash[snake_key.to_sym] if val.nil?
+    val = hash[snake_key.to_s] if val.nil?
+    val
+  end
+
   # Query Claude Code for one-shot or unidirectional streaming interactions
   #
   # This function is ideal for simple, stateless queries where you don't need
