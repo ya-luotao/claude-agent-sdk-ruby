@@ -996,14 +996,17 @@ end
 # Base exception class for all SDK errors
 class ClaudeSDKError < StandardError; end
 
+# Raised when connection to Claude Code fails
+class CLIConnectionError < ClaudeSDKError; end
+
+# Raised when the control protocol does not respond in time
+class ControlRequestTimeoutError < CLIConnectionError; end
+
 # Raised when Claude Code CLI is not found
 class CLINotFoundError < CLIConnectionError
   # @param message [String] Error message (default: "Claude Code not found")
   # @param cli_path [String, nil] Optional path to the CLI that was not found
 end
-
-# Raised when connection to Claude Code fails
-class CLIConnectionError < ClaudeSDKError; end
 
 # Raised when the Claude Code process fails
 class ProcessError < ClaudeSDKError
@@ -1027,6 +1030,7 @@ end
 
 | Type | Description |
 |------|-------------|
+| `Configuration` | Global defaults via `ClaudeAgentSDK.configure` block |
 | `ClaudeAgentOptions` | Main configuration for queries and clients |
 | `HookMatcher` | Hook configuration with matcher pattern and timeout |
 | `PermissionResultAllow` | Permission callback result to allow tool use |
@@ -1088,6 +1092,8 @@ begin
   ClaudeAgentSDK.query(prompt: "Hello") do |message|
     puts message
   end
+rescue ClaudeAgentSDK::ControlRequestTimeoutError
+  puts "Control protocol timed out — consider increasing the timeout"
 rescue ClaudeAgentSDK::CLINotFoundError
   puts "Please install Claude Code"
 rescue ClaudeAgentSDK::ProcessError => e
@@ -1097,13 +1103,23 @@ rescue ClaudeAgentSDK::CLIJSONDecodeError => e
 end
 ```
 
+#### Configuring Timeout
+
+The control request timeout defaults to **1200 seconds** (20 minutes) to accommodate long-running agent sessions. Override it via environment variable:
+
+```bash
+# Set a custom timeout (in seconds)
+export CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS=300  # 5 minutes
+```
+
 ### Error Types
 
 | Error | Description |
 |-------|-------------|
 | `ClaudeSDKError` | Base error for all SDK errors |
-| `CLINotFoundError` | Claude Code not installed |
 | `CLIConnectionError` | Connection issues |
+| `ControlRequestTimeoutError` | Control protocol timeout (configurable via env var) |
+| `CLINotFoundError` | Claude Code not installed |
 | `ProcessError` | Process failed (includes `exit_code` and `stderr`) |
 | `CLIJSONDecodeError` | JSON parsing issues |
 | `MessageParseError` | Message parsing issues |
