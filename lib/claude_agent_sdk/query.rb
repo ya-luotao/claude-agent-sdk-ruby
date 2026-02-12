@@ -6,6 +6,7 @@ require 'async/queue'
 require 'async/condition'
 require 'securerandom'
 require_relative 'transport'
+require_relative 'errors'
 
 module ClaudeAgentSDK
   # Handles bidirectional control protocol on top of Transport
@@ -18,6 +19,9 @@ module ClaudeAgentSDK
   # - Initialization handshake
   class Query
     attr_reader :transport, :is_streaming_mode, :sdk_mcp_servers
+
+    CONTROL_REQUEST_TIMEOUT_ENV_VAR = 'CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS'
+    DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil)
       @transport = transport
@@ -95,6 +99,16 @@ module ClaudeAgentSDK
 
     private
 
+    def control_request_timeout_seconds
+      raw_value = ENV.fetch(CONTROL_REQUEST_TIMEOUT_ENV_VAR, nil)
+      return DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS if raw_value.nil? || raw_value.strip.empty?
+
+      value = Float(raw_value)
+      value.positive? ? value : DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS
+    rescue ArgumentError
+      DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS
+    end
+
     def read_messages
       @transport.read_messages do |message|
         break if @closed
@@ -106,7 +120,7 @@ module ClaudeAgentSDK
         when 'control_response'
           handle_control_response(message)
         when 'control_request'
-          request_id = message[:request_id]
+          request_id = message[:request_id] || message[:requestId]
           task = Async do
             begin
               handle_control_request(message)
@@ -126,8 +140,14 @@ module ClaudeAgentSDK
         end
       end
     rescue StandardError => e
+      # Unblock pending control requests (e.g., initialize) so callers don't hang until timeout.
+      @pending_control_responses.dup.each do |request_id, condition|
+        @pending_control_results[request_id] ||= e
+        condition.signal
+      end
+
       # Put error in queue so iterators can handle it
-      @message_queue.enqueue({ type: 'error', error: e.message })
+      @message_queue.enqueue({ type: 'error', error: e })
     ensure
       # Always signal end of stream
       @message_queue.enqueue({ type: 'end' })
@@ -135,7 +155,7 @@ module ClaudeAgentSDK
 
     def handle_control_response(message)
       response = message[:response] || {}
-      request_id = response[:request_id]
+      request_id = response[:request_id] || response[:requestId] || message[:request_id] || message[:requestId]
       return unless @pending_control_responses.key?(request_id)
 
       if response[:subtype] == 'error'
@@ -149,7 +169,7 @@ module ClaudeAgentSDK
     end
 
     def handle_control_request(request)
-      request_id = request[:request_id]
+      request_id = request[:request_id] || request[:requestId]
       request_data = request[:request]
       subtype = request_data[:subtype]
 
@@ -172,6 +192,7 @@ module ClaudeAgentSDK
         response: {
           subtype: 'success',
           request_id: request_id,
+          requestId: request_id,
           response: response_data
         }
       }
@@ -183,6 +204,7 @@ module ClaudeAgentSDK
         response: {
           subtype: 'error',
           request_id: request_id,
+          requestId: request_id,
           error: 'Cancelled'
         }
       }
@@ -194,6 +216,7 @@ module ClaudeAgentSDK
         response: {
           subtype: 'error',
           request_id: request_id,
+          requestId: request_id,
           error: e.message
         }
       }
@@ -398,6 +421,8 @@ module ClaudeAgentSDK
     def send_control_request(request)
       raise 'Control requests require streaming mode' unless @is_streaming_mode
 
+      timeout_seconds = control_request_timeout_seconds
+
       # Generate unique request ID
       @request_counter += 1
       request_id = "req_#{@request_counter}_#{SecureRandom.hex(4)}"
@@ -410,14 +435,15 @@ module ClaudeAgentSDK
       control_request = {
         type: 'control_request',
         request_id: request_id,
+        requestId: request_id,
         request: request
       }
 
       @transport.write(JSON.generate(control_request) + "\n")
 
-      # Wait for response with timeout
+      # Wait for response with timeout (default 1200s to handle slow CLI startup)
       Async do |task|
-        task.with_timeout(60.0) do
+        task.with_timeout(timeout_seconds) do
           condition.wait
         end
 
@@ -431,7 +457,7 @@ module ClaudeAgentSDK
     rescue Async::TimeoutError
       @pending_control_responses.delete(request_id)
       @pending_control_results.delete(request_id)
-      raise "Control request timeout: #{request[:subtype]}"
+      raise ControlRequestTimeoutError, "Control request timeout: #{request[:subtype]}"
     end
 
     def handle_sdk_mcp_request(server_name, message)

@@ -2,6 +2,7 @@
 
 require 'json'
 require 'open3'
+require 'timeout'
 require_relative 'transport'
 require_relative 'errors'
 require_relative 'version'
@@ -29,9 +30,15 @@ module ClaudeAgentSDK
     end
 
     def find_cli
-      # Try which command first
-      cli = `which claude 2>/dev/null`.strip
-      return cli unless cli.empty?
+      # Try which command first (using Open3 for thread safety)
+      cli = nil
+      begin
+        stdout, _status = Open3.capture2('which', 'claude')
+        cli = stdout.strip
+      rescue StandardError
+        # which command failed, try common locations
+      end
+      return cli if cli && !cli.empty? && File.executable?(cli)
 
       # Try common locations
       locations = [
@@ -326,35 +333,67 @@ module ClaudeAgentSDK
       @ready = false
       return unless @process
 
+      cleanup_errors = []
+
       # Kill stderr thread
       if @stderr_task&.alive?
-        @stderr_task.kill
-        @stderr_task.join(1) rescue nil
+        begin
+          @stderr_task.kill
+          @stderr_task.join(1)
+        rescue StandardError => e
+          cleanup_errors << "stderr thread: #{e.message}"
+        end
       end
 
       # Close streams
       begin
         @stdin&.close
-      rescue StandardError
-        # Ignore
+      rescue IOError
+        # Already closed, ignore
+      rescue StandardError => e
+        cleanup_errors << "stdin: #{e.message}"
       end
+
       begin
         @stdout&.close
-      rescue StandardError
-        # Ignore
+      rescue IOError
+        # Already closed, ignore
+      rescue StandardError => e
+        cleanup_errors << "stdout: #{e.message}"
       end
+
       begin
         @stderr&.close
-      rescue StandardError
-        # Ignore
+      rescue IOError
+        # Already closed, ignore
+      rescue StandardError => e
+        cleanup_errors << "stderr: #{e.message}"
       end
 
       # Terminate process
       begin
-        Process.kill('TERM', @process.pid) if @process.alive?
-        @process.value
-      rescue StandardError
-        # Ignore
+        if @process.alive?
+          Process.kill('TERM', @process.pid)
+          # Wait briefly for graceful shutdown
+          Timeout.timeout(2) { @process.value }
+        end
+      rescue Timeout::Error
+        # Force kill if graceful shutdown failed
+        begin
+          Process.kill('KILL', @process.pid)
+          @process.value
+        rescue StandardError => e
+          cleanup_errors << "force kill: #{e.message}"
+        end
+      rescue Errno::ESRCH
+        # Process already dead, ignore
+      rescue StandardError => e
+        cleanup_errors << "process termination: #{e.message}"
+      end
+
+      # Log any cleanup errors (non-fatal)
+      if cleanup_errors.any?
+        warn "Claude SDK: Cleanup warnings: #{cleanup_errors.join(', ')}"
       end
 
       @process = nil

@@ -7,6 +7,9 @@ module ClaudeAgentSDK
   # Raised when unable to connect to Claude Code
   class CLIConnectionError < ClaudeSDKError; end
 
+  # Raised when the control protocol does not respond in time
+  class ControlRequestTimeoutError < CLIConnectionError; end
+
   # Raised when Claude Code is not found or not installed
   class CLINotFoundError < CLIConnectionError
     def initialize(message = 'Claude Code not found', cli_path: nil)
