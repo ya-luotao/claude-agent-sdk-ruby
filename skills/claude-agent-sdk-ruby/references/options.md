@@ -2,6 +2,24 @@
 
 Configure the SDK via `ClaudeAgentSDK::ClaudeAgentOptions.new(...)`. Set only what you need.
 
+## Global defaults (`ClaudeAgentSDK.configure`)
+
+Set defaults once, then override only when needed per call.
+
+```ruby
+ClaudeAgentSDK.configure do |config|
+  config.default_options = {
+    model: 'claude-sonnet-4-5',
+    permission_mode: 'bypassPermissions',
+    env: { 'ANTHROPIC_API_KEY' => ENV.fetch('ANTHROPIC_API_KEY') }
+  }
+end
+```
+
+Notes:
+- `ClaudeAgentOptions.new(...)` still overrides defaults you pass explicitly.
+- Hash options like `env` and `mcp_servers` merge with configured defaults.
+
 ## Core knobs
 
 - `system_prompt`: Set an overall instruction as a string, or use `ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: '...')` to extend a preset prompt.
@@ -9,10 +27,13 @@ Configure the SDK via `ClaudeAgentSDK::ClaudeAgentOptions.new(...)`. Set only wh
 - `fallback_model`: Use when the primary model is unavailable.
 - `max_turns`: Cap the number of turns.
 - `max_budget_usd`: Cap total spend (USD).
+- `include_partial_messages`: Include partial assistant messages in the stream when supported.
 - `cwd`: Run Claude Code in a specific working directory.
+- `max_thinking_tokens`: Stored for API parity, but not currently passed through to Claude CLI.
 
 ## Tools and permissions
 
+- `tools`: Set base tools (Array, Hash, or `ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code')`).
 - `allowed_tools`: Explicit allow-list (examples: `Read`, `Write`, `Edit`, `Bash`, and `mcp__name__tool`).
 - `append_allowed_tools`: Append to tool allow-list without replacing it.
 - `disallowed_tools`: Explicit block-list.
@@ -67,3 +88,13 @@ Use `mcp_servers:` to add SDK MCP servers (in-process) or external MCP servers. 
 ## Sandbox
 
 Use `sandbox:` with `ClaudeAgentSDK::SandboxSettings` to run tool execution in an isolated sandbox when supported.
+
+## Experimental and runtime controls
+
+- `betas`: Enable CLI beta features (`--betas`).
+- Client runtime APIs:
+- `Client#interrupt`
+- `Client#set_permission_mode`
+- `Client#set_model`
+- `Client#get_mcp_status`
+- `Client#get_server_info`

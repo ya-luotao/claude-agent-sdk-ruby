@@ -9,6 +9,20 @@ Fix:
 - Install Claude Code CLI (Node.js required).
 - If the CLI is installed in a non-standard path, set `ClaudeAgentSDK::ClaudeAgentOptions#cli_path`.
 
+## Control requests timing out
+
+Symptoms:
+- `ClaudeAgentSDK::ControlRequestTimeoutError`
+
+Checks and fixes:
+- Increase control timeout for long-running sessions:
+```bash
+export CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS=1800
+```
+- Tune for your workload; default is 1200 seconds.
+- Rescue `ControlRequestTimeoutError` in jobs/workers and retry when appropriate.
+- Review long-running hooks, permission callbacks, or MCP tools that may delay control responses.
+
 ## Tool calls not working
 
 Checks:
