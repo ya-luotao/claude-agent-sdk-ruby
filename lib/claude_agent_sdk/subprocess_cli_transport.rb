@@ -262,7 +262,9 @@ module ClaudeAgentSDK
       # Build environment
       # Convert symbol keys to strings for spawn compatibility
       custom_env = @options.env.transform_keys { |k| k.to_s }
-      process_env = ENV.to_h.merge('CLAUDE_AGENT_SDK_VERSION' => VERSION).merge(custom_env)
+      # Strip CLAUDECODE to prevent "nested session" detection when the SDK
+      # launches Claude Code from within an existing Claude Code terminal
+      process_env = ENV.to_h.except('CLAUDECODE').merge('CLAUDE_AGENT_SDK_VERSION' => VERSION).merge(custom_env)
       process_env['CLAUDE_CODE_ENTRYPOINT'] ||= 'sdk-rb'
       process_env['PWD'] = @cwd.to_s if @cwd
 
