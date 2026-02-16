@@ -13,6 +13,11 @@ module ClaudeAgentSDK
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
 
+    # Prompts larger than this are piped via stdin instead of CLI args
+    # to avoid Errno::E2BIG (ARG_MAX is typically 1MB on macOS/Linux,
+    # shared with environment variables).
+    PROMPT_STDIN_THRESHOLD = 200 * 1024 # 200KB
+
     def initialize(prompt, options)
       @prompt = prompt
       @is_streaming = !prompt.is_a?(String)
@@ -27,6 +32,7 @@ module ClaudeAgentSDK
       @exit_error = nil
       @max_buffer_size = options.max_buffer_size || DEFAULT_MAX_BUFFER_SIZE
       @stderr_task = nil
+      @pipe_prompt_via_stdin = false
     end
 
     def find_cli
@@ -245,6 +251,11 @@ module ClaudeAgentSDK
       # Prompt handling
       if @is_streaming
         cmd.concat(['--input-format', 'stream-json'])
+      elsif @prompt.to_s.bytesize > PROMPT_STDIN_THRESHOLD
+        # Large prompts are piped via stdin to avoid OS argument size limits.
+        # Claude CLI reads from stdin when --print is used without a trailing argument.
+        cmd << '--print'
+        @pipe_prompt_via_stdin = true
       else
         cmd.concat(['--print', '--', @prompt.to_s])
       end
@@ -277,13 +288,30 @@ module ClaudeAgentSDK
 
         @stdin, @stdout, @stderr, @process = Open3.popen3(process_env, *cmd, opts)
 
-        # Handle stderr if piped
-        if should_pipe_stderr && @stderr
-          @stderr_task = Thread.new do
-            handle_stderr
-          rescue StandardError
-            # Ignore errors during stderr reading
+        # Always drain stderr to prevent pipe buffer deadlock.
+        # Without this, --verbose output fills the OS pipe buffer (~64KB),
+        # the subprocess blocks on write, and all pipes stall → EPIPE.
+        if @stderr
+          if should_pipe_stderr
+            @stderr_task = Thread.new do
+              handle_stderr
+            rescue StandardError
+              # Ignore errors during stderr reading
+            end
+          else
+            # Silently drain stderr so the subprocess never blocks
+            @stderr_task = Thread.new do
+              @stderr.each_line { |_| } # discard
+            rescue StandardError
+              # Ignore — process may have already exited
+            end
           end
+        end
+
+        # For large prompts, pipe the prompt text to stdin before closing.
+        # This avoids Errno::E2BIG when the prompt exceeds ARG_MAX.
+        if @pipe_prompt_via_stdin && @stdin
+          @stdin.write(@prompt.to_s)
         end
 
         # Close stdin for non-streaming mode
