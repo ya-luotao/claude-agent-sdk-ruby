@@ -32,6 +32,8 @@ module ClaudeAgentSDK
       @exit_error = nil
       @max_buffer_size = options.max_buffer_size || DEFAULT_MAX_BUFFER_SIZE
       @stderr_task = nil
+      @recent_stderr = []
+      @recent_stderr_mutex = Mutex.new
       @pipe_prompt_via_stdin = false
     end
 
@@ -273,9 +275,11 @@ module ClaudeAgentSDK
       # Build environment
       # Convert symbol keys to strings for spawn compatibility
       custom_env = @options.env.transform_keys { |k| k.to_s }
-      # Strip CLAUDECODE to prevent "nested session" detection when the SDK
-      # launches Claude Code from within an existing Claude Code terminal
-      process_env = ENV.to_h.except('CLAUDECODE').merge('CLAUDE_AGENT_SDK_VERSION' => VERSION).merge(custom_env)
+      # Explicitly unset CLAUDECODE to prevent "nested session" detection when the SDK
+      # launches Claude Code from within an existing Claude Code terminal.
+      # NOTE: Must set to nil (not just omit the key) — Ruby's spawn only overlays
+      # the env hash on top of the parent environment; a nil value actively unsets.
+      process_env = ENV.to_h.merge('CLAUDECODE' => nil, 'CLAUDE_AGENT_SDK_VERSION' => VERSION).merge(custom_env)
       process_env['CLAUDE_CODE_ENTRYPOINT'] ||= 'sdk-rb'
       process_env['PWD'] = @cwd.to_s if @cwd
 
@@ -292,16 +296,17 @@ module ClaudeAgentSDK
         # Without this, --verbose output fills the OS pipe buffer (~64KB),
         # the subprocess blocks on write, and all pipes stall → EPIPE.
         if @stderr
-          if should_pipe_stderr
+          if should_pipe_stderr # rubocop:disable Style/ConditionalAssignment
             @stderr_task = Thread.new do
               handle_stderr
             rescue StandardError
               # Ignore errors during stderr reading
             end
           else
-            # Silently drain stderr so the subprocess never blocks
+            # Silently drain stderr so the subprocess never blocks,
+            # but still accumulate recent lines for error reporting.
             @stderr_task = Thread.new do
-              @stderr.each_line { |_| } # discard
+              drain_stderr_with_accumulation
             rescue StandardError
               # Ignore — process may have already exited
             end
@@ -343,6 +348,12 @@ module ClaudeAgentSDK
         line_str = line.chomp
         next if line_str.empty?
 
+        # Accumulate recent lines for inclusion in ProcessError
+        @recent_stderr_mutex.synchronize do
+          @recent_stderr << line_str
+          @recent_stderr.shift if @recent_stderr.size > 20
+        end
+
         # Call stderr callback if provided
         @options.stderr&.call(line_str)
 
@@ -357,6 +368,20 @@ module ClaudeAgentSDK
       end
     rescue StandardError
       # Ignore errors during stderr reading
+    end
+
+    def drain_stderr_with_accumulation
+      return unless @stderr
+
+      @stderr.each_line do |line|
+        line_str = line.chomp
+        next if line_str.empty?
+
+        @recent_stderr_mutex.synchronize do
+          @recent_stderr << line_str
+          @recent_stderr.shift if @recent_stderr.size > 20
+        end
+      end
     end
 
     def close
@@ -511,10 +536,16 @@ module ClaudeAgentSDK
       returncode = status.exitstatus
 
       if returncode && returncode != 0
+        # Wait briefly for stderr thread to finish draining
+        @stderr_task&.join(1)
+
+        stderr_text = @recent_stderr_mutex.synchronize { @recent_stderr.last(10).join("\n") }
+        stderr_text = 'No stderr output captured' if stderr_text.empty?
+
         @exit_error = ProcessError.new(
           "Command failed with exit code #{returncode}",
           exit_code: returncode,
-          stderr: 'Check stderr output for details'
+          stderr: stderr_text
         )
         raise @exit_error
       end

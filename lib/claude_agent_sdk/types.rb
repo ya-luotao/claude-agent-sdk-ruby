@@ -144,6 +144,15 @@ module ClaudeAgentSDK
     end
   end
 
+  # Rate limit event emitted by Claude Code CLI when API rate limits are hit
+  class RateLimitEvent
+    attr_accessor :data
+
+    def initialize(data:)
+      @data = data
+    end
+  end
+
   # Agent definition configuration
   class AgentDefinition
     attr_accessor :description, :prompt, :tools, :model

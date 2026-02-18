@@ -23,6 +23,8 @@ module ClaudeAgentSDK
         parse_result_message(data)
       when 'stream_event'
         parse_stream_event(data)
+      when 'rate_limit_event'
+        parse_rate_limit_event(data)
       else
         raise MessageParseError.new("Unknown message type: #{message_type}", data: data)
       end
@@ -89,6 +91,10 @@ module ClaudeAgentSDK
         event: data[:event],
         parent_tool_use_id: data[:parent_tool_use_id]
       )
+    end
+
+    def self.parse_rate_limit_event(data)
+      RateLimitEvent.new(data: data)
     end
 
     def self.parse_content_block(block)
