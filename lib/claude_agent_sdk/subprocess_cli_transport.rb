@@ -13,8 +13,9 @@ module ClaudeAgentSDK
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
 
-    def initialize(_prompt, options)
-      @options = options
+    def initialize(options_or_prompt = nil, options = nil)
+      # Support both new single-arg form and legacy two-arg form
+      @options = options.nil? ? options_or_prompt : options
       @cli_path = options.cli_path || find_cli
       @cwd = options.cwd
       @process = nil

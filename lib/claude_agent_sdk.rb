@@ -84,7 +84,8 @@ module ClaudeAgentSDK
         query_handler = Query.new(
           transport: transport,
           is_streaming_mode: true,
-          agents: options.agents
+          agents: options.agents,
+          sdk_mcp_servers: sdk_mcp_servers
         )
 
         # Start reading messages in background
@@ -121,7 +122,12 @@ module ClaudeAgentSDK
           block.call(message)
         end
       ensure
-        transport.close
+        # query_handler.close stops the background read task and closes the transport
+        if query_handler
+          query_handler.close
+        else
+          transport.close
+        end
       end
     end.wait
   end

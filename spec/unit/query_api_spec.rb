@@ -12,7 +12,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     allow(transport).to receive(:write)
     allow(transport).to receive(:read_messages) # returns nil immediately
 
-    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: nil)
+    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: nil, close: nil)
     allow(query_handler).to receive(:receive_messages) # yields nothing
 
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |opts|
