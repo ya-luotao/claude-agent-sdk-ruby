@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bundle exec rspec:*)",
+      "Bash(gh release view:*)",
+      "Bash(gh release create:*)",
+      "Bash(gh auth refresh:*)",
+      "Bash(unset:*)",
+      "Bash(gh release edit v0.4.1 --notes \"$\\(cat <<''EOF''\n## Added\n\n### Hook Parity\n- Added hook event support for `PostToolUseFailure`, `Notification`, `SubagentStart`, and `PermissionRequest`\n- Expanded `SubagentStop` hook inputs with `agent_id`, `agent_transcript_path`, and `agent_type`\n- Added hook-specific outputs for new hook events\n- Added `updatedMCPToolOutput` support to `PostToolUse` hook outputs\n\n### MCP Status APIs\n- `get_mcp_status` on `Query` and `Client` for live MCP connection status \\(streaming mode\\)\n- `get_server_info` on `Client` as a parity alias for server initialization info\n\n## Fixed\n- Hook input parsing now supports both symbol and string keys\n- Hook callback timeouts are enforced and control request cancellation is handled cleanly\n\n**Full Changelog**: https://github.com/ya-luotao/claude-agent-sdk-ruby/compare/v0.4.0...v0.4.1\nEOF\n\\)\")",
+      "Bash(git pull:*)",
+      "Bash(git push:*)",
+      "Bash(git show:*)",
+      "Bash(gh release list:*)",
+      "Bash(gem search:*)",
+      "Bash(gh api:*)",
+      "Bash(gh auth status:*)",
+      "Bash(GITHUB_TOKEN= gh release create:*)",
+      "Bash(bundle exec rake:*)",
+      "Bash(gem push:*)",
+      "Bash(GITHUB_TOKEN= gh pr view:*)",
+      "Bash(GITHUB_TOKEN= gh pr diff:*)",
+      "Bash(GITHUB_TOKEN= gh pr checkout:*)",
+      "Bash(git remote add:*)",
+      "Bash(git fetch:*)",
+      "Bash(GITHUB_TOKEN= gh pr comment:*)",
+      "Bash(git checkout:*)",
+      "Bash(GITHUB_TOKEN= gh api:*)",
+      "Bash(python3:*)",
+      "Bash(bundle exec rubocop:*)",
+      "Bash(git stash:*)",
+      "Bash(GITHUB_TOKEN= gh pr merge:*)",
+      "Bash(bundle exec ruby:*)",
+      "Bash(timeout 15 ruby:*)",
+      "Bash(git status:*)"
+    ]
+  }
+}

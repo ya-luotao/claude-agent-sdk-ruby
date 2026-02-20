@@ -16,15 +16,15 @@ module ClaudeAgentSDK
     def initialize(options_or_prompt = nil, options = nil)
       # Support both new single-arg form and legacy two-arg form
       @options = options.nil? ? options_or_prompt : options
-      @cli_path = options.cli_path || find_cli
-      @cwd = options.cwd
+      @cli_path = @options.cli_path || find_cli
+      @cwd = @options.cwd
       @process = nil
       @stdin = nil
       @stdout = nil
       @stderr = nil
       @ready = false
       @exit_error = nil
-      @max_buffer_size = options.max_buffer_size || DEFAULT_MAX_BUFFER_SIZE
+      @max_buffer_size = @options.max_buffer_size || DEFAULT_MAX_BUFFER_SIZE
       @stderr_task = nil
       @recent_stderr = []
       @recent_stderr_mutex = Mutex.new
