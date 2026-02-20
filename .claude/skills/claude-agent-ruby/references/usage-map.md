@@ -14,6 +14,7 @@
 - Hooks
 - Permission Callbacks
 - Structured Output
+- Thinking Configuration
 - Budget Control
 - Fallback Model
 - Beta Features
@@ -47,9 +48,12 @@ Async do
 end.wait
 ```
 
-SDK MCP tool:
+SDK MCP tool (with optional annotations):
 ```ruby
-tool = ClaudeAgentSDK.create_tool('greet', 'Greet a user', { name: :string }) do |args|
+tool = ClaudeAgentSDK.create_tool(
+  'greet', 'Greet a user', { name: :string },
+  annotations: { title: 'Greeter', readOnlyHint: true }
+) do |args|
   { content: [{ type: 'text', text: "Hello, #{args[:name]}!" }] }
 end
 
@@ -59,4 +63,20 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   mcp_servers: { tools: server },
   allowed_tools: ['mcp__tools__greet']
 )
+```
+
+Thinking configuration:
+```ruby
+# Adaptive (32k default budget)
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new
+)
+
+# Custom budget
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 10_000)
+)
+
+# Effort level
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(effort: 'high')
 ```

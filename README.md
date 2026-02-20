@@ -16,6 +16,7 @@
 - [Hooks](#hooks)
 - [Permission Callbacks](#permission-callbacks)
 - [Structured Output](#structured-output)
+- [Thinking Configuration](#thinking-configuration)
 - [Budget Control](#budget-control)
 - [Fallback Model](#fallback-model)
 - [Beta Features](#beta-features)
@@ -38,7 +39,7 @@ Add this line to your application's Gemfile:
 gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'
 
 # Or use a stable version from RubyGems
-gem 'claude-agent-sdk', '~> 0.6.0'
+gem 'claude-agent-sdk', '~> 0.7.0'
 ```
 
 And then execute:
@@ -249,8 +250,11 @@ Custom tools are implemented as in-process MCP servers that run directly within 
 require 'claude_agent_sdk'
 require 'async'
 
-# Define a tool using create_tool
-greet_tool = ClaudeAgentSDK.create_tool('greet', 'Greet a user', { name: :string }) do |args|
+# Define a tool using create_tool (with optional annotations)
+greet_tool = ClaudeAgentSDK.create_tool(
+  'greet', 'Greet a user', { name: :string },
+  annotations: { title: 'Greeter', readOnlyHint: true }
+) do |args|
   { content: [{ type: 'text', text: "Hello, #{args[:name]}!" }] }
 end
 
@@ -392,8 +396,8 @@ A **hook** is a Ruby proc/lambda that the Claude Code *application* (*not* Claud
 
 All hook input objects include common fields like `session_id`, `transcript_path`, `cwd`, and `permission_mode`.
 
-- `PreToolUse` → `PreToolUseHookInput` (`tool_name`, `tool_input`)
-- `PostToolUse` → `PostToolUseHookInput` (`tool_name`, `tool_input`, `tool_response`)
+- `PreToolUse` → `PreToolUseHookInput` (`tool_name`, `tool_input`, `tool_use_id`)
+- `PostToolUse` → `PostToolUseHookInput` (`tool_name`, `tool_input`, `tool_response`, `tool_use_id`)
 - `PostToolUseFailure` → `PostToolUseFailureHookInput` (`tool_name`, `tool_input`, `tool_use_id`, `error`, `is_interrupt`)
 - `UserPromptSubmit` → `UserPromptSubmitHookInput` (`prompt`)
 - `Stop` → `StopHookInput` (`stop_hook_active`)
@@ -565,6 +569,37 @@ end
 ```
 
 For complete examples, see [examples/structured_output_example.rb](examples/structured_output_example.rb).
+
+## Thinking Configuration
+
+Control extended thinking behavior with typed configuration objects. The `thinking` option takes precedence over the deprecated `max_thinking_tokens`.
+
+```ruby
+# Adaptive thinking — uses a default budget of 32,000 tokens
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new
+)
+
+# Enabled thinking with custom budget
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 50_000)
+)
+
+# Explicitly disabled thinking
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  thinking: ClaudeAgentSDK::ThinkingConfigDisabled.new
+)
+```
+
+Use the `effort` option to control the model's effort level:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  effort: 'high'  # 'low', 'medium', or 'high'
+)
+```
+
+> **Note:** When `system_prompt` is `nil` (the default), the SDK passes `--system-prompt ""` to the CLI, which suppresses the default Claude Code system prompt. To use the default system prompt, use a `SystemPromptPreset`.
 
 ## Budget Control
 
@@ -891,7 +926,8 @@ User input message.
 class UserMessage
   attr_accessor :content,           # String | Array<ContentBlock>
                 :uuid,              # String | nil - Unique ID for rewind support
-                :parent_tool_use_id # String | nil
+                :parent_tool_use_id, # String | nil
+                :tool_use_result    # Hash | nil - Tool result data when message is a tool response
 end
 ```
 
@@ -1036,6 +1072,10 @@ end
 | `PermissionResultAllow` | Permission callback result to allow tool use |
 | `PermissionResultDeny` | Permission callback result to deny tool use |
 | `AgentDefinition` | Agent definition with description, prompt, tools, model |
+| `ThinkingConfigAdaptive` | Adaptive thinking mode (32,000 token default budget) |
+| `ThinkingConfigEnabled` | Enabled thinking with explicit `budget_tokens` |
+| `ThinkingConfigDisabled` | Disabled thinking (0 tokens) |
+| `SdkMcpTool` | SDK MCP tool definition with name, description, input_schema, handler, annotations |
 | `McpStdioServerConfig` | MCP server config for stdio transport |
 | `McpSSEServerConfig` | MCP server config for SSE transport |
 | `McpHttpServerConfig` | MCP server config for HTTP transport |

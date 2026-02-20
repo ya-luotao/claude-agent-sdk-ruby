@@ -9,20 +9,22 @@ description: Implement or modify Ruby code that uses the claude-agent-sdk gem, i
 Use this skill to build or refactor Ruby integrations with Claude Code via `claude-agent-sdk`, favoring the gem's README and types for exact APIs.
 
 ## Decision Guide
-- Choose `ClaudeAgentSDK.query` for one-shot or unidirectional streaming.
-- Choose `ClaudeAgentSDK::Client` for bidirectional sessions, hooks, or permission callbacks; wrap in `Async do ... end.wait`.
+- Choose `ClaudeAgentSDK.query` for one-shot queries or streaming input. Internally uses the control protocol (streaming mode) since v0.7.0.
+- Choose `ClaudeAgentSDK::Client` for multi-turn sessions, hooks, permission callbacks, or dynamic model switching; wrap in `Async do ... end.wait`.
 - Choose SDK MCP servers (`create_tool`, `create_sdk_mcp_server`) for in-process tools; choose external MCP configs for subprocess/HTTP servers.
 
 ## Implementation Checklist
 - Confirm prerequisites (Ruby 3.2+, Node.js, Claude Code CLI).
 - Build `ClaudeAgentSDK::ClaudeAgentOptions` and pass it to `query` or `Client.new`.
-- Handle messages by type (`AssistantMessage`, `ResultMessage`, etc.) and content blocks (`TextBlock`, `ToolUseBlock`, etc.).
+- Handle messages by type (`AssistantMessage`, `ResultMessage`, `UserMessage`, etc.) and content blocks (`TextBlock`, `ToolUseBlock`, etc.).
 - Use `output_format` and read `StructuredOutput` tool-use blocks for JSON schema responses.
-- Define hooks and permission callbacks as Ruby procs/lambdas; do not combine `can_use_tool` with `permission_prompt_tool_name`.
-- For SDK MCP tools, include `mcp__<server>__<tool>` in `allowed_tools`.
+- Use `thinking:` with `ThinkingConfigAdaptive`, `ThinkingConfigEnabled(budget_tokens:)`, or `ThinkingConfigDisabled` to control extended thinking. Use `effort:` (`'low'`, `'medium'`, `'high'`) for effort level.
+- Define hooks and permission callbacks as Ruby procs/lambdas; do not combine `can_use_tool` with `permission_prompt_tool_name`. Hook inputs include `tool_use_id` on `PreToolUseHookInput` and `PostToolUseHookInput`.
+- For SDK MCP tools, include `mcp__<server>__<tool>` in `allowed_tools`. Use `annotations:` on `create_tool` for MCP tool annotations.
 - Use `tools` or `ToolsPreset` for base tool selection; use `append_allowed_tools` when extending defaults.
 - Configure sandboxing via `SandboxSettings` and `SandboxNetworkConfig` when requested.
 - Use `resume`, `session_id`, and `fork_session` for session handling; enable file checkpointing only when explicitly needed.
+- Note: when `system_prompt` is nil (default), the SDK passes `--system-prompt ""` to suppress the default Claude Code system prompt.
 
 ## Where To Look For Exact Details
 - Locate the gem path with `bundle show claude-agent-sdk` or `ruby -e 'puts Gem::Specification.find_by_name(\"claude-agent-sdk\").full_gem_path'`.
