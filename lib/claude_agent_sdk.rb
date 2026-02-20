@@ -65,12 +65,45 @@ module ClaudeAgentSDK
     options = options.dup_with(env: (options.env || {}).merge('CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb'))
 
     Async do
-      transport = SubprocessCLITransport.new(prompt, options)
+      # Always use streaming mode with control protocol (matches Python SDK).
+      # This sends agents via initialize request instead of CLI args,
+      # avoiding OS ARG_MAX limits.
+      transport = SubprocessCLITransport.new(options)
       begin
         transport.connect
 
-        # If prompt is an Enumerator, write each message to stdin
-        if prompt.is_a?(Enumerator) || prompt.respond_to?(:each)
+        # Extract SDK MCP servers
+        sdk_mcp_servers = {}
+        if options.mcp_servers.is_a?(Hash)
+          options.mcp_servers.each do |name, config|
+            sdk_mcp_servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
+          end
+        end
+
+        # Create Query handler for control protocol
+        query_handler = Query.new(
+          transport: transport,
+          is_streaming_mode: true,
+          agents: options.agents
+        )
+
+        # Start reading messages in background
+        query_handler.start
+
+        # Initialize the control protocol (sends agents)
+        query_handler.initialize_protocol
+
+        # Send prompt(s) as user messages, then close stdin
+        if prompt.is_a?(String)
+          message = {
+            type: 'user',
+            message: { role: 'user', content: prompt },
+            parent_tool_use_id: nil,
+            session_id: 'default'
+          }
+          transport.write(JSON.generate(message) + "\n")
+          transport.end_input
+        elsif prompt.is_a?(Enumerator) || prompt.respond_to?(:each)
           Async do
             begin
               prompt.each do |message_json|
@@ -82,8 +115,8 @@ module ClaudeAgentSDK
           end
         end
 
-        # Read and yield messages
-        transport.read_messages do |data|
+        # Read and yield messages from the query handler (filters out control messages)
+        query_handler.receive_messages do |data|
           message = MessageParser.parse(data)
           block.call(message)
         end
@@ -167,7 +200,7 @@ module ClaudeAgentSDK
       )
 
       # Client always uses streaming mode; keep stdin open for bidirectional communication.
-      @transport = SubprocessCLITransport.new([].to_enum, configured_options)
+      @transport = SubprocessCLITransport.new(configured_options)
       @transport.connect
 
       # Extract SDK MCP servers
@@ -187,7 +220,8 @@ module ClaudeAgentSDK
         is_streaming_mode: true,
         can_use_tool: configured_options.can_use_tool,
         hooks: hooks,
-        sdk_mcp_servers: sdk_mcp_servers
+        sdk_mcp_servers: sdk_mcp_servers,
+        agents: configured_options.agents
       )
 
       # Start query handler and initialize

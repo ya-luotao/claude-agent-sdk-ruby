@@ -219,6 +219,30 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
       end
     end
 
+    context 'user message tool_use_result' do
+      it 'parses tool_use_result when present' do
+        data = {
+          type: 'user',
+          message: { content: 'Tool result' },
+          tool_use_result: { output: 'success', status: 'ok' }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::UserMessage)
+        expect(msg.tool_use_result).to eq({ output: 'success', status: 'ok' })
+      end
+
+      it 'defaults tool_use_result to nil when absent' do
+        data = {
+          type: 'user',
+          message: { content: 'Hello' }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg.tool_use_result).to be_nil
+      end
+    end
+
     context 'error handling' do
       it 'raises error for malformed user message' do
         data = { type: 'user' } # Missing message field

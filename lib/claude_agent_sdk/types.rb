@@ -81,12 +81,13 @@ module ClaudeAgentSDK
 
   # User message
   class UserMessage
-    attr_accessor :content, :uuid, :parent_tool_use_id
+    attr_accessor :content, :uuid, :parent_tool_use_id, :tool_use_result
 
-    def initialize(content:, uuid: nil, parent_tool_use_id: nil)
+    def initialize(content:, uuid: nil, parent_tool_use_id: nil, tool_use_result: nil)
       @content = content
       @uuid = uuid # Unique identifier for rewind support
       @parent_tool_use_id = parent_tool_use_id
+      @tool_use_result = tool_use_result # Tool result data when message is a tool response
     end
   end
 
@@ -150,6 +151,36 @@ module ClaudeAgentSDK
 
     def initialize(data:)
       @data = data
+    end
+  end
+
+  # Thinking configuration types
+
+  # Adaptive thinking: uses a default budget of 32000 tokens
+  class ThinkingConfigAdaptive
+    attr_accessor :type
+
+    def initialize
+      @type = 'adaptive'
+    end
+  end
+
+  # Enabled thinking: uses a user-specified budget
+  class ThinkingConfigEnabled
+    attr_accessor :type, :budget_tokens
+
+    def initialize(budget_tokens:)
+      @type = 'enabled'
+      @budget_tokens = budget_tokens
+    end
+  end
+
+  # Disabled thinking: sets thinking tokens to 0
+  class ThinkingConfigDisabled
+    attr_accessor :type
+
+    def initialize
+      @type = 'disabled'
     end
   end
 
@@ -278,26 +309,29 @@ module ClaudeAgentSDK
 
   # PreToolUse hook input
   class PreToolUseHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :tool_name, :tool_input
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id
 
-    def initialize(hook_event_name: 'PreToolUse', tool_name: nil, tool_input: nil, **base_args)
+    def initialize(hook_event_name: 'PreToolUse', tool_name: nil, tool_input: nil, tool_use_id: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @tool_name = tool_name
       @tool_input = tool_input
+      @tool_use_id = tool_use_id
     end
   end
 
   # PostToolUse hook input
   class PostToolUseHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_response
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_response, :tool_use_id
 
-    def initialize(hook_event_name: 'PostToolUse', tool_name: nil, tool_input: nil, tool_response: nil, **base_args)
+    def initialize(hook_event_name: 'PostToolUse', tool_name: nil, tool_input: nil, tool_response: nil,
+                   tool_use_id: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @tool_name = tool_name
       @tool_input = tool_input
       @tool_response = tool_response
+      @tool_use_id = tool_use_id
     end
   end
 
@@ -407,13 +441,16 @@ module ClaudeAgentSDK
 
   # PreToolUse hook specific output
   class PreToolUseHookSpecificOutput
-    attr_accessor :hook_event_name, :permission_decision, :permission_decision_reason, :updated_input
+    attr_accessor :hook_event_name, :permission_decision, :permission_decision_reason,
+                  :updated_input, :additional_context
 
-    def initialize(permission_decision: nil, permission_decision_reason: nil, updated_input: nil)
+    def initialize(permission_decision: nil, permission_decision_reason: nil, updated_input: nil,
+                   additional_context: nil)
       @hook_event_name = 'PreToolUse'
       @permission_decision = permission_decision # 'allow', 'deny', or 'ask'
       @permission_decision_reason = permission_decision_reason
       @updated_input = updated_input
+      @additional_context = additional_context
     end
 
     def to_h
@@ -421,6 +458,7 @@ module ClaudeAgentSDK
       result[:permissionDecision] = @permission_decision if @permission_decision
       result[:permissionDecisionReason] = @permission_decision_reason if @permission_decision_reason
       result[:updatedInput] = @updated_input if @updated_input
+      result[:additionalContext] = @additional_context if @additional_context
       result
     end
   end
@@ -791,7 +829,8 @@ module ClaudeAgentSDK
                   :fork_session, :agents, :setting_sources,
                   :output_format, :max_budget_usd, :max_thinking_tokens,
                   :fallback_model, :plugins, :debug_stderr,
-                  :betas, :tools, :sandbox, :enable_file_checkpointing, :append_allowed_tools
+                  :betas, :tools, :sandbox, :enable_file_checkpointing, :append_allowed_tools,
+                  :thinking, :effort
 
     # Non-nil defaults for options that need them.
     # Keys absent from here default to nil.
@@ -853,13 +892,14 @@ module ClaudeAgentSDK
 
   # SDK MCP Tool definition
   class SdkMcpTool
-    attr_accessor :name, :description, :input_schema, :handler
+    attr_accessor :name, :description, :input_schema, :handler, :annotations
 
-    def initialize(name:, description:, input_schema:, handler:)
+    def initialize(name:, description:, input_schema:, handler:, annotations: nil)
       @name = name
       @description = description
       @input_schema = input_schema
       @handler = handler
+      @annotations = annotations # MCP tool annotations (e.g., { title: '...', readOnlyHint: true })
     end
   end
 

@@ -33,6 +33,33 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       expect(server.list_tools).to eq([])
     end
 
+    it 'includes annotations in tool listing when present' do
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'read_file',
+        description: 'Read a file',
+        input_schema: { path: :string },
+        handler: ->(_) { { content: [] } },
+        annotations: { title: 'File Reader', readOnlyHint: true }
+      )
+      server = described_class.new(name: 'test', tools: [tool])
+
+      tools = server.list_tools
+      expect(tools.first[:annotations]).to eq({ title: 'File Reader', readOnlyHint: true })
+    end
+
+    it 'omits annotations when nil' do
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'test',
+        description: 'Test',
+        input_schema: {},
+        handler: ->(_) { { content: [] } }
+      )
+      server = described_class.new(name: 'test', tools: [tool])
+
+      tools = server.list_tools
+      expect(tools.first.key?(:annotations)).to eq(false)
+    end
+
     it 'returns tool definitions with JSON schemas' do
       tool = ClaudeAgentSDK::SdkMcpTool.new(
         name: 'add',
@@ -205,6 +232,20 @@ RSpec.describe ClaudeAgentSDK, '.create_tool' do
   it 'requires a block' do
     expect { described_class.create_tool('test', 'Test', {}) }
       .to raise_error(ArgumentError, /Block required/)
+  end
+
+  it 'passes annotations to the tool' do
+    annotations = { title: 'My Tool', readOnlyHint: true }
+    tool = described_class.create_tool('test', 'Test', {}, annotations: annotations) do |_|
+      { content: [] }
+    end
+
+    expect(tool.annotations).to eq(annotations)
+  end
+
+  it 'defaults annotations to nil' do
+    tool = described_class.create_tool('test', 'Test', {}) { |_| { content: [] } }
+    expect(tool.annotations).to be_nil
   end
 
   it 'handler executes correctly' do

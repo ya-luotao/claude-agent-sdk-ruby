@@ -13,14 +13,7 @@ module ClaudeAgentSDK
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
 
-    # Prompts larger than this are piped via stdin instead of CLI args
-    # to avoid Errno::E2BIG (ARG_MAX is typically 1MB on macOS/Linux,
-    # shared with environment variables).
-    PROMPT_STDIN_THRESHOLD = 200 * 1024 # 200KB
-
-    def initialize(prompt, options)
-      @prompt = prompt
-      @is_streaming = !prompt.is_a?(String)
+    def initialize(_prompt, options)
       @options = options
       @cli_path = options.cli_path || find_cli
       @cwd = options.cwd
@@ -34,7 +27,6 @@ module ClaudeAgentSDK
       @stderr_task = nil
       @recent_stderr = []
       @recent_stderr_mutex = Mutex.new
-      @pipe_prompt_via_stdin = false
     end
 
     def find_cli
@@ -76,20 +68,21 @@ module ClaudeAgentSDK
       cmd = [@cli_path, '--output-format', 'stream-json', '--verbose']
 
       # System prompt handling
-      if @options.system_prompt
-        if @options.system_prompt.is_a?(String)
-          cmd.concat(['--system-prompt', @options.system_prompt])
-        elsif @options.system_prompt.is_a?(SystemPromptPreset)
-          cmd.concat(['--system-prompt-preset', @options.system_prompt.preset]) if @options.system_prompt.preset
-          cmd.concat(['--append-system-prompt', @options.system_prompt.append]) if @options.system_prompt.append
-        elsif @options.system_prompt.is_a?(Hash)
-          prompt_type = @options.system_prompt[:type] || @options.system_prompt['type']
-          if prompt_type == 'preset'
-            preset = @options.system_prompt[:preset] || @options.system_prompt['preset']
-            append = @options.system_prompt[:append] || @options.system_prompt['append']
-            cmd.concat(['--system-prompt-preset', preset]) if preset
-            cmd.concat(['--append-system-prompt', append]) if append
-          end
+      # When nil, pass empty string to ensure predictable behavior without default Claude Code system prompt
+      if @options.system_prompt.nil?
+        cmd.concat(['--system-prompt', ''])
+      elsif @options.system_prompt.is_a?(String)
+        cmd.concat(['--system-prompt', @options.system_prompt])
+      elsif @options.system_prompt.is_a?(SystemPromptPreset)
+        cmd.concat(['--system-prompt-preset', @options.system_prompt.preset]) if @options.system_prompt.preset
+        cmd.concat(['--append-system-prompt', @options.system_prompt.append]) if @options.system_prompt.append
+      elsif @options.system_prompt.is_a?(Hash)
+        prompt_type = @options.system_prompt[:type] || @options.system_prompt['type']
+        if prompt_type == 'preset'
+          preset = @options.system_prompt[:preset] || @options.system_prompt['preset']
+          append = @options.system_prompt[:append] || @options.system_prompt['append']
+          cmd.concat(['--system-prompt-preset', preset]) if preset
+          cmd.concat(['--append-system-prompt', append]) if append
         end
       end
 
@@ -147,7 +140,13 @@ module ClaudeAgentSDK
 
       # Budget limit option
       cmd.concat(['--max-budget-usd', @options.max_budget_usd.to_s]) if @options.max_budget_usd
-      # Note: max_thinking_tokens is stored in options but not yet supported by Claude CLI
+
+      # Thinking configuration (takes precedence over deprecated max_thinking_tokens)
+      thinking_tokens = resolve_thinking_tokens
+      cmd.concat(['--max-thinking-tokens', thinking_tokens.to_s]) unless thinking_tokens.nil?
+
+      # Effort level
+      cmd.concat(['--effort', @options.effort.to_s]) if @options.effort
 
       # Betas option for enabling experimental features
       if @options.betas && !@options.betas.empty?
@@ -216,18 +215,8 @@ module ClaudeAgentSDK
       cmd << '--include-partial-messages' if @options.include_partial_messages
       cmd << '--fork-session' if @options.fork_session
 
-      # Agents
-      if @options.agents
-        agents_dict = @options.agents.transform_values do |agent_def|
-          {
-            description: agent_def.description,
-            prompt: agent_def.prompt,
-            tools: agent_def.tools,
-            model: agent_def.model
-          }.compact
-        end
-        cmd.concat(['--agents', JSON.generate(agents_dict)])
-      end
+      # Note: agents are now sent via the initialize control request (not CLI args)
+      # to avoid OS ARG_MAX limits with large agent configurations.
 
       # Plugins
       if @options.plugins && !@options.plugins.empty?
@@ -250,17 +239,10 @@ module ClaudeAgentSDK
         end
       end
 
-      # Prompt handling
-      if @is_streaming
-        cmd.concat(['--input-format', 'stream-json'])
-      elsif @prompt.to_s.bytesize > PROMPT_STDIN_THRESHOLD
-        # Large prompts are piped via stdin to avoid OS argument size limits.
-        # Claude CLI reads from stdin when --print is used without a trailing argument.
-        cmd << '--print'
-        @pipe_prompt_via_stdin = true
-      else
-        cmd.concat(['--print', '--', @prompt.to_s])
-      end
+      # Always use streaming mode for bidirectional control protocol.
+      # Prompts and agents are sent via stdin (initialize + user messages),
+      # which avoids OS ARG_MAX limits for large prompts and agent configurations.
+      cmd.concat(['--input-format', 'stream-json'])
 
       cmd
     end
@@ -313,16 +295,7 @@ module ClaudeAgentSDK
           end
         end
 
-        # For large prompts, pipe the prompt text to stdin before closing.
-        # This avoids Errno::E2BIG when the prompt exceeds ARG_MAX.
-        if @pipe_prompt_via_stdin && @stdin
-          @stdin.write(@prompt.to_s)
-        end
-
-        # Close stdin for non-streaming mode
-        @stdin.close unless @is_streaming
-        @stdin = nil unless @is_streaming
-
+        # Always keep stdin open — streaming mode uses it for the control protocol
         @ready = true
       rescue Errno::ENOENT => e
         # Check if error is from cwd or CLI
@@ -574,6 +547,25 @@ module ClaudeAgentSDK
 
     def ready?
       @ready
+    end
+
+    DEFAULT_ADAPTIVE_THINKING_TOKENS = 32_000
+
+    private
+
+    def resolve_thinking_tokens
+      if @options.thinking
+        case @options.thinking
+        when ThinkingConfigAdaptive
+          DEFAULT_ADAPTIVE_THINKING_TOKENS
+        when ThinkingConfigEnabled
+          @options.thinking.budget_tokens
+        when ThinkingConfigDisabled
+          0
+        end
+      elsif @options.max_thinking_tokens
+        @options.max_thinking_tokens
+      end
     end
   end
 end

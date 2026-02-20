@@ -23,12 +23,13 @@ module ClaudeAgentSDK
     CONTROL_REQUEST_TIMEOUT_ENV_VAR = 'CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS'
     DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
 
-    def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil)
+    def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
       @hooks = hooks || {}
       @sdk_mcp_servers = sdk_mcp_servers || {}
+      @agents = agents
 
       # Control protocol state
       @pending_control_responses = {}
@@ -76,10 +77,24 @@ module ClaudeAgentSDK
         end
       end
 
+      # Build agents dict for initialization
+      agents_dict = nil
+      if @agents
+        agents_dict = @agents.transform_values do |agent_def|
+          {
+            description: agent_def.description,
+            prompt: agent_def.prompt,
+            tools: agent_def.tools,
+            model: agent_def.model
+          }.compact
+        end
+      end
+
       # Send initialize request
       request = {
         subtype: 'initialize',
-        hooks: hooks_config.empty? ? nil : hooks_config
+        hooks: hooks_config.empty? ? nil : hooks_config,
+        agents: agents_dict
       }
 
       response = send_control_request(request)
@@ -306,6 +321,7 @@ module ClaudeAgentSDK
         PreToolUseHookInput.new(
           tool_name: fetch.call(:tool_name),
           tool_input: fetch.call(:tool_input),
+          tool_use_id: fetch.call(:tool_use_id),
           **base_args
         )
       when 'PostToolUse'
@@ -313,6 +329,7 @@ module ClaudeAgentSDK
           tool_name: fetch.call(:tool_name),
           tool_input: fetch.call(:tool_input),
           tool_response: fetch.call(:tool_response),
+          tool_use_id: fetch.call(:tool_use_id),
           **base_args
         )
       when 'PostToolUseFailure'

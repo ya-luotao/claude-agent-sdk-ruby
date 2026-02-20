@@ -42,6 +42,125 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(cmd).to include('--system-prompt-preset', 'claude_code')
       expect(cmd).to include('--append-system-prompt', 'Extra')
     end
+
+    it 'passes empty system prompt when nil' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      idx = cmd.index('--system-prompt')
+      expect(idx).not_to be_nil
+      expect(cmd[idx + 1]).to eq('')
+    end
+
+    it 'always uses --input-format stream-json' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--input-format', 'stream-json')
+    end
+
+    it 'does not include --agents in CLI args' do
+      agent = ClaudeAgentSDK::AgentDefinition.new(
+        description: 'Test agent',
+        prompt: 'You are helpful'
+      )
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        agents: { test: agent }
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).not_to include('--agents')
+    end
+
+    it 'passes --max-thinking-tokens for ThinkingConfigAdaptive' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      idx = cmd.index('--max-thinking-tokens')
+      expect(idx).not_to be_nil
+      expect(cmd[idx + 1]).to eq('32000')
+    end
+
+    it 'passes --max-thinking-tokens for ThinkingConfigEnabled' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 50_000)
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      idx = cmd.index('--max-thinking-tokens')
+      expect(idx).not_to be_nil
+      expect(cmd[idx + 1]).to eq('50000')
+    end
+
+    it 'passes --max-thinking-tokens 0 for ThinkingConfigDisabled' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        thinking: ClaudeAgentSDK::ThinkingConfigDisabled.new
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      idx = cmd.index('--max-thinking-tokens')
+      expect(idx).not_to be_nil
+      expect(cmd[idx + 1]).to eq('0')
+    end
+
+    it 'thinking takes precedence over deprecated max_thinking_tokens' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 10_000),
+        max_thinking_tokens: 99_999
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      idx = cmd.index('--max-thinking-tokens')
+      expect(idx).not_to be_nil
+      expect(cmd[idx + 1]).to eq('10000')
+    end
+
+    it 'falls back to max_thinking_tokens when thinking is nil' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        max_thinking_tokens: 20_000
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      idx = cmd.index('--max-thinking-tokens')
+      expect(idx).not_to be_nil
+      expect(cmd[idx + 1]).to eq('20000')
+    end
+
+    it 'passes --effort flag' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        effort: 'high'
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--effort', 'high')
+    end
   end
 
   describe '#check_claude_version' do

@@ -35,6 +35,7 @@ module ClaudeAgentSDK
     def self.parse_user_message(data)
       parent_tool_use_id = data[:parent_tool_use_id]
       uuid = data[:uuid] # UUID for rewind support
+      tool_use_result = data[:tool_use_result]
       message_data = data[:message]
       raise MessageParseError.new("Missing message field in user message", data: data) unless message_data
 
@@ -43,9 +44,11 @@ module ClaudeAgentSDK
 
       if content.is_a?(Array)
         content_blocks = content.map { |block| parse_content_block(block) }
-        UserMessage.new(content: content_blocks, uuid: uuid, parent_tool_use_id: parent_tool_use_id)
+        UserMessage.new(content: content_blocks, uuid: uuid, parent_tool_use_id: parent_tool_use_id,
+                        tool_use_result: tool_use_result)
       else
-        UserMessage.new(content: content, uuid: uuid, parent_tool_use_id: parent_tool_use_id)
+        UserMessage.new(content: content, uuid: uuid, parent_tool_use_id: parent_tool_use_id,
+                        tool_use_result: tool_use_result)
       end
     end
 

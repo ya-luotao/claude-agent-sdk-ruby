@@ -268,6 +268,89 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'agents via initialize' do
+    it 'includes agents dict in initialize request' do
+      writes = []
+      transport = instance_double(ClaudeAgentSDK::Transport)
+      allow(transport).to receive(:write) { |data| writes << data }
+
+      agents = {
+        coder: ClaudeAgentSDK::AgentDefinition.new(
+          description: 'A coding agent',
+          prompt: 'You write code',
+          tools: %w[Read Write],
+          model: 'claude-sonnet-4'
+        )
+      }
+
+      query = described_class.new(
+        transport: transport,
+        is_streaming_mode: true,
+        agents: agents
+      )
+      allow(query).to receive(:send_control_request) do |request|
+        expect(request[:subtype]).to eq('initialize')
+        expect(request[:agents]).to be_a(Hash)
+        expect(request[:agents][:coder][:description]).to eq('A coding agent')
+        expect(request[:agents][:coder][:prompt]).to eq('You write code')
+        expect(request[:agents][:coder][:tools]).to eq(%w[Read Write])
+        expect(request[:agents][:coder][:model]).to eq('claude-sonnet-4')
+        {}
+      end
+
+      query.initialize_protocol
+    end
+
+    it 'omits agents from initialize when nil' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+      allow(query).to receive(:send_control_request) do |request|
+        expect(request[:agents]).to be_nil
+        {}
+      end
+
+      query.initialize_protocol
+    end
+  end
+
+  describe '#parse_hook_input' do
+    it 'populates tool_use_id for PreToolUse events' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      input_data = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        tool_use_id: 'toolu_abc123',
+        session_id: 'sess_1'
+      }
+
+      result = query.send(:parse_hook_input, input_data)
+      expect(result).to be_a(ClaudeAgentSDK::PreToolUseHookInput)
+      expect(result.tool_use_id).to eq('toolu_abc123')
+      expect(result.tool_name).to eq('Bash')
+    end
+
+    it 'populates tool_use_id for PostToolUse events' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      input_data = {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        tool_response: 'file.txt',
+        tool_use_id: 'toolu_def456'
+      }
+
+      result = query.send(:parse_hook_input, input_data)
+      expect(result).to be_a(ClaudeAgentSDK::PostToolUseHookInput)
+      expect(result.tool_use_id).to eq('toolu_def456')
+      expect(result.tool_response).to eq('file.txt')
+    end
+  end
+
   describe 'control request cancellation' do
     it 'writes a cancelled response when stopped' do
       writes = []

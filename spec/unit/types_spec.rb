@@ -620,6 +620,114 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::ThinkingConfigAdaptive do
+      it 'creates an adaptive thinking config' do
+        config = described_class.new
+        expect(config).to be_a(ClaudeAgentSDK::ThinkingConfigAdaptive)
+      end
+    end
+
+    describe ClaudeAgentSDK::ThinkingConfigEnabled do
+      it 'stores budget_tokens' do
+        config = described_class.new(budget_tokens: 16_000)
+        expect(config.budget_tokens).to eq(16_000)
+      end
+    end
+
+    describe ClaudeAgentSDK::ThinkingConfigDisabled do
+      it 'creates a disabled thinking config' do
+        config = described_class.new
+        expect(config).to be_a(ClaudeAgentSDK::ThinkingConfigDisabled)
+      end
+    end
+
+    describe ClaudeAgentSDK::PreToolUseHookInput do
+      it 'stores tool_use_id' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          tool_use_id: 'toolu_abc123'
+        )
+
+        expect(input.tool_use_id).to eq('toolu_abc123')
+      end
+    end
+
+    describe ClaudeAgentSDK::PostToolUseHookInput do
+      it 'stores tool_use_id' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          tool_response: 'ok',
+          tool_use_id: 'toolu_abc456'
+        )
+
+        expect(input.tool_use_id).to eq('toolu_abc456')
+      end
+    end
+
+    describe ClaudeAgentSDK::PreToolUseHookSpecificOutput do
+      it 'includes additionalContext in to_h' do
+        output = described_class.new(
+          permission_decision: 'allow',
+          additional_context: 'Allowed because in sandbox'
+        )
+
+        hash = output.to_h
+        expect(hash[:additionalContext]).to eq('Allowed because in sandbox')
+        expect(hash[:permissionDecision]).to eq('allow')
+      end
+
+      it 'omits additionalContext when nil' do
+        output = described_class.new(permission_decision: 'deny')
+        hash = output.to_h
+        expect(hash.key?(:additionalContext)).to eq(false)
+      end
+    end
+
+    describe ClaudeAgentSDK::UserMessage do
+      it 'stores tool_use_result' do
+        msg = described_class.new(
+          content: 'Tool response',
+          tool_use_result: { tool_use_id: 'toolu_123', content: 'result' }
+        )
+
+        expect(msg.tool_use_result).to eq({ tool_use_id: 'toolu_123', content: 'result' })
+      end
+
+      it 'has nil tool_use_result by default' do
+        msg = described_class.new(content: 'Hello')
+        expect(msg.tool_use_result).to be_nil
+      end
+    end
+
+    describe ClaudeAgentSDK::SdkMcpTool do
+      it 'stores annotations' do
+        handler = ->(_args) { { content: [] } }
+        tool = described_class.new(
+          name: 'test_tool',
+          description: 'A test tool',
+          input_schema: { param: :string },
+          handler: handler,
+          annotations: { title: 'Test', readOnlyHint: true }
+        )
+
+        expect(tool.annotations).to eq({ title: 'Test', readOnlyHint: true })
+      end
+
+      it 'has nil annotations by default' do
+        handler = ->(_args) { { content: [] } }
+        tool = described_class.new(
+          name: 'test_tool',
+          description: 'A test tool',
+          input_schema: {},
+          handler: handler
+        )
+
+        expect(tool.annotations).to be_nil
+      end
+    end
+
     describe 'ClaudeAgentOptions new options' do
       it 'accepts betas option' do
         options = ClaudeAgentSDK::ClaudeAgentOptions.new(
@@ -664,6 +772,140 @@ RSpec.describe ClaudeAgentSDK do
           append_allowed_tools: ['Write', 'Bash']
         )
         expect(options.append_allowed_tools).to eq(['Write', 'Bash'])
+      end
+
+      it 'accepts thinking option with ThinkingConfigAdaptive' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new
+        )
+        expect(options.thinking).to be_a(ClaudeAgentSDK::ThinkingConfigAdaptive)
+      end
+
+      it 'accepts thinking option with ThinkingConfigEnabled' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 50_000)
+        )
+        expect(options.thinking).to be_a(ClaudeAgentSDK::ThinkingConfigEnabled)
+        expect(options.thinking.budget_tokens).to eq(50_000)
+      end
+
+      it 'accepts thinking option with ThinkingConfigDisabled' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          thinking: ClaudeAgentSDK::ThinkingConfigDisabled.new
+        )
+        expect(options.thinking).to be_a(ClaudeAgentSDK::ThinkingConfigDisabled)
+      end
+
+      it 'accepts effort option' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(effort: 'high')
+        expect(options.effort).to eq('high')
+      end
+    end
+
+    describe ClaudeAgentSDK::ThinkingConfigAdaptive do
+      it 'has adaptive type' do
+        config = described_class.new
+        expect(config.type).to eq('adaptive')
+      end
+    end
+
+    describe ClaudeAgentSDK::ThinkingConfigEnabled do
+      it 'stores budget_tokens' do
+        config = described_class.new(budget_tokens: 16_000)
+        expect(config.type).to eq('enabled')
+        expect(config.budget_tokens).to eq(16_000)
+      end
+    end
+
+    describe ClaudeAgentSDK::ThinkingConfigDisabled do
+      it 'has disabled type' do
+        config = described_class.new
+        expect(config.type).to eq('disabled')
+      end
+    end
+
+    describe ClaudeAgentSDK::PreToolUseHookInput do
+      it 'stores tool_use_id' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          tool_use_id: 'toolu_abc123'
+        )
+        expect(input.tool_use_id).to eq('toolu_abc123')
+      end
+
+      it 'defaults tool_use_id to nil' do
+        input = described_class.new(tool_name: 'Bash')
+        expect(input.tool_use_id).to be_nil
+      end
+    end
+
+    describe ClaudeAgentSDK::PostToolUseHookInput do
+      it 'stores tool_use_id' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          tool_use_id: 'toolu_def456'
+        )
+        expect(input.tool_use_id).to eq('toolu_def456')
+      end
+    end
+
+    describe ClaudeAgentSDK::PreToolUseHookSpecificOutput do
+      it 'includes additionalContext in to_h' do
+        output = described_class.new(
+          permission_decision: 'allow',
+          additional_context: 'Approved by admin'
+        )
+        hash = output.to_h
+        expect(hash[:additionalContext]).to eq('Approved by admin')
+        expect(hash[:permissionDecision]).to eq('allow')
+      end
+
+      it 'omits additionalContext when nil' do
+        output = described_class.new(permission_decision: 'allow')
+        hash = output.to_h
+        expect(hash.key?(:additionalContext)).to eq(false)
+      end
+    end
+
+    describe ClaudeAgentSDK::UserMessage do
+      it 'stores tool_use_result' do
+        msg = described_class.new(
+          content: 'result',
+          tool_use_result: { output: 'success' }
+        )
+        expect(msg.tool_use_result).to eq({ output: 'success' })
+      end
+
+      it 'defaults tool_use_result to nil' do
+        msg = described_class.new(content: 'Hello')
+        expect(msg.tool_use_result).to be_nil
+      end
+    end
+
+    describe ClaudeAgentSDK::SdkMcpTool do
+      it 'stores annotations' do
+        handler = ->(_args) { { content: [] } }
+        tool = described_class.new(
+          name: 'test',
+          description: 'A test tool',
+          input_schema: {},
+          handler: handler,
+          annotations: { title: 'Test Tool', readOnlyHint: true }
+        )
+        expect(tool.annotations).to eq({ title: 'Test Tool', readOnlyHint: true })
+      end
+
+      it 'defaults annotations to nil' do
+        handler = ->(_args) { { content: [] } }
+        tool = described_class.new(
+          name: 'test',
+          description: 'A test tool',
+          input_schema: {},
+          handler: handler
+        )
+        expect(tool.annotations).to be_nil
       end
     end
   end

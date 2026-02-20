@@ -51,11 +51,13 @@ module ClaudeAgentSDK
     # @return [Array<Hash>] Array of tool definitions
     def list_tools
       @tools.map do |tool|
-        {
+        entry = {
           name: tool.name,
           description: tool.description,
           inputSchema: convert_input_schema(tool.input_schema)
         }
+        entry[:annotations] = tool.annotations if tool.annotations
+        entry
       end
     end
 
@@ -387,14 +389,15 @@ module ClaudeAgentSDK
   #       { content: [{ type: 'text', text: "Result: #{result}" }] }
   #     end
   #   end
-  def self.create_tool(name, description, input_schema, &handler)
+  def self.create_tool(name, description, input_schema, annotations: nil, &handler)
     raise ArgumentError, 'Block required for tool handler' unless handler
 
     SdkMcpTool.new(
       name: name,
       description: description,
       input_schema: input_schema,
-      handler: handler
+      handler: handler,
+      annotations: annotations
     )
   end
 

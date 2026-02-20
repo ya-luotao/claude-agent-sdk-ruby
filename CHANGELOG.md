@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-02-20
+
+### Added
+
+#### Thinking Configuration
+- `ThinkingConfigAdaptive`, `ThinkingConfigEnabled`, `ThinkingConfigDisabled` classes for structured thinking control
+- `thinking` option on `ClaudeAgentOptions` — takes precedence over deprecated `max_thinking_tokens`
+  - `ThinkingConfigAdaptive` → 32,000 token default budget
+  - `ThinkingConfigEnabled(budget_tokens:)` → explicit budget
+  - `ThinkingConfigDisabled` → 0 tokens (thinking off)
+- `effort` option on `ClaudeAgentOptions` — maps to `--effort` CLI flag (`'low'`, `'medium'`, `'high'`)
+
+#### Tool Annotations
+- `annotations` attribute on `SdkMcpTool` for MCP tool annotations (e.g., `readOnlyHint`, `title`)
+- `annotations:` keyword on `ClaudeAgentSDK.create_tool`
+- Annotations included in `SdkMcpServer#list_tools` responses
+
+#### Hook Enhancements
+- `tool_use_id` attribute on `PreToolUseHookInput` and `PostToolUseHookInput`
+- `additional_context` attribute on `PreToolUseHookSpecificOutput`
+
+#### Message Enhancements
+- `tool_use_result` attribute on `UserMessage` for tool response data
+- `MessageParser` populates `tool_use_result` from CLI output
+
+### Changed
+
+#### Architecture: Always Streaming Mode (BREAKING for internal API)
+- **`SubprocessCLITransport`** now always uses `--input-format stream-json` — removed `--print` mode and `--agents` CLI flag
+- **`SubprocessCLITransport.new`** still accepts `(prompt, options)` for compatibility but ignores the prompt argument (always uses streaming mode)
+- **`query()`** now uses the full control protocol internally (Query handler + initialize handshake), matching the Python SDK
+- **Agents** are sent via the `initialize` control request over stdin instead of CLI `--agents` flag, avoiding OS ARG_MAX limits
+- **`query()`** now supports SDK MCP servers and `can_use_tool` callbacks (previously Client-only)
+
+#### Empty System Prompt
+- When `system_prompt` is `nil`, passes `--system-prompt ""` to CLI for predictable behavior without the default Claude Code system prompt
+
+## [0.6.3] - 2026-02-18
+
+### Fixed
+- **ProcessError stderr:** Real stderr output is now included in `ProcessError` exceptions (was always "No stderr output captured")
+- **Rate limit events:** Added `RateLimitEvent` type and `rate_limit_event` message parsing support
+
 ## [0.6.2] - 2026-02-17
 
 ### Fixed

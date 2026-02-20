@@ -7,11 +7,9 @@ RSpec.describe ClaudeAgentSDK::Client do
     transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
     query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
 
-    received_prompt = nil
     received_options = nil
 
-    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |prompt, options|
-      received_prompt = prompt
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |options|
       received_options = options
       transport
     end
@@ -20,8 +18,6 @@ RSpec.describe ClaudeAgentSDK::Client do
     client = described_class.new
     client.connect
 
-    expect(received_prompt).not_to be_a(String)
-    expect(received_prompt).to respond_to(:each)
     expect(received_options).to be_a(ClaudeAgentSDK::ClaudeAgentOptions)
     expect(received_options.env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb-client')
   end
@@ -66,7 +62,7 @@ RSpec.describe ClaudeAgentSDK::Client do
     query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
 
     received_options = nil
-    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |_prompt, options|
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |options|
       received_options = options
       transport
     end
@@ -186,7 +182,7 @@ RSpec.describe ClaudeAgentSDK::Client do
       query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
 
       received_options = nil
-      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |_prompt, options|
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |options|
         received_options = options
         transport
       end
