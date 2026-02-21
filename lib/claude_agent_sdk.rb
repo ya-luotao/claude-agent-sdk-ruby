@@ -119,7 +119,7 @@ module ClaudeAgentSDK
         # Read and yield messages from the query handler (filters out control messages)
         query_handler.receive_messages do |data|
           message = MessageParser.parse(data)
-          block.call(message)
+          block.call(message) if message
         end
       ensure
         # query_handler.close stops the background read task and closes the transport
@@ -275,7 +275,7 @@ module ClaudeAgentSDK
 
       @query_handler.receive_messages do |data|
         message = MessageParser.parse(data)
-        block.call(message)
+        block.call(message) if message
       end
     end
 

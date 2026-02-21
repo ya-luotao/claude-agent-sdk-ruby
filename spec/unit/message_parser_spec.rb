@@ -16,9 +16,9 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         .to raise_error(ClaudeAgentSDK::MessageParseError, /missing 'type' field/)
     end
 
-    it 'raises error for unknown message type' do
-      expect { described_class.parse({ type: 'unknown' }) }
-        .to raise_error(ClaudeAgentSDK::MessageParseError, /Unknown message type/)
+    it 'returns nil for unknown message type' do
+      result = described_class.parse({ type: 'future_type' })
+      expect(result).to be_nil
     end
 
     context 'user messages' do
@@ -49,6 +49,25 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.content).to be_an(Array)
         expect(msg.content.first).to be_a(ClaudeAgentSDK::TextBlock)
         expect(msg.content.first.text).to eq('Hello')
+      end
+
+      it 'preserves unknown content block types as UnknownBlock' do
+        data = {
+          type: 'user',
+          message: {
+            content: [
+              { type: 'text', text: 'Check this PDF' },
+              { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'abc123' } }
+            ]
+          }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg.content.length).to eq(2)
+        expect(msg.content[0]).to be_a(ClaudeAgentSDK::TextBlock)
+        expect(msg.content[1]).to be_a(ClaudeAgentSDK::UnknownBlock)
+        expect(msg.content[1].type).to eq('document')
+        expect(msg.content[1].data[:source][:media_type]).to eq('application/pdf')
       end
 
       it 'includes parent_tool_use_id if present' do
@@ -124,6 +143,26 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         thinking = msg.content.first
         expect(thinking).to be_a(ClaudeAgentSDK::ThinkingBlock)
         expect(thinking.thinking).to eq('Let me think...')
+      end
+
+      it 'preserves unknown content block types in assistant messages' do
+        data = {
+          type: 'assistant',
+          message: {
+            model: 'claude-sonnet-4',
+            content: [
+              { type: 'text', text: 'Here is the image' },
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'png_data' } }
+            ]
+          }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg.content.length).to eq(2)
+        expect(msg.content[0]).to be_a(ClaudeAgentSDK::TextBlock)
+        expect(msg.content[1]).to be_a(ClaudeAgentSDK::UnknownBlock)
+        expect(msg.content[1].type).to eq('image')
+        expect(msg.content[1].data[:source][:media_type]).to eq('image/png')
       end
 
       it 'parses error field' do

@@ -77,6 +77,17 @@ module ClaudeAgentSDK
     end
   end
 
+  # Generic content block for types the SDK doesn't explicitly handle (e.g., "document", "image").
+  # Preserves the raw hash data for forward compatibility with newer CLI versions.
+  class UnknownBlock
+    attr_accessor :type, :data
+
+    def initialize(type:, data:)
+      @type = type
+      @data = data
+    end
+  end
+
   # Message Types
 
   # User message

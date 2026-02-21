@@ -26,7 +26,9 @@ module ClaudeAgentSDK
       when 'rate_limit_event'
         parse_rate_limit_event(data)
       else
-        raise MessageParseError.new("Unknown message type: #{message_type}", data: data)
+        # Forward-compatible: skip unrecognized message types so newer
+        # CLI versions don't crash older SDK versions.
+        nil
       end
     rescue KeyError => e
       raise MessageParseError.new("Missing required field: #{e.message}", data: data)
@@ -115,7 +117,9 @@ module ClaudeAgentSDK
           is_error: block[:is_error]
         )
       else
-        raise MessageParseError.new("Unknown content block type: #{block[:type]}")
+        # Forward-compatible: preserve unrecognized content block types (e.g., "document", "image")
+        # so newer CLI versions don't crash older SDK versions.
+        UnknownBlock.new(type: block[:type], data: block)
       end
     end
   end
