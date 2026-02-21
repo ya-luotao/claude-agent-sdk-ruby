@@ -978,7 +978,7 @@ end
 
 ```ruby
 # Union type of all content blocks
-ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
+ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | UnknownBlock
 ```
 
 #### TextBlock
@@ -1023,6 +1023,17 @@ class ToolResultBlock
   attr_accessor :tool_use_id,  # String
                 :content,      # String | Array<Hash> | nil
                 :is_error      # Boolean | nil
+end
+```
+
+#### UnknownBlock
+
+Generic content block for types the SDK doesn't explicitly handle (e.g., `document` for PDFs, `image` for inline images). Preserves the raw data for forward compatibility with newer CLI versions.
+
+```ruby
+class UnknownBlock
+  attr_accessor :type,  # String — the original block type (e.g., "document")
+                :data   # Hash — the full raw block hash
 end
 ```
 

@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `UnknownBlock` type that preserves raw data for unrecognized content block types
 
+### Changed
+- **Breaking (minor):** `MessageParser.parse` no longer raises `MessageParseError` for unknown message types — returns `nil` instead. If you were rescuing `MessageParseError` to handle unknown types, check for `nil` return values instead.
+- **Breaking (minor):** `MessageParser.parse_content_block` no longer raises `MessageParseError` for unknown content block types — returns `UnknownBlock` instead. Content block iteration using `is_a?` filtering (e.g., `block.is_a?(TextBlock)`) is unaffected.
+
 ## [0.7.1] - 2026-02-21
 
 ### Fixed
