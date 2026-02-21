@@ -25,11 +25,9 @@ module ClaudeAgentSDK
         parse_stream_event(data)
       when 'rate_limit_event'
         parse_rate_limit_event(data)
-      else
-        # Forward-compatible: skip unrecognized message types so newer
-        # CLI versions don't crash older SDK versions.
-        nil
       end
+      # Forward-compatible: returns nil for unrecognized message types so
+      # newer CLI versions don't crash older SDK versions.
     rescue KeyError => e
       raise MessageParseError.new("Missing required field: #{e.message}", data: data)
     end

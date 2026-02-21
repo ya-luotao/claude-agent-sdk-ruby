@@ -164,10 +164,9 @@ module ClaudeAgentSDK
 
             def input_schema_value
               schema = convert_schema(@tool_def.input_schema)
-              MCP::Tool::InputSchema.new(
-                properties: schema[:properties] || {},
-                required: schema[:required] || []
-              )
+              opts = { properties: schema[:properties] || {} }
+              opts[:required] = schema[:required] if schema[:required]&.any?
+              MCP::Tool::InputSchema.new(**opts)
             end
 
             def call(server_context: nil, **args)
@@ -204,11 +203,10 @@ module ClaudeAgentSDK
                   properties[param_name] = type_to_json_schema(param_type)
                 end
 
-                return {
-                  type: 'object',
-                  properties: properties,
-                  required: properties.keys.map(&:to_s)
-                }
+                result = { type: 'object', properties: properties }
+                required_keys = properties.keys.map(&:to_s)
+                result[:required] = required_keys unless required_keys.empty?
+                return result
               end
 
               # Default fallback
@@ -332,11 +330,9 @@ module ClaudeAgentSDK
           properties[param_name] = type_to_json_schema(param_type)
         end
 
-        return {
-          type: 'object',
-          properties: properties,
-          required: properties.keys
-        }
+        result = { type: 'object', properties: properties }
+        result[:required] = properties.keys unless properties.empty?
+        return result
       end
 
       # Default fallback
