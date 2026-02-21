@@ -16,7 +16,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
 ## Implementation Checklist
 - Confirm prerequisites (Ruby 3.2+, Node.js, Claude Code CLI).
 - Build `ClaudeAgentSDK::ClaudeAgentOptions` and pass it to `query` or `Client.new`.
-- Handle messages by type (`AssistantMessage`, `ResultMessage`, `UserMessage`, etc.) and content blocks (`TextBlock`, `ToolUseBlock`, etc.).
+- Handle messages by type (`AssistantMessage`, `ResultMessage`, `UserMessage`, etc.) and content blocks (`TextBlock`, `ToolUseBlock`, `UnknownBlock`, etc.). Use `is_a?` filtering — unknown content block types are returned as `UnknownBlock` (with `.type` and `.data` accessors) and unknown message types are returned as `nil`.
 - Use `output_format` and read `StructuredOutput` tool-use blocks for JSON schema responses.
 - Use `thinking:` with `ThinkingConfigAdaptive`, `ThinkingConfigEnabled(budget_tokens:)`, or `ThinkingConfigDisabled` to control extended thinking. Use `effort:` (`'low'`, `'medium'`, `'high'`) for effort level.
 - Define hooks and permission callbacks as Ruby procs/lambdas; do not combine `can_use_tool` with `permission_prompt_tool_name`. Hook inputs include `tool_use_id` on `PreToolUseHookInput` and `PostToolUseHookInput`.

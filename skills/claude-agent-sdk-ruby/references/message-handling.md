@@ -10,6 +10,35 @@ Use these patterns to consume messages yielded by `ClaudeAgentSDK.query` and `Cl
 - `ClaudeAgentSDK::ResultMessage` (end-of-turn marker with `result`, `structured_output`, `total_cost_usd`, `session_id`)
 - `ClaudeAgentSDK::StreamEvent` (partial updates; only if enabled)
 
+## Content block types
+
+- `ClaudeAgentSDK::TextBlock` — text content (`.text`)
+- `ClaudeAgentSDK::ThinkingBlock` — extended thinking (`.thinking`, `.signature`)
+- `ClaudeAgentSDK::ToolUseBlock` — tool call (`.id`, `.name`, `.input`)
+- `ClaudeAgentSDK::ToolResultBlock` — tool result (`.tool_use_id`, `.content`, `.is_error`)
+- `ClaudeAgentSDK::UnknownBlock` — forward-compatible fallback for unrecognized types like `document` (PDF) or `image` (`.type`, `.data`); use `is_a?` filtering to skip gracefully
+
+## Forward compatibility (v0.7.2+)
+
+The SDK handles unknown types gracefully:
+- Unknown content block types → `UnknownBlock` (preserves raw data in `.data`)
+- Unknown message types → `nil` (skipped by callers)
+
+This means newer CLI versions won't crash older SDK versions. Filter content blocks with `is_a?` checks, and unknown types are silently skipped:
+
+```ruby
+message.content.each do |block|
+  case block
+  when ClaudeAgentSDK::TextBlock
+    puts block.text
+  when ClaudeAgentSDK::ToolUseBlock
+    puts "Tool: #{block.name}"
+  when ClaudeAgentSDK::UnknownBlock
+    # Access raw data if needed: block.type, block.data
+  end
+end
+```
+
 ## Extract assistant text
 
 ```ruby

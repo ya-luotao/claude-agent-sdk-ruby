@@ -65,6 +65,13 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
+SDK MCP tool (no parameters):
+```ruby
+tool = ClaudeAgentSDK.create_tool('ping', 'Ping the server', {}) do |_args|
+  { content: [{ type: 'text', text: 'pong' }] }
+end
+```
+
 Thinking configuration:
 ```ruby
 # Adaptive (32k default budget)

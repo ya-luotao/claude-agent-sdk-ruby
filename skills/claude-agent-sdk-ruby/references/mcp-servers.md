@@ -39,6 +39,7 @@ end.wait
 
 Tool return shape:
 - Return `{ content: [{ type: "text", text: "..." }], is_error: true|false }`.
+- Tools with no parameters can use an empty schema: `input_schema: {}` (fixed in v0.7.2).
 
 ## External MCP servers
 

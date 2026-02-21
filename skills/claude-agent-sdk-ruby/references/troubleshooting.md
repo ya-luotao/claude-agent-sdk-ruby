@@ -37,6 +37,13 @@ Checks:
 - `ClaudeAgentSDK.query` does not support `can_use_tool` (use `ClaudeAgentSDK::Client`).
 - Do not combine `can_use_tool` with `permission_prompt_tool_name`.
 
+## Unknown content block or message types
+
+Since v0.7.2, the SDK gracefully handles unrecognized types:
+- Unknown content block types (e.g., `document` from PDF reading) return `UnknownBlock` instead of raising.
+- Unknown message types return `nil` and are skipped.
+- If you were rescuing `MessageParseError` for unknown types, switch to checking for `UnknownBlock` or `nil`.
+
 ## No assistant text printed
 
 Checks:
