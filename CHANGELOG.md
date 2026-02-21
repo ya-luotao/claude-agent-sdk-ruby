@@ -8,8 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.2] - 2026-02-21
 
 ### Fixed
+- **Unknown content block crash:** Unrecognized content block types (e.g., `document` blocks from PDF reading) now return `UnknownBlock` instead of raising `MessageParseError`, aligning with the Python SDK's forward-compatible design
+- **Unknown message type crash:** Unrecognized message types now return `nil` (skipped by callers) instead of raising
 - **Empty input schema crash:** Tools with no parameters (`input_schema: {}`) caused `MCP::Tool::InputSchema` validation failure (`required` array must have at least 1 item per JSON Schema draft-04). Now omits `required` when empty.
-- **RuboCop offense:** Removed redundant `else` clause in `MessageParser.parse`
+
+### Added
+- `UnknownBlock` type that preserves raw data for unrecognized content block types
 
 ## [0.7.1] - 2026-02-21
 
