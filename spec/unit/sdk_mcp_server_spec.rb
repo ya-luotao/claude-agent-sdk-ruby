@@ -99,7 +99,7 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       expect(schema[:properties][:bool][:type]).to eq('boolean')
     end
 
-    it 'handles pre-formatted JSON schemas' do
+    it 'handles pre-formatted JSON schemas with symbol keys' do
       tool = ClaudeAgentSDK::SdkMcpTool.new(
         name: 'test',
         description: 'Test',
@@ -114,6 +114,30 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       schema = server.list_tools.first[:inputSchema]
       expect(schema[:type]).to eq('object')
       expect(schema[:properties][:custom][:type]).to eq('string')
+    end
+
+    it 'handles pre-formatted JSON schemas with string keys (e.g. from RubyLLM)' do
+      # Libraries like RubyLLM deep-stringify schema keys. The SDK must treat
+      # these as pre-built schemas and return them as-is, not interpret each
+      # top-level key ("type", "properties", "required", etc.) as a parameter name.
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'save_memory',
+        description: 'Save a fact to memory',
+        input_schema: {
+          'type' => 'object',
+          'properties' => { 'fact' => { 'type' => 'string', 'description' => 'The fact to remember' } },
+          'required' => ['fact'],
+          'additionalProperties' => false
+        },
+        handler: ->(_) { {} }
+      )
+      server = described_class.new(name: 'test', tools: [tool])
+
+      schema = server.list_tools.first[:inputSchema]
+      expect(schema['type']).to eq('object')
+      expect(schema['properties'].keys).to eq(['fact']),
+        'Schema must expose only the declared parameter, not leak schema meta-keys'
+      expect(schema['properties']['fact']['type']).to eq('string')
     end
   end
 

@@ -191,9 +191,14 @@ module ClaudeAgentSDK
             private
 
             def convert_schema(schema)
-              # If it's already a proper JSON schema, return it
-              if schema.is_a?(Hash) && schema[:type] && schema[:properties]
-                return schema
+              # If it's already a proper JSON schema, return it.
+              # Support both symbol keys (e.g. {type: "object"}) and string keys
+              # (e.g. {"type" => "object"}) so libraries like RubyLLM that
+              # deep-stringify schema keys are handled correctly.
+              # Normalize to symbol keys so downstream code (schema[:properties],
+              # schema[:required]) works regardless of the input key format.
+              if schema.is_a?(Hash) && (schema[:type] || schema['type']) && (schema[:properties] || schema['properties'])
+                return schema.transform_keys(&:to_sym)
               end
 
               # Simple schema: hash mapping parameter names to types
@@ -318,8 +323,13 @@ module ClaudeAgentSDK
     end
 
     def convert_input_schema(schema)
-      # If it's already a proper JSON schema, return it
-      if schema.is_a?(Hash) && schema[:type] && schema[:properties]
+      # If it's already a proper JSON schema, return it.
+      # Support both symbol keys (e.g. {type: "object"}) and string keys
+      # (e.g. {"type" => "object"}) so libraries like RubyLLM that
+      # deep-stringify schema keys are handled correctly.
+      if schema.is_a?(Hash) &&
+         (schema[:type] || schema["type"]) &&
+         (schema[:properties] || schema["properties"])
         return schema
       end
 
