@@ -39,7 +39,7 @@ Add this line to your application's Gemfile:
 gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'
 
 # Or use a stable version from RubyGems
-gem 'claude-agent-sdk', '~> 0.7.2'
+gem 'claude-agent-sdk', '~> 0.7.3'
 ```
 
 And then execute:
@@ -280,6 +280,26 @@ Async do
 
   client.disconnect
 end.wait
+```
+
+### Pre-built JSON Schemas
+
+If your schemas come from another library (e.g., [RubyLLM](https://github.com/crmne/ruby_llm)) that deep-stringifies keys, the SDK handles them transparently — both symbol-keyed and string-keyed schemas are accepted and normalized:
+
+```ruby
+# Symbol keys (standard Ruby)
+tool = ClaudeAgentSDK.create_tool('save', 'Save a fact', {
+  type: 'object',
+  properties: { fact: { type: 'string' } },
+  required: ['fact']
+}) { |args| { content: [{ type: 'text', text: "Saved: #{args[:fact]}" }] } }
+
+# String keys (e.g., from RubyLLM or JSON.parse)
+tool = ClaudeAgentSDK.create_tool('save', 'Save a fact', {
+  'type' => 'object',
+  'properties' => { 'fact' => { 'type' => 'string' } },
+  'required' => ['fact']
+}) { |args| { content: [{ type: 'text', text: "Saved: #{args[:fact]}" }] } }
 ```
 
 ### Benefits Over External MCP Servers

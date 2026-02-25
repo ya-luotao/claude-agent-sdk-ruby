@@ -20,7 +20,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
 - Use `output_format` and read `StructuredOutput` tool-use blocks for JSON schema responses.
 - Use `thinking:` with `ThinkingConfigAdaptive`, `ThinkingConfigEnabled(budget_tokens:)`, or `ThinkingConfigDisabled` to control extended thinking. Use `effort:` (`'low'`, `'medium'`, `'high'`) for effort level.
 - Define hooks and permission callbacks as Ruby procs/lambdas; do not combine `can_use_tool` with `permission_prompt_tool_name`. Hook inputs include `tool_use_id` on `PreToolUseHookInput` and `PostToolUseHookInput`.
-- For SDK MCP tools, include `mcp__<server>__<tool>` in `allowed_tools`. Use `annotations:` on `create_tool` for MCP tool annotations.
+- For SDK MCP tools, include `mcp__<server>__<tool>` in `allowed_tools`. Use `annotations:` on `create_tool` for MCP tool annotations. Both symbol-keyed and string-keyed `input_schema` hashes are accepted (e.g., from RubyLLM or `JSON.parse`); the SDK normalizes to symbol keys internally.
 - Use `tools` or `ToolsPreset` for base tool selection; use `append_allowed_tools` when extending defaults.
 - Configure sandboxing via `SandboxSettings` and `SandboxNetworkConfig` when requested.
 - Use `resume`, `session_id`, and `fork_session` for session handling; enable file checkpointing only when explicitly needed.

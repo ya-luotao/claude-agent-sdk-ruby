@@ -65,6 +65,15 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
+SDK MCP tool (pre-built JSON schema, e.g. from RubyLLM):
+```ruby
+tool = ClaudeAgentSDK.create_tool('save', 'Save a fact', {
+  'type' => 'object',
+  'properties' => { 'fact' => { 'type' => 'string' } },
+  'required' => ['fact']
+}) { |args| { content: [{ type: 'text', text: "Saved: #{args[:fact]}" }] } }
+```
+
 SDK MCP tool (no parameters):
 ```ruby
 tool = ClaudeAgentSDK.create_tool('ping', 'Ping the server', {}) do |_args|

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-02-26
+
+### Fixed
+- **String-keyed JSON schema crash:** Libraries like [RubyLLM](https://github.com/crmne/ruby_llm) that deep-stringify schema keys (e.g., `{ 'type' => 'object', 'properties' => { ... } }`) were misidentified as simple type-mapping schemas, causing each top-level key to be treated as a parameter name instead of passing the schema through. Now both symbol-keyed and string-keyed schemas are detected and normalized correctly. (PR #9 by [@iuhoay](https://github.com/iuhoay))
+- **Shallow key symbolization:** `convert_schema` used `transform_keys` (shallow) which left nested property keys as strings, breaking downstream `MCP::Tool::InputSchema` construction. Now uses deep symbolization recursively.
+- **Guard ordering crash:** `convert_schema` and `convert_input_schema` accessed `schema[:type]` before the `schema.is_a?(Hash)` guard, which would raise `NoMethodError` on `nil` input.
+- **Schema detection tightened:** Pre-built schema detection now requires `type == 'object'` and `properties.is_a?(Hash)`, preventing false positives when a simple schema happens to have parameters named `type` and `properties`.
+
+### Added
+- `ClaudeAgentSDK.deep_symbolize_keys` utility method for recursive hash key symbolization
+
 ## [0.7.2] - 2026-02-21
 
 ### Fixed
