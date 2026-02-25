@@ -197,7 +197,12 @@ module ClaudeAgentSDK
               # deep-stringify schema keys are handled correctly.
               # Normalize to symbol keys so downstream code (schema[:properties],
               # schema[:required]) works regardless of the input key format.
-              if schema.is_a?(Hash) && (schema[:type] || schema['type']) && (schema[:properties] || schema['properties'])
+              # Require type == "object" and properties to be a Hash to avoid
+              # misidentifying simple schemas whose param names happen to be
+              # "type" and "properties".
+              type_val = schema[:type] || schema['type']
+              props_val = schema[:properties] || schema['properties']
+              if schema.is_a?(Hash) && type_val == 'object' && props_val.is_a?(Hash)
                 return schema.transform_keys(&:to_sym)
               end
 
@@ -327,9 +332,12 @@ module ClaudeAgentSDK
       # Support both symbol keys (e.g. {type: "object"}) and string keys
       # (e.g. {"type" => "object"}) so libraries like RubyLLM that
       # deep-stringify schema keys are handled correctly.
-      if schema.is_a?(Hash) &&
-         (schema[:type] || schema["type"]) &&
-         (schema[:properties] || schema["properties"])
+      # Require type == "object" and properties to be a Hash to avoid
+      # misidentifying simple schemas whose param names happen to be
+      # "type" and "properties".
+      type_val = schema[:type] || schema["type"]
+      props_val = schema[:properties] || schema["properties"]
+      if schema.is_a?(Hash) && type_val == 'object' && props_val.is_a?(Hash)
         return schema
       end
 
