@@ -117,8 +117,8 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
     end
 
     it 'handles pre-formatted JSON schemas with string keys (e.g. from RubyLLM)' do
-      # Libraries like RubyLLM deep-stringify schema keys. The SDK must treat
-      # these as pre-built schemas and return them as-is, not interpret each
+      # Libraries like RubyLLM deep-stringify schema keys. The SDK must detect
+      # these as pre-built schemas and normalize to symbol keys, not interpret each
       # top-level key ("type", "properties", "required", etc.) as a parameter name.
       tool = ClaudeAgentSDK::SdkMcpTool.new(
         name: 'save_memory',
@@ -134,10 +134,30 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       server = described_class.new(name: 'test', tools: [tool])
 
       schema = server.list_tools.first[:inputSchema]
-      expect(schema['type']).to eq('object')
-      expect(schema['properties'].keys).to eq(['fact']),
-        'Schema must expose only the declared parameter, not leak schema meta-keys'
-      expect(schema['properties']['fact']['type']).to eq('string')
+      expect(schema[:type]).to eq('object')
+      expect(schema[:properties].keys).to(
+        eq([:fact]), 'Schema must expose only the declared parameter, not leak schema meta-keys'
+      )
+      expect(schema[:properties][:fact][:type]).to eq('string')
+      expect(schema[:properties][:fact][:description]).to eq('The fact to remember')
+      expect(schema[:required]).to eq(['fact'])
+      expect(schema[:additionalProperties]).to eq(false)
+    end
+
+    it 'does not treat a simple schema with params named type and properties as pre-built' do
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'test',
+        description: 'Test',
+        input_schema: { type: :string, properties: :string },
+        handler: ->(_) { {} }
+      )
+      server = described_class.new(name: 'test', tools: [tool])
+
+      schema = server.list_tools.first[:inputSchema]
+      expect(schema[:type]).to eq('object')
+      expect(schema[:properties]).to have_key(:type)
+      expect(schema[:properties]).to have_key(:properties)
+      expect(schema[:properties][:type][:type]).to eq('string')
     end
   end
 
@@ -208,6 +228,48 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
   end
 
   describe '#handle_json' do
+    it 'exposes correct schema via MCP tools/list for string-keyed schemas' do
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'save_memory',
+        description: 'Save a fact',
+        input_schema: {
+          'type' => 'object',
+          'properties' => { 'fact' => { 'type' => 'string' } },
+          'required' => ['fact']
+        },
+        handler: ->(_) { { content: [{ type: 'text', text: 'ok' }] } }
+      )
+      server = described_class.new(name: 'test', tools: [tool])
+
+      request = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }
+      response = JSON.parse(server.handle_json(JSON.generate(request)), symbolize_names: true)
+
+      tool_schema = response.dig(:result, :tools, 0, :inputSchema)
+      expect(tool_schema[:properties].keys).to contain_exactly(:fact)
+      expect(tool_schema[:properties][:fact][:type]).to eq('string')
+    end
+
+    it 'exposes correct schema via MCP tools/list for symbol-keyed schemas' do
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'test',
+        description: 'Test',
+        input_schema: {
+          type: 'object',
+          properties: { name: { type: 'string' } },
+          required: ['name']
+        },
+        handler: ->(_) { { content: [{ type: 'text', text: 'ok' }] } }
+      )
+      server = described_class.new(name: 'test', tools: [tool])
+
+      request = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }
+      response = JSON.parse(server.handle_json(JSON.generate(request)), symbolize_names: true)
+
+      tool_schema = response.dig(:result, :tools, 0, :inputSchema)
+      expect(tool_schema[:properties].keys).to contain_exactly(:name)
+      expect(tool_schema[:properties][:name][:type]).to eq('string')
+    end
+
     it 'propagates tool errors and non-text content in MCP responses' do
       tool = ClaudeAgentSDK::SdkMcpTool.new(
         name: 'fail_with_image',

@@ -3,6 +3,15 @@
 require 'mcp'
 
 module ClaudeAgentSDK
+  # Recursively convert all hash keys to symbols
+  def self.deep_symbolize_keys(obj)
+    case obj
+    when Hash then obj.transform_keys(&:to_sym).transform_values { |v| deep_symbolize_keys(v) }
+    when Array then obj.map { |v| deep_symbolize_keys(v) }
+    else obj
+    end
+  end
+
   # SDK MCP Server - wraps official MCP::Server with block-based API
   #
   # Unlike external MCP servers that run as separate processes, SDK MCP servers
@@ -191,19 +200,12 @@ module ClaudeAgentSDK
             private
 
             def convert_schema(schema)
-              # If it's already a proper JSON schema, return it.
-              # Support both symbol keys (e.g. {type: "object"}) and string keys
-              # (e.g. {"type" => "object"}) so libraries like RubyLLM that
-              # deep-stringify schema keys are handled correctly.
-              # Normalize to symbol keys so downstream code (schema[:properties],
-              # schema[:required]) works regardless of the input key format.
-              # Require type == "object" and properties to be a Hash to avoid
-              # misidentifying simple schemas whose param names happen to be
-              # "type" and "properties".
-              type_val = schema[:type] || schema['type']
-              props_val = schema[:properties] || schema['properties']
-              if schema.is_a?(Hash) && type_val == 'object' && props_val.is_a?(Hash)
-                return schema.transform_keys(&:to_sym)
+              # If it's already a proper JSON schema (symbol or string keys), normalize
+              # to symbol keys so downstream code (schema[:properties]) works uniformly.
+              if schema.is_a?(Hash)
+                type_val = schema[:type] || schema['type']
+                props_val = schema[:properties] || schema['properties']
+                return ClaudeAgentSDK.deep_symbolize_keys(schema) if type_val == 'object' && props_val.is_a?(Hash)
               end
 
               # Simple schema: hash mapping parameter names to types
@@ -328,17 +330,12 @@ module ClaudeAgentSDK
     end
 
     def convert_input_schema(schema)
-      # If it's already a proper JSON schema, return it.
-      # Support both symbol keys (e.g. {type: "object"}) and string keys
-      # (e.g. {"type" => "object"}) so libraries like RubyLLM that
-      # deep-stringify schema keys are handled correctly.
-      # Require type == "object" and properties to be a Hash to avoid
-      # misidentifying simple schemas whose param names happen to be
-      # "type" and "properties".
-      type_val = schema[:type] || schema["type"]
-      props_val = schema[:properties] || schema["properties"]
-      if schema.is_a?(Hash) && type_val == 'object' && props_val.is_a?(Hash)
-        return schema
+      # If it's already a proper JSON schema (symbol or string keys), normalize
+      # to symbol keys for consistent output.
+      if schema.is_a?(Hash)
+        type_val = schema[:type] || schema['type']
+        props_val = schema[:properties] || schema['properties']
+        return ClaudeAgentSDK.deep_symbolize_keys(schema) if type_val == 'object' && props_val.is_a?(Hash)
       end
 
       # Simple schema: hash mapping parameter names to types
