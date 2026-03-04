@@ -372,6 +372,59 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(result.tool_name).to eq('Bash')
     end
 
+    it 'populates agent_id and agent_type for PreToolUse events' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      input_data = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: {},
+        agent_id: 'agent_abc',
+        agent_type: 'coder'
+      }
+
+      result = query.send(:parse_hook_input, input_data)
+      expect(result.agent_id).to eq('agent_abc')
+      expect(result.agent_type).to eq('coder')
+    end
+
+    it 'populates agent_id and agent_type for PostToolUseFailure events' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      input_data = {
+        hook_event_name: 'PostToolUseFailure',
+        tool_name: 'Bash',
+        tool_input: {},
+        agent_id: 'agent_xyz',
+        agent_type: 'tester'
+      }
+
+      result = query.send(:parse_hook_input, input_data)
+      expect(result).to be_a(ClaudeAgentSDK::PostToolUseFailureHookInput)
+      expect(result.agent_id).to eq('agent_xyz')
+      expect(result.agent_type).to eq('tester')
+    end
+
+    it 'populates agent_id and agent_type for PermissionRequest events' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      input_data = {
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Write',
+        tool_input: {},
+        agent_id: 'agent_perm',
+        agent_type: 'planner'
+      }
+
+      result = query.send(:parse_hook_input, input_data)
+      expect(result).to be_a(ClaudeAgentSDK::PermissionRequestHookInput)
+      expect(result.agent_id).to eq('agent_perm')
+      expect(result.agent_type).to eq('planner')
+    end
+
     it 'populates tool_use_id for PostToolUse events' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
       query = described_class.new(transport: transport, is_streaming_mode: true)

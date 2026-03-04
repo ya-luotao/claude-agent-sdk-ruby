@@ -377,6 +377,23 @@ RSpec.describe ClaudeAgentSDK do
         expect(input.session_id).to eq('sess_123')
         expect(input.cwd).to eq('/home/user')
       end
+
+      it 'stores agent_id and agent_type for subagent context' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          agent_id: 'agent_abc',
+          agent_type: 'coder'
+        )
+        expect(input.agent_id).to eq('agent_abc')
+        expect(input.agent_type).to eq('coder')
+      end
+
+      it 'defaults agent_id and agent_type to nil' do
+        input = described_class.new(tool_name: 'Bash')
+        expect(input.agent_id).to be_nil
+        expect(input.agent_type).to be_nil
+      end
     end
 
     describe ClaudeAgentSDK::PostToolUseHookInput do
@@ -389,6 +406,16 @@ RSpec.describe ClaudeAgentSDK do
 
         expect(input.hook_event_name).to eq('PostToolUse')
         expect(input.tool_response).to eq('file1.txt\nfile2.txt')
+      end
+
+      it 'stores agent_id and agent_type for subagent context' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          agent_id: 'agent_1',
+          agent_type: 'researcher'
+        )
+        expect(input.agent_id).to eq('agent_1')
+        expect(input.agent_type).to eq('researcher')
       end
     end
 
@@ -410,6 +437,16 @@ RSpec.describe ClaudeAgentSDK do
         expect(input.error).to eq('Command blocked')
         expect(input.is_interrupt).to eq(true)
         expect(input.session_id).to eq('sess_123')
+      end
+
+      it 'stores agent_id and agent_type for subagent context' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          agent_id: 'agent_2',
+          agent_type: 'tester'
+        )
+        expect(input.agent_id).to eq('agent_2')
+        expect(input.agent_type).to eq('tester')
       end
     end
 
@@ -450,6 +487,16 @@ RSpec.describe ClaudeAgentSDK do
         expect(input.tool_name).to eq('Bash')
         expect(input.tool_input).to eq({ command: 'ls' })
         expect(input.permission_suggestions).to eq([{ type: 'setMode', mode: 'default' }])
+      end
+
+      it 'stores agent_id and agent_type for subagent context' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          agent_id: 'agent_3',
+          agent_type: 'planner'
+        )
+        expect(input.agent_id).to eq('agent_3')
+        expect(input.agent_type).to eq('planner')
       end
     end
 

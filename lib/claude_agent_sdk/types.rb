@@ -374,29 +374,34 @@ module ClaudeAgentSDK
 
   # PreToolUse hook input
   class PreToolUseHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id, :agent_id, :agent_type
 
-    def initialize(hook_event_name: 'PreToolUse', tool_name: nil, tool_input: nil, tool_use_id: nil, **base_args)
+    def initialize(hook_event_name: 'PreToolUse', tool_name: nil, tool_input: nil, tool_use_id: nil,
+                   agent_id: nil, agent_type: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @tool_name = tool_name
       @tool_input = tool_input
       @tool_use_id = tool_use_id
+      @agent_id = agent_id
+      @agent_type = agent_type
     end
   end
 
   # PostToolUse hook input
   class PostToolUseHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_response, :tool_use_id
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_response, :tool_use_id, :agent_id, :agent_type
 
     def initialize(hook_event_name: 'PostToolUse', tool_name: nil, tool_input: nil, tool_response: nil,
-                   tool_use_id: nil, **base_args)
+                   tool_use_id: nil, agent_id: nil, agent_type: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @tool_name = tool_name
       @tool_input = tool_input
       @tool_response = tool_response
       @tool_use_id = tool_use_id
+      @agent_id = agent_id
+      @agent_type = agent_type
     end
   end
 
@@ -439,10 +444,11 @@ module ClaudeAgentSDK
 
   # PostToolUseFailure hook input
   class PostToolUseFailureHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id, :error, :is_interrupt
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id, :error, :is_interrupt,
+                  :agent_id, :agent_type
 
     def initialize(hook_event_name: 'PostToolUseFailure', tool_name: nil, tool_input: nil, tool_use_id: nil,
-                   error: nil, is_interrupt: nil, **base_args)
+                   error: nil, is_interrupt: nil, agent_id: nil, agent_type: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @tool_name = tool_name
@@ -450,6 +456,8 @@ module ClaudeAgentSDK
       @tool_use_id = tool_use_id
       @error = error
       @is_interrupt = is_interrupt
+      @agent_id = agent_id
+      @agent_type = agent_type
     end
   end
 
@@ -480,15 +488,17 @@ module ClaudeAgentSDK
 
   # PermissionRequest hook input
   class PermissionRequestHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :tool_name, :tool_input, :permission_suggestions
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :permission_suggestions, :agent_id, :agent_type
 
     def initialize(hook_event_name: 'PermissionRequest', tool_name: nil, tool_input: nil, permission_suggestions: nil,
-                   **base_args)
+                   agent_id: nil, agent_type: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @tool_name = tool_name
       @tool_input = tool_input
       @permission_suggestions = permission_suggestions
+      @agent_id = agent_id
+      @agent_type = agent_type
     end
   end
 
