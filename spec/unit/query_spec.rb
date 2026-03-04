@@ -4,6 +4,46 @@ require 'spec_helper'
 require 'async'
 
 RSpec.describe ClaudeAgentSDK::Query do
+  describe '#reconnect_mcp_server' do
+    it 'sends mcp_reconnect control request with camelCase serverName' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      expect(query).to receive(:send_control_request).with({
+                                                             subtype: 'mcp_reconnect',
+                                                             serverName: 'my-server'
+                                                           })
+      query.reconnect_mcp_server('my-server')
+    end
+  end
+
+  describe '#toggle_mcp_server' do
+    it 'sends mcp_toggle control request with serverName and enabled' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      expect(query).to receive(:send_control_request).with({
+                                                             subtype: 'mcp_toggle',
+                                                             serverName: 'my-server',
+                                                             enabled: false
+                                                           })
+      query.toggle_mcp_server('my-server', false)
+    end
+  end
+
+  describe '#stop_task' do
+    it 'sends stop_task control request with task_id' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      expect(query).to receive(:send_control_request).with({
+                                                             subtype: 'stop_task',
+                                                             task_id: 'task_abc123'
+                                                           })
+      query.stop_task('task_abc123')
+    end
+  end
+
   describe 'hook callbacks' do
     it 'passes typed hook input objects to callbacks' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)

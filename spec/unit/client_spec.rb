@@ -99,6 +99,69 @@ RSpec.describe ClaudeAgentSDK::Client do
     end
   end
 
+  it 'raises when reconnecting MCP server while not connected' do
+    client = described_class.new
+    expect { client.reconnect_mcp_server('my-server') }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+  end
+
+  it 'delegates reconnect_mcp_server when connected' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(
+      ClaudeAgentSDK::Query,
+      start: true, initialize_protocol: true,
+      reconnect_mcp_server: nil
+    )
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    client = described_class.new
+    client.connect
+    client.reconnect_mcp_server('my-server')
+    expect(query_handler).to have_received(:reconnect_mcp_server).with('my-server')
+  end
+
+  it 'raises when toggling MCP server while not connected' do
+    client = described_class.new
+    expect { client.toggle_mcp_server('my-server', true) }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+  end
+
+  it 'delegates toggle_mcp_server when connected' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(
+      ClaudeAgentSDK::Query,
+      start: true, initialize_protocol: true,
+      toggle_mcp_server: nil
+    )
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    client = described_class.new
+    client.connect
+    client.toggle_mcp_server('my-server', false)
+    expect(query_handler).to have_received(:toggle_mcp_server).with('my-server', false)
+  end
+
+  it 'raises when stopping task while not connected' do
+    client = described_class.new
+    expect { client.stop_task('task_1') }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+  end
+
+  it 'delegates stop_task when connected' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(
+      ClaudeAgentSDK::Query,
+      start: true, initialize_protocol: true,
+      stop_task: nil
+    )
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    client = described_class.new
+    client.connect
+    client.stop_task('task_abc')
+    expect(query_handler).to have_received(:stop_task).with('task_abc')
+  end
+
   it 'raises when requesting MCP status while not connected' do
     client = described_class.new
     expect { client.get_mcp_status }.to raise_error(ClaudeAgentSDK::CLIConnectionError)

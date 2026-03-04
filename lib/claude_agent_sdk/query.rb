@@ -662,6 +662,35 @@ module ClaudeAgentSDK
                            })
     end
 
+    # Reconnect a failed MCP server
+    # @param server_name [String] Name of the MCP server to reconnect
+    def reconnect_mcp_server(server_name)
+      send_control_request({
+                             subtype: 'mcp_reconnect',
+                             serverName: server_name
+                           })
+    end
+
+    # Enable or disable an MCP server
+    # @param server_name [String] Name of the MCP server
+    # @param enabled [Boolean] Whether to enable or disable
+    def toggle_mcp_server(server_name, enabled)
+      send_control_request({
+                             subtype: 'mcp_toggle',
+                             serverName: server_name,
+                             enabled: enabled
+                           })
+    end
+
+    # Stop a running background task
+    # @param task_id [String] The ID of the task to stop
+    def stop_task(task_id)
+      send_control_request({
+                             subtype: 'stop_task',
+                             task_id: task_id
+                           })
+    end
+
     # Rewind files to a previous checkpoint (v0.1.15+)
     # Restores file state to what it was at the given user message
     # Requires enable_file_checkpointing to be true in options

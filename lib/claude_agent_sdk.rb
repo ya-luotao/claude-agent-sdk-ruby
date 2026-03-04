@@ -310,6 +310,28 @@ module ClaudeAgentSDK
       @query_handler.set_model(model)
     end
 
+    # Reconnect a failed MCP server
+    # @param server_name [String] Name of the MCP server to reconnect
+    def reconnect_mcp_server(server_name)
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.reconnect_mcp_server(server_name)
+    end
+
+    # Enable or disable an MCP server
+    # @param server_name [String] Name of the MCP server
+    # @param enabled [Boolean] Whether to enable or disable
+    def toggle_mcp_server(server_name, enabled)
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.toggle_mcp_server(server_name, enabled)
+    end
+
+    # Stop a running background task
+    # @param task_id [String] The ID of the task to stop
+    def stop_task(task_id)
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.stop_task(task_id)
+    end
+
     # Rewind files to a previous checkpoint (v0.1.15+)
     # Restores file state to what it was at the given user message
     # Requires enable_file_checkpointing to be true in options
