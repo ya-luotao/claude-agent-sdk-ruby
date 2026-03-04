@@ -124,6 +124,60 @@ module ClaudeAgentSDK
     end
   end
 
+  # Task lifecycle notification statuses
+  TASK_NOTIFICATION_STATUSES = %w[completed failed stopped].freeze
+
+  # Task started system message (subagent/background task started)
+  class TaskStartedMessage < SystemMessage
+    attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type
+
+    def initialize(subtype:, data:, task_id:, description:, uuid:, session_id:,
+                   tool_use_id: nil, task_type: nil)
+      super(subtype: subtype, data: data)
+      @task_id = task_id
+      @description = description
+      @uuid = uuid
+      @session_id = session_id
+      @tool_use_id = tool_use_id
+      @task_type = task_type
+    end
+  end
+
+  # Task progress system message (periodic update from a running task)
+  class TaskProgressMessage < SystemMessage
+    attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name
+
+    def initialize(subtype:, data:, task_id:, description:, usage:, uuid:, session_id:,
+                   tool_use_id: nil, last_tool_name: nil)
+      super(subtype: subtype, data: data)
+      @task_id = task_id
+      @description = description
+      @usage = usage
+      @uuid = uuid
+      @session_id = session_id
+      @tool_use_id = tool_use_id
+      @last_tool_name = last_tool_name
+    end
+  end
+
+  # Task notification system message (task completed/failed/stopped)
+  class TaskNotificationMessage < SystemMessage
+    attr_accessor :task_id, :status, :output_file, :summary, :uuid, :session_id, :tool_use_id, :usage
+
+    def initialize(subtype:, data:, task_id:, status:, output_file:, summary:, uuid:, session_id:,
+                   tool_use_id: nil, usage: nil)
+      super(subtype: subtype, data: data)
+      @task_id = task_id
+      @status = status
+      @output_file = output_file
+      @summary = summary
+      @uuid = uuid
+      @session_id = session_id
+      @tool_use_id = tool_use_id
+      @usage = usage
+    end
+  end
+
   # Result message with cost and usage information
   class ResultMessage
     attr_accessor :subtype, :duration_ms, :duration_api_ms, :is_error,

@@ -96,6 +96,112 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::TaskStartedMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(
+          subtype: 'task_started',
+          data: {},
+          task_id: 'task_1',
+          description: 'Working on feature',
+          uuid: 'uuid_123',
+          session_id: 'sess_1'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.task_id).to eq('task_1')
+        expect(msg.description).to eq('Working on feature')
+        expect(msg.uuid).to eq('uuid_123')
+        expect(msg.session_id).to eq('sess_1')
+      end
+
+      it 'stores optional fields' do
+        msg = described_class.new(
+          subtype: 'task_started',
+          data: {},
+          task_id: 'task_1',
+          description: 'test',
+          uuid: 'uuid_1',
+          session_id: 'sess_1',
+          tool_use_id: 'toolu_1',
+          task_type: 'background'
+        )
+        expect(msg.tool_use_id).to eq('toolu_1')
+        expect(msg.task_type).to eq('background')
+      end
+    end
+
+    describe ClaudeAgentSDK::TaskProgressMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(
+          subtype: 'task_progress',
+          data: {},
+          task_id: 'task_1',
+          description: 'In progress',
+          usage: { total_tokens: 500, tool_uses: 3, duration_ms: 2000 },
+          uuid: 'uuid_123',
+          session_id: 'sess_1'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.task_id).to eq('task_1')
+        expect(msg.description).to eq('In progress')
+        expect(msg.usage).to eq({ total_tokens: 500, tool_uses: 3, duration_ms: 2000 })
+        expect(msg.uuid).to eq('uuid_123')
+        expect(msg.session_id).to eq('sess_1')
+      end
+
+      it 'stores optional fields' do
+        msg = described_class.new(
+          subtype: 'task_progress',
+          data: {},
+          task_id: 'task_1',
+          description: 'test',
+          usage: {},
+          uuid: 'uuid_1',
+          session_id: 'sess_1',
+          tool_use_id: 'toolu_1',
+          last_tool_name: 'Bash'
+        )
+        expect(msg.tool_use_id).to eq('toolu_1')
+        expect(msg.last_tool_name).to eq('Bash')
+      end
+    end
+
+    describe ClaudeAgentSDK::TaskNotificationMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(
+          subtype: 'task_notification',
+          data: {},
+          task_id: 'task_1',
+          status: 'completed',
+          output_file: '/tmp/output.txt',
+          summary: 'Task finished',
+          uuid: 'uuid_123',
+          session_id: 'sess_1'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.task_id).to eq('task_1')
+        expect(msg.status).to eq('completed')
+        expect(msg.output_file).to eq('/tmp/output.txt')
+        expect(msg.summary).to eq('Task finished')
+      end
+
+      it 'stores optional fields' do
+        msg = described_class.new(
+          subtype: 'task_notification',
+          data: {},
+          task_id: 'task_1',
+          status: 'failed',
+          output_file: '/tmp/out.txt',
+          summary: 'failed',
+          uuid: 'uuid_1',
+          session_id: 'sess_1',
+          tool_use_id: 'toolu_1',
+          usage: { total_tokens: 100, tool_uses: 1, duration_ms: 500 }
+        )
+        expect(msg.tool_use_id).to eq('toolu_1')
+        expect(msg.usage).to eq({ total_tokens: 100, tool_uses: 1, duration_ms: 500 })
+      end
+    end
+
     describe ClaudeAgentSDK::ResultMessage do
       it 'stores result information' do
         msg = described_class.new(
