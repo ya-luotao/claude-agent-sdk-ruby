@@ -181,20 +181,22 @@ module ClaudeAgentSDK
   # Result message with cost and usage information
   class ResultMessage
     attr_accessor :subtype, :duration_ms, :duration_api_ms, :is_error,
-                  :num_turns, :session_id, :total_cost_usd, :usage, :result, :structured_output
+                  :num_turns, :session_id, :stop_reason, :total_cost_usd, :usage, :result, :structured_output
 
     def initialize(subtype:, duration_ms:, duration_api_ms:, is_error:,
-                   num_turns:, session_id:, total_cost_usd: nil, usage: nil, result: nil, structured_output: nil)
+                   num_turns:, session_id:, stop_reason: nil, total_cost_usd: nil,
+                   usage: nil, result: nil, structured_output: nil)
       @subtype = subtype
       @duration_ms = duration_ms
       @duration_api_ms = duration_api_ms
       @is_error = is_error
       @num_turns = num_turns
       @session_id = session_id
+      @stop_reason = stop_reason
       @total_cost_usd = total_cost_usd
       @usage = usage
       @result = result
-      @structured_output = structured_output # Structured output when output_format is specified
+      @structured_output = structured_output
     end
   end
 

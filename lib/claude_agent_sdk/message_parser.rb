@@ -102,10 +102,11 @@ module ClaudeAgentSDK
         is_error: data[:is_error],
         num_turns: data[:num_turns],
         session_id: data[:session_id],
+        stop_reason: data[:stop_reason],
         total_cost_usd: data[:total_cost_usd],
         usage: data[:usage],
         result: data[:result],
-        structured_output: data[:structured_output] # Structured output when output_format is specified
+        structured_output: data[:structured_output]
       )
     end
 

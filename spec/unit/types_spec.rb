@@ -221,6 +221,33 @@ RSpec.describe ClaudeAgentSDK do
         expect(msg.total_cost_usd).to eq(0.01)
       end
 
+      it 'stores stop_reason' do
+        msg = described_class.new(
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'session_123',
+          stop_reason: 'end_turn'
+        )
+
+        expect(msg.stop_reason).to eq('end_turn')
+      end
+
+      it 'defaults stop_reason to nil' do
+        msg = described_class.new(
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'session_123'
+        )
+
+        expect(msg.stop_reason).to be_nil
+      end
+
       it 'stores structured_output' do
         msg = described_class.new(
           subtype: 'success',

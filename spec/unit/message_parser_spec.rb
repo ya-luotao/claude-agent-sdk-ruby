@@ -304,6 +304,23 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.usage).to be_nil
       end
 
+      it 'parses stop_reason' do
+        data = {
+          type: 'result',
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'test',
+          stop_reason: 'end_turn'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::ResultMessage)
+        expect(msg.stop_reason).to eq('end_turn')
+      end
+
       it 'parses structured_output' do
         data = {
           type: 'result',
