@@ -698,6 +698,107 @@ module ClaudeAgentSDK
     end
   end
 
+  # MCP status response types
+
+  # MCP server connection status values
+  MCP_SERVER_CONNECTION_STATUSES = %w[connected failed needs-auth pending disabled].freeze
+
+  # MCP server info (name and version)
+  class McpServerInfo
+    attr_accessor :name, :version
+
+    def initialize(name:, version: nil)
+      @name = name
+      @version = version
+    end
+  end
+
+  # MCP tool annotation hints
+  class McpToolAnnotations
+    attr_accessor :read_only, :destructive, :open_world
+
+    def initialize(read_only: nil, destructive: nil, open_world: nil)
+      @read_only = read_only
+      @destructive = destructive
+      @open_world = open_world
+    end
+
+    def self.parse(data)
+      return nil unless data
+
+      new(
+        read_only: data[:readOnly] || data[:read_only],
+        destructive: data[:destructive],
+        open_world: data[:openWorld] || data[:open_world]
+      )
+    end
+  end
+
+  # MCP tool info (name, description, annotations)
+  class McpToolInfo
+    attr_accessor :name, :description, :annotations
+
+    def initialize(name:, description: nil, annotations: nil)
+      @name = name
+      @description = description
+      @annotations = annotations
+    end
+
+    def self.parse(data)
+      new(
+        name: data[:name],
+        description: data[:description],
+        annotations: McpToolAnnotations.parse(data[:annotations])
+      )
+    end
+  end
+
+  # Status of a single MCP server connection
+  class McpServerStatus
+    attr_accessor :name, :status, :server_info, :error, :config, :scope, :tools
+
+    def initialize(name:, status:, server_info: nil, error: nil, config: nil, scope: nil, tools: nil)
+      @name = name
+      @status = status
+      @server_info = server_info
+      @error = error
+      @config = config
+      @scope = scope
+      @tools = tools
+    end
+
+    def self.parse(data)
+      server_info = if data[:serverInfo]
+                      McpServerInfo.new(name: data[:serverInfo][:name], version: data[:serverInfo][:version])
+                    end
+      tools = data[:tools]&.map { |t| McpToolInfo.parse(t) }
+
+      new(
+        name: data[:name],
+        status: data[:status],
+        server_info: server_info,
+        error: data[:error],
+        config: data[:config],
+        scope: data[:scope],
+        tools: tools
+      )
+    end
+  end
+
+  # Response from get_mcp_status containing all server statuses
+  class McpStatusResponse
+    attr_accessor :mcp_servers
+
+    def initialize(mcp_servers:)
+      @mcp_servers = mcp_servers
+    end
+
+    def self.parse(data)
+      servers = (data[:mcpServers] || []).map { |s| McpServerStatus.parse(s) }
+      new(mcp_servers: servers)
+    end
+  end
+
   # MCP Server configurations
   class McpStdioServerConfig
     attr_accessor :type, :command, :args, :env

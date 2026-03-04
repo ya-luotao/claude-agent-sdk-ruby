@@ -640,6 +640,92 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::McpServerInfo do
+      it 'stores server name and version' do
+        info = described_class.new(name: 'my-server', version: '1.0.0')
+        expect(info.name).to eq('my-server')
+        expect(info.version).to eq('1.0.0')
+      end
+    end
+
+    describe ClaudeAgentSDK::McpToolAnnotations do
+      it 'stores annotation hints' do
+        annotations = described_class.new(read_only: true, destructive: false, open_world: true)
+        expect(annotations.read_only).to eq(true)
+        expect(annotations.destructive).to eq(false)
+        expect(annotations.open_world).to eq(true)
+      end
+    end
+
+    describe ClaudeAgentSDK::McpToolInfo do
+      it 'stores tool name and description' do
+        tool = described_class.new(name: 'read_file', description: 'Read a file')
+        expect(tool.name).to eq('read_file')
+        expect(tool.description).to eq('Read a file')
+      end
+
+      it 'stores annotations' do
+        annotations = ClaudeAgentSDK::McpToolAnnotations.new(read_only: true)
+        tool = described_class.new(name: 'read_file', annotations: annotations)
+        expect(tool.annotations.read_only).to eq(true)
+      end
+    end
+
+    describe ClaudeAgentSDK::McpServerStatus do
+      it 'stores all fields' do
+        info = ClaudeAgentSDK::McpServerInfo.new(name: 'srv', version: '1.0')
+        status = described_class.new(
+          name: 'my-server',
+          status: 'connected',
+          server_info: info,
+          error: nil,
+          scope: 'project',
+          tools: []
+        )
+        expect(status.name).to eq('my-server')
+        expect(status.status).to eq('connected')
+        expect(status.server_info.name).to eq('srv')
+        expect(status.scope).to eq('project')
+      end
+
+      it 'parses from raw hash with camelCase keys' do
+        raw = {
+          name: 'test-server',
+          status: 'connected',
+          serverInfo: { name: 'test', version: '2.0' },
+          tools: [
+            { name: 'tool1', description: 'desc1', annotations: { readOnly: true } }
+          ],
+          scope: 'user'
+        }
+        status = described_class.parse(raw)
+        expect(status.name).to eq('test-server')
+        expect(status.status).to eq('connected')
+        expect(status.server_info).to be_a(ClaudeAgentSDK::McpServerInfo)
+        expect(status.server_info.version).to eq('2.0')
+        expect(status.tools.length).to eq(1)
+        expect(status.tools.first).to be_a(ClaudeAgentSDK::McpToolInfo)
+        expect(status.tools.first.annotations.read_only).to eq(true)
+      end
+    end
+
+    describe ClaudeAgentSDK::McpStatusResponse do
+      it 'parses from raw hash' do
+        raw = {
+          mcpServers: [
+            { name: 'server1', status: 'connected' },
+            { name: 'server2', status: 'failed', error: 'timeout' }
+          ]
+        }
+        response = described_class.parse(raw)
+        expect(response.mcp_servers.length).to eq(2)
+        expect(response.mcp_servers[0]).to be_a(ClaudeAgentSDK::McpServerStatus)
+        expect(response.mcp_servers[0].name).to eq('server1')
+        expect(response.mcp_servers[1].status).to eq('failed')
+        expect(response.mcp_servers[1].error).to eq('timeout')
+      end
+    end
+
     describe ClaudeAgentSDK::SdkMcpTool do
       it 'stores tool definition' do
         handler = ->(_args) { { content: [] } }
