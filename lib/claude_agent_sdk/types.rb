@@ -768,9 +768,7 @@ module ClaudeAgentSDK
     end
 
     def self.parse(data)
-      server_info = if data[:serverInfo]
-                      McpServerInfo.new(name: data[:serverInfo][:name], version: data[:serverInfo][:version])
-                    end
+      server_info = (McpServerInfo.new(name: data[:serverInfo][:name], version: data[:serverInfo][:version]) if data[:serverInfo])
       tools = data[:tools]&.map { |t| McpToolInfo.parse(t) }
 
       new(
