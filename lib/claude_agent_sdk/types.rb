@@ -727,9 +727,9 @@ module ClaudeAgentSDK
       return nil unless data
 
       new(
-        read_only: data[:readOnly] || data[:read_only],
+        read_only: data.key?(:readOnly) ? data[:readOnly] : data[:read_only],
         destructive: data[:destructive],
-        open_world: data[:openWorld] || data[:open_world]
+        open_world: data.key?(:openWorld) ? data[:openWorld] : data[:open_world]
       )
     end
   end

@@ -449,9 +449,11 @@ module ClaudeAgentSDK
     end
 
     def walk_to_leaf(by_uuid, uuid)
+      visited = Set.new
       current = by_uuid[uuid]
       while current
         return current if %w[user assistant].include?(current['type'])
+        return nil unless visited.add?(current['uuid'])
 
         parent = current['parentUuid']
         current = parent ? by_uuid[parent] : nil
@@ -460,8 +462,11 @@ module ClaudeAgentSDK
 
     def walk_to_root(by_uuid, leaf)
       chain = []
+      visited = Set.new
       current = leaf
       while current
+        break unless visited.add?(current['uuid'])
+
         chain << current
         parent = current['parentUuid']
         current = parent ? by_uuid[parent] : nil

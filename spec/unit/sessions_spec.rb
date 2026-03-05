@@ -368,6 +368,35 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       end
     end
 
+    it 'handles circular parentUuid references without infinite loop' do
+      Dir.mktmpdir do |config_dir|
+        allow(described_class).to receive(:config_dir).and_return(config_dir)
+
+        session_id = '12345678-1234-1234-1234-123456789abc'
+        project_dir = File.join(config_dir, 'projects', '-test')
+        FileUtils.mkdir_p(project_dir)
+
+        # msg-1 and msg-2 form a cycle, msg-3 is a terminal that leads into the cycle
+        entries = [
+          { type: 'user', uuid: 'msg-1', parentUuid: 'msg-2', sessionId: session_id,
+            message: { content: 'First' } },
+          { type: 'assistant', uuid: 'msg-2', parentUuid: 'msg-1', sessionId: session_id,
+            message: { content: 'Second' } },
+          { type: 'system', uuid: 'msg-3', parentUuid: 'msg-2', sessionId: session_id,
+            message: { content: 'System' } }
+        ]
+
+        File.write(
+          File.join(project_dir, "#{session_id}.jsonl"),
+          entries.map(&:to_json).join("\n")
+        )
+
+        # Should not hang — returns some result without infinite looping
+        messages = described_class.get_session_messages(session_id: session_id)
+        expect(messages.length).to be <= 3
+      end
+    end
+
     it 'applies offset and limit' do
       Dir.mktmpdir do |config_dir|
         allow(described_class).to receive(:config_dir).and_return(config_dir)

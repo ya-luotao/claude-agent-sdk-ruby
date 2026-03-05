@@ -655,6 +655,21 @@ RSpec.describe ClaudeAgentSDK do
         expect(annotations.destructive).to eq(false)
         expect(annotations.open_world).to eq(true)
       end
+
+      it 'parses false values correctly from camelCase keys' do
+        data = { readOnly: false, destructive: false, openWorld: false }
+        annotations = described_class.parse(data)
+        expect(annotations.read_only).to eq(false)
+        expect(annotations.destructive).to eq(false)
+        expect(annotations.open_world).to eq(false)
+      end
+
+      it 'falls back to snake_case keys when camelCase is absent' do
+        data = { read_only: true, open_world: false }
+        annotations = described_class.parse(data)
+        expect(annotations.read_only).to eq(true)
+        expect(annotations.open_world).to eq(false)
+      end
     end
 
     describe ClaudeAgentSDK::McpToolInfo do
