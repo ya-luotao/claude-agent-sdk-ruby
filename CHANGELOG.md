@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-03-05
+
+Port of Python SDK v0.1.46 features.
+
+### Added
+
+#### Task Message Types
+- `TaskStartedMessage`, `TaskProgressMessage`, `TaskNotificationMessage` — typed `SystemMessage` subclasses for background task lifecycle events
+- `TASK_NOTIFICATION_STATUSES` constant (`completed`, `failed`, `stopped`)
+- `MessageParser` dispatches on `subtype` within `system` messages, falling back to generic `SystemMessage` for unknown subtypes
+
+#### MCP Server Control
+- `reconnect_mcp_server(server_name)` on `Query` and `Client` — retry failed MCP server connections
+- `toggle_mcp_server(server_name, enabled)` on `Query` and `Client` — enable/disable MCP servers live
+- `stop_task(task_id)` on `Query` and `Client` — stop a running background task
+
+#### Subagent Context on Hook Inputs
+- `agent_id` and `agent_type` attributes on `PreToolUseHookInput`, `PostToolUseHookInput`, `PostToolUseFailureHookInput`, `PermissionRequestHookInput`
+- Populated when hooks fire inside subagents, allowing attribution of tool calls to specific agents
+
+#### Result Message
+- `stop_reason` attribute on `ResultMessage` (e.g., `'end_turn'`, `'max_tokens'`, `'stop_sequence'`)
+
+#### Typed MCP Status Response
+- `McpServerInfo`, `McpToolAnnotations`, `McpToolInfo`, `McpServerStatus`, `McpStatusResponse` types
+- `.parse` class methods for hydrating from raw CLI response hashes
+- `MCP_SERVER_CONNECTION_STATUSES` constant (`connected`, `failed`, `needs-auth`, `pending`, `disabled`)
+
+#### Session Browsing
+- `ClaudeAgentSDK.list_sessions(directory:, limit:, include_worktrees:)` — list sessions from `~/.claude/projects/` JSONL files
+- `ClaudeAgentSDK.get_session_messages(session_id:, directory:, limit:, offset:)` — reconstruct conversation chain from session transcript
+- `SDKSessionInfo` type with `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`
+- `SessionMessage` type with `type`, `uuid`, `session_id`, `message`
+- Pure filesystem operations — no CLI subprocess required
+- Git worktree-aware session scanning
+- `parentUuid` chain walking with cycle detection for robust conversation reconstruction
+
+### Fixed
+- **`McpToolAnnotations.parse` losing `false` values:** `readOnly: false` was evaluated as `false || nil → nil` due to `||` short-circuiting. Now uses `.key?` to check presence before falling back to snake_case keys.
+
 ## [0.7.3] - 2026-02-26
 
 ### Fixed

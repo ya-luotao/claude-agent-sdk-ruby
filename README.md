@@ -23,6 +23,7 @@
 - [Tools Configuration](#tools-configuration)
 - [Sandbox Settings](#sandbox-settings)
 - [File Checkpointing & Rewind](#file-checkpointing--rewind)
+- [Session Browsing](#session-browsing)
 - [Rails Integration](#rails-integration)
 - [Types](#types)
 - [Error Handling](#error-handling)
@@ -39,7 +40,7 @@ Add this line to your application's Gemfile:
 gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'
 
 # Or use a stable version from RubyGems
-gem 'claude-agent-sdk', '~> 0.7.3'
+gem 'claude-agent-sdk', '~> 0.8.0'
 ```
 
 And then execute:
@@ -225,12 +226,17 @@ Async do
   puts "MCP status: #{status}"
 
   # Get server initialization info
-  info = client.server_info
-  puts "Available commands: #{info}"
-
-  # (Parity alias) Get server initialization info
   info = client.get_server_info
   puts "Available commands: #{info}"
+
+  # Reconnect a failed MCP server
+  client.reconnect_mcp_server('my-server')
+
+  # Enable or disable an MCP server
+  client.toggle_mcp_server('my-server', false)
+
+  # Stop a running background task
+  client.stop_task('task_abc123')
 
   client.disconnect
 end.wait
@@ -774,6 +780,47 @@ end.wait
 
 > **Note:** The `uuid` field on `UserMessage` is populated by the CLI and represents checkpoint identifiers. Rewinding to a UUID restores file state to what it was at that point in the conversation.
 
+## Session Browsing
+
+Browse and inspect previous Claude Code sessions directly from Ruby — no CLI subprocess required.
+
+### Listing Sessions
+
+```ruby
+# List all sessions (sorted by most recent first)
+sessions = ClaudeAgentSDK.list_sessions
+sessions.each do |session|
+  puts "#{session.session_id}: #{session.summary} (#{session.git_branch})"
+end
+
+# List sessions for a specific directory
+sessions = ClaudeAgentSDK.list_sessions(directory: '/path/to/project', limit: 10)
+
+# Include git worktree sessions
+sessions = ClaudeAgentSDK.list_sessions(directory: '.', include_worktrees: true)
+```
+
+Each `SDKSessionInfo` includes:
+- `session_id`, `summary`, `last_modified`, `file_size`
+- `custom_title`, `first_prompt`, `git_branch`, `cwd`
+
+### Reading Session Messages
+
+```ruby
+# Get the full conversation from a session
+messages = ClaudeAgentSDK.get_session_messages(session_id: 'abc-123-...')
+messages.each do |msg|
+  puts "[#{msg.type}] #{msg.message}"
+end
+
+# Paginate through messages
+page = ClaudeAgentSDK.get_session_messages(session_id: 'abc-123-...', offset: 10, limit: 20)
+```
+
+Each `SessionMessage` includes `type` (`"user"` or `"assistant"`), `uuid`, `session_id`, and `message` (raw API dict).
+
+> **Note:** Session browsing reads `~/.claude/projects/` JSONL files directly. It respects the `CLAUDE_CONFIG_DIR` environment variable and automatically detects git worktrees.
+
 ## Rails Integration
 
 The SDK integrates well with Rails applications. Here are common patterns:
@@ -966,12 +1013,25 @@ end
 
 #### SystemMessage
 
-System message with metadata.
+System message with metadata. Task lifecycle events are typed subclasses.
 
 ```ruby
 class SystemMessage
-  attr_accessor :subtype,  # String ('init', etc.)
+  attr_accessor :subtype,  # String ('init', 'task_started', 'task_progress', 'task_notification', etc.)
                 :data      # Hash
+end
+
+# Typed subclasses (all inherit from SystemMessage, so is_a?(SystemMessage) still works)
+class TaskStartedMessage < SystemMessage
+  attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type
+end
+
+class TaskProgressMessage < SystemMessage
+  attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name
+end
+
+class TaskNotificationMessage < SystemMessage
+  attr_accessor :task_id, :status, :output_file, :summary, :uuid, :session_id, :tool_use_id, :usage
 end
 ```
 
@@ -987,6 +1047,7 @@ class ResultMessage
                 :is_error,          # Boolean
                 :num_turns,         # Integer
                 :session_id,        # String
+                :stop_reason,       # String | nil ('end_turn', 'max_tokens', 'stop_sequence')
                 :total_cost_usd,    # Float | nil
                 :usage,             # Hash | nil
                 :result,            # String | nil (final text result)
@@ -1111,6 +1172,13 @@ end
 | `McpSSEServerConfig` | MCP server config for SSE transport |
 | `McpHttpServerConfig` | MCP server config for HTTP transport |
 | `SdkPluginConfig` | SDK plugin configuration |
+| `McpServerStatus` | Status of a single MCP server connection (with `.parse`) |
+| `McpStatusResponse` | Response from `get_mcp_status` containing all server statuses (with `.parse`) |
+| `McpServerInfo` | MCP server name and version |
+| `McpToolInfo` | MCP tool name, description, and annotations |
+| `McpToolAnnotations` | MCP tool annotation hints (`read_only`, `destructive`, `open_world`) |
+| `SDKSessionInfo` | Session metadata from `list_sessions` |
+| `SessionMessage` | Single message from `get_session_messages` |
 | `SandboxSettings` | Sandbox settings for isolated command execution |
 | `SandboxNetworkConfig` | Network configuration for sandbox |
 | `SandboxIgnoreViolations` | Configure which sandbox violations to ignore |
@@ -1126,6 +1194,8 @@ end
 | `SETTING_SOURCES` | Available setting sources |
 | `HOOK_EVENTS` | Available hook events |
 | `ASSISTANT_MESSAGE_ERRORS` | Possible error types in AssistantMessage |
+| `TASK_NOTIFICATION_STATUSES` | Task lifecycle notification statuses (`completed`, `failed`, `stopped`) |
+| `MCP_SERVER_CONNECTION_STATUSES` | MCP server connection states (`connected`, `failed`, `needs-auth`, `pending`, `disabled`) |
 
 ## Error Handling
 
