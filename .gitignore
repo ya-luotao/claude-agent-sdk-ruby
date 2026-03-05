@@ -56,3 +56,6 @@ Gemfile.lock
 .rubocop-https?--*
 .rubocop_cache/
 .rspec_status
+
+# Claude Code local settings
+.claude/settings.local.json
