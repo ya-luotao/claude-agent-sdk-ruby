@@ -6,6 +6,35 @@
 
 [![Gem Version](https://badge.fury.io/rb/claude-agent-sdk.svg?icon=si%3Arubygems)](https://badge.fury.io/rb/claude-agent-sdk)
 
+### Feature Parity with Python SDK (v0.1.46)
+
+| Feature | Python | Ruby |
+|---------|:------:|:----:|
+| One-shot `query()` | `query()` | `query()` |
+| Bidirectional `Client` | `ClaudeSDKClient` | `Client` |
+| Streaming input | `AsyncIterable` | `Enumerator` |
+| Custom tools (SDK MCP servers) | `@tool` decorator | `create_tool` block |
+| MCP resources & prompts | ✅ | ✅ |
+| Hooks (all 10 events) | ✅ | ✅ |
+| Permission callbacks (`can_use_tool`) | ✅ | ✅ |
+| Structured output | ✅ | ✅ |
+| Thinking config (adaptive/enabled/disabled) | ✅ | ✅ |
+| Effort levels | ✅ | ✅ |
+| Programmatic subagents | ✅ | ✅ |
+| Sandbox settings | ✅ | ✅ |
+| Beta features (1M context) | ✅ | ✅ |
+| File checkpointing & rewind | ✅ | ✅ |
+| Session browsing (`list_sessions`, `get_session_messages`) | ✅ | ✅ |
+| Task message types (started/progress/notification) | ✅ | ✅ |
+| MCP server control (reconnect/toggle/stop) | ✅ | ✅ |
+| Subagent context on hook inputs | ✅ | ✅ |
+| Typed MCP status response | ✅ | ✅ |
+| `stop_reason` on `ResultMessage` | ✅ | ✅ |
+| Fallback model | ✅ | ✅ |
+| Plugin support | ✅ | ✅ |
+| Rails integration (configure block, ActionCable) | — | ✅ |
+| Bundled CLI binary | ✅ | — |
+
 ## Table of Contents
 
 - [Installation](#installation)
