@@ -192,6 +192,87 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.subtype).to eq('info')
         expect(msg.data).to include(message: 'Test system message')
       end
+
+      it 'parses task_started as TaskStartedMessage' do
+        data = {
+          type: 'system',
+          subtype: 'task_started',
+          task_id: 'task_abc',
+          description: 'Running background task',
+          uuid: 'uuid_123',
+          session_id: 'sess_1',
+          tool_use_id: 'toolu_1',
+          task_type: 'background'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::TaskStartedMessage)
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.task_id).to eq('task_abc')
+        expect(msg.description).to eq('Running background task')
+        expect(msg.uuid).to eq('uuid_123')
+        expect(msg.session_id).to eq('sess_1')
+        expect(msg.tool_use_id).to eq('toolu_1')
+        expect(msg.task_type).to eq('background')
+        expect(msg.subtype).to eq('task_started')
+        expect(msg.data).to eq(data)
+      end
+
+      it 'parses task_progress as TaskProgressMessage' do
+        data = {
+          type: 'system',
+          subtype: 'task_progress',
+          task_id: 'task_abc',
+          description: 'Still working',
+          usage: { total_tokens: 500, tool_uses: 3, duration_ms: 2000 },
+          uuid: 'uuid_456',
+          session_id: 'sess_1',
+          tool_use_id: 'toolu_2',
+          last_tool_name: 'Bash'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::TaskProgressMessage)
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.task_id).to eq('task_abc')
+        expect(msg.usage).to eq({ total_tokens: 500, tool_uses: 3, duration_ms: 2000 })
+        expect(msg.last_tool_name).to eq('Bash')
+      end
+
+      it 'parses task_notification as TaskNotificationMessage' do
+        data = {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: 'task_abc',
+          status: 'completed',
+          output_file: '/tmp/output.jsonl',
+          summary: 'Task completed successfully',
+          uuid: 'uuid_789',
+          session_id: 'sess_1',
+          usage: { total_tokens: 1000, tool_uses: 5, duration_ms: 5000 }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::TaskNotificationMessage)
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.status).to eq('completed')
+        expect(msg.output_file).to eq('/tmp/output.jsonl')
+        expect(msg.summary).to eq('Task completed successfully')
+        expect(msg.usage).to eq({ total_tokens: 1000, tool_uses: 5, duration_ms: 5000 })
+      end
+
+      it 'falls back to SystemMessage for unknown subtypes' do
+        data = {
+          type: 'system',
+          subtype: 'future_subtype',
+          some_field: 'value'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg).not_to be_a(ClaudeAgentSDK::TaskStartedMessage)
+        expect(msg.subtype).to eq('future_subtype')
+      end
     end
 
     context 'result messages' do
@@ -221,6 +302,23 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         msg = described_class.parse(data)
         expect(msg.total_cost_usd).to be_nil
         expect(msg.usage).to be_nil
+      end
+
+      it 'parses stop_reason' do
+        data = {
+          type: 'result',
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'test',
+          stop_reason: 'end_turn'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::ResultMessage)
+        expect(msg.stop_reason).to eq('end_turn')
       end
 
       it 'parses structured_output' do

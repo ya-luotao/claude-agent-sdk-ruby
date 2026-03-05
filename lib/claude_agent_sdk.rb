@@ -10,6 +10,7 @@ require_relative 'claude_agent_sdk/message_parser'
 require_relative 'claude_agent_sdk/query'
 require_relative 'claude_agent_sdk/sdk_mcp_server'
 require_relative 'claude_agent_sdk/streaming'
+require_relative 'claude_agent_sdk/sessions'
 require 'async'
 require 'securerandom'
 
@@ -58,6 +59,25 @@ module ClaudeAgentSDK
   #   ClaudeAgentSDK.query(prompt: messages) do |message|
   #     puts message
   #   end
+  # List sessions for a directory (or all sessions)
+  # @param directory [String, nil] Working directory to list sessions for
+  # @param limit [Integer, nil] Maximum number of sessions to return
+  # @param include_worktrees [Boolean] Whether to include git worktree sessions
+  # @return [Array<SDKSessionInfo>] Sessions sorted by last_modified descending
+  def self.list_sessions(directory: nil, limit: nil, include_worktrees: true)
+    Sessions.list_sessions(directory: directory, limit: limit, include_worktrees: include_worktrees)
+  end
+
+  # Get messages from a session transcript
+  # @param session_id [String] The session UUID
+  # @param directory [String, nil] Working directory to search in
+  # @param limit [Integer, nil] Maximum number of messages
+  # @param offset [Integer] Number of messages to skip
+  # @return [Array<SessionMessage>] Ordered messages from the session
+  def self.get_session_messages(session_id:, directory: nil, limit: nil, offset: 0)
+    Sessions.get_session_messages(session_id: session_id, directory: directory, limit: limit, offset: offset)
+  end
+
   def self.query(prompt:, options: nil, &block)
     return enum_for(:query, prompt: prompt, options: options) unless block
 
@@ -308,6 +328,28 @@ module ClaudeAgentSDK
     def set_model(model)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
       @query_handler.set_model(model)
+    end
+
+    # Reconnect a failed MCP server
+    # @param server_name [String] Name of the MCP server to reconnect
+    def reconnect_mcp_server(server_name)
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.reconnect_mcp_server(server_name)
+    end
+
+    # Enable or disable an MCP server
+    # @param server_name [String] Name of the MCP server
+    # @param enabled [Boolean] Whether to enable or disable
+    def toggle_mcp_server(server_name, enabled)
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.toggle_mcp_server(server_name, enabled)
+    end
+
+    # Stop a running background task
+    # @param task_id [String] The ID of the task to stop
+    def stop_task(task_id)
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.stop_task(task_id)
     end
 
     # Rewind files to a previous checkpoint (v0.1.15+)

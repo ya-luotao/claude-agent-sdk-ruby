@@ -124,23 +124,79 @@ module ClaudeAgentSDK
     end
   end
 
+  # Task lifecycle notification statuses
+  TASK_NOTIFICATION_STATUSES = %w[completed failed stopped].freeze
+
+  # Task started system message (subagent/background task started)
+  class TaskStartedMessage < SystemMessage
+    attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type
+
+    def initialize(subtype:, data:, task_id:, description:, uuid:, session_id:,
+                   tool_use_id: nil, task_type: nil)
+      super(subtype: subtype, data: data)
+      @task_id = task_id
+      @description = description
+      @uuid = uuid
+      @session_id = session_id
+      @tool_use_id = tool_use_id
+      @task_type = task_type
+    end
+  end
+
+  # Task progress system message (periodic update from a running task)
+  class TaskProgressMessage < SystemMessage
+    attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name
+
+    def initialize(subtype:, data:, task_id:, description:, usage:, uuid:, session_id:,
+                   tool_use_id: nil, last_tool_name: nil)
+      super(subtype: subtype, data: data)
+      @task_id = task_id
+      @description = description
+      @usage = usage
+      @uuid = uuid
+      @session_id = session_id
+      @tool_use_id = tool_use_id
+      @last_tool_name = last_tool_name
+    end
+  end
+
+  # Task notification system message (task completed/failed/stopped)
+  class TaskNotificationMessage < SystemMessage
+    attr_accessor :task_id, :status, :output_file, :summary, :uuid, :session_id, :tool_use_id, :usage
+
+    def initialize(subtype:, data:, task_id:, status:, output_file:, summary:, uuid:, session_id:,
+                   tool_use_id: nil, usage: nil)
+      super(subtype: subtype, data: data)
+      @task_id = task_id
+      @status = status
+      @output_file = output_file
+      @summary = summary
+      @uuid = uuid
+      @session_id = session_id
+      @tool_use_id = tool_use_id
+      @usage = usage
+    end
+  end
+
   # Result message with cost and usage information
   class ResultMessage
     attr_accessor :subtype, :duration_ms, :duration_api_ms, :is_error,
-                  :num_turns, :session_id, :total_cost_usd, :usage, :result, :structured_output
+                  :num_turns, :session_id, :stop_reason, :total_cost_usd, :usage, :result, :structured_output
 
     def initialize(subtype:, duration_ms:, duration_api_ms:, is_error:,
-                   num_turns:, session_id:, total_cost_usd: nil, usage: nil, result: nil, structured_output: nil)
+                   num_turns:, session_id:, stop_reason: nil, total_cost_usd: nil,
+                   usage: nil, result: nil, structured_output: nil)
       @subtype = subtype
       @duration_ms = duration_ms
       @duration_api_ms = duration_api_ms
       @is_error = is_error
       @num_turns = num_turns
       @session_id = session_id
+      @stop_reason = stop_reason
       @total_cost_usd = total_cost_usd
       @usage = usage
       @result = result
-      @structured_output = structured_output # Structured output when output_format is specified
+      @structured_output = structured_output
     end
   end
 
@@ -320,29 +376,34 @@ module ClaudeAgentSDK
 
   # PreToolUse hook input
   class PreToolUseHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id, :agent_id, :agent_type
 
-    def initialize(hook_event_name: 'PreToolUse', tool_name: nil, tool_input: nil, tool_use_id: nil, **base_args)
+    def initialize(hook_event_name: 'PreToolUse', tool_name: nil, tool_input: nil, tool_use_id: nil,
+                   agent_id: nil, agent_type: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @tool_name = tool_name
       @tool_input = tool_input
       @tool_use_id = tool_use_id
+      @agent_id = agent_id
+      @agent_type = agent_type
     end
   end
 
   # PostToolUse hook input
   class PostToolUseHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_response, :tool_use_id
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_response, :tool_use_id, :agent_id, :agent_type
 
     def initialize(hook_event_name: 'PostToolUse', tool_name: nil, tool_input: nil, tool_response: nil,
-                   tool_use_id: nil, **base_args)
+                   tool_use_id: nil, agent_id: nil, agent_type: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @tool_name = tool_name
       @tool_input = tool_input
       @tool_response = tool_response
       @tool_use_id = tool_use_id
+      @agent_id = agent_id
+      @agent_type = agent_type
     end
   end
 
@@ -385,10 +446,11 @@ module ClaudeAgentSDK
 
   # PostToolUseFailure hook input
   class PostToolUseFailureHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id, :error, :is_interrupt
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id, :error, :is_interrupt,
+                  :agent_id, :agent_type
 
     def initialize(hook_event_name: 'PostToolUseFailure', tool_name: nil, tool_input: nil, tool_use_id: nil,
-                   error: nil, is_interrupt: nil, **base_args)
+                   error: nil, is_interrupt: nil, agent_id: nil, agent_type: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @tool_name = tool_name
@@ -396,6 +458,8 @@ module ClaudeAgentSDK
       @tool_use_id = tool_use_id
       @error = error
       @is_interrupt = is_interrupt
+      @agent_id = agent_id
+      @agent_type = agent_type
     end
   end
 
@@ -426,15 +490,17 @@ module ClaudeAgentSDK
 
   # PermissionRequest hook input
   class PermissionRequestHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :tool_name, :tool_input, :permission_suggestions
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :permission_suggestions, :agent_id, :agent_type
 
     def initialize(hook_event_name: 'PermissionRequest', tool_name: nil, tool_input: nil, permission_suggestions: nil,
-                   **base_args)
+                   agent_id: nil, agent_type: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @tool_name = tool_name
       @tool_input = tool_input
       @permission_suggestions = permission_suggestions
+      @agent_id = agent_id
+      @agent_type = agent_type
     end
   end
 
@@ -629,6 +695,105 @@ module ClaudeAgentSDK
       result[:reason] = @reason if @reason
       result[:hookSpecificOutput] = @hook_specific_output.to_h if @hook_specific_output
       result
+    end
+  end
+
+  # MCP status response types
+
+  # MCP server connection status values
+  MCP_SERVER_CONNECTION_STATUSES = %w[connected failed needs-auth pending disabled].freeze
+
+  # MCP server info (name and version)
+  class McpServerInfo
+    attr_accessor :name, :version
+
+    def initialize(name:, version: nil)
+      @name = name
+      @version = version
+    end
+  end
+
+  # MCP tool annotation hints
+  class McpToolAnnotations
+    attr_accessor :read_only, :destructive, :open_world
+
+    def initialize(read_only: nil, destructive: nil, open_world: nil)
+      @read_only = read_only
+      @destructive = destructive
+      @open_world = open_world
+    end
+
+    def self.parse(data)
+      return nil unless data
+
+      new(
+        read_only: data.key?(:readOnly) ? data[:readOnly] : data[:read_only],
+        destructive: data[:destructive],
+        open_world: data.key?(:openWorld) ? data[:openWorld] : data[:open_world]
+      )
+    end
+  end
+
+  # MCP tool info (name, description, annotations)
+  class McpToolInfo
+    attr_accessor :name, :description, :annotations
+
+    def initialize(name:, description: nil, annotations: nil)
+      @name = name
+      @description = description
+      @annotations = annotations
+    end
+
+    def self.parse(data)
+      new(
+        name: data[:name],
+        description: data[:description],
+        annotations: McpToolAnnotations.parse(data[:annotations])
+      )
+    end
+  end
+
+  # Status of a single MCP server connection
+  class McpServerStatus
+    attr_accessor :name, :status, :server_info, :error, :config, :scope, :tools
+
+    def initialize(name:, status:, server_info: nil, error: nil, config: nil, scope: nil, tools: nil)
+      @name = name
+      @status = status
+      @server_info = server_info
+      @error = error
+      @config = config
+      @scope = scope
+      @tools = tools
+    end
+
+    def self.parse(data)
+      server_info = (McpServerInfo.new(name: data[:serverInfo][:name], version: data[:serverInfo][:version]) if data[:serverInfo])
+      tools = data[:tools]&.map { |t| McpToolInfo.parse(t) }
+
+      new(
+        name: data[:name],
+        status: data[:status],
+        server_info: server_info,
+        error: data[:error],
+        config: data[:config],
+        scope: data[:scope],
+        tools: tools
+      )
+    end
+  end
+
+  # Response from get_mcp_status containing all server statuses
+  class McpStatusResponse
+    attr_accessor :mcp_servers
+
+    def initialize(mcp_servers:)
+      @mcp_servers = mcp_servers
+    end
+
+    def self.parse(data)
+      servers = (data[:mcpServers] || []).map { |s| McpServerStatus.parse(s) }
+      new(mcp_servers: servers)
     end
   end
 

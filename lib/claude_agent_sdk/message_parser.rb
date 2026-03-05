@@ -66,10 +66,32 @@ module ClaudeAgentSDK
     end
 
     def self.parse_system_message(data)
-      SystemMessage.new(
-        subtype: data[:subtype],
-        data: data
-      )
+      case data[:subtype]
+      when 'task_started'
+        TaskStartedMessage.new(
+          subtype: data[:subtype], data: data,
+          task_id: data[:task_id], description: data[:description],
+          uuid: data[:uuid], session_id: data[:session_id],
+          tool_use_id: data[:tool_use_id], task_type: data[:task_type]
+        )
+      when 'task_progress'
+        TaskProgressMessage.new(
+          subtype: data[:subtype], data: data,
+          task_id: data[:task_id], description: data[:description],
+          usage: data[:usage], uuid: data[:uuid], session_id: data[:session_id],
+          tool_use_id: data[:tool_use_id], last_tool_name: data[:last_tool_name]
+        )
+      when 'task_notification'
+        TaskNotificationMessage.new(
+          subtype: data[:subtype], data: data,
+          task_id: data[:task_id], status: data[:status],
+          output_file: data[:output_file], summary: data[:summary],
+          uuid: data[:uuid], session_id: data[:session_id],
+          tool_use_id: data[:tool_use_id], usage: data[:usage]
+        )
+      else
+        SystemMessage.new(subtype: data[:subtype], data: data)
+      end
     end
 
     def self.parse_result_message(data)
@@ -80,10 +102,11 @@ module ClaudeAgentSDK
         is_error: data[:is_error],
         num_turns: data[:num_turns],
         session_id: data[:session_id],
+        stop_reason: data[:stop_reason],
         total_cost_usd: data[:total_cost_usd],
         usage: data[:usage],
         result: data[:result],
-        structured_output: data[:structured_output] # Structured output when output_format is specified
+        structured_output: data[:structured_output]
       )
     end
 

@@ -4,6 +4,46 @@ require 'spec_helper'
 require 'async'
 
 RSpec.describe ClaudeAgentSDK::Query do
+  describe '#reconnect_mcp_server' do
+    it 'sends mcp_reconnect control request with camelCase serverName' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      expect(query).to receive(:send_control_request).with({
+                                                             subtype: 'mcp_reconnect',
+                                                             serverName: 'my-server'
+                                                           })
+      query.reconnect_mcp_server('my-server')
+    end
+  end
+
+  describe '#toggle_mcp_server' do
+    it 'sends mcp_toggle control request with serverName and enabled' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      expect(query).to receive(:send_control_request).with({
+                                                             subtype: 'mcp_toggle',
+                                                             serverName: 'my-server',
+                                                             enabled: false
+                                                           })
+      query.toggle_mcp_server('my-server', false)
+    end
+  end
+
+  describe '#stop_task' do
+    it 'sends stop_task control request with task_id' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      expect(query).to receive(:send_control_request).with({
+                                                             subtype: 'stop_task',
+                                                             task_id: 'task_abc123'
+                                                           })
+      query.stop_task('task_abc123')
+    end
+  end
+
   describe 'hook callbacks' do
     it 'passes typed hook input objects to callbacks' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
@@ -330,6 +370,59 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(result).to be_a(ClaudeAgentSDK::PreToolUseHookInput)
       expect(result.tool_use_id).to eq('toolu_abc123')
       expect(result.tool_name).to eq('Bash')
+    end
+
+    it 'populates agent_id and agent_type for PreToolUse events' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      input_data = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: {},
+        agent_id: 'agent_abc',
+        agent_type: 'coder'
+      }
+
+      result = query.send(:parse_hook_input, input_data)
+      expect(result.agent_id).to eq('agent_abc')
+      expect(result.agent_type).to eq('coder')
+    end
+
+    it 'populates agent_id and agent_type for PostToolUseFailure events' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      input_data = {
+        hook_event_name: 'PostToolUseFailure',
+        tool_name: 'Bash',
+        tool_input: {},
+        agent_id: 'agent_xyz',
+        agent_type: 'tester'
+      }
+
+      result = query.send(:parse_hook_input, input_data)
+      expect(result).to be_a(ClaudeAgentSDK::PostToolUseFailureHookInput)
+      expect(result.agent_id).to eq('agent_xyz')
+      expect(result.agent_type).to eq('tester')
+    end
+
+    it 'populates agent_id and agent_type for PermissionRequest events' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      input_data = {
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Write',
+        tool_input: {},
+        agent_id: 'agent_perm',
+        agent_type: 'planner'
+      }
+
+      result = query.send(:parse_hook_input, input_data)
+      expect(result).to be_a(ClaudeAgentSDK::PermissionRequestHookInput)
+      expect(result.agent_id).to eq('agent_perm')
+      expect(result.agent_type).to eq('planner')
     end
 
     it 'populates tool_use_id for PostToolUse events' do

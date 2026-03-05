@@ -96,6 +96,112 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::TaskStartedMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(
+          subtype: 'task_started',
+          data: {},
+          task_id: 'task_1',
+          description: 'Working on feature',
+          uuid: 'uuid_123',
+          session_id: 'sess_1'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.task_id).to eq('task_1')
+        expect(msg.description).to eq('Working on feature')
+        expect(msg.uuid).to eq('uuid_123')
+        expect(msg.session_id).to eq('sess_1')
+      end
+
+      it 'stores optional fields' do
+        msg = described_class.new(
+          subtype: 'task_started',
+          data: {},
+          task_id: 'task_1',
+          description: 'test',
+          uuid: 'uuid_1',
+          session_id: 'sess_1',
+          tool_use_id: 'toolu_1',
+          task_type: 'background'
+        )
+        expect(msg.tool_use_id).to eq('toolu_1')
+        expect(msg.task_type).to eq('background')
+      end
+    end
+
+    describe ClaudeAgentSDK::TaskProgressMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(
+          subtype: 'task_progress',
+          data: {},
+          task_id: 'task_1',
+          description: 'In progress',
+          usage: { total_tokens: 500, tool_uses: 3, duration_ms: 2000 },
+          uuid: 'uuid_123',
+          session_id: 'sess_1'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.task_id).to eq('task_1')
+        expect(msg.description).to eq('In progress')
+        expect(msg.usage).to eq({ total_tokens: 500, tool_uses: 3, duration_ms: 2000 })
+        expect(msg.uuid).to eq('uuid_123')
+        expect(msg.session_id).to eq('sess_1')
+      end
+
+      it 'stores optional fields' do
+        msg = described_class.new(
+          subtype: 'task_progress',
+          data: {},
+          task_id: 'task_1',
+          description: 'test',
+          usage: {},
+          uuid: 'uuid_1',
+          session_id: 'sess_1',
+          tool_use_id: 'toolu_1',
+          last_tool_name: 'Bash'
+        )
+        expect(msg.tool_use_id).to eq('toolu_1')
+        expect(msg.last_tool_name).to eq('Bash')
+      end
+    end
+
+    describe ClaudeAgentSDK::TaskNotificationMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(
+          subtype: 'task_notification',
+          data: {},
+          task_id: 'task_1',
+          status: 'completed',
+          output_file: '/tmp/output.txt',
+          summary: 'Task finished',
+          uuid: 'uuid_123',
+          session_id: 'sess_1'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.task_id).to eq('task_1')
+        expect(msg.status).to eq('completed')
+        expect(msg.output_file).to eq('/tmp/output.txt')
+        expect(msg.summary).to eq('Task finished')
+      end
+
+      it 'stores optional fields' do
+        msg = described_class.new(
+          subtype: 'task_notification',
+          data: {},
+          task_id: 'task_1',
+          status: 'failed',
+          output_file: '/tmp/out.txt',
+          summary: 'failed',
+          uuid: 'uuid_1',
+          session_id: 'sess_1',
+          tool_use_id: 'toolu_1',
+          usage: { total_tokens: 100, tool_uses: 1, duration_ms: 500 }
+        )
+        expect(msg.tool_use_id).to eq('toolu_1')
+        expect(msg.usage).to eq({ total_tokens: 100, tool_uses: 1, duration_ms: 500 })
+      end
+    end
+
     describe ClaudeAgentSDK::ResultMessage do
       it 'stores result information' do
         msg = described_class.new(
@@ -113,6 +219,33 @@ RSpec.describe ClaudeAgentSDK do
         expect(msg.duration_ms).to eq(1000)
         expect(msg.is_error).to eq(false)
         expect(msg.total_cost_usd).to eq(0.01)
+      end
+
+      it 'stores stop_reason' do
+        msg = described_class.new(
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'session_123',
+          stop_reason: 'end_turn'
+        )
+
+        expect(msg.stop_reason).to eq('end_turn')
+      end
+
+      it 'defaults stop_reason to nil' do
+        msg = described_class.new(
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'session_123'
+        )
+
+        expect(msg.stop_reason).to be_nil
       end
 
       it 'stores structured_output' do
@@ -271,6 +404,23 @@ RSpec.describe ClaudeAgentSDK do
         expect(input.session_id).to eq('sess_123')
         expect(input.cwd).to eq('/home/user')
       end
+
+      it 'stores agent_id and agent_type for subagent context' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          agent_id: 'agent_abc',
+          agent_type: 'coder'
+        )
+        expect(input.agent_id).to eq('agent_abc')
+        expect(input.agent_type).to eq('coder')
+      end
+
+      it 'defaults agent_id and agent_type to nil' do
+        input = described_class.new(tool_name: 'Bash')
+        expect(input.agent_id).to be_nil
+        expect(input.agent_type).to be_nil
+      end
     end
 
     describe ClaudeAgentSDK::PostToolUseHookInput do
@@ -283,6 +433,16 @@ RSpec.describe ClaudeAgentSDK do
 
         expect(input.hook_event_name).to eq('PostToolUse')
         expect(input.tool_response).to eq('file1.txt\nfile2.txt')
+      end
+
+      it 'stores agent_id and agent_type for subagent context' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          agent_id: 'agent_1',
+          agent_type: 'researcher'
+        )
+        expect(input.agent_id).to eq('agent_1')
+        expect(input.agent_type).to eq('researcher')
       end
     end
 
@@ -304,6 +464,16 @@ RSpec.describe ClaudeAgentSDK do
         expect(input.error).to eq('Command blocked')
         expect(input.is_interrupt).to eq(true)
         expect(input.session_id).to eq('sess_123')
+      end
+
+      it 'stores agent_id and agent_type for subagent context' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          agent_id: 'agent_2',
+          agent_type: 'tester'
+        )
+        expect(input.agent_id).to eq('agent_2')
+        expect(input.agent_type).to eq('tester')
       end
     end
 
@@ -344,6 +514,16 @@ RSpec.describe ClaudeAgentSDK do
         expect(input.tool_name).to eq('Bash')
         expect(input.tool_input).to eq({ command: 'ls' })
         expect(input.permission_suggestions).to eq([{ type: 'setMode', mode: 'default' }])
+      end
+
+      it 'stores agent_id and agent_type for subagent context' do
+        input = described_class.new(
+          tool_name: 'Bash',
+          agent_id: 'agent_3',
+          agent_type: 'planner'
+        )
+        expect(input.agent_id).to eq('agent_3')
+        expect(input.agent_type).to eq('planner')
       end
     end
 
@@ -457,6 +637,107 @@ RSpec.describe ClaudeAgentSDK do
         hash = plugin.to_h
         expect(hash[:type]).to eq('plugin')
         expect(hash[:path]).to eq('/path/to/plugin')
+      end
+    end
+
+    describe ClaudeAgentSDK::McpServerInfo do
+      it 'stores server name and version' do
+        info = described_class.new(name: 'my-server', version: '1.0.0')
+        expect(info.name).to eq('my-server')
+        expect(info.version).to eq('1.0.0')
+      end
+    end
+
+    describe ClaudeAgentSDK::McpToolAnnotations do
+      it 'stores annotation hints' do
+        annotations = described_class.new(read_only: true, destructive: false, open_world: true)
+        expect(annotations.read_only).to eq(true)
+        expect(annotations.destructive).to eq(false)
+        expect(annotations.open_world).to eq(true)
+      end
+
+      it 'parses false values correctly from camelCase keys' do
+        data = { readOnly: false, destructive: false, openWorld: false }
+        annotations = described_class.parse(data)
+        expect(annotations.read_only).to eq(false)
+        expect(annotations.destructive).to eq(false)
+        expect(annotations.open_world).to eq(false)
+      end
+
+      it 'falls back to snake_case keys when camelCase is absent' do
+        data = { read_only: true, open_world: false }
+        annotations = described_class.parse(data)
+        expect(annotations.read_only).to eq(true)
+        expect(annotations.open_world).to eq(false)
+      end
+    end
+
+    describe ClaudeAgentSDK::McpToolInfo do
+      it 'stores tool name and description' do
+        tool = described_class.new(name: 'read_file', description: 'Read a file')
+        expect(tool.name).to eq('read_file')
+        expect(tool.description).to eq('Read a file')
+      end
+
+      it 'stores annotations' do
+        annotations = ClaudeAgentSDK::McpToolAnnotations.new(read_only: true)
+        tool = described_class.new(name: 'read_file', annotations: annotations)
+        expect(tool.annotations.read_only).to eq(true)
+      end
+    end
+
+    describe ClaudeAgentSDK::McpServerStatus do
+      it 'stores all fields' do
+        info = ClaudeAgentSDK::McpServerInfo.new(name: 'srv', version: '1.0')
+        status = described_class.new(
+          name: 'my-server',
+          status: 'connected',
+          server_info: info,
+          error: nil,
+          scope: 'project',
+          tools: []
+        )
+        expect(status.name).to eq('my-server')
+        expect(status.status).to eq('connected')
+        expect(status.server_info.name).to eq('srv')
+        expect(status.scope).to eq('project')
+      end
+
+      it 'parses from raw hash with camelCase keys' do
+        raw = {
+          name: 'test-server',
+          status: 'connected',
+          serverInfo: { name: 'test', version: '2.0' },
+          tools: [
+            { name: 'tool1', description: 'desc1', annotations: { readOnly: true } }
+          ],
+          scope: 'user'
+        }
+        status = described_class.parse(raw)
+        expect(status.name).to eq('test-server')
+        expect(status.status).to eq('connected')
+        expect(status.server_info).to be_a(ClaudeAgentSDK::McpServerInfo)
+        expect(status.server_info.version).to eq('2.0')
+        expect(status.tools.length).to eq(1)
+        expect(status.tools.first).to be_a(ClaudeAgentSDK::McpToolInfo)
+        expect(status.tools.first.annotations.read_only).to eq(true)
+      end
+    end
+
+    describe ClaudeAgentSDK::McpStatusResponse do
+      it 'parses from raw hash' do
+        raw = {
+          mcpServers: [
+            { name: 'server1', status: 'connected' },
+            { name: 'server2', status: 'failed', error: 'timeout' }
+          ]
+        }
+        response = described_class.parse(raw)
+        expect(response.mcp_servers.length).to eq(2)
+        expect(response.mcp_servers[0]).to be_a(ClaudeAgentSDK::McpServerStatus)
+        expect(response.mcp_servers[0].name).to eq('server1')
+        expect(response.mcp_servers[1].status).to eq('failed')
+        expect(response.mcp_servers[1].error).to eq('timeout')
       end
     end
 

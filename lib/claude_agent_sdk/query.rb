@@ -316,13 +316,19 @@ module ClaudeAgentSDK
         permission_mode: fetch.call(:permission_mode)
       }
 
+      # Subagent context fields shared by tool-lifecycle hooks
+      subagent_args = {
+        agent_id: fetch.call(:agent_id),
+        agent_type: fetch.call(:agent_type)
+      }
+
       case event_name
       when 'PreToolUse'
         PreToolUseHookInput.new(
           tool_name: fetch.call(:tool_name),
           tool_input: fetch.call(:tool_input),
           tool_use_id: fetch.call(:tool_use_id),
-          **base_args
+          **subagent_args, **base_args
         )
       when 'PostToolUse'
         PostToolUseHookInput.new(
@@ -330,7 +336,7 @@ module ClaudeAgentSDK
           tool_input: fetch.call(:tool_input),
           tool_response: fetch.call(:tool_response),
           tool_use_id: fetch.call(:tool_use_id),
-          **base_args
+          **subagent_args, **base_args
         )
       when 'PostToolUseFailure'
         PostToolUseFailureHookInput.new(
@@ -339,7 +345,7 @@ module ClaudeAgentSDK
           tool_use_id: fetch.call(:tool_use_id),
           error: fetch.call(:error),
           is_interrupt: fetch.call(:is_interrupt),
-          **base_args
+          **subagent_args, **base_args
         )
       when 'UserPromptSubmit'
         UserPromptSubmitHookInput.new(
@@ -377,7 +383,7 @@ module ClaudeAgentSDK
           tool_name: fetch.call(:tool_name),
           tool_input: fetch.call(:tool_input),
           permission_suggestions: fetch.call(:permission_suggestions),
-          **base_args
+          **subagent_args, **base_args
         )
       when 'PreCompact'
         PreCompactHookInput.new(
@@ -659,6 +665,35 @@ module ClaudeAgentSDK
       send_control_request({
                              subtype: 'set_model',
                              model: model
+                           })
+    end
+
+    # Reconnect a failed MCP server
+    # @param server_name [String] Name of the MCP server to reconnect
+    def reconnect_mcp_server(server_name)
+      send_control_request({
+                             subtype: 'mcp_reconnect',
+                             serverName: server_name
+                           })
+    end
+
+    # Enable or disable an MCP server
+    # @param server_name [String] Name of the MCP server
+    # @param enabled [Boolean] Whether to enable or disable
+    def toggle_mcp_server(server_name, enabled)
+      send_control_request({
+                             subtype: 'mcp_toggle',
+                             serverName: server_name,
+                             enabled: enabled
+                           })
+    end
+
+    # Stop a running background task
+    # @param task_id [String] The ID of the task to stop
+    def stop_task(task_id)
+      send_control_request({
+                             subtype: 'stop_task',
+                             task_id: task_id
                            })
     end
 
