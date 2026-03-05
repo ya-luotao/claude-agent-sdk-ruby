@@ -3,6 +3,7 @@
 require 'English'
 require 'json'
 require 'pathname'
+require 'shellwords'
 
 module ClaudeAgentSDK
   # Session info returned by list_sessions
