@@ -1,0 +1,34 @@
+name: Publish to GitHub Packages
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Build gem
+        run: gem build claude-agent-sdk.gemspec
+
+      - name: Push to GitHub Packages
+        run: |
+          mkdir -p ~/.gem
+          echo "---" > ~/.gem/credentials
+          echo ":github: Bearer $GITHUB_TOKEN" >> ~/.gem/credentials
+          chmod 0600 ~/.gem/credentials
+          gem push --key github --host https://rubygems.pkg.github.com/ya-luotao *.gem
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
