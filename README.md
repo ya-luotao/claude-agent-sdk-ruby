@@ -35,6 +35,90 @@
 | Rails integration (configure block, ActionCable) | — | ✅ |
 | Bundled CLI binary | ✅ | — |
 
+<details>
+<summary><strong>Usage & Implementation Differences</strong></summary>
+
+#### Async model
+
+Python uses `async`/`await` with `anyio` (works with both asyncio and Trio). Ruby uses the [`async`](https://github.com/socketry/async) gem with fibers — no `await` keyword needed, blocking calls yield automatically.
+
+```python
+# Python
+async with ClaudeSDKClient(options) as client:
+    await client.query("Hello")
+    async for msg in client.receive_messages():
+        print(msg)
+```
+
+```ruby
+# Ruby
+Async do
+  client = ClaudeAgentSDK::Client.new(options: options)
+  client.connect
+  client.query("Hello")
+  client.receive_messages { |msg| puts msg }
+  client.disconnect
+end.wait
+```
+
+#### Custom tools
+
+Python uses a `@tool` decorator. Ruby uses `create_tool` with a block.
+
+```python
+# Python
+@tool(name="add", description="Add numbers", input_schema={...})
+def add(a: int, b: int) -> str:
+    return str(a + b)
+```
+
+```ruby
+# Ruby
+add = ClaudeAgentSDK.create_tool("add", "Add numbers", { a: :number, b: :number }) do |args|
+  { content: [{ type: "text", text: (args[:a] + args[:b]).to_s }] }
+end
+```
+
+#### Streaming input
+
+Python uses `AsyncIterable`. Ruby uses `Enumerator` or any `#each`-able.
+
+```python
+# Python
+async def messages():
+    yield {"type": "user", "message": {"role": "user", "content": "Hello"}}
+
+async for msg in query(prompt=messages(), options=options):
+    print(msg)
+```
+
+```ruby
+# Ruby
+messages = ClaudeAgentSDK::Streaming.from_array(["Hello", "Follow up"])
+ClaudeAgentSDK.query(prompt: messages) { |msg| puts msg }
+```
+
+#### Types
+
+Python uses `dataclass` with type annotations and `TypedDict`. Ruby uses plain classes with `attr_accessor` and keyword args — no runtime type checking, but the same structure.
+
+#### Configuration defaults
+
+Python passes options directly. Ruby adds `ClaudeAgentSDK.configure` for global defaults that merge with per-call options — handy for Rails initializers.
+
+```ruby
+# Ruby-only: global defaults
+ClaudeAgentSDK.configure do |config|
+  config.default_options = { model: "sonnet", permission_mode: "bypassPermissions" }
+end
+```
+
+#### Subprocess transport
+
+Both SDKs spawn `claude` CLI as a subprocess with stream-JSON over stdin/stdout. Python uses `anyio.open_process`; Ruby uses `Open3.popen3` with a background `Thread` for stderr. The wire protocol is identical.
+
+</details>
+
 ## Table of Contents
 
 - [Installation](#installation)
