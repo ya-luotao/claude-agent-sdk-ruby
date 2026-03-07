@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-03-08
+
+Python SDK parity fixes for one-shot `query()` control protocol and CLI transport.
+
+### Fixed
+
+#### One-Shot Query Control Protocol
+- **Hooks and `can_use_tool` in `query()`:** One-shot `query()` now passes `hooks`, `can_use_tool`, and SDK MCP servers through to the `Query` handler, matching the Python SDK (previously these were Client-only)
+- **`can_use_tool` validation:** String prompts with `can_use_tool` now raise `ArgumentError` (streaming mode required); conflicting `permission_prompt_tool_name` also raises early
+- **`session_id` parity:** One-shot queries now send `session_id: ''` (was `'default'`), matching Python SDK behavior
+- **Premature stdin close:** Added `wait_for_result_and_end_input` that holds stdin open until the first result when hooks or SDK MCP servers need control message exchange
+- **`stream_input` stdin leak:** Moved `end_input` to `ensure` block so stdin is always closed even when the stream enumerator raises
+- **`Async::Condition` race:** Added `@first_result_received` flag guard to prevent lost signals when result arrives before `wait` is called
+
+#### CLI Transport Parity
+- **File checkpointing:** Moved from deprecated `--enable-file-checkpointing` CLI flag to `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` environment variable
+- **Partial messages:** Now also sets `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1` environment variable when `include_partial_messages` is enabled
+- **Tools preset:** `ToolsPreset` objects and preset hashes now map to `--tools default` (was `--tools <json>`)
+- **Plugins:** Changed from `--plugins <json>` to `--plugin-dir <path>` per-plugin, matching current CLI interface
+- **Plugin type:** `SdkPluginConfig` now defaults to `type: 'local'` (was `'plugin'`), normalizes legacy `'plugin'` type
+- **Rewind control request:** Changed key from `userMessageUuid` to `user_message_id` for Python SDK parity
+- **Settings file with sandbox:** When sandbox is enabled and settings is a file path, now reads and parses the file to merge sandbox settings (raises on missing/invalid files instead of silently dropping settings)
+
+#### Hook Input Parsing
+- **Falsy value preservation:** `parse_hook_input` now uses `key?`-based lookup instead of `||`, correctly preserving `false` and `nil` values (e.g., `stop_hook_active: false`)
+- **Empty hooks normalization:** `query()` now skips empty matcher lists and normalizes hooks to `nil` when no matchers survive, preventing unnecessary 60s close-wait timeout
+
+### Changed
+- **`build_command` refactored:** Extracted `build_settings_args`, `build_tools_args`, `build_output_format_args`, `build_mcp_servers_args`, `build_plugins_args` private helpers to reduce method complexity
+
 ## [0.8.0] - 2026-03-05
 
 Port of Python SDK v0.1.46 features.
