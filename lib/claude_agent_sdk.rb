@@ -85,8 +85,10 @@ module ClaudeAgentSDK
 
     configured_options = options
     if options.can_use_tool
-      raise ArgumentError,
-            'can_use_tool callback requires streaming mode. Please provide prompt as an Enumerator instead of a String.' if prompt.is_a?(String)
+      if prompt.is_a?(String)
+        raise ArgumentError,
+              'can_use_tool callback requires streaming mode. Please provide prompt as an Enumerator instead of a String.'
+      end
 
       raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name' if options.permission_prompt_tool_name
 

@@ -44,6 +44,7 @@ module ClaudeAgentSDK
 
       # Message stream
       @message_queue = Async::Queue.new
+      @first_result_received = false
       @first_result_condition = Async::Condition.new
       @task = nil
       @initialized = false
@@ -163,7 +164,10 @@ module ClaudeAgentSDK
           task&.stop
           next
         else
-          @first_result_condition.signal if message[:type] == 'result'
+          if message[:type] == 'result' && !@first_result_received
+            @first_result_received = true
+            @first_result_condition.signal
+          end
           # Regular SDK messages go to the queue
           @message_queue.enqueue(message)
         end
@@ -178,7 +182,10 @@ module ClaudeAgentSDK
       # Put error in queue so iterators can handle it
       @message_queue.enqueue({ type: 'error', error: e })
     ensure
-      @first_result_condition.signal
+      unless @first_result_received
+        @first_result_received = true
+        @first_result_condition.signal
+      end
       # Always signal end of stream
       @message_queue.enqueue({ type: 'end' })
     end
@@ -732,9 +739,10 @@ module ClaudeAgentSDK
     # Wait for the first result before closing stdin when hooks or SDK MCP
     # servers may still need to exchange control messages with the CLI.
     def wait_for_result_and_end_input
-      if (@sdk_mcp_servers && !@sdk_mcp_servers.empty?) || (@hooks && !@hooks.empty?)
+      if !@first_result_received &&
+         ((@sdk_mcp_servers && !@sdk_mcp_servers.empty?) || (@hooks && !@hooks.empty?))
         Async::Task.current.with_timeout(stream_close_timeout_seconds) do
-          @first_result_condition.wait
+          @first_result_condition.wait unless @first_result_received
         end
       end
     rescue Async::TimeoutError
@@ -755,10 +763,11 @@ module ClaudeAgentSDK
         serialized += "\n" unless serialized.end_with?("\n")
         @transport.write(serialized)
       end
-      wait_for_result_and_end_input
     rescue StandardError => e
       # Log error but don't raise
       warn "Error streaming input: #{e.message}"
+    ensure
+      wait_for_result_and_end_input
     end
 
     # Receive SDK messages (not control messages)

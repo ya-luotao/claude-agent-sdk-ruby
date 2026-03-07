@@ -98,49 +98,7 @@ module ClaudeAgentSDK
       cmd.concat(['--resume', @options.resume]) if @options.resume
 
       # Settings handling with sandbox merge
-      # Sandbox settings are merged into the main settings JSON
-      if @options.settings || @options.sandbox
-        settings_hash = {}
-        settings_is_path = false
-
-        # Parse existing settings if provided
-        if @options.settings
-          if @options.settings.is_a?(String)
-            begin
-              settings_hash = JSON.parse(@options.settings)
-            rescue JSON::ParserError
-              if @options.sandbox
-                if File.file?(@options.settings)
-                  settings_hash = JSON.parse(File.read(@options.settings))
-                else
-                  warn "Warning: Settings file not found: #{@options.settings}"
-                end
-              else
-                # If not valid JSON, treat as file path and pass as-is
-                settings_is_path = true
-                cmd.concat(['--settings', @options.settings])
-              end
-            end
-          elsif @options.settings.is_a?(Hash)
-            settings_hash = @options.settings.dup
-          end
-        end
-
-        # Merge sandbox settings if provided (only when settings is not a file path)
-        if !settings_is_path && @options.sandbox
-          sandbox_hash = if @options.sandbox.is_a?(SandboxSettings)
-                           @options.sandbox.to_h
-                         else
-                           @options.sandbox
-                         end
-          settings_hash[:sandbox] = sandbox_hash unless sandbox_hash.empty?
-        end
-
-        # Output merged settings (only when settings is not a file path)
-        if !settings_is_path && !settings_hash.empty?
-          cmd.concat(['--settings', JSON.generate(settings_hash)])
-        end
-      end
+      build_settings_args(cmd)
 
       # Budget limit option
       cmd.concat(['--max-budget-usd', @options.max_budget_usd.to_s]) if @options.max_budget_usd
@@ -158,20 +116,7 @@ module ClaudeAgentSDK
       end
 
       # Tools option for base tools selection
-      unless @options.tools.nil?
-        if @options.tools.is_a?(Array)
-          tools_value = @options.tools.empty? ? '' : @options.tools.join(',')
-          cmd.concat(['--tools', tools_value])
-        elsif @options.tools.is_a?(ToolsPreset)
-          cmd.concat(['--tools', 'default'])
-        elsif @options.tools.is_a?(Hash)
-          if (@options.tools[:type] || @options.tools['type']) == 'preset'
-            cmd.concat(['--tools', 'default'])
-          else
-            cmd.concat(['--tools', JSON.generate(@options.tools)])
-          end
-        end
-      end
+      build_tools_args(cmd)
 
       # Append allowed tools option
       if @options.append_allowed_tools && !@options.append_allowed_tools.empty?
@@ -179,20 +124,7 @@ module ClaudeAgentSDK
       end
 
       # JSON schema for structured output
-      # Accepts either:
-      # 1. Direct schema: { type: 'object', properties: {...} }
-      # 2. Wrapped format: { type: 'json_schema', schema: {...} }
-      if @options.output_format
-        schema = if @options.output_format.is_a?(Hash) && @options.output_format[:type] == 'json_schema'
-                   @options.output_format[:schema]
-                 elsif @options.output_format.is_a?(Hash) && @options.output_format['type'] == 'json_schema'
-                   @options.output_format['schema']
-                 else
-                   @options.output_format
-                 end
-        schema_json = schema.is_a?(String) ? schema : JSON.generate(schema)
-        cmd.concat(['--json-schema', schema_json])
-      end
+      build_output_format_args(cmd)
 
       # Add directories
       @options.add_dirs.each do |dir|
@@ -200,23 +132,7 @@ module ClaudeAgentSDK
       end
 
       # MCP servers
-      if @options.mcp_servers && !@options.mcp_servers.empty?
-        if @options.mcp_servers.is_a?(Hash)
-          servers_for_cli = {}
-          @options.mcp_servers.each do |name, config|
-            if config.is_a?(Hash) && config[:type] == 'sdk'
-              # For SDK servers, exclude instance field
-              sdk_config = config.reject { |k, _| k == :instance }
-              servers_for_cli[name] = sdk_config
-            else
-              servers_for_cli[name] = config
-            end
-          end
-          cmd.concat(['--mcp-config', JSON.generate({ mcpServers: servers_for_cli })]) unless servers_for_cli.empty?
-        else
-          cmd.concat(['--mcp-config', @options.mcp_servers.to_s])
-        end
-      end
+      build_mcp_servers_args(cmd)
 
       cmd << '--include-partial-messages' if @options.include_partial_messages
       cmd << '--fork-session' if @options.fork_session
@@ -225,21 +141,7 @@ module ClaudeAgentSDK
       # to avoid OS ARG_MAX limits with large agent configurations.
 
       # Plugins
-      if @options.plugins && !@options.plugins.empty?
-        @options.plugins.each do |plugin|
-          plugin_config = plugin.is_a?(SdkPluginConfig) ? plugin.to_h : plugin
-          plugin_type = plugin_config[:type] || plugin_config['type']
-          plugin_path = plugin_config[:path] || plugin_config['path']
-
-          unless %w[local plugin].include?(plugin_type)
-            raise ArgumentError, "Unsupported plugin type: #{plugin_type.inspect}"
-          end
-
-          next unless plugin_path
-
-          cmd.concat(['--plugin-dir', plugin_path])
-        end
-      end
+      build_plugins_args(cmd)
 
       # Setting sources
       sources_value = @options.setting_sources ? @options.setting_sources.join(',') : ''
@@ -571,6 +473,115 @@ module ClaudeAgentSDK
     DEFAULT_ADAPTIVE_THINKING_TOKENS = 32_000
 
     private
+
+    def build_settings_args(cmd)
+      return unless @options.settings || @options.sandbox
+
+      settings_hash = {}
+      settings_is_path = false
+
+      if @options.settings
+        if @options.settings.is_a?(String)
+          begin
+            settings_hash = JSON.parse(@options.settings)
+          rescue JSON::ParserError
+            if @options.sandbox
+              settings_hash = load_settings_file(@options.settings)
+            else
+              settings_is_path = true
+              cmd.concat(['--settings', @options.settings])
+            end
+          end
+        elsif @options.settings.is_a?(Hash)
+          settings_hash = @options.settings.dup
+        end
+      end
+
+      if !settings_is_path && @options.sandbox
+        sandbox_hash = @options.sandbox.is_a?(SandboxSettings) ? @options.sandbox.to_h : @options.sandbox
+        settings_hash[:sandbox] = sandbox_hash unless sandbox_hash.empty?
+      end
+
+      cmd.concat(['--settings', JSON.generate(settings_hash)]) if !settings_is_path && !settings_hash.empty?
+    end
+
+    def build_tools_args(cmd)
+      return if @options.tools.nil?
+
+      if @options.tools.is_a?(Array)
+        tools_value = @options.tools.empty? ? '' : @options.tools.join(',')
+        cmd.concat(['--tools', tools_value])
+      elsif @options.tools.is_a?(ToolsPreset)
+        cmd.concat(['--tools', 'default'])
+      elsif @options.tools.is_a?(Hash)
+        if (@options.tools[:type] || @options.tools['type']) == 'preset'
+          cmd.concat(['--tools', 'default'])
+        else
+          cmd.concat(['--tools', JSON.generate(@options.tools)])
+        end
+      end
+    end
+
+    def build_output_format_args(cmd)
+      return unless @options.output_format
+
+      schema = if @options.output_format.is_a?(Hash) && @options.output_format[:type] == 'json_schema'
+                 @options.output_format[:schema]
+               elsif @options.output_format.is_a?(Hash) && @options.output_format['type'] == 'json_schema'
+                 @options.output_format['schema']
+               else
+                 @options.output_format
+               end
+      schema_json = schema.is_a?(String) ? schema : JSON.generate(schema)
+      cmd.concat(['--json-schema', schema_json])
+    end
+
+    def build_mcp_servers_args(cmd)
+      return unless @options.mcp_servers && !@options.mcp_servers.empty?
+
+      if @options.mcp_servers.is_a?(Hash)
+        servers_for_cli = {}
+        @options.mcp_servers.each do |name, config|
+          servers_for_cli[name] = if config.is_a?(Hash) && config[:type] == 'sdk'
+                                    config.reject { |k, _| k == :instance }
+                                  else
+                                    config
+                                  end
+        end
+        cmd.concat(['--mcp-config', JSON.generate({ mcpServers: servers_for_cli })]) unless servers_for_cli.empty?
+      else
+        cmd.concat(['--mcp-config', @options.mcp_servers.to_s])
+      end
+    end
+
+    def build_plugins_args(cmd)
+      return unless @options.plugins && !@options.plugins.empty?
+
+      @options.plugins.each do |plugin|
+        plugin_config = plugin.is_a?(SdkPluginConfig) ? plugin.to_h : plugin
+        plugin_type = plugin_config[:type] || plugin_config['type']
+        plugin_path = plugin_config[:path] || plugin_config['path']
+
+        raise ArgumentError, "Unsupported plugin type: #{plugin_type.inspect}" unless %w[local plugin].include?(plugin_type)
+        next unless plugin_path
+
+        cmd.concat(['--plugin-dir', plugin_path])
+      end
+    end
+
+    def load_settings_file(path)
+      unless File.file?(path)
+        warn "Warning: Settings file not found: #{path}"
+        return {}
+      end
+      JSON.parse(File.read(path))
+    rescue JSON::ParserError
+      warn "Warning: Settings file contains invalid JSON: #{path}"
+      {}
+    rescue SystemCallError => e
+      warn "Warning: Could not read settings file #{path}: #{e.message}"
+      {}
+    end
 
     def resolve_thinking_tokens
       if @options.thinking
