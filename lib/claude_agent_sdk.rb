@@ -119,16 +119,20 @@ module ClaudeAgentSDK
         if configured_options.hooks
           hooks = {}
           configured_options.hooks.each do |event, matchers|
-            hooks[event.to_s] = []
+            next if matchers.nil? || matchers.empty?
+
+            entries = []
             matchers.each do |matcher|
               config = {
                 matcher: matcher.matcher,
                 hooks: matcher.hooks
               }
               config[:timeout] = matcher.timeout if matcher.timeout
-              hooks[event.to_s] << config
+              entries << config
             end
+            hooks[event.to_s] = entries unless entries.empty?
           end
+          hooks = nil if hooks.empty?
         end
 
         # Create Query handler for control protocol

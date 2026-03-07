@@ -215,6 +215,33 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       end
     end
 
+    it 'raises when settings file path contains invalid JSON and sandbox is enabled' do
+      Tempfile.create(['claude-settings', '.json']) do |file|
+        file.write('not valid json {{{')
+        file.flush
+
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          cli_path: '/usr/bin/claude',
+          settings: file.path,
+          sandbox: ClaudeAgentSDK::SandboxSettings.new(enabled: true)
+        )
+
+        transport = described_class.new('hi', options)
+        expect { transport.build_command }.to raise_error(JSON::ParserError)
+      end
+    end
+
+    it 'raises when settings file path does not exist and sandbox is enabled' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        settings: '/nonexistent/path/settings.json',
+        sandbox: ClaudeAgentSDK::SandboxSettings.new(enabled: true)
+      )
+
+      transport = described_class.new('hi', options)
+      expect { transport.build_command }.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Settings file not found/)
+    end
+
     it 'does not add the deprecated enable-file-checkpointing flag' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',

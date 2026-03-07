@@ -95,6 +95,37 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     expect(writes.first[:session_id]).to eq('')
   end
 
+  it 'passes nil hooks when all matcher lists are empty' do
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+      hooks: { 'PreToolUse' => [] }
+    )
+
+    captured_query_args = nil
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+    allow(transport).to receive(:write)
+
+    query_handler = instance_double(
+      ClaudeAgentSDK::Query,
+      start: true,
+      initialize_protocol: nil,
+      wait_for_result_and_end_input: nil,
+      close: nil
+    )
+    allow(query_handler).to receive(:receive_messages)
+
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+      captured_query_args = kwargs
+      query_handler
+    end
+
+    Async do
+      described_class.query(prompt: 'hello', options: options) { |_message| nil }
+    end.wait
+
+    expect(captured_query_args[:hooks]).to be_nil
+  end
+
   it 'configures can_use_tool for streaming one-shot queries' do
     callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
     options = ClaudeAgentSDK::ClaudeAgentOptions.new(can_use_tool: callback)

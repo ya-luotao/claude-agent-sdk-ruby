@@ -570,17 +570,9 @@ module ClaudeAgentSDK
     end
 
     def load_settings_file(path)
-      unless File.file?(path)
-        warn "Warning: Settings file not found: #{path}"
-        return {}
-      end
+      raise CLIConnectionError, "Settings file not found: #{path}" unless File.file?(path)
+
       JSON.parse(File.read(path))
-    rescue JSON::ParserError
-      warn "Warning: Settings file contains invalid JSON: #{path}"
-      {}
-    rescue SystemCallError => e
-      warn "Warning: Could not read settings file #{path}: #{e.message}"
-      {}
     end
 
     def resolve_thinking_tokens
