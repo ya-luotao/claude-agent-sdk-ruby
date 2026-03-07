@@ -82,21 +82,50 @@ module ClaudeAgentSDK
     return enum_for(:query, prompt: prompt, options: options) unless block
 
     options ||= ClaudeAgentOptions.new
-    options = options.dup_with(env: (options.env || {}).merge('CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb'))
+
+    configured_options = options
+    if options.can_use_tool
+      raise ArgumentError,
+            'can_use_tool callback requires streaming mode. Please provide prompt as an Enumerator instead of a String.' if prompt.is_a?(String)
+
+      raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name' if options.permission_prompt_tool_name
+
+      configured_options = options.dup_with(permission_prompt_tool_name: 'stdio')
+    end
+
+    configured_options = configured_options.dup_with(
+      env: (configured_options.env || {}).merge('CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb')
+    )
 
     Async do
       # Always use streaming mode with control protocol (matches Python SDK).
       # This sends agents via initialize request instead of CLI args,
       # avoiding OS ARG_MAX limits.
-      transport = SubprocessCLITransport.new(options)
+      transport = SubprocessCLITransport.new(configured_options)
       begin
         transport.connect
 
         # Extract SDK MCP servers
         sdk_mcp_servers = {}
-        if options.mcp_servers.is_a?(Hash)
-          options.mcp_servers.each do |name, config|
+        if configured_options.mcp_servers.is_a?(Hash)
+          configured_options.mcp_servers.each do |name, config|
             sdk_mcp_servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
+          end
+        end
+
+        hooks = nil
+        if configured_options.hooks
+          hooks = {}
+          configured_options.hooks.each do |event, matchers|
+            hooks[event.to_s] = []
+            matchers.each do |matcher|
+              config = {
+                matcher: matcher.matcher,
+                hooks: matcher.hooks
+              }
+              config[:timeout] = matcher.timeout if matcher.timeout
+              hooks[event.to_s] << config
+            end
           end
         end
 
@@ -104,7 +133,9 @@ module ClaudeAgentSDK
         query_handler = Query.new(
           transport: transport,
           is_streaming_mode: true,
-          agents: options.agents,
+          can_use_tool: configured_options.can_use_tool,
+          hooks: hooks,
+          agents: configured_options.agents,
           sdk_mcp_servers: sdk_mcp_servers
         )
 
@@ -120,19 +151,13 @@ module ClaudeAgentSDK
             type: 'user',
             message: { role: 'user', content: prompt },
             parent_tool_use_id: nil,
-            session_id: 'default'
+            session_id: ''
           }
           transport.write(JSON.generate(message) + "\n")
-          transport.end_input
+          query_handler.wait_for_result_and_end_input
         elsif prompt.is_a?(Enumerator) || prompt.respond_to?(:each)
           Async do
-            begin
-              prompt.each do |message_json|
-                transport.write(message_json)
-              end
-            ensure
-              transport.end_input
-            end
+            query_handler.stream_input(prompt)
           end
         end
 

@@ -866,8 +866,10 @@ module ClaudeAgentSDK
   class SdkPluginConfig
     attr_accessor :type, :path
 
-    def initialize(path:)
-      @type = 'plugin'
+    def initialize(path:, type: 'local')
+      raise ArgumentError, "unsupported plugin type: #{type}" unless %w[local plugin].include?(type)
+
+      @type = 'local'
       @path = path
     end
 

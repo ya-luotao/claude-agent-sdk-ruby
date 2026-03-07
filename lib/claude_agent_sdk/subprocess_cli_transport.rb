@@ -109,13 +109,16 @@ module ClaudeAgentSDK
             begin
               settings_hash = JSON.parse(@options.settings)
             rescue JSON::ParserError
-              # If not valid JSON, treat as file path and pass as-is
-              settings_is_path = true
-              cmd.concat(['--settings', @options.settings])
               if @options.sandbox
-                warn "Warning: Cannot merge sandbox settings when settings is a file path. " \
-                     "Sandbox settings will be ignored. Use a Hash or JSON string for settings " \
-                     "to enable sandbox merging."
+                if File.file?(@options.settings)
+                  settings_hash = JSON.parse(File.read(@options.settings))
+                else
+                  warn "Warning: Settings file not found: #{@options.settings}"
+                end
+              else
+                # If not valid JSON, treat as file path and pass as-is
+                settings_is_path = true
+                cmd.concat(['--settings', @options.settings])
               end
             end
           elsif @options.settings.is_a?(Hash)
@@ -155,13 +158,18 @@ module ClaudeAgentSDK
       end
 
       # Tools option for base tools selection
-      if @options.tools
+      unless @options.tools.nil?
         if @options.tools.is_a?(Array)
-          cmd.concat(['--tools', @options.tools.join(',')])
+          tools_value = @options.tools.empty? ? '' : @options.tools.join(',')
+          cmd.concat(['--tools', tools_value])
         elsif @options.tools.is_a?(ToolsPreset)
-          cmd.concat(['--tools', JSON.generate(@options.tools.to_h)])
+          cmd.concat(['--tools', 'default'])
         elsif @options.tools.is_a?(Hash)
-          cmd.concat(['--tools', JSON.generate(@options.tools)])
+          if (@options.tools[:type] || @options.tools['type']) == 'preset'
+            cmd.concat(['--tools', 'default'])
+          else
+            cmd.concat(['--tools', JSON.generate(@options.tools)])
+          end
         end
       end
 
@@ -169,9 +177,6 @@ module ClaudeAgentSDK
       if @options.append_allowed_tools && !@options.append_allowed_tools.empty?
         cmd.concat(['--append-allowed-tools', @options.append_allowed_tools.join(',')])
       end
-
-      # File checkpointing for rewind support
-      cmd << '--enable-file-checkpointing' if @options.enable_file_checkpointing
 
       # JSON schema for structured output
       # Accepts either:
@@ -221,10 +226,19 @@ module ClaudeAgentSDK
 
       # Plugins
       if @options.plugins && !@options.plugins.empty?
-        plugins_config = @options.plugins.map do |plugin|
-          plugin.is_a?(SdkPluginConfig) ? plugin.to_h : plugin
+        @options.plugins.each do |plugin|
+          plugin_config = plugin.is_a?(SdkPluginConfig) ? plugin.to_h : plugin
+          plugin_type = plugin_config[:type] || plugin_config['type']
+          plugin_path = plugin_config[:path] || plugin_config['path']
+
+          unless %w[local plugin].include?(plugin_type)
+            raise ArgumentError, "Unsupported plugin type: #{plugin_type.inspect}"
+          end
+
+          next unless plugin_path
+
+          cmd.concat(['--plugin-dir', plugin_path])
         end
-        cmd.concat(['--plugins', JSON.generate(plugins_config)])
       end
 
       # Setting sources
@@ -264,6 +278,10 @@ module ClaudeAgentSDK
       # the env hash on top of the parent environment; a nil value actively unsets.
       process_env = ENV.to_h.merge('CLAUDECODE' => nil, 'CLAUDE_AGENT_SDK_VERSION' => VERSION).merge(custom_env)
       process_env['CLAUDE_CODE_ENTRYPOINT'] ||= 'sdk-rb'
+      process_env['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING'] = 'true' if @options.enable_file_checkpointing
+      if @options.include_partial_messages
+        process_env['CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING'] ||= '1'
+      end
       process_env['PWD'] = @cwd.to_s if @cwd
 
       # Determine stderr handling

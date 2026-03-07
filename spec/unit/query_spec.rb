@@ -44,6 +44,19 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe '#rewind_files' do
+    it 'sends rewind_files control request with user_message_id' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      expect(query).to receive(:send_control_request).with({
+                                                             subtype: 'rewind_files',
+                                                             user_message_id: 'msg_123'
+                                                           })
+      query.rewind_files('msg_123')
+    end
+  end
+
   describe 'hook callbacks' do
     it 'passes typed hook input objects to callbacks' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
@@ -441,6 +454,19 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(result).to be_a(ClaudeAgentSDK::PostToolUseHookInput)
       expect(result.tool_use_id).to eq('toolu_def456')
       expect(result.tool_response).to eq('file.txt')
+    end
+
+    it 'preserves false values in hook input payloads' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      result = query.send(:parse_hook_input, {
+                            hook_event_name: 'Stop',
+                            stop_hook_active: false
+                          })
+
+      expect(result).to be_a(ClaudeAgentSDK::StopHookInput)
+      expect(result.stop_hook_active).to eq(false)
     end
   end
 

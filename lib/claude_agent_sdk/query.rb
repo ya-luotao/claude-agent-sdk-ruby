@@ -22,6 +22,8 @@ module ClaudeAgentSDK
 
     CONTROL_REQUEST_TIMEOUT_ENV_VAR = 'CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS'
     DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
+    STREAM_CLOSE_TIMEOUT_ENV_VAR = 'CLAUDE_CODE_STREAM_CLOSE_TIMEOUT'
+    DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS = 60.0
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil)
       @transport = transport
@@ -42,6 +44,7 @@ module ClaudeAgentSDK
 
       # Message stream
       @message_queue = Async::Queue.new
+      @first_result_condition = Async::Condition.new
       @task = nil
       @initialized = false
       @closed = false
@@ -124,6 +127,16 @@ module ClaudeAgentSDK
       DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS
     end
 
+    def stream_close_timeout_seconds
+      raw_value = ENV.fetch(STREAM_CLOSE_TIMEOUT_ENV_VAR, nil)
+      return DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS if raw_value.nil? || raw_value.strip.empty?
+
+      value = Float(raw_value) / 1000.0
+      value.positive? ? value : DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS
+    rescue ArgumentError
+      DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS
+    end
+
     def read_messages
       @transport.read_messages do |message|
         break if @closed
@@ -150,6 +163,7 @@ module ClaudeAgentSDK
           task&.stop
           next
         else
+          @first_result_condition.signal if message[:type] == 'result'
           # Regular SDK messages go to the queue
           @message_queue.enqueue(message)
         end
@@ -164,6 +178,7 @@ module ClaudeAgentSDK
       # Put error in queue so iterators can handle it
       @message_queue.enqueue({ type: 'error', error: e })
     ensure
+      @first_result_condition.signal
       # Always signal end of stream
       @message_queue.enqueue({ type: 'end' })
     end
@@ -308,7 +323,13 @@ module ClaudeAgentSDK
 
     def parse_hook_input(input_data)
       event_name = input_data[:hook_event_name] || input_data['hook_event_name']
-      fetch = ->(key) { input_data[key] || input_data[key.to_s] }
+      fetch = lambda do |key|
+        if input_data.key?(key)
+          input_data[key]
+        elsif input_data.key?(key.to_s)
+          input_data[key.to_s]
+        end
+      end
       base_args = {
         session_id: fetch.call(:session_id),
         transcript_path: fetch.call(:transcript_path),
@@ -704,17 +725,37 @@ module ClaudeAgentSDK
     def rewind_files(user_message_uuid)
       send_control_request({
                              subtype: 'rewind_files',
-                             userMessageUuid: user_message_uuid
+                             user_message_id: user_message_uuid
                            })
+    end
+
+    # Wait for the first result before closing stdin when hooks or SDK MCP
+    # servers may still need to exchange control messages with the CLI.
+    def wait_for_result_and_end_input
+      if (@sdk_mcp_servers && !@sdk_mcp_servers.empty?) || (@hooks && !@hooks.empty?)
+        Async::Task.current.with_timeout(stream_close_timeout_seconds) do
+          @first_result_condition.wait
+        end
+      end
+    rescue Async::TimeoutError
+      nil
+    ensure
+      @transport.end_input
     end
 
     # Stream input messages to transport
     def stream_input(stream)
       stream.each do |message|
         break if @closed
-        @transport.write(JSON.generate(message) + "\n")
+        serialized = if message.is_a?(Hash)
+                       JSON.generate(message) + "\n"
+                     else
+                       message.to_s
+                     end
+        serialized += "\n" unless serialized.end_with?("\n")
+        @transport.write(serialized)
       end
-      @transport.end_input
+      wait_for_result_and_end_input
     rescue StandardError => e
       # Log error but don't raise
       warn "Error streaming input: #{e.message}"
