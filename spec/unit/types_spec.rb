@@ -628,15 +628,21 @@ RSpec.describe ClaudeAgentSDK do
     describe ClaudeAgentSDK::SdkPluginConfig do
       it 'stores plugin path' do
         plugin = described_class.new(path: '/path/to/plugin')
-        expect(plugin.type).to eq('plugin')
+        expect(plugin.type).to eq('local')
         expect(plugin.path).to eq('/path/to/plugin')
       end
 
       it 'converts to hash' do
         plugin = described_class.new(path: '/path/to/plugin')
         hash = plugin.to_h
-        expect(hash[:type]).to eq('plugin')
+        expect(hash[:type]).to eq('local')
         expect(hash[:path]).to eq('/path/to/plugin')
+      end
+
+      it 'normalizes the legacy plugin type to local' do
+        plugin = described_class.new(path: '/path/to/plugin', type: 'plugin')
+
+        expect(plugin.type).to eq('local')
       end
     end
 

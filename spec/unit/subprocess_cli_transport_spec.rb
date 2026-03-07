@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'tempfile'
 
 RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
   describe '#build_command' do
@@ -161,6 +162,97 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       expect(cmd).to include('--effort', 'high')
     end
+
+    it 'maps tools preset objects to the CLI default tool set' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        tools: ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code')
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      idx = cmd.index('--tools')
+      expect(idx).not_to be_nil
+      expect(cmd[idx + 1]).to eq('default')
+    end
+
+    it 'uses plugin directories instead of --plugins JSON' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        plugins: [ClaudeAgentSDK::SdkPluginConfig.new(path: '/tmp/plugin')]
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--plugin-dir', '/tmp/plugin')
+      expect(cmd).not_to include('--plugins')
+    end
+
+    it 'merges sandbox settings into settings loaded from a file path' do
+      Tempfile.create(['claude-settings', '.json']) do |file|
+        file.write(JSON.generate({ permissions: { allow: ['Bash(ls:*)'] } }))
+        file.flush
+
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          cli_path: '/usr/bin/claude',
+          settings: file.path,
+          sandbox: ClaudeAgentSDK::SandboxSettings.new(enabled: true)
+        )
+
+        transport = described_class.new('hi', options)
+        cmd = transport.build_command
+
+        idx = cmd.index('--settings')
+        expect(idx).not_to be_nil
+
+        merged_settings = JSON.parse(cmd[idx + 1])
+        expect(merged_settings).to eq(
+          'permissions' => { 'allow' => ['Bash(ls:*)'] },
+          'sandbox' => { 'enabled' => true }
+        )
+      end
+    end
+
+    it 'raises when settings file path contains invalid JSON and sandbox is enabled' do
+      Tempfile.create(['claude-settings', '.json']) do |file|
+        file.write('not valid json {{{')
+        file.flush
+
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          cli_path: '/usr/bin/claude',
+          settings: file.path,
+          sandbox: ClaudeAgentSDK::SandboxSettings.new(enabled: true)
+        )
+
+        transport = described_class.new('hi', options)
+        expect { transport.build_command }.to raise_error(JSON::ParserError)
+      end
+    end
+
+    it 'raises when settings file path does not exist and sandbox is enabled' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        settings: '/nonexistent/path/settings.json',
+        sandbox: ClaudeAgentSDK::SandboxSettings.new(enabled: true)
+      )
+
+      transport = described_class.new('hi', options)
+      expect { transport.build_command }.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Settings file not found/)
+    end
+
+    it 'does not add the deprecated enable-file-checkpointing flag' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        enable_file_checkpointing: true
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).not_to include('--enable-file-checkpointing')
+    end
   end
 
   describe '#check_claude_version' do
@@ -219,6 +311,48 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       transport.connect
 
       expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb-client')
+    end
+
+    it 'enables SDK file checkpointing via environment variable' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        enable_file_checkpointing: true
+      )
+      transport = described_class.new('hi', options)
+
+      stdin = instance_double(IO)
+      captured_env = nil
+      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(Open3).to receive(:popen3) do |env, *_args|
+        captured_env = env
+        [stdin, instance_double(IO), instance_double(IO), instance_double(Process::Waiter)]
+      end
+      allow(stdin).to receive(:close)
+
+      transport.connect
+
+      expect(captured_env['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING']).to eq('true')
+    end
+
+    it 'enables fine-grained tool streaming when partial messages are requested' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        include_partial_messages: true
+      )
+      transport = described_class.new('hi', options)
+
+      stdin = instance_double(IO)
+      captured_env = nil
+      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(Open3).to receive(:popen3) do |env, *_args|
+        captured_env = env
+        [stdin, instance_double(IO), instance_double(IO), instance_double(Process::Waiter)]
+      end
+      allow(stdin).to receive(:close)
+
+      transport.connect
+
+      expect(captured_env['CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING']).to eq('1')
     end
   end
 end
