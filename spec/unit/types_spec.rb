@@ -315,16 +315,23 @@ RSpec.describe ClaudeAgentSDK do
         expect(event.session_id).to eq('sess_456')
       end
 
-      it 'provides backward-compatible data accessor' do
-        raw = { status: 'allowed', resetsAt: 1_700_000_000 }
-        info = ClaudeAgentSDK::RateLimitInfo.new(status: 'allowed', raw: raw)
-        event = described_class.new(rate_limit_info: info, uuid: 'u', session_id: 's')
+      it 'provides backward-compatible data accessor returning full raw payload' do
+        raw_payload = {
+          type: 'rate_limit_event', uuid: 'u', session_id: 's',
+          rate_limit_info: { status: 'allowed', resetsAt: 1_700_000_000 }
+        }
+        info = ClaudeAgentSDK::RateLimitInfo.new(status: 'allowed')
+        event = described_class.new(rate_limit_info: info, uuid: 'u', session_id: 's', raw_data: raw_payload)
 
-        expect(event.data).to eq(raw)
+        expect(event.data).to eq(raw_payload)
+        expect(event.data[:uuid]).to eq('u')
+        expect(event.data[:session_id]).to eq('s')
+        expect(event.data[:rate_limit_info][:status]).to eq('allowed')
       end
 
-      it 'returns empty hash from data when rate_limit_info is nil' do
-        event = described_class.new(rate_limit_info: nil, uuid: 'u', session_id: 's')
+      it 'returns empty hash from data when no raw_data provided' do
+        info = ClaudeAgentSDK::RateLimitInfo.new(status: 'allowed')
+        event = described_class.new(rate_limit_info: info, uuid: 'u', session_id: 's')
         expect(event.data).to eq({})
       end
     end

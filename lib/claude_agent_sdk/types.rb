@@ -240,15 +240,16 @@ module ClaudeAgentSDK
   class RateLimitEvent
     attr_accessor :rate_limit_info, :uuid, :session_id
 
-    def initialize(rate_limit_info:, uuid:, session_id:)
+    def initialize(rate_limit_info:, uuid:, session_id:, raw_data: nil)
       @rate_limit_info = rate_limit_info
       @uuid = uuid
       @session_id = session_id
+      @raw_data = raw_data
     end
 
-    # Backward-compatible accessor for raw data
+    # Backward-compatible accessor returning the full raw event payload
     def data
-      @rate_limit_info&.raw || {}
+      @raw_data || {}
     end
   end
 

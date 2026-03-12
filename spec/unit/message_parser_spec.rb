@@ -403,17 +403,18 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.rate_limit_info.raw).to eq({})
       end
 
-      it 'provides backward-compatible data accessor' do
-        raw_info = { status: 'rejected', resetsAt: 1_700_000_000 }
+      it 'provides backward-compatible data accessor with full payload' do
         data = {
           type: 'rate_limit_event',
           uuid: 'rl_789',
           session_id: 'sess_abc',
-          rate_limit_info: raw_info
+          rate_limit_info: { status: 'rejected', resetsAt: 1_700_000_000 }
         }
 
         msg = described_class.parse(data)
-        expect(msg.data).to eq(raw_info)
+        expect(msg.data).to eq(data)
+        expect(msg.data[:uuid]).to eq('rl_789')
+        expect(msg.data[:session_id]).to eq('sess_abc')
       end
     end
 

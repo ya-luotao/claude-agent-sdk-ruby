@@ -134,7 +134,8 @@ module ClaudeAgentSDK
       RateLimitEvent.new(
         rate_limit_info: rate_limit_info,
         uuid: data[:uuid],
-        session_id: data[:session_id]
+        session_id: data[:session_id],
+        raw_data: data
       )
     end
 
