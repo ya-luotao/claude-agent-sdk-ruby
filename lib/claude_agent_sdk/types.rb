@@ -212,12 +212,44 @@ module ClaudeAgentSDK
     end
   end
 
-  # Rate limit event emitted by Claude Code CLI when API rate limits are hit
-  class RateLimitEvent
-    attr_accessor :data
+  # Type constants for rate limit statuses
+  RATE_LIMIT_STATUSES = %w[allowed allowed_warning rejected].freeze
 
-    def initialize(data:)
-      @data = data
+  # Type constants for rate limit types
+  RATE_LIMIT_TYPES = %w[five_hour seven_day seven_day_opus seven_day_sonnet overage].freeze
+
+  # Rate limit info with typed fields
+  class RateLimitInfo
+    attr_accessor :status, :resets_at, :rate_limit_type, :utilization,
+                  :overage_status, :overage_resets_at, :overage_disabled_reason, :raw
+
+    def initialize(status:, resets_at: nil, rate_limit_type: nil, utilization: nil,
+                   overage_status: nil, overage_resets_at: nil, overage_disabled_reason: nil, raw: {})
+      @status = status
+      @resets_at = resets_at
+      @rate_limit_type = rate_limit_type
+      @utilization = utilization
+      @overage_status = overage_status
+      @overage_resets_at = overage_resets_at
+      @overage_disabled_reason = overage_disabled_reason
+      @raw = raw
+    end
+  end
+
+  # Rate limit event emitted when rate limit info changes
+  class RateLimitEvent
+    attr_accessor :rate_limit_info, :uuid, :session_id
+
+    def initialize(rate_limit_info:, uuid:, session_id:, raw_data: nil)
+      @rate_limit_info = rate_limit_info
+      @uuid = uuid
+      @session_id = session_id
+      @raw_data = raw_data
+    end
+
+    # Backward-compatible accessor returning the full raw event payload
+    def data
+      @raw_data || {}
     end
   end
 
@@ -753,6 +785,37 @@ module ClaudeAgentSDK
     end
   end
 
+  # Output-only serializable version of McpSdkServerConfig (without live instance)
+  # Returned in MCP status responses
+  class McpSdkServerConfigStatus
+    attr_accessor :type, :name
+
+    def initialize(type: 'sdk', name:)
+      @type = type
+      @name = name
+    end
+
+    def to_h
+      { type: @type, name: @name }
+    end
+  end
+
+  # Claude.ai proxy MCP server config
+  # Output-only type that appears in status responses for servers proxied through Claude.ai
+  class McpClaudeAIProxyServerConfig
+    attr_accessor :type, :url, :id
+
+    def initialize(type: 'claudeai-proxy', url:, id:)
+      @type = type
+      @url = url
+      @id = id
+    end
+
+    def to_h
+      { type: @type, url: @url, id: @id }
+    end
+  end
+
   # Status of a single MCP server connection
   class McpServerStatus
     attr_accessor :name, :status, :server_info, :error, :config, :scope, :tools
@@ -770,16 +833,30 @@ module ClaudeAgentSDK
     def self.parse(data)
       server_info = (McpServerInfo.new(name: data[:serverInfo][:name], version: data[:serverInfo][:version]) if data[:serverInfo])
       tools = data[:tools]&.map { |t| McpToolInfo.parse(t) }
+      config = parse_config(data[:config])
 
       new(
         name: data[:name],
         status: data[:status],
         server_info: server_info,
         error: data[:error],
-        config: data[:config],
+        config: config,
         scope: data[:scope],
         tools: tools
       )
+    end
+
+    def self.parse_config(config)
+      return config unless config.is_a?(Hash) && config[:type]
+
+      case config[:type]
+      when 'claudeai-proxy'
+        McpClaudeAIProxyServerConfig.new(url: config[:url], id: config[:id])
+      when 'sdk'
+        McpSdkServerConfigStatus.new(name: config[:name])
+      else
+        config
+      end
     end
   end
 

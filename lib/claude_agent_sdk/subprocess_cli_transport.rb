@@ -75,14 +75,14 @@ module ClaudeAgentSDK
       elsif @options.system_prompt.is_a?(String)
         cmd.concat(['--system-prompt', @options.system_prompt])
       elsif @options.system_prompt.is_a?(SystemPromptPreset)
-        cmd.concat(['--system-prompt-preset', @options.system_prompt.preset]) if @options.system_prompt.preset
+        # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
+        # Only --append-system-prompt is passed if append text is provided
         cmd.concat(['--append-system-prompt', @options.system_prompt.append]) if @options.system_prompt.append
       elsif @options.system_prompt.is_a?(Hash)
         prompt_type = @options.system_prompt[:type] || @options.system_prompt['type']
         if prompt_type == 'preset'
-          preset = @options.system_prompt[:preset] || @options.system_prompt['preset']
           append = @options.system_prompt[:append] || @options.system_prompt['append']
-          cmd.concat(['--system-prompt-preset', preset]) if preset
+          # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
           cmd.concat(['--append-system-prompt', append]) if append
         end
       end
@@ -107,7 +107,7 @@ module ClaudeAgentSDK
       thinking_tokens = resolve_thinking_tokens
       cmd.concat(['--max-thinking-tokens', thinking_tokens.to_s]) unless thinking_tokens.nil?
 
-      # Effort level
+      # Effort level (valid values: low, medium, high, max)
       cmd.concat(['--effort', @options.effort.to_s]) if @options.effort
 
       # Betas option for enabling experimental features
