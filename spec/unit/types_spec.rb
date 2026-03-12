@@ -263,6 +263,72 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::RateLimitInfo do
+      it 'stores all fields' do
+        info = described_class.new(
+          status: 'allowed_warning',
+          resets_at: 1_700_000_000,
+          rate_limit_type: 'five_hour',
+          utilization: 0.85,
+          overage_status: 'allowed',
+          overage_resets_at: 1_700_100_000,
+          overage_disabled_reason: nil,
+          raw: { status: 'allowed_warning' }
+        )
+
+        expect(info.status).to eq('allowed_warning')
+        expect(info.resets_at).to eq(1_700_000_000)
+        expect(info.rate_limit_type).to eq('five_hour')
+        expect(info.utilization).to eq(0.85)
+        expect(info.overage_status).to eq('allowed')
+        expect(info.overage_resets_at).to eq(1_700_100_000)
+        expect(info.overage_disabled_reason).to be_nil
+        expect(info.raw).to eq({ status: 'allowed_warning' })
+      end
+
+      it 'defaults optional fields to nil' do
+        info = described_class.new(status: 'allowed')
+
+        expect(info.status).to eq('allowed')
+        expect(info.resets_at).to be_nil
+        expect(info.rate_limit_type).to be_nil
+        expect(info.utilization).to be_nil
+        expect(info.overage_status).to be_nil
+        expect(info.overage_resets_at).to be_nil
+        expect(info.overage_disabled_reason).to be_nil
+        expect(info.raw).to eq({})
+      end
+    end
+
+    describe ClaudeAgentSDK::RateLimitEvent do
+      it 'stores rate_limit_info, uuid, and session_id' do
+        info = ClaudeAgentSDK::RateLimitInfo.new(status: 'rejected', raw: { status: 'rejected' })
+        event = described_class.new(
+          rate_limit_info: info,
+          uuid: 'evt_123',
+          session_id: 'sess_456'
+        )
+
+        expect(event.rate_limit_info).to eq(info)
+        expect(event.rate_limit_info.status).to eq('rejected')
+        expect(event.uuid).to eq('evt_123')
+        expect(event.session_id).to eq('sess_456')
+      end
+
+      it 'provides backward-compatible data accessor' do
+        raw = { status: 'allowed', resetsAt: 1_700_000_000 }
+        info = ClaudeAgentSDK::RateLimitInfo.new(status: 'allowed', raw: raw)
+        event = described_class.new(rate_limit_info: info, uuid: 'u', session_id: 's')
+
+        expect(event.data).to eq(raw)
+      end
+
+      it 'returns empty hash from data when rate_limit_info is nil' do
+        event = described_class.new(rate_limit_info: nil, uuid: 'u', session_id: 's')
+        expect(event.data).to eq({})
+      end
+    end
+
     describe ClaudeAgentSDK::PermissionUpdate do
       it 'converts to hash format' do
         rule = ClaudeAgentSDK::PermissionRuleValue.new(tool_name: 'Bash', rule_content: 'echo')
@@ -692,6 +758,35 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::McpSdkServerConfigStatus do
+      it 'stores type and name' do
+        config = described_class.new(name: 'my-sdk-server')
+        expect(config.type).to eq('sdk')
+        expect(config.name).to eq('my-sdk-server')
+      end
+
+      it 'converts to hash' do
+        config = described_class.new(name: 'my-sdk-server')
+        hash = config.to_h
+        expect(hash).to eq({ type: 'sdk', name: 'my-sdk-server' })
+      end
+    end
+
+    describe ClaudeAgentSDK::McpClaudeAIProxyServerConfig do
+      it 'stores type, url, and id' do
+        config = described_class.new(url: 'https://proxy.example.com', id: 'proxy-123')
+        expect(config.type).to eq('claudeai-proxy')
+        expect(config.url).to eq('https://proxy.example.com')
+        expect(config.id).to eq('proxy-123')
+      end
+
+      it 'converts to hash' do
+        config = described_class.new(url: 'https://proxy.example.com', id: 'proxy-123')
+        hash = config.to_h
+        expect(hash).to eq({ type: 'claudeai-proxy', url: 'https://proxy.example.com', id: 'proxy-123' })
+      end
+    end
+
     describe ClaudeAgentSDK::McpServerStatus do
       it 'stores all fields' do
         info = ClaudeAgentSDK::McpServerInfo.new(name: 'srv', version: '1.0')
@@ -727,6 +822,42 @@ RSpec.describe ClaudeAgentSDK do
         expect(status.tools.length).to eq(1)
         expect(status.tools.first).to be_a(ClaudeAgentSDK::McpToolInfo)
         expect(status.tools.first.annotations.read_only).to eq(true)
+      end
+
+      it 'parses claudeai-proxy config into McpClaudeAIProxyServerConfig' do
+        raw = {
+          name: 'proxy-server',
+          status: 'connected',
+          config: { type: 'claudeai-proxy', url: 'https://proxy.example.com', id: 'proxy-1' }
+        }
+        status = described_class.parse(raw)
+        expect(status.config).to be_a(ClaudeAgentSDK::McpClaudeAIProxyServerConfig)
+        expect(status.config.type).to eq('claudeai-proxy')
+        expect(status.config.url).to eq('https://proxy.example.com')
+        expect(status.config.id).to eq('proxy-1')
+      end
+
+      it 'parses sdk config into McpSdkServerConfigStatus' do
+        raw = {
+          name: 'sdk-server',
+          status: 'connected',
+          config: { type: 'sdk', name: 'my-sdk' }
+        }
+        status = described_class.parse(raw)
+        expect(status.config).to be_a(ClaudeAgentSDK::McpSdkServerConfigStatus)
+        expect(status.config.type).to eq('sdk')
+        expect(status.config.name).to eq('my-sdk')
+      end
+
+      it 'passes through unknown config types as raw hash' do
+        raw = {
+          name: 'stdio-server',
+          status: 'connected',
+          config: { type: 'stdio', command: 'node', args: ['server.js'] }
+        }
+        status = described_class.parse(raw)
+        expect(status.config).to be_a(Hash)
+        expect(status.config[:type]).to eq('stdio')
       end
     end
 

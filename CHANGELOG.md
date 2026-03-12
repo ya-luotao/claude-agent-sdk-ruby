@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-03-12
+
+Port of Python SDK v0.1.48 parity improvements.
+
+### Added
+
+#### Typed Rate Limit Events
+- `RateLimitInfo` class with `status`, `resets_at`, `rate_limit_type`, `utilization`, `overage_status`, `overage_resets_at`, `overage_disabled_reason`, `raw` attributes
+- `RATE_LIMIT_STATUSES` constant (`allowed`, `allowed_warning`, `rejected`)
+- `RATE_LIMIT_TYPES` constant (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`, `overage`)
+- `RateLimitEvent` now has typed `rate_limit_info`, `uuid`, `session_id` attributes (previously raw `data` hash)
+- Backward-compatible `data` accessor on `RateLimitEvent` returns raw hash from `rate_limit_info.raw`
+
+#### MCP Status Output Types
+- `McpClaudeAIProxyServerConfig` type for `claudeai-proxy` servers in MCP status responses
+- `McpSdkServerConfigStatus` type for serializable SDK server config in status responses
+- `McpServerStatus.parse` handles `claudeai-proxy` config type
+
+#### Effort Level
+- `effort` option now supports `"max"` value in addition to `"low"`, `"medium"`, `"high"`
+
 ## [0.8.1] - 2026-03-08
 
 Python SDK parity fixes for one-shot `query()` control protocol and CLI transport.

@@ -107,7 +107,7 @@ module ClaudeAgentSDK
       thinking_tokens = resolve_thinking_tokens
       cmd.concat(['--max-thinking-tokens', thinking_tokens.to_s]) unless thinking_tokens.nil?
 
-      # Effort level
+      # Effort level (valid values: low, medium, high, max)
       cmd.concat(['--effort', @options.effort.to_s]) if @options.effort
 
       # Betas option for enabling experimental features

@@ -120,7 +120,22 @@ module ClaudeAgentSDK
     end
 
     def self.parse_rate_limit_event(data)
-      RateLimitEvent.new(data: data)
+      info = data[:rate_limit_info] || {}
+      rate_limit_info = RateLimitInfo.new(
+        status: info[:status],
+        resets_at: info[:resetsAt],
+        rate_limit_type: info[:rateLimitType],
+        utilization: info[:utilization],
+        overage_status: info[:overageStatus],
+        overage_resets_at: info[:overageResetsAt],
+        overage_disabled_reason: info[:overageDisabledReason],
+        raw: info
+      )
+      RateLimitEvent.new(
+        rate_limit_info: rate_limit_info,
+        uuid: data[:uuid],
+        session_id: data[:session_id]
+      )
     end
 
     def self.parse_content_block(block)

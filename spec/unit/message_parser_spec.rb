@@ -356,6 +356,67 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
       end
     end
 
+    context 'rate limit events' do
+      it 'parses rate_limit_event with typed fields' do
+        data = {
+          type: 'rate_limit_event',
+          uuid: 'rl_123',
+          session_id: 'sess_456',
+          rate_limit_info: {
+            status: 'allowed_warning',
+            resetsAt: 1_700_000_000,
+            rateLimitType: 'five_hour',
+            utilization: 0.85,
+            overageStatus: 'allowed',
+            overageResetsAt: 1_700_100_000,
+            overageDisabledReason: nil
+          }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::RateLimitEvent)
+        expect(msg.uuid).to eq('rl_123')
+        expect(msg.session_id).to eq('sess_456')
+
+        info = msg.rate_limit_info
+        expect(info).to be_a(ClaudeAgentSDK::RateLimitInfo)
+        expect(info.status).to eq('allowed_warning')
+        expect(info.resets_at).to eq(1_700_000_000)
+        expect(info.rate_limit_type).to eq('five_hour')
+        expect(info.utilization).to eq(0.85)
+        expect(info.overage_status).to eq('allowed')
+        expect(info.overage_resets_at).to eq(1_700_100_000)
+        expect(info.overage_disabled_reason).to be_nil
+        expect(info.raw).to eq(data[:rate_limit_info])
+      end
+
+      it 'handles missing rate_limit_info gracefully' do
+        data = {
+          type: 'rate_limit_event',
+          uuid: 'rl_456',
+          session_id: 'sess_789'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::RateLimitEvent)
+        expect(msg.rate_limit_info.status).to be_nil
+        expect(msg.rate_limit_info.raw).to eq({})
+      end
+
+      it 'provides backward-compatible data accessor' do
+        raw_info = { status: 'rejected', resetsAt: 1_700_000_000 }
+        data = {
+          type: 'rate_limit_event',
+          uuid: 'rl_789',
+          session_id: 'sess_abc',
+          rate_limit_info: raw_info
+        }
+
+        msg = described_class.parse(data)
+        expect(msg.data).to eq(raw_info)
+      end
+    end
+
     context 'user message tool_use_result' do
       it 'parses tool_use_result when present' do
         data = {
