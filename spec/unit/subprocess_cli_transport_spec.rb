@@ -17,7 +17,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(cmd).to include('--system-prompt', 'You are a helpful assistant')
     end
 
-    it 'passes a preset system_prompt via --system-prompt-preset and --append-system-prompt' do
+    it 'passes a preset system_prompt via --append-system-prompt only (no --system-prompt)' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
         system_prompt: { type: 'preset', preset: 'claude_code', append: 'Extra instructions' }
@@ -26,7 +26,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       transport = described_class.new('hi', options)
       cmd = transport.build_command
 
-      expect(cmd).to include('--system-prompt-preset', 'claude_code')
+      expect(cmd).not_to include('--system-prompt')
       expect(cmd).to include('--append-system-prompt', 'Extra instructions')
     end
 
@@ -40,7 +40,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       transport = described_class.new('hi', options)
       cmd = transport.build_command
 
-      expect(cmd).to include('--system-prompt-preset', 'claude_code')
+      expect(cmd).not_to include('--system-prompt')
       expect(cmd).to include('--append-system-prompt', 'Extra')
     end
 
