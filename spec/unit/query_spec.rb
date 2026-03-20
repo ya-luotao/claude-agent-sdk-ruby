@@ -364,6 +364,63 @@ RSpec.describe ClaudeAgentSDK::Query do
 
       query.initialize_protocol
     end
+
+    it 'includes skills, memory, mcpServers in agents dict' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      agents = {
+        researcher: ClaudeAgentSDK::AgentDefinition.new(
+          description: 'A research agent',
+          prompt: 'Research things',
+          skills: %w[search summarize],
+          memory: 'project',
+          mcp_servers: ['external-api']
+        )
+      }
+
+      query = described_class.new(
+        transport: transport,
+        is_streaming_mode: true,
+        agents: agents
+      )
+      allow(query).to receive(:send_control_request) do |request|
+        agent_dict = request[:agents][:researcher]
+        expect(agent_dict[:skills]).to eq(%w[search summarize])
+        expect(agent_dict[:memory]).to eq('project')
+        expect(agent_dict[:mcpServers]).to eq(['external-api'])
+        {}
+      end
+
+      query.initialize_protocol
+    end
+
+    it 'compacts nil fields from agents dict' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      agents = {
+        basic: ClaudeAgentSDK::AgentDefinition.new(
+          description: 'Basic agent',
+          prompt: 'Do stuff'
+        )
+      }
+
+      query = described_class.new(
+        transport: transport,
+        is_streaming_mode: true,
+        agents: agents
+      )
+      allow(query).to receive(:send_control_request) do |request|
+        agent_dict = request[:agents][:basic]
+        expect(agent_dict.key?(:skills)).to eq(false)
+        expect(agent_dict.key?(:memory)).to eq(false)
+        expect(agent_dict.key?(:mcpServers)).to eq(false)
+        expect(agent_dict.key?(:tools)).to eq(false)
+        expect(agent_dict.key?(:model)).to eq(false)
+        {}
+      end
+
+      query.initialize_protocol
+    end
   end
 
   describe '#parse_hook_input' do

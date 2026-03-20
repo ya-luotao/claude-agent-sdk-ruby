@@ -181,9 +181,6 @@ module ClaudeAgentSDK
       process_env = ENV.to_h.merge('CLAUDECODE' => nil, 'CLAUDE_AGENT_SDK_VERSION' => VERSION).merge(custom_env)
       process_env['CLAUDE_CODE_ENTRYPOINT'] ||= 'sdk-rb'
       process_env['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING'] = 'true' if @options.enable_file_checkpointing
-      if @options.include_partial_messages
-        process_env['CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING'] ||= '1'
-      end
       process_env['PWD'] = @cwd.to_s if @cwd
 
       # Determine stderr handling

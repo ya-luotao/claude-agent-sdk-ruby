@@ -181,6 +181,39 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg).to be_a(ClaudeAgentSDK::AssistantMessage)
         expect(msg.error).to eq('rate_limit')
       end
+
+      it 'parses usage field when present' do
+        data = {
+          type: 'assistant',
+          message: {
+            model: 'claude-sonnet-4',
+            content: [
+              { type: 'text', text: 'Hello' }
+            ],
+            usage: { input_tokens: 100, output_tokens: 50 }
+          }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::AssistantMessage)
+        expect(msg.usage).to eq({ input_tokens: 100, output_tokens: 50 })
+      end
+
+      it 'defaults usage to nil when absent' do
+        data = {
+          type: 'assistant',
+          message: {
+            model: 'claude-sonnet-4',
+            content: [
+              { type: 'text', text: 'Hello' }
+            ]
+          }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::AssistantMessage)
+        expect(msg.usage).to be_nil
+      end
     end
 
     context 'system messages' do

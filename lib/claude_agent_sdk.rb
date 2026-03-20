@@ -11,6 +11,7 @@ require_relative 'claude_agent_sdk/query'
 require_relative 'claude_agent_sdk/sdk_mcp_server'
 require_relative 'claude_agent_sdk/streaming'
 require_relative 'claude_agent_sdk/sessions'
+require_relative 'claude_agent_sdk/session_mutations'
 require 'async'
 require 'securerandom'
 
@@ -76,6 +77,22 @@ module ClaudeAgentSDK
   # @return [Array<SessionMessage>] Ordered messages from the session
   def self.get_session_messages(session_id:, directory: nil, limit: nil, offset: 0)
     Sessions.get_session_messages(session_id: session_id, directory: directory, limit: limit, offset: offset)
+  end
+
+  # Rename a session by appending a custom-title entry
+  # @param session_id [String] UUID of the session to rename
+  # @param title [String] New session title
+  # @param directory [String, nil] Project directory path
+  def self.rename_session(session_id:, title:, directory: nil)
+    SessionMutations.rename_session(session_id: session_id, title: title, directory: directory)
+  end
+
+  # Tag a session. Pass nil to clear the tag.
+  # @param session_id [String] UUID of the session to tag
+  # @param tag [String, nil] Tag string, or nil to clear
+  # @param directory [String, nil] Project directory path
+  def self.tag_session(session_id:, tag:, directory: nil)
+    SessionMutations.tag_session(session_id: session_id, tag: tag, directory: directory)
   end
 
   def self.query(prompt:, options: nil, &block)
