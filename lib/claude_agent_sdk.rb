@@ -239,8 +239,14 @@ module ClaudeAgentSDK
   class Client
     attr_reader :query_handler
 
-    def initialize(options: nil)
+    # @param options [ClaudeAgentOptions, nil] Configuration options
+    # @param transport_class [Class] Transport class to use (must implement Transport interface).
+    #   Defaults to SubprocessCLITransport.
+    # @param transport_args [Hash] Additional keyword arguments passed to transport_class.new(options, **transport_args)
+    def initialize(options: nil, transport_class: SubprocessCLITransport, transport_args: {})
       @options = options || ClaudeAgentOptions.new
+      @transport_class = transport_class
+      @transport_args = transport_args
       @transport = nil
       @query_handler = nil
       @connected = false
@@ -274,7 +280,7 @@ module ClaudeAgentSDK
       )
 
       # Client always uses streaming mode; keep stdin open for bidirectional communication.
-      @transport = SubprocessCLITransport.new(configured_options)
+      @transport = @transport_class.new(configured_options, **@transport_args)
       @transport.connect
 
       # Extract SDK MCP servers

@@ -204,6 +204,96 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(client.get_server_info).to eq({ commands: ['help'] })
   end
 
+  context 'with custom transport_class' do
+    let(:custom_transport) do
+      instance_double(ClaudeAgentSDK::Transport, connect: true, write: nil, close: nil, ready?: true)
+    end
+    let(:custom_transport_class) do
+      klass = Class.new(ClaudeAgentSDK::Transport)
+      transport_instance = custom_transport
+      klass.define_method(:initialize) { |_options| @instance = transport_instance }
+      klass
+    end
+    let(:query_handler) do
+      instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+    end
+
+    before do
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+    end
+
+    it 'uses custom transport_class instead of SubprocessCLITransport' do
+      received_args = nil
+      klass = Class.new(ClaudeAgentSDK::Transport) do
+        define_method(:initialize) { |options, **kwargs| received_args = { options: options, kwargs: kwargs } }
+        define_method(:connect) { nil }
+        define_method(:write) { |_data| nil }
+        define_method(:read_messages) { nil }
+        define_method(:close) { nil }
+        define_method(:ready?) { true }
+        define_method(:end_input) { nil }
+      end
+
+      client = described_class.new(transport_class: klass)
+      client.connect
+
+      expect(received_args[:options]).to be_a(ClaudeAgentSDK::ClaudeAgentOptions)
+      expect(received_args[:kwargs]).to eq({})
+    end
+
+    it 'passes transport_args as keyword arguments to transport_class.new' do
+      received_args = nil
+      klass = Class.new(ClaudeAgentSDK::Transport) do
+        define_method(:initialize) { |options, **kwargs| received_args = { options: options, kwargs: kwargs } }
+        define_method(:connect) { nil }
+        define_method(:write) { |_data| nil }
+        define_method(:read_messages) { nil }
+        define_method(:close) { nil }
+        define_method(:ready?) { true }
+        define_method(:end_input) { nil }
+      end
+
+      client = described_class.new(
+        transport_class: klass,
+        transport_args: { sandbox: 'my-sandbox', timeout: 30 }
+      )
+      client.connect
+
+      expect(received_args[:kwargs]).to eq({ sandbox: 'my-sandbox', timeout: 30 })
+    end
+
+    it 'still performs option transformations with custom transport' do
+      received_options = nil
+      klass = Class.new(ClaudeAgentSDK::Transport) do
+        define_method(:initialize) { |options, **_kwargs| received_options = options }
+        define_method(:connect) { nil }
+        define_method(:write) { |_data| nil }
+        define_method(:read_messages) { nil }
+        define_method(:close) { nil }
+        define_method(:ready?) { true }
+        define_method(:end_input) { nil }
+      end
+
+      callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(can_use_tool: callback)
+      client = described_class.new(options: options, transport_class: klass)
+      client.connect
+
+      expect(received_options.permission_prompt_tool_name).to eq('stdio')
+      expect(received_options.env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb-client')
+    end
+
+    it 'defaults transport_class to SubprocessCLITransport' do
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+
+      client = described_class.new
+      client.connect
+
+      expect(ClaudeAgentSDK::SubprocessCLITransport).to have_received(:new)
+    end
+  end
+
   context 'with default configuration' do
     after { ClaudeAgentSDK.reset_configuration }
 
