@@ -89,7 +89,10 @@ module ClaudeAgentSDK
             description: agent_def.description,
             prompt: agent_def.prompt,
             tools: agent_def.tools,
-            model: agent_def.model
+            model: agent_def.model,
+            skills: agent_def.skills,
+            memory: agent_def.memory,
+            mcpServers: agent_def.mcp_servers
           }.compact
         end
       end

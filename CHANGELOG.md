@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-03-20
+
+Port of Python SDK v0.1.48 features for feature parity.
+
+### Added
+
+#### Session Mutations
+- `ClaudeAgentSDK.rename_session(session_id:, title:, directory:)` — rename a session by appending a custom-title JSONL entry
+- `ClaudeAgentSDK.tag_session(session_id:, tag:, directory:)` — tag a session (pass `nil` to clear); tags are Unicode-sanitized
+- `SessionMutations` module with `rename_session`, `tag_session`, and internal Unicode sanitization helpers
+- Ported from Python SDK's `_internal/session_mutations.py` with TOCTOU-safe `O_WRONLY | O_APPEND` file operations
+
+#### AssistantMessage Usage
+- `usage` attribute on `AssistantMessage` — token usage data from the API response
+- `MessageParser` populates `usage` from `data.dig(:message, :usage)`
+
+#### AgentDefinition Fields
+- `skills`, `memory`, `mcp_servers` attributes on `AgentDefinition`
+- Serialized as `skills`, `memory`, `mcpServers` (camelCase) in the CLI wire protocol initialize request
+
+#### TaskUsage Typed Class
+- `TaskUsage` class with `total_tokens`, `tool_uses`, `duration_ms` attributes
+- `TaskUsage.from_hash` factory supporting symbol, string, camelCase, and snake_case keys
+
+### Removed
+
+#### FGTS Environment Variable
+- Removed auto-setting of `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING` environment variable when `include_partial_messages` is enabled — Python SDK v0.1.48 reverted this because it causes HTTP 400 errors on LiteLLM proxies, Bedrock, and Vertex with Claude 4.5 models. The `--include-partial-messages` CLI flag remains the correct mechanism.
+
 ## [0.9.0] - 2026-03-12
 
 Port of Python SDK v0.1.48 parity improvements.

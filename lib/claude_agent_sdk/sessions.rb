@@ -491,9 +491,12 @@ module ClaudeAgentSDK
     end
 
     private_class_method :list_sessions_for_directory, :list_all_sessions,
-                         :deduplicate_sessions, :detect_worktrees,
+                         :deduplicate_sessions,
                          :find_session_file, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :filter_visible_messages, :read_head_tail, :build_session_info
+
+    # These remain accessible for SessionMutations:
+    # config_dir, sanitize_path, find_project_dir, detect_worktrees
   end
 end

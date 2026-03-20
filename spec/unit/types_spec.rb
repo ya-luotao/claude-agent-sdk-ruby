@@ -86,6 +86,19 @@ RSpec.describe ClaudeAgentSDK do
           expect(msg.error).to eq(error_type)
         end
       end
+
+      it 'stores usage field' do
+        blocks = [ClaudeAgentSDK::TextBlock.new(text: 'Hello')]
+        usage = { input_tokens: 100, output_tokens: 50 }
+        msg = described_class.new(content: blocks, model: 'claude-sonnet-4', usage: usage)
+        expect(msg.usage).to eq(usage)
+      end
+
+      it 'defaults usage to nil' do
+        blocks = [ClaudeAgentSDK::TextBlock.new(text: 'Hello')]
+        msg = described_class.new(content: blocks, model: 'claude-sonnet-4')
+        expect(msg.usage).to be_nil
+      end
     end
 
     describe ClaudeAgentSDK::SystemMessage do
@@ -93,6 +106,78 @@ RSpec.describe ClaudeAgentSDK do
         msg = described_class.new(subtype: 'info', data: { message: 'Test' })
         expect(msg.subtype).to eq('info')
         expect(msg.data).to eq({ message: 'Test' })
+      end
+    end
+
+    describe ClaudeAgentSDK::TaskUsage do
+      it 'stores usage fields with defaults' do
+        usage = described_class.new
+        expect(usage.total_tokens).to eq(0)
+        expect(usage.tool_uses).to eq(0)
+        expect(usage.duration_ms).to eq(0)
+      end
+
+      it 'stores custom usage values' do
+        usage = described_class.new(total_tokens: 1000, tool_uses: 5, duration_ms: 3000)
+        expect(usage.total_tokens).to eq(1000)
+        expect(usage.tool_uses).to eq(5)
+        expect(usage.duration_ms).to eq(3000)
+      end
+
+      it 'creates from hash with symbol keys' do
+        usage = described_class.from_hash({ total_tokens: 500, tool_uses: 3, duration_ms: 2000 })
+        expect(usage.total_tokens).to eq(500)
+        expect(usage.tool_uses).to eq(3)
+        expect(usage.duration_ms).to eq(2000)
+      end
+
+      it 'creates from hash with string keys' do
+        usage = described_class.from_hash({ 'total_tokens' => 500, 'tool_uses' => 3, 'duration_ms' => 2000 })
+        expect(usage.total_tokens).to eq(500)
+        expect(usage.tool_uses).to eq(3)
+        expect(usage.duration_ms).to eq(2000)
+      end
+
+      it 'creates from hash with camelCase keys' do
+        usage = described_class.from_hash({ totalTokens: 500, toolUses: 3, durationMs: 2000 })
+        expect(usage.total_tokens).to eq(500)
+        expect(usage.tool_uses).to eq(3)
+        expect(usage.duration_ms).to eq(2000)
+      end
+
+      it 'returns nil for non-hash input' do
+        expect(described_class.from_hash(nil)).to be_nil
+        expect(described_class.from_hash('not a hash')).to be_nil
+      end
+    end
+
+    describe ClaudeAgentSDK::AgentDefinition do
+      it 'stores basic fields' do
+        agent = described_class.new(description: 'A coding agent', prompt: 'You write code')
+        expect(agent.description).to eq('A coding agent')
+        expect(agent.prompt).to eq('You write code')
+        expect(agent.tools).to be_nil
+        expect(agent.model).to be_nil
+      end
+
+      it 'stores skills, memory, mcp_servers' do
+        agent = described_class.new(
+          description: 'Agent',
+          prompt: 'Do stuff',
+          skills: %w[code review],
+          memory: 'project',
+          mcp_servers: ['server1', { name: 'server2', url: 'http://example.com' }]
+        )
+        expect(agent.skills).to eq(%w[code review])
+        expect(agent.memory).to eq('project')
+        expect(agent.mcp_servers).to eq(['server1', { name: 'server2', url: 'http://example.com' }])
+      end
+
+      it 'defaults new fields to nil' do
+        agent = described_class.new(description: 'Agent', prompt: 'Do stuff')
+        expect(agent.skills).to be_nil
+        expect(agent.memory).to be_nil
+        expect(agent.mcp_servers).to be_nil
       end
     end
 

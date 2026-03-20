@@ -104,13 +104,14 @@ module ClaudeAgentSDK
 
   # Assistant message with content blocks
   class AssistantMessage
-    attr_accessor :content, :model, :parent_tool_use_id, :error
+    attr_accessor :content, :model, :parent_tool_use_id, :error, :usage
 
-    def initialize(content:, model:, parent_tool_use_id: nil, error: nil)
+    def initialize(content:, model:, parent_tool_use_id: nil, error: nil, usage: nil)
       @content = content
       @model = model
       @parent_tool_use_id = parent_tool_use_id
       @error = error # One of: authentication_failed, billing_error, rate_limit, invalid_request, server_error, unknown
+      @usage = usage # Token usage info from the API response
     end
   end
 
@@ -126,6 +127,27 @@ module ClaudeAgentSDK
 
   # Task lifecycle notification statuses
   TASK_NOTIFICATION_STATUSES = %w[completed failed stopped].freeze
+
+  # Typed usage data for task progress and notifications
+  class TaskUsage
+    attr_accessor :total_tokens, :tool_uses, :duration_ms
+
+    def initialize(total_tokens: 0, tool_uses: 0, duration_ms: 0)
+      @total_tokens = total_tokens
+      @tool_uses = tool_uses
+      @duration_ms = duration_ms
+    end
+
+    def self.from_hash(hash)
+      return nil unless hash.is_a?(Hash)
+
+      new(
+        total_tokens: hash[:total_tokens] || hash['total_tokens'] || hash[:totalTokens] || hash['totalTokens'] || 0,
+        tool_uses: hash[:tool_uses] || hash['tool_uses'] || hash[:toolUses] || hash['toolUses'] || 0,
+        duration_ms: hash[:duration_ms] || hash['duration_ms'] || hash[:durationMs] || hash['durationMs'] || 0
+      )
+    end
+  end
 
   # Task started system message (subagent/background task started)
   class TaskStartedMessage < SystemMessage
@@ -285,13 +307,16 @@ module ClaudeAgentSDK
 
   # Agent definition configuration
   class AgentDefinition
-    attr_accessor :description, :prompt, :tools, :model
+    attr_accessor :description, :prompt, :tools, :model, :skills, :memory, :mcp_servers
 
-    def initialize(description:, prompt:, tools: nil, model: nil)
+    def initialize(description:, prompt:, tools: nil, model: nil, skills: nil, memory: nil, mcp_servers: nil)
       @description = description
       @prompt = prompt
       @tools = tools
       @model = model
+      @skills = skills # Array of skill names
+      @memory = memory # One of: 'user', 'project', 'local'
+      @mcp_servers = mcp_servers # Array of server names or config hashes
     end
   end
 

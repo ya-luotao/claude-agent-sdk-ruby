@@ -346,7 +346,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(captured_env['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING']).to eq('true')
     end
 
-    it 'enables fine-grained tool streaming when partial messages are requested' do
+    it 'does not set FGTS env var even when partial messages are requested' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
         include_partial_messages: true
@@ -364,7 +364,8 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       transport.connect
 
-      expect(captured_env['CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING']).to eq('1')
+      # FGTS env var was reverted in Python SDK v0.1.48 due to 400 errors on proxies/Bedrock/Vertex
+      expect(captured_env).not_to have_key('CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING')
     end
   end
 end
