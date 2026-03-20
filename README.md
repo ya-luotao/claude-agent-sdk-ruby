@@ -6,7 +6,7 @@
 
 [![Gem Version](https://badge.fury.io/rb/claude-agent-sdk.svg?icon=si%3Arubygems)](https://badge.fury.io/rb/claude-agent-sdk)
 
-### Feature Parity with Python SDK (v0.1.48)
+### Feature Parity with Python SDK (v0.1.48) + Ruby Extras
 
 | Feature | Python | Ruby |
 |---------|:------:|:----:|
@@ -34,6 +34,7 @@
 | `usage` on `AssistantMessage` | ✅ | ✅ |
 | Fallback model | ✅ | ✅ |
 | Plugin support | ✅ | ✅ |
+| Custom transport (pluggable I/O layer) | — | ✅ |
 | Rails integration (configure block, ActionCable) | — | ✅ |
 | Bundled CLI binary | ✅ | — |
 
@@ -127,6 +128,7 @@ Both SDKs spawn `claude` CLI as a subprocess with stream-JSON over stdin/stdout.
 - [Quick Start](#quick-start)
 - [Basic Usage: query()](#basic-usage-query)
 - [Client](#client)
+- [Custom Transport](#custom-transport)
 - [Custom Tools (SDK MCP Servers)](#custom-tools-sdk-mcp-servers)
 - [Hooks](#hooks)
 - [Permission Callbacks](#permission-callbacks)
@@ -156,7 +158,7 @@ Add this line to your application's Gemfile:
 gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'
 
 # Or use a stable version from RubyGems
-gem 'claude-agent-sdk', '~> 0.10.0'
+gem 'claude-agent-sdk', '~> 0.11.0'
 ```
 
 And then execute:
@@ -354,6 +356,59 @@ Async do
   # Stop a running background task
   client.stop_task('task_abc123')
 
+  client.disconnect
+end.wait
+```
+
+### Custom Transport
+
+By default, `Client` uses `SubprocessCLITransport` to spawn the Claude Code CLI locally. You can provide a custom transport class to connect via other channels (e.g., E2B sandbox, remote SSH, WebSocket):
+
+```ruby
+# Custom transport must implement the Transport interface:
+# connect, write, read_messages, end_input, close, ready?
+class E2BSandboxTransport < ClaudeAgentSDK::Transport
+  def initialize(options, sandbox:)
+    @options = options
+    @sandbox = sandbox
+  end
+
+  def connect
+    @sandbox.connect
+  end
+
+  def write(data)
+    @sandbox.stdin_write(data)
+  end
+
+  def read_messages(&block)
+    @sandbox.stdout_read_lines { |line| yield JSON.parse(line, symbolize_names: true) }
+  end
+
+  def end_input
+    @sandbox.close_stdin
+  end
+
+  def close
+    @sandbox.disconnect
+  end
+
+  def ready?
+    @sandbox.connected?
+  end
+end
+
+# Use it with Client — all connect orchestration (option transforms,
+# MCP extraction, hook conversion, Query lifecycle) is handled for you
+Async do
+  client = ClaudeAgentSDK::Client.new(
+    options: options,
+    transport_class: E2BSandboxTransport,
+    transport_args: { sandbox: my_sandbox }
+  )
+  client.connect
+  client.query("Hello from the sandbox!")
+  client.receive_response { |msg| puts msg }
   client.disconnect
 end.wait
 ```

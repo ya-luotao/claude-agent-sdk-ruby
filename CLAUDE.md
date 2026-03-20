@@ -53,7 +53,7 @@ User code
 
 - **`query()`** — Simple function interface. Creates a `SubprocessCLITransport` directly, reads messages via `transport.read_messages`, parses with `MessageParser`. No control protocol. Good for one-shot queries and streaming input via Enumerators.
 
-- **`Client`** — Full-featured bidirectional sessions. Creates transport with empty enumerator (keeps stdin open), instantiates a `Query` handler that runs `read_messages` in an async task, routes control messages internally, and exposes SDK messages via `Async::Queue`. Supports hooks, permission callbacks, SDK MCP servers, interrupt, model switching, and file rewind.
+- **`Client`** — Full-featured bidirectional sessions. Accepts optional `transport_class` (defaults to `SubprocessCLITransport`) and `transport_args` for custom transports. Creates transport, instantiates a `Query` handler that runs `read_messages` in an async task, routes control messages internally, and exposes SDK messages via `Async::Queue`. Supports hooks, permission callbacks, SDK MCP servers, interrupt, model switching, and file rewind.
 
 ### SDK MCP Servers
 

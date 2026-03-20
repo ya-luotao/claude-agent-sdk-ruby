@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-03-20
+
+### Added
+
+#### Custom Transport Support
+- `Client.new` accepts `transport_class:` and `transport_args:` keyword arguments, allowing consumers to plug in custom transports (e.g., E2B sandbox, remote SSH) without duplicating `Client#connect` internals
+- Default remains `SubprocessCLITransport` — zero behavior change for existing callers
+- Custom transport class must implement the `Transport` interface (`connect`, `write`, `read_messages`, `end_input`, `close`, `ready?`)
+- `transport_args` are passed as keyword arguments to `transport_class.new(options, **transport_args)`
+- All option transformations, MCP extraction, hook conversion, and Query lifecycle stay in `Client#connect` — the transport only handles I/O
+
 ## [0.10.0] - 2026-03-20
 
 Port of Python SDK v0.1.48 features for feature parity.
