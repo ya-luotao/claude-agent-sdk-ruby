@@ -6,7 +6,7 @@
 
 [![Gem Version](https://badge.fury.io/rb/claude-agent-sdk.svg?icon=si%3Arubygems)](https://badge.fury.io/rb/claude-agent-sdk)
 
-### Feature Parity with Python SDK (v0.1.46)
+### Feature Parity with Python SDK (v0.1.48)
 
 | Feature | Python | Ruby |
 |---------|:------:|:----:|
@@ -25,11 +25,13 @@
 | Beta features (1M context) | ✅ | ✅ |
 | File checkpointing & rewind | ✅ | ✅ |
 | Session browsing (`list_sessions`, `get_session_messages`) | ✅ | ✅ |
+| Session mutations (`rename_session`, `tag_session`) | ✅ | ✅ |
 | Task message types (started/progress/notification) | ✅ | ✅ |
 | MCP server control (reconnect/toggle/stop) | ✅ | ✅ |
 | Subagent context on hook inputs | ✅ | ✅ |
 | Typed MCP status response | ✅ | ✅ |
 | `stop_reason` on `ResultMessage` | ✅ | ✅ |
+| `usage` on `AssistantMessage` | ✅ | ✅ |
 | Fallback model | ✅ | ✅ |
 | Plugin support | ✅ | ✅ |
 | Rails integration (configure block, ActionCable) | — | ✅ |
@@ -137,6 +139,7 @@ Both SDKs spawn `claude` CLI as a subprocess with stream-JSON over stdin/stdout.
 - [Sandbox Settings](#sandbox-settings)
 - [File Checkpointing & Rewind](#file-checkpointing--rewind)
 - [Session Browsing](#session-browsing)
+- [Session Mutations](#session-mutations)
 - [Rails Integration](#rails-integration)
 - [Types](#types)
 - [Error Handling](#error-handling)
@@ -153,7 +156,7 @@ Add this line to your application's Gemfile:
 gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'
 
 # Or use a stable version from RubyGems
-gem 'claude-agent-sdk', '~> 0.8.0'
+gem 'claude-agent-sdk', '~> 0.10.0'
 ```
 
 And then execute:
@@ -934,6 +937,39 @@ Each `SessionMessage` includes `type` (`"user"` or `"assistant"`), `uuid`, `sess
 
 > **Note:** Session browsing reads `~/.claude/projects/` JSONL files directly. It respects the `CLAUDE_CONFIG_DIR` environment variable and automatically detects git worktrees.
 
+## Session Mutations
+
+Rename or tag sessions programmatically — no CLI subprocess required.
+
+### Renaming a Session
+
+```ruby
+# Rename a session (appends a custom-title JSONL entry)
+ClaudeAgentSDK.rename_session(
+  session_id: '550e8400-e29b-41d4-a716-446655440000',
+  title: 'My refactoring session',
+  directory: '/path/to/project'  # optional
+)
+```
+
+### Tagging a Session
+
+```ruby
+# Tag a session (Unicode-sanitized before storing)
+ClaudeAgentSDK.tag_session(
+  session_id: '550e8400-e29b-41d4-a716-446655440000',
+  tag: 'experiment'
+)
+
+# Clear a tag
+ClaudeAgentSDK.tag_session(
+  session_id: '550e8400-e29b-41d4-a716-446655440000',
+  tag: nil
+)
+```
+
+> **Note:** Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process.
+
 ## Rails Integration
 
 The SDK integrates well with Rails applications. Here are common patterns:
@@ -1120,7 +1156,8 @@ class AssistantMessage
   attr_accessor :content,           # Array<ContentBlock>
                 :model,             # String
                 :parent_tool_use_id,# String | nil
-                :error              # String | nil ('authentication_failed', 'billing_error', 'rate_limit', 'invalid_request', 'server_error', 'unknown')
+                :error,             # String | nil ('authentication_failed', 'billing_error', 'rate_limit', 'invalid_request', 'server_error', 'unknown')
+                :usage              # Hash | nil - Token usage info from the API response
 end
 ```
 
@@ -1276,7 +1313,7 @@ end
 | `HookMatcher` | Hook configuration with matcher pattern and timeout |
 | `PermissionResultAllow` | Permission callback result to allow tool use |
 | `PermissionResultDeny` | Permission callback result to deny tool use |
-| `AgentDefinition` | Agent definition with description, prompt, tools, model |
+| `AgentDefinition` | Agent definition with description, prompt, tools, model, skills, memory, mcp_servers |
 | `ThinkingConfigAdaptive` | Adaptive thinking mode (32,000 token default budget) |
 | `ThinkingConfigEnabled` | Enabled thinking with explicit `budget_tokens` |
 | `ThinkingConfigDisabled` | Disabled thinking (0 tokens) |
@@ -1290,6 +1327,7 @@ end
 | `McpServerInfo` | MCP server name and version |
 | `McpToolInfo` | MCP tool name, description, and annotations |
 | `McpToolAnnotations` | MCP tool annotation hints (`read_only`, `destructive`, `open_world`) |
+| `TaskUsage` | Typed usage data (`total_tokens`, `tool_uses`, `duration_ms`) with `from_hash` factory |
 | `SDKSessionInfo` | Session metadata from `list_sessions` |
 | `SessionMessage` | Single message from `get_session_messages` |
 | `SandboxSettings` | Sandbox settings for isolated command execution |
