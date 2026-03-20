@@ -205,15 +205,6 @@ RSpec.describe ClaudeAgentSDK::Client do
   end
 
   context 'with custom transport_class' do
-    let(:custom_transport) do
-      instance_double(ClaudeAgentSDK::Transport, connect: true, write: nil, close: nil, ready?: true)
-    end
-    let(:custom_transport_class) do
-      klass = Class.new(ClaudeAgentSDK::Transport)
-      transport_instance = custom_transport
-      klass.define_method(:initialize) { |_options| @instance = transport_instance }
-      klass
-    end
     let(:query_handler) do
       instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
     end
@@ -222,10 +213,11 @@ RSpec.describe ClaudeAgentSDK::Client do
       allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
     end
 
-    it 'uses custom transport_class instead of SubprocessCLITransport' do
-      received_args = nil
-      klass = Class.new(ClaudeAgentSDK::Transport) do
-        define_method(:initialize) { |options, **kwargs| received_args = { options: options, kwargs: kwargs } }
+    # Build an anonymous Transport subclass that captures its initialize arguments
+    # via the provided block and stubs all interface methods.
+    def build_transport_class(&on_initialize)
+      Class.new(ClaudeAgentSDK::Transport) do
+        define_method(:initialize, &on_initialize)
         define_method(:connect) { nil }
         define_method(:write) { |_data| nil }
         define_method(:read_messages) { nil }
@@ -233,6 +225,11 @@ RSpec.describe ClaudeAgentSDK::Client do
         define_method(:ready?) { true }
         define_method(:end_input) { nil }
       end
+    end
+
+    it 'uses custom transport_class instead of SubprocessCLITransport' do
+      received_args = nil
+      klass = build_transport_class { |options, **kwargs| received_args = { options: options, kwargs: kwargs } }
 
       client = described_class.new(transport_class: klass)
       client.connect
@@ -243,15 +240,7 @@ RSpec.describe ClaudeAgentSDK::Client do
 
     it 'passes transport_args as keyword arguments to transport_class.new' do
       received_args = nil
-      klass = Class.new(ClaudeAgentSDK::Transport) do
-        define_method(:initialize) { |options, **kwargs| received_args = { options: options, kwargs: kwargs } }
-        define_method(:connect) { nil }
-        define_method(:write) { |_data| nil }
-        define_method(:read_messages) { nil }
-        define_method(:close) { nil }
-        define_method(:ready?) { true }
-        define_method(:end_input) { nil }
-      end
+      klass = build_transport_class { |options, **kwargs| received_args = { options: options, kwargs: kwargs } }
 
       client = described_class.new(
         transport_class: klass,
@@ -264,15 +253,7 @@ RSpec.describe ClaudeAgentSDK::Client do
 
     it 'still performs option transformations with custom transport' do
       received_options = nil
-      klass = Class.new(ClaudeAgentSDK::Transport) do
-        define_method(:initialize) { |options, **_kwargs| received_options = options }
-        define_method(:connect) { nil }
-        define_method(:write) { |_data| nil }
-        define_method(:read_messages) { nil }
-        define_method(:close) { nil }
-        define_method(:ready?) { true }
-        define_method(:end_input) { nil }
-      end
+      klass = build_transport_class { |options, **_kwargs| received_options = options }
 
       callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(can_use_tool: callback)
