@@ -112,10 +112,6 @@ module ClaudeAgentSDK
       configured_options = options.dup_with(permission_prompt_tool_name: 'stdio')
     end
 
-    configured_options = configured_options.dup_with(
-      env: (configured_options.env || {}).merge('CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb')
-    )
-
     Async do
       # Always use streaming mode with control protocol (matches Python SDK).
       # This sends agents via initialize request instead of CLI args,
@@ -274,10 +270,6 @@ module ClaudeAgentSDK
         # Set permission_prompt_tool_name to stdio for control protocol
         configured_options = @options.dup_with(permission_prompt_tool_name: 'stdio')
       end
-
-      configured_options = configured_options.dup_with(
-        env: (configured_options.env || {}).merge('CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb-client')
-      )
 
       # Client always uses streaming mode; keep stdin open for bidirectional communication.
       @transport = @transport_class.new(configured_options, **@transport_args)

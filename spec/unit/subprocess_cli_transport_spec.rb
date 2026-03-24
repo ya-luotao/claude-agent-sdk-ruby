@@ -307,7 +307,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     it 'preserves a caller-provided CLAUDE_CODE_ENTRYPOINT value' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
-        env: { 'CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb-client' }
+        env: { 'CLAUDE_CODE_ENTRYPOINT' => 'custom-entrypoint' }
       )
       transport = described_class.new('hi', options)
 
@@ -322,7 +322,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       transport.connect
 
-      expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb-client')
+      expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('custom-entrypoint')
     end
 
     it 'enables SDK file checkpointing via environment variable' do
