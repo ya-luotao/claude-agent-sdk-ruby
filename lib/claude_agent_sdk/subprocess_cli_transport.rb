@@ -316,20 +316,30 @@ module ClaudeAgentSDK
         cleanup_errors << "stderr: #{e.message}"
       end
 
-      # Terminate process
+      # Wait for graceful shutdown after stdin EOF, then terminate if needed.
+      # The subprocess needs time to flush its session file after receiving
+      # EOF on stdin. Without this grace period, SIGTERM can interrupt the
+      # write and cause the last assistant message to be lost.
       begin
         if @process.alive?
-          Process.kill('TERM', @process.pid)
-          # Wait briefly for graceful shutdown
-          Timeout.timeout(2) { @process.value }
+          # Give the process up to 5 seconds to exit on its own
+          Timeout.timeout(5) { @process.value }
         end
       rescue Timeout::Error
-        # Force kill if graceful shutdown failed
+        # Graceful shutdown timed out — send SIGTERM
         begin
-          Process.kill('KILL', @process.pid)
-          @process.value
-        rescue StandardError => e
-          cleanup_errors << "force kill: #{e.message}"
+          Process.kill('TERM', @process.pid)
+          Timeout.timeout(2) { @process.value }
+        rescue Timeout::Error
+          # SIGTERM didn't work — force kill
+          begin
+            Process.kill('KILL', @process.pid)
+            @process.value
+          rescue StandardError => e
+            cleanup_errors << "force kill: #{e.message}"
+          end
+        rescue Errno::ESRCH
+          # Process already dead
         end
       rescue Errno::ESRCH
         # Process already dead, ignore
