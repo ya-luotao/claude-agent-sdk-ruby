@@ -345,6 +345,78 @@ RSpec.describe ClaudeAgentSDK::Sessions do
     end
   end
 
+  describe '.get_session_info' do
+    it 'returns nil for invalid session_id' do
+      expect(described_class.get_session_info(session_id: 'not-a-uuid')).to be_nil
+    end
+
+    it 'returns nil when session file not found' do
+      allow(described_class).to receive(:config_dir).and_return('/nonexistent')
+      expect(described_class.get_session_info(session_id: '12345678-1234-1234-1234-123456789abc')).to be_nil
+    end
+
+    it 'finds a session by id in a specific directory' do
+      Dir.mktmpdir do |config_dir|
+        allow(described_class).to receive(:config_dir).and_return(config_dir)
+
+        session_id = '12345678-1234-1234-1234-123456789abc'
+        # Create a project dir matching the directory path
+        dir_path = File.join(config_dir, 'testproject')
+        FileUtils.mkdir_p(dir_path)
+        sanitized = described_class.sanitize_path(File.realpath(dir_path).unicode_normalize(:nfc))
+        project_dir = File.join(config_dir, 'projects', sanitized)
+        FileUtils.mkdir_p(project_dir)
+
+        File.write(
+          File.join(project_dir, "#{session_id}.jsonl"),
+          { type: 'user', uuid: 'u1', message: { content: 'Hello from info' } }.to_json
+        )
+
+        result = described_class.get_session_info(session_id: session_id, directory: dir_path)
+        expect(result).to be_a(ClaudeAgentSDK::SDKSessionInfo)
+        expect(result.session_id).to eq(session_id)
+        expect(result.first_prompt).to eq('Hello from info')
+      end
+    end
+
+    it 'finds a session by id across all project dirs' do
+      Dir.mktmpdir do |config_dir|
+        allow(described_class).to receive(:config_dir).and_return(config_dir)
+
+        session_id = '12345678-1234-1234-1234-123456789abc'
+        project_dir = File.join(config_dir, 'projects', '-some-project')
+        FileUtils.mkdir_p(project_dir)
+
+        File.write(
+          File.join(project_dir, "#{session_id}.jsonl"),
+          { type: 'user', uuid: 'u1', message: { content: 'Found it' } }.to_json
+        )
+
+        result = described_class.get_session_info(session_id: session_id)
+        expect(result).to be_a(ClaudeAgentSDK::SDKSessionInfo)
+        expect(result.session_id).to eq(session_id)
+        expect(result.first_prompt).to eq('Found it')
+      end
+    end
+
+    it 'returns nil for sidechain sessions' do
+      Dir.mktmpdir do |config_dir|
+        allow(described_class).to receive(:config_dir).and_return(config_dir)
+
+        session_id = '12345678-1234-1234-1234-123456789abc'
+        project_dir = File.join(config_dir, 'projects', '-test')
+        FileUtils.mkdir_p(project_dir)
+
+        File.write(
+          File.join(project_dir, "#{session_id}.jsonl"),
+          { type: 'user', isSidechain: true, uuid: 'u1', message: { content: 'Side' } }.to_json
+        )
+
+        expect(described_class.get_session_info(session_id: session_id)).to be_nil
+      end
+    end
+  end
+
   describe '.get_session_messages' do
     it 'returns empty for invalid session_id' do
       expect(described_class.get_session_messages(session_id: 'not-a-uuid')).to eq([])
@@ -567,6 +639,14 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
       .and_return([])
 
     ClaudeAgentSDK.list_sessions(directory: '/test', limit: 5, include_worktrees: false)
+  end
+
+  it 'delegates get_session_info to Sessions module' do
+    expect(ClaudeAgentSDK::Sessions).to receive(:get_session_info)
+      .with(session_id: 'abc', directory: '/test')
+      .and_return(nil)
+
+    ClaudeAgentSDK.get_session_info(session_id: 'abc', directory: '/test')
   end
 
   it 'delegates get_session_messages to Sessions module' do

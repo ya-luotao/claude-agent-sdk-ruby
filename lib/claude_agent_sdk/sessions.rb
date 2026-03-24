@@ -317,6 +317,32 @@ module ClaudeAgentSDK
       sessions
     end
 
+    # Read metadata for a single session by ID without a full directory scan.
+    #
+    # @param session_id [String] UUID of the session to look up
+    # @param directory [String, nil] Project directory path. When nil, all
+    #   project directories are searched.
+    # @return [SDKSessionInfo, nil] Session info, or nil if not found / sidechain / no summary
+    def get_session_info(session_id:, directory: nil)
+      return nil unless session_id.match?(UUID_RE)
+
+      file_name = "#{session_id}.jsonl"
+      return get_session_info_for_directory(file_name, directory) if directory
+
+      # No directory — search all project directories.
+      projects_dir = File.join(config_dir, 'projects')
+      return nil unless File.directory?(projects_dir)
+
+      Dir.children(projects_dir).each do |child|
+        entry = File.join(projects_dir, child)
+        next unless File.directory?(entry)
+
+        info = read_session_lite(File.join(entry, file_name), nil)
+        return info if info
+      end
+      nil
+    end
+
     # Get messages from a session transcript
     # @param session_id [String] The session UUID
     # @param directory [String, nil] Working directory to search in
@@ -340,6 +366,28 @@ module ClaudeAgentSDK
     end
 
     # -- Private helpers --
+
+    def get_session_info_for_directory(file_name, directory)
+      canonical = File.realpath(directory).unicode_normalize(:nfc)
+      project_dir = find_project_dir(canonical)
+      if project_dir
+        info = read_session_lite(File.join(project_dir, file_name), canonical)
+        return info if info
+      end
+
+      # Worktree fallback — matches get_session_messages semantics.
+      worktree_paths = detect_worktrees(canonical) rescue [] # rubocop:disable Style/RescueModifier
+      worktree_paths.each do |wt_path|
+        next if wt_path == canonical
+
+        wt_project_dir = find_project_dir(wt_path)
+        next unless wt_project_dir
+
+        info = read_session_lite(File.join(wt_project_dir, file_name), wt_path)
+        return info if info
+      end
+      nil
+    end
 
     def list_sessions_for_directory(directory, include_worktrees)
       path = File.realpath(directory).unicode_normalize(:nfc)
@@ -525,7 +573,8 @@ module ClaudeAgentSDK
       end
     end
 
-    private_class_method :list_sessions_for_directory, :list_all_sessions,
+    private_class_method :get_session_info_for_directory,
+                         :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions,
                          :find_session_file, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
