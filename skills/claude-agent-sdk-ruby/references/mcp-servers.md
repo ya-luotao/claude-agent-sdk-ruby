@@ -68,3 +68,14 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 ## Resources and prompts (SDK MCP)
 
 SDK MCP servers can also expose resources and prompts via `ClaudeAgentSDK.create_resource` and `ClaudeAgentSDK.create_prompt`.
+
+## MCP runtime control (Client only)
+
+Manage MCP server connections during a live session:
+
+```ruby
+client.get_mcp_status                          # inspect connection status
+client.reconnect_mcp_server("my_server")       # reconnect a failed server
+client.toggle_mcp_server("my_server", false)   # disable a server
+client.toggle_mcp_server("my_server", true)    # re-enable it
+```

@@ -84,3 +84,38 @@ end
 ## Capture UUIDs for rewind
 
 If `enable_file_checkpointing` is enabled, the CLI populates `UserMessage#uuid`. Store UUIDs if you plan to call `Client#rewind_files(uuid)`.
+
+## Streaming input helpers
+
+Use `ClaudeAgentSDK::Streaming` to build Enumerators for multi-turn streaming input (pass as `prompt:` to `query()` or `Client#connect`).
+
+```ruby
+# From an array of strings
+stream = ClaudeAgentSDK::Streaming.from_array(["Hello", "What is 2+2?", "Thanks!"])
+ClaudeAgentSDK.query(prompt: stream) { |msg| puts msg.inspect }
+
+# From a block (useful for delayed/interactive input)
+stream = ClaudeAgentSDK::Streaming.from_block do |yielder|
+  yielder << "First message"
+  sleep 1
+  yielder << "Second message"
+end
+
+# Build a single user message (returns JSON string)
+json = ClaudeAgentSDK::Streaming.user_message("Hello", session_id: "default")
+```
+
+## Client runtime APIs
+
+These methods are available on a connected `Client` instance for mid-conversation control:
+
+- `client.interrupt` — Send interrupt signal (stop current generation)
+- `client.set_model(model)` — Change AI model mid-conversation
+- `client.set_permission_mode(mode)` — Change permission mode (`"default"`, `"acceptEdits"`, `"bypassPermissions"`)
+- `client.rewind_files(user_message_uuid)` — Rewind files to a checkpoint (requires `enable_file_checkpointing`)
+- `client.get_mcp_status` — Get MCP server connection status
+- `client.get_server_info` — Get server initialization info
+- `client.reconnect_mcp_server(server_name)` — Reconnect a failed MCP server
+- `client.toggle_mcp_server(server_name, enabled)` — Enable or disable an MCP server
+- `client.stop_task(task_id)` — Stop a running background task
+- `client.server_info` — Access cached server initialization result (no control request)

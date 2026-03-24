@@ -1,6 +1,6 @@
 ---
-name: claude-agent-sdk-ruby
-description: Use when writing or refactoring Ruby code that integrates Claude Code via the claude-agent-sdk gem (ClaudeAgentSDK.query, ClaudeAgentSDK::Client, streaming input, ClaudeAgentOptions configuration including global defaults via ClaudeAgentSDK.configure, tools/permissions, MCP servers, hooks, structured output, budgets, sandboxing, betas/tools presets, control-timeout handling, session resumption/rewind, and Rails patterns like jobs or ActionCable).
+name: claude-agent-ruby
+description: Implement or modify Ruby code that uses the claude-agent-sdk gem, including query() one-shot calls, Client-based interactive sessions, streaming input, option configuration, tools/permissions, hooks, SDK MCP servers, structured output, budgets, sandboxing, betas/tools presets, control-timeout handling, session resumption/rewind, session browsing (list_sessions/get_session_messages), task lifecycle messages, MCP server control (reconnect/toggle/stop), Rails integration, and error handling.
 ---
 
 # Claude Agent SDK for Ruby
@@ -36,8 +36,8 @@ end
 
 ## Use these references
 
-- Read `references/message-handling.md` to extract text/tool blocks, capture `UserMessage#uuid` for rewind, and use `ResultMessage` fields.
-- Read `references/options.md` to configure `ClaudeAgentOptions` (defaults, tools, permissions, output formats, budgets, sandbox, sessions, advanced flags).
-- Read `references/mcp-servers.md` to define in-process SDK MCP tools/resources/prompts or configure external MCP servers.
+- Read `references/message-handling.md` to extract text/tool blocks, build streaming input with `Streaming` helpers, use Client runtime APIs (interrupt, set_model, MCP control, stop_task), and capture `UserMessage#uuid` for rewind.
+- Read `references/options.md` to configure `ClaudeAgentOptions` (defaults, tools, permissions, output formats, budgets, sandbox, sessions, agents, custom transports), and to browse/mutate sessions (`list_sessions`, `get_session_messages`, `rename_session`, `tag_session`).
+- Read `references/mcp-servers.md` to define in-process SDK MCP tools/resources/prompts, configure external MCP servers, or manage MCP servers at runtime (reconnect, toggle, status).
 - Read `references/rails.md` for initializers, background jobs, ActionCable streaming, and session resumption patterns.
 - Read `references/troubleshooting.md` for common setup/runtime errors and timeout tuning.

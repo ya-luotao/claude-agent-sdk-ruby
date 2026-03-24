@@ -7,7 +7,7 @@ Symptoms:
 
 Fix:
 - Install Claude Code CLI (Node.js required).
-- If the CLI is installed in a non-standard path, set `ClaudeAgentSDK::ClaudeAgentOptions#cli_path`.
+- If the CLI is installed in a non-standard path, set `ClaudeAgentSDK::ClaudeAgentOptions#cli_path` (see `references/options.md`).
 
 ## Control requests timing out
 
@@ -26,14 +26,14 @@ export CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS=1800
 ## Tool calls not working
 
 Checks:
-- Add the tool to `allowed_tools` (or `append_allowed_tools`).
+- Add the tool to `allowed_tools` (or `append_allowed_tools`) — see `references/options.md` (Tools and permissions).
 - Use an appropriate `permission_mode` (for example `acceptEdits` for file edits).
-- If using MCP tools, include `mcp__server__tool` in `allowed_tools`.
+- If using MCP tools, include `mcp__server__tool` in `allowed_tools` — see `references/mcp-servers.md`.
 
 ## Permission callback not firing
 
 Checks:
-- Use `ClaudeAgentSDK::Client` (streaming mode).
+- Use `ClaudeAgentSDK::Client` (streaming mode) — see `references/options.md` (Permission callback).
 - `ClaudeAgentSDK.query` does not support `can_use_tool` (use `ClaudeAgentSDK::Client`).
 - Do not combine `can_use_tool` with `permission_prompt_tool_name`.
 
@@ -47,5 +47,5 @@ Since v0.7.2, the SDK gracefully handles unrecognized types:
 ## No assistant text printed
 
 Checks:
-- Extract text from `AssistantMessage#content` blocks (only `TextBlock` has `.text`).
+- Extract text from `AssistantMessage#content` blocks (only `TextBlock` has `.text`) — see `references/message-handling.md`.
 - Stop only after `ResultMessage` so you do not exit early.

@@ -89,12 +89,46 @@ Use `mcp_servers:` to add SDK MCP servers (in-process) or external MCP servers. 
 
 Use `sandbox:` with `ClaudeAgentSDK::SandboxSettings` to run tool execution in an isolated sandbox when supported.
 
-## Experimental and runtime controls
+## Agents
+
+Use `agents:` to configure sub-agent definitions passed to the CLI via the control protocol.
+
+## Custom transport
+
+`Client.new` accepts `transport_class:` and `transport_args:` to swap the default `SubprocessCLITransport` for a custom transport (must implement the `Transport` interface: `connect`, `write`, `read_messages`, `close`).
+
+```ruby
+client = ClaudeAgentSDK::Client.new(
+  options: options,
+  transport_class: MyCustomTransport,
+  transport_args: { host: "localhost", port: 9000 }
+)
+```
+
+## Advanced flags
 
 - `betas`: Enable CLI beta features (`--betas`).
-- Client runtime APIs:
-- `Client#interrupt`
-- `Client#set_permission_mode`
-- `Client#set_model`
-- `Client#get_mcp_status`
-- `Client#get_server_info`
+
+## Session browsing and mutation (top-level SDK functions)
+
+These are standalone functions — they do not require a `Client` or running CLI process.
+
+```ruby
+# List recent sessions for a directory
+sessions = ClaudeAgentSDK.list_sessions(directory: "/path/to/project", limit: 10)
+sessions.each do |s|
+  puts "#{s.session_id} — #{s.summary} (#{s.custom_title})"
+end
+
+# Read messages from a session transcript
+messages = ClaudeAgentSDK.get_session_messages(session_id: "uuid-here", limit: 50)
+
+# Rename or tag a session
+ClaudeAgentSDK.rename_session(session_id: "uuid-here", title: "My session")
+ClaudeAgentSDK.tag_session(session_id: "uuid-here", tag: "production")
+ClaudeAgentSDK.tag_session(session_id: "uuid-here", tag: nil)  # clear tag
+```
+
+Return types:
+- `list_sessions` → `Array<SDKSessionInfo>` (fields: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`)
+- `get_session_messages` → `Array<SessionMessage>` (fields: `type`, `uuid`, `session_id`, `message`, `parent_tool_use_id`)
