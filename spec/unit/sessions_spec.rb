@@ -177,6 +177,85 @@ RSpec.describe ClaudeAgentSDK::Sessions do
         expect(result.custom_title).to eq('My Custom Title')
       end
     end
+
+    it 'extracts tag from {"type":"tag"} lines' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json,
+          { type: 'tag', tag: 'experiment', sessionId: '12345678-1234-1234-1234-123456789abc' }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.tag).to eq('experiment')
+      end
+    end
+
+    it 'treats empty tag as cleared (nil)' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json,
+          { type: 'tag', tag: 'first', sessionId: '12345678-1234-1234-1234-123456789abc' }.to_json,
+          { type: 'tag', tag: '', sessionId: '12345678-1234-1234-1234-123456789abc' }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.tag).to be_nil
+      end
+    end
+
+    it 'returns nil tag when no tag lines exist' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json)
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.tag).to be_nil
+      end
+    end
+
+    it 'extracts created_at from first entry ISO timestamp' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'user', uuid: 'u1', timestamp: '2026-01-15T10:30:00Z',
+            message: { content: 'Hello' } }.to_json,
+          { type: 'assistant', uuid: 'a1', message: { content: 'Hi' } }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.created_at).to be_a(Integer)
+        expect(result.created_at).to be > 0
+        # 2026-01-15T10:30:00Z in epoch ms
+        expected_ms = (Time.utc(2026, 1, 15, 10, 30, 0).to_f * 1000).to_i
+        expect(result.created_at).to eq(expected_ms)
+      end
+    end
+
+    it 'returns nil created_at when no timestamp in first entry' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json)
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.created_at).to be_nil
+      end
+    end
+
+    it 'uses aiTitle as fallback for custom_title' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json,
+          { type: 'system', uuid: 's1', aiTitle: 'AI Generated Title' }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.custom_title).to eq('AI Generated Title')
+        expect(result.summary).to eq('AI Generated Title')
+      end
+    end
   end
 
   describe '.read_sessions_from_dir' do
@@ -430,7 +509,7 @@ RSpec.describe ClaudeAgentSDK::Sessions do
 end
 
 RSpec.describe ClaudeAgentSDK::SDKSessionInfo do
-  it 'stores all fields' do
+  it 'stores all fields including tag and created_at' do
     info = described_class.new(
       session_id: 'abc-123',
       summary: 'Test session',
@@ -439,7 +518,9 @@ RSpec.describe ClaudeAgentSDK::SDKSessionInfo do
       custom_title: 'My Title',
       first_prompt: 'Hello',
       git_branch: 'main',
-      cwd: '/test'
+      cwd: '/test',
+      tag: 'experiment',
+      created_at: 900_000
     )
 
     expect(info.session_id).to eq('abc-123')
@@ -450,6 +531,15 @@ RSpec.describe ClaudeAgentSDK::SDKSessionInfo do
     expect(info.first_prompt).to eq('Hello')
     expect(info.git_branch).to eq('main')
     expect(info.cwd).to eq('/test')
+    expect(info.tag).to eq('experiment')
+    expect(info.created_at).to eq(900_000)
+  end
+
+  it 'defaults file_size, tag, and created_at to nil' do
+    info = described_class.new(session_id: 'x', summary: 's', last_modified: 0)
+    expect(info.file_size).to be_nil
+    expect(info.tag).to be_nil
+    expect(info.created_at).to be_nil
   end
 end
 

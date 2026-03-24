@@ -9,10 +9,12 @@ module ClaudeAgentSDK
   # Session info returned by list_sessions
   class SDKSessionInfo
     attr_accessor :session_id, :summary, :last_modified, :file_size,
-                  :custom_title, :first_prompt, :git_branch, :cwd
+                  :custom_title, :first_prompt, :git_branch, :cwd,
+                  :tag, :created_at
 
-    def initialize(session_id:, summary:, last_modified:, file_size:,
-                   custom_title: nil, first_prompt: nil, git_branch: nil, cwd: nil)
+    def initialize(session_id:, summary:, last_modified:, file_size: nil,
+                   custom_title: nil, first_prompt: nil, git_branch: nil, cwd: nil,
+                   tag: nil, created_at: nil)
       @session_id = session_id
       @summary = summary
       @last_modified = last_modified
@@ -21,6 +23,8 @@ module ClaudeAgentSDK
       @first_prompt = first_prompt
       @git_branch = git_branch
       @cwd = cwd
+      @tag = tag
+      @created_at = created_at
     end
   end
 
@@ -231,10 +235,31 @@ module ClaudeAgentSDK
     end
 
     def build_session_info(file_path, head, tail, stat, project_path)
-      custom_title = extract_json_string_field(tail, 'customTitle', last: true)
+      # User-set title (customTitle) wins over AI-generated title (aiTitle).
+      # Head fallback covers short sessions where the title entry may not be in tail.
+      custom_title = extract_json_string_field(tail, 'customTitle', last: true) ||
+                     extract_json_string_field(head, 'customTitle', last: true) ||
+                     extract_json_string_field(tail, 'aiTitle', last: true) ||
+                     extract_json_string_field(head, 'aiTitle', last: true)
       first_prompt = extract_first_prompt_from_head(head)
-      summary = custom_title || extract_json_string_field(tail, 'summary', last: true) || first_prompt
+      # lastPrompt tail entry shows what the user was most recently doing.
+      summary = custom_title ||
+                extract_json_string_field(tail, 'lastPrompt', last: true) ||
+                extract_json_string_field(tail, 'summary', last: true) ||
+                first_prompt
       return nil if summary.nil? || summary.strip.empty?
+
+      # Scope tag extraction to {"type":"tag"} lines — a bare tail scan for
+      # "tag" would match tool_use inputs (git tag, Docker tags, etc.).
+      tag_line = tail.lines.reverse.find { |ln| ln.start_with?('{"type":"tag"') }
+      tag_value = tag_line ? extract_json_string_field(tag_line, 'tag', last: true) : nil
+      tag_value = nil if tag_value && tag_value.empty?
+
+      # created_at from first entry's ISO timestamp (epoch ms). More reliable
+      # than stat().birthtime which is unsupported on some filesystems.
+      first_line = head.lines.first || ''
+      first_timestamp = extract_json_string_field(first_line, 'timestamp', last: false)
+      created_at = parse_iso_timestamp_ms(first_timestamp) if first_timestamp
 
       SDKSessionInfo.new(
         session_id: File.basename(file_path, '.jsonl'),
@@ -245,8 +270,18 @@ module ClaudeAgentSDK
         first_prompt: first_prompt,
         git_branch: extract_json_string_field(tail, 'gitBranch', last: true) ||
                     extract_json_string_field(head, 'gitBranch', last: false),
-        cwd: extract_json_string_field(head, 'cwd', last: false) || project_path
+        cwd: extract_json_string_field(head, 'cwd', last: false) || project_path,
+        tag: tag_value,
+        created_at: created_at
       )
+    end
+
+    # Parse an ISO 8601 timestamp string into epoch milliseconds
+    def parse_iso_timestamp_ms(timestamp_str)
+      require 'time'
+      (Time.iso8601(timestamp_str).to_f * 1000).to_i
+    rescue ArgumentError
+      nil
     end
 
     # Read all sessions from a project directory
@@ -494,7 +529,8 @@ module ClaudeAgentSDK
                          :deduplicate_sessions,
                          :find_session_file, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
-                         :filter_visible_messages, :read_head_tail, :build_session_info
+                         :filter_visible_messages, :read_head_tail, :build_session_info,
+                         :parse_iso_timestamp_ms
 
     # These remain accessible for SessionMutations:
     # config_dir, sanitize_path, find_project_dir, detect_worktrees
