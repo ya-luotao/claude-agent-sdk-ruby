@@ -19,16 +19,24 @@ module ClaudeAgentSDK
     PostToolUse
     PostToolUseFailure
     UserPromptSubmit
+    SessionStart
+    SessionEnd
     Stop
+    SubagentStart
     SubagentStop
     PreCompact
     Notification
-    SubagentStart
     PermissionRequest
+    Setup
+    TeammateIdle
+    TaskCompleted
+    ConfigChange
+    WorktreeCreate
+    WorktreeRemove
   ].freeze
 
   # Type constants for assistant message errors
-  ASSISTANT_MESSAGE_ERRORS = %w[authentication_failed billing_error rate_limit invalid_request server_error unknown].freeze
+  ASSISTANT_MESSAGE_ERRORS = %w[authentication_failed billing_error rate_limit invalid_request server_error max_output_tokens unknown].freeze
 
   # Type constants for SDK beta features
   # Available beta features that can be enabled via the betas option
@@ -125,22 +133,44 @@ module ClaudeAgentSDK
     end
   end
 
-  # Init system message (emitted after /clear resets the conversation)
+  # Init system message (emitted at session start and after /clear)
   class InitMessage < SystemMessage
-    attr_accessor :session_id
+    attr_accessor :uuid, :session_id, :agents, :api_key_source, :betas,
+                  :claude_code_version, :cwd, :tools, :mcp_servers, :model,
+                  :permission_mode, :slash_commands, :output_style, :skills, :plugins
 
-    def initialize(subtype:, data:, session_id: nil)
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, agents: nil,
+                   api_key_source: nil, betas: nil, claude_code_version: nil,
+                   cwd: nil, tools: nil, mcp_servers: nil, model: nil,
+                   permission_mode: nil, slash_commands: nil, output_style: nil,
+                   skills: nil, plugins: nil)
       super(subtype: subtype, data: data)
+      @uuid = uuid
       @session_id = session_id
+      @agents = agents
+      @api_key_source = api_key_source
+      @betas = betas
+      @claude_code_version = claude_code_version
+      @cwd = cwd
+      @tools = tools
+      @mcp_servers = mcp_servers
+      @model = model
+      @permission_mode = permission_mode
+      @slash_commands = slash_commands
+      @output_style = output_style
+      @skills = skills
+      @plugins = plugins
     end
   end
 
   # Compact boundary system message (emitted after context compaction completes)
   class CompactBoundaryMessage < SystemMessage
-    attr_accessor :compact_metadata
+    attr_accessor :uuid, :session_id, :compact_metadata
 
-    def initialize(subtype:, data:, compact_metadata: nil)
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, compact_metadata: nil)
       super(subtype: subtype, data: data)
+      @uuid = uuid
+      @session_id = session_id
       @compact_metadata = compact_metadata
     end
   end
@@ -247,11 +277,13 @@ module ClaudeAgentSDK
   # Result message with cost and usage information
   class ResultMessage
     attr_accessor :subtype, :duration_ms, :duration_api_ms, :is_error,
-                  :num_turns, :session_id, :stop_reason, :total_cost_usd, :usage, :result, :structured_output
+                  :num_turns, :session_id, :stop_reason, :total_cost_usd, :usage,
+                  :result, :structured_output, :model_usage, :permission_denials, :errors
 
     def initialize(subtype:, duration_ms:, duration_api_ms:, is_error:,
                    num_turns:, session_id:, stop_reason: nil, total_cost_usd: nil,
-                   usage: nil, result: nil, structured_output: nil)
+                   usage: nil, result: nil, structured_output: nil,
+                   model_usage: nil, permission_denials: nil, errors: nil)
       @subtype = subtype
       @duration_ms = duration_ms
       @duration_api_ms = duration_api_ms
@@ -263,6 +295,9 @@ module ClaudeAgentSDK
       @usage = usage
       @result = result
       @structured_output = structured_output
+      @model_usage = model_usage # Hash of { model_name => usage_data }
+      @permission_denials = permission_denials # Array of { tool_name:, tool_use_id:, tool_input: }
+      @errors = errors # Array of error strings (present on error subtypes)
     end
   end
 
@@ -521,27 +556,30 @@ module ClaudeAgentSDK
 
   # Stop hook input
   class StopHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :stop_hook_active
+    attr_accessor :hook_event_name, :stop_hook_active, :last_assistant_message
 
-    def initialize(hook_event_name: 'Stop', stop_hook_active: false, **base_args)
+    def initialize(hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @stop_hook_active = stop_hook_active
+      @last_assistant_message = last_assistant_message
     end
   end
 
   # SubagentStop hook input
   class SubagentStopHookInput < BaseHookInput
-    attr_accessor :hook_event_name, :stop_hook_active, :agent_id, :agent_transcript_path, :agent_type
+    attr_accessor :hook_event_name, :stop_hook_active, :agent_id, :agent_transcript_path, :agent_type,
+                  :last_assistant_message
 
     def initialize(hook_event_name: 'SubagentStop', stop_hook_active: false, agent_id: nil,
-                   agent_transcript_path: nil, agent_type: nil, **base_args)
+                   agent_transcript_path: nil, agent_type: nil, last_assistant_message: nil, **base_args)
       super(**base_args)
       @hook_event_name = hook_event_name
       @stop_hook_active = stop_hook_active
       @agent_id = agent_id
       @agent_transcript_path = agent_transcript_path
       @agent_type = agent_type
+      @last_assistant_message = last_assistant_message
     end
   end
 
@@ -614,6 +652,119 @@ module ClaudeAgentSDK
       @hook_event_name = hook_event_name
       @trigger = trigger
       @custom_instructions = custom_instructions
+    end
+  end
+
+  # SessionStart hook input
+  class SessionStartHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :source, :agent_type, :model
+
+    def initialize(hook_event_name: 'SessionStart', source: nil, agent_type: nil, model: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @source = source # "startup", "resume", "clear", "compact"
+      @agent_type = agent_type
+      @model = model
+    end
+  end
+
+  # SessionEnd hook input
+  class SessionEndHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :reason
+
+    def initialize(hook_event_name: 'SessionEnd', reason: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @reason = reason
+    end
+  end
+
+  # Setup hook input
+  class SetupHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :trigger
+
+    def initialize(hook_event_name: 'Setup', trigger: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @trigger = trigger # "init" or "maintenance"
+    end
+  end
+
+  # TeammateIdle hook input
+  class TeammateIdleHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :teammate_name, :team_name
+
+    def initialize(hook_event_name: 'TeammateIdle', teammate_name: nil, team_name: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @teammate_name = teammate_name
+      @team_name = team_name
+    end
+  end
+
+  # TaskCompleted hook input
+  class TaskCompletedHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :task_id, :task_subject, :task_description, :teammate_name, :team_name
+
+    def initialize(hook_event_name: 'TaskCompleted', task_id: nil, task_subject: nil, task_description: nil,
+                   teammate_name: nil, team_name: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @task_id = task_id
+      @task_subject = task_subject
+      @task_description = task_description
+      @teammate_name = teammate_name
+      @team_name = team_name
+    end
+  end
+
+  # ConfigChange hook input
+  class ConfigChangeHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :source, :file_path
+
+    def initialize(hook_event_name: 'ConfigChange', source: nil, file_path: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @source = source # "user_settings", "project_settings", "local_settings", "policy_settings", "skills"
+      @file_path = file_path
+    end
+  end
+
+  # WorktreeCreate hook input
+  class WorktreeCreateHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :name
+
+    def initialize(hook_event_name: 'WorktreeCreate', name: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @name = name
+    end
+  end
+
+  # WorktreeRemove hook input
+  class WorktreeRemoveHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :worktree_path
+
+    def initialize(hook_event_name: 'WorktreeRemove', worktree_path: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @worktree_path = worktree_path
+    end
+  end
+
+  # Setup hook specific output
+  class SetupHookSpecificOutput
+    attr_accessor :hook_event_name, :additional_context
+
+    def initialize(additional_context: nil)
+      @hook_event_name = 'Setup'
+      @additional_context = additional_context
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:additionalContext] = @additional_context if @additional_context
+      result
     end
   end
 

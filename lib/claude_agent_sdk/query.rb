@@ -386,6 +386,7 @@ module ClaudeAgentSDK
       when 'Stop'
         StopHookInput.new(
           stop_hook_active: fetch.call(:stop_hook_active),
+          last_assistant_message: fetch.call(:last_assistant_message),
           **base_args
         )
       when 'SubagentStop'
@@ -394,6 +395,7 @@ module ClaudeAgentSDK
           agent_id: fetch.call(:agent_id),
           agent_transcript_path: fetch.call(:agent_transcript_path),
           agent_type: fetch.call(:agent_type),
+          last_assistant_message: fetch.call(:last_assistant_message),
           **base_args
         )
       when 'Notification'
@@ -420,6 +422,54 @@ module ClaudeAgentSDK
         PreCompactHookInput.new(
           trigger: fetch.call(:trigger),
           custom_instructions: fetch.call(:custom_instructions),
+          **base_args
+        )
+      when 'SessionStart'
+        SessionStartHookInput.new(
+          source: fetch.call(:source),
+          agent_type: fetch.call(:agent_type),
+          model: fetch.call(:model),
+          **base_args
+        )
+      when 'SessionEnd'
+        SessionEndHookInput.new(
+          reason: fetch.call(:reason),
+          **base_args
+        )
+      when 'Setup'
+        SetupHookInput.new(
+          trigger: fetch.call(:trigger),
+          **base_args
+        )
+      when 'TeammateIdle'
+        TeammateIdleHookInput.new(
+          teammate_name: fetch.call(:teammate_name),
+          team_name: fetch.call(:team_name),
+          **base_args
+        )
+      when 'TaskCompleted'
+        TaskCompletedHookInput.new(
+          task_id: fetch.call(:task_id),
+          task_subject: fetch.call(:task_subject),
+          task_description: fetch.call(:task_description),
+          teammate_name: fetch.call(:teammate_name),
+          team_name: fetch.call(:team_name),
+          **base_args
+        )
+      when 'ConfigChange'
+        ConfigChangeHookInput.new(
+          source: fetch.call(:source),
+          file_path: fetch.call(:file_path),
+          **base_args
+        )
+      when 'WorktreeCreate'
+        WorktreeCreateHookInput.new(
+          name: fetch.call(:name),
+          **base_args
+        )
+      when 'WorktreeRemove'
+        WorktreeRemoveHookInput.new(
+          worktree_path: fetch.call(:worktree_path),
           **base_args
         )
       else

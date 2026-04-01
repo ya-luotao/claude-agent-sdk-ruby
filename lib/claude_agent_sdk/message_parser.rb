@@ -71,12 +71,19 @@ module ClaudeAgentSDK
       when 'init'
         InitMessage.new(
           subtype: data[:subtype], data: data,
-          session_id: data[:session_id]
+          uuid: data[:uuid], session_id: data[:session_id],
+          agents: data[:agents], api_key_source: data[:apiKeySource] || data[:api_key_source],
+          betas: data[:betas], claude_code_version: data[:claude_code_version],
+          cwd: data[:cwd], tools: data[:tools], mcp_servers: data[:mcp_servers],
+          model: data[:model], permission_mode: data[:permissionMode] || data[:permission_mode],
+          slash_commands: data[:slash_commands], output_style: data[:output_style],
+          skills: data[:skills], plugins: data[:plugins]
         )
       when 'compact_boundary'
         raw_metadata = data[:compact_metadata]
         CompactBoundaryMessage.new(
           subtype: data[:subtype], data: data,
+          uuid: data[:uuid], session_id: data[:session_id],
           compact_metadata: CompactMetadata.from_hash(raw_metadata)
         )
       when 'task_started'
@@ -118,7 +125,10 @@ module ClaudeAgentSDK
         total_cost_usd: data[:total_cost_usd],
         usage: data[:usage],
         result: data[:result],
-        structured_output: data[:structured_output]
+        structured_output: data[:structured_output],
+        model_usage: data[:modelUsage] || data[:model_usage],
+        permission_denials: data[:permission_denials],
+        errors: data[:errors]
       )
     end
 

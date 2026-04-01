@@ -110,16 +110,34 @@ RSpec.describe ClaudeAgentSDK do
     end
 
     describe ClaudeAgentSDK::InitMessage do
-      it 'is a SystemMessage subclass' do
+      it 'is a SystemMessage subclass with all fields defaulting to nil' do
         msg = described_class.new(subtype: 'init', data: {})
         expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
         expect(msg.subtype).to eq('init')
         expect(msg.session_id).to be_nil
+        expect(msg.uuid).to be_nil
+        expect(msg.tools).to be_nil
+        expect(msg.model).to be_nil
       end
 
-      it 'stores session_id' do
-        msg = described_class.new(subtype: 'init', data: {}, session_id: 'new-sess-123')
-        expect(msg.session_id).to eq('new-sess-123')
+      it 'stores all session initialization fields' do
+        msg = described_class.new(
+          subtype: 'init', data: {}, uuid: 'u1', session_id: 'sess',
+          agents: ['reviewer'], api_key_source: 'env', betas: ['beta1'],
+          claude_code_version: '1.0', cwd: '/tmp', tools: ['Read'],
+          mcp_servers: [], model: 'opus', permission_mode: 'default',
+          slash_commands: ['/clear'], output_style: 'concise',
+          skills: ['commit'], plugins: []
+        )
+        expect(msg.uuid).to eq('u1')
+        expect(msg.agents).to eq(['reviewer'])
+        expect(msg.api_key_source).to eq('env')
+        expect(msg.claude_code_version).to eq('1.0')
+        expect(msg.tools).to eq(['Read'])
+        expect(msg.model).to eq('opus')
+        expect(msg.permission_mode).to eq('default')
+        expect(msg.output_style).to eq('concise')
+        expect(msg.skills).to eq(['commit'])
       end
     end
 
@@ -768,6 +786,80 @@ RSpec.describe ClaudeAgentSDK do
         expect(input.agent_id).to eq('agent_1')
         expect(input.agent_transcript_path).to eq('/tmp/agent.jsonl')
         expect(input.agent_type).to eq('coder')
+      end
+    end
+
+    describe ClaudeAgentSDK::SessionStartHookInput do
+      it 'stores session start fields' do
+        input = described_class.new(source: 'startup', agent_type: 'main', model: 'opus')
+        expect(input.hook_event_name).to eq('SessionStart')
+        expect(input.source).to eq('startup')
+        expect(input.agent_type).to eq('main')
+        expect(input.model).to eq('opus')
+      end
+    end
+
+    describe ClaudeAgentSDK::SessionEndHookInput do
+      it 'stores session end fields' do
+        input = described_class.new(reason: 'user_exit')
+        expect(input.hook_event_name).to eq('SessionEnd')
+        expect(input.reason).to eq('user_exit')
+      end
+    end
+
+    describe ClaudeAgentSDK::SetupHookInput do
+      it 'stores setup fields' do
+        input = described_class.new(trigger: 'init')
+        expect(input.hook_event_name).to eq('Setup')
+        expect(input.trigger).to eq('init')
+      end
+    end
+
+    describe ClaudeAgentSDK::TeammateIdleHookInput do
+      it 'stores teammate idle fields' do
+        input = described_class.new(teammate_name: 'reviewer', team_name: 'dev')
+        expect(input.hook_event_name).to eq('TeammateIdle')
+        expect(input.teammate_name).to eq('reviewer')
+        expect(input.team_name).to eq('dev')
+      end
+    end
+
+    describe ClaudeAgentSDK::TaskCompletedHookInput do
+      it 'stores task completed fields' do
+        input = described_class.new(
+          task_id: 't1', task_subject: 'Review PR',
+          task_description: 'Check for bugs', teammate_name: 'reviewer', team_name: 'dev'
+        )
+        expect(input.hook_event_name).to eq('TaskCompleted')
+        expect(input.task_id).to eq('t1')
+        expect(input.task_subject).to eq('Review PR')
+        expect(input.task_description).to eq('Check for bugs')
+        expect(input.teammate_name).to eq('reviewer')
+      end
+    end
+
+    describe ClaudeAgentSDK::ConfigChangeHookInput do
+      it 'stores config change fields' do
+        input = described_class.new(source: 'project_settings', file_path: '.claude/settings.json')
+        expect(input.hook_event_name).to eq('ConfigChange')
+        expect(input.source).to eq('project_settings')
+        expect(input.file_path).to eq('.claude/settings.json')
+      end
+    end
+
+    describe ClaudeAgentSDK::WorktreeCreateHookInput do
+      it 'stores worktree create fields' do
+        input = described_class.new(name: 'feature-branch')
+        expect(input.hook_event_name).to eq('WorktreeCreate')
+        expect(input.name).to eq('feature-branch')
+      end
+    end
+
+    describe ClaudeAgentSDK::WorktreeRemoveHookInput do
+      it 'stores worktree remove fields' do
+        input = described_class.new(worktree_path: '/tmp/worktree-123')
+        expect(input.hook_event_name).to eq('WorktreeRemove')
+        expect(input.worktree_path).to eq('/tmp/worktree-123')
       end
     end
 

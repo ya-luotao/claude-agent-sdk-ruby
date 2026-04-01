@@ -294,28 +294,53 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.usage).to eq({ total_tokens: 1000, tool_uses: 5, duration_ms: 5000 })
       end
 
-      it 'parses init as InitMessage' do
+      it 'parses init as InitMessage with all fields' do
         data = {
           type: 'system',
           subtype: 'init',
-          session_id: 'new-session-uuid'
+          uuid: 'uuid-123',
+          session_id: 'new-session-uuid',
+          agents: ['code-reviewer'],
+          apiKeySource: 'env',
+          betas: ['context-1m-2025-08-07'],
+          claude_code_version: '1.2.3',
+          cwd: '/tmp/test',
+          tools: %w[Read Write Bash],
+          mcp_servers: [{ name: 'myserver', status: 'connected' }],
+          model: 'claude-sonnet-4-20250514',
+          permissionMode: 'acceptEdits',
+          slash_commands: %w[compact clear],
+          output_style: 'concise',
+          skills: ['commit'],
+          plugins: [{ name: 'my-plugin', path: './plugin' }]
         }
 
         msg = described_class.parse(data)
         expect(msg).to be_a(ClaudeAgentSDK::InitMessage)
-        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
-        expect(msg.subtype).to eq('init')
+        expect(msg.uuid).to eq('uuid-123')
         expect(msg.session_id).to eq('new-session-uuid')
-        expect(msg.data).to eq(data)
+        expect(msg.agents).to eq(['code-reviewer'])
+        expect(msg.api_key_source).to eq('env')
+        expect(msg.betas).to eq(['context-1m-2025-08-07'])
+        expect(msg.claude_code_version).to eq('1.2.3')
+        expect(msg.cwd).to eq('/tmp/test')
+        expect(msg.tools).to eq(%w[Read Write Bash])
+        expect(msg.model).to eq('claude-sonnet-4-20250514')
+        expect(msg.permission_mode).to eq('acceptEdits')
+        expect(msg.slash_commands).to eq(%w[compact clear])
+        expect(msg.output_style).to eq('concise')
+        expect(msg.skills).to eq(['commit'])
+        expect(msg.plugins).to eq([{ name: 'my-plugin', path: './plugin' }])
       end
 
-      it 'parses compact_boundary as CompactBoundaryMessage' do
+      it 'parses compact_boundary as CompactBoundaryMessage with uuid and session_id' do
         data = {
           type: 'system',
           subtype: 'compact_boundary',
+          uuid: 'uuid-456',
+          session_id: 'sess-789',
           compact_metadata: {
             pre_tokens: 95_000,
-            post_tokens: 12_000,
             trigger: 'auto'
           }
         }
@@ -323,12 +348,11 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         msg = described_class.parse(data)
         expect(msg).to be_a(ClaudeAgentSDK::CompactBoundaryMessage)
         expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
-        expect(msg.subtype).to eq('compact_boundary')
+        expect(msg.uuid).to eq('uuid-456')
+        expect(msg.session_id).to eq('sess-789')
         expect(msg.compact_metadata).to be_a(ClaudeAgentSDK::CompactMetadata)
         expect(msg.compact_metadata.pre_tokens).to eq(95_000)
-        expect(msg.compact_metadata.post_tokens).to eq(12_000)
         expect(msg.compact_metadata.trigger).to eq('auto')
-        expect(msg.data).to eq(data)
       end
 
       it 'parses compact_boundary with nil metadata' do
@@ -417,6 +441,27 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         msg = described_class.parse(data)
         expect(msg).to be_a(ClaudeAgentSDK::ResultMessage)
         expect(msg.structured_output).to eq({ name: 'John', age: 30, active: true })
+      end
+
+      it 'parses model_usage, permission_denials, and errors' do
+        data = {
+          type: 'result',
+          subtype: 'error_max_turns',
+          duration_ms: 5000,
+          duration_api_ms: 4000,
+          is_error: true,
+          num_turns: 10,
+          session_id: 'test',
+          modelUsage: { 'claude-sonnet' => { input_tokens: 1000, output_tokens: 500 } },
+          permission_denials: [{ tool_name: 'Bash', tool_use_id: 'tu_1', tool_input: { command: 'rm -rf /' } }],
+          errors: ['Max turns exceeded']
+        }
+
+        msg = described_class.parse(data)
+        expect(msg.model_usage).to eq({ 'claude-sonnet' => { input_tokens: 1000, output_tokens: 500 } })
+        expect(msg.permission_denials).to eq([{ tool_name: 'Bash', tool_use_id: 'tu_1',
+                                                tool_input: { command: 'rm -rf /' } }])
+        expect(msg.errors).to eq(['Max turns exceeded'])
       end
     end
 
