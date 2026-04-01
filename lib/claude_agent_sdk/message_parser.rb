@@ -68,6 +68,12 @@ module ClaudeAgentSDK
 
     def self.parse_system_message(data)
       case data[:subtype]
+      when 'compact_boundary'
+        raw_metadata = data[:compact_metadata]
+        CompactBoundaryMessage.new(
+          subtype: data[:subtype], data: data,
+          compact_metadata: CompactMetadata.from_hash(raw_metadata)
+        )
       when 'task_started'
         TaskStartedMessage.new(
           subtype: data[:subtype], data: data,

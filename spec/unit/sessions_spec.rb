@@ -99,6 +99,14 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       expect(described_class.extract_first_prompt_from_head(lines)).to eq('Real prompt')
     end
 
+    it 'skips isCompactSummary lines' do
+      lines = [
+        '{"type":"user","message":{"content":"Summary of prior conversation"},"isCompactSummary":true}',
+        '{"type":"user","message":{"content":"Real prompt"}}'
+      ].join("\n")
+      expect(described_class.extract_first_prompt_from_head(lines)).to eq('Real prompt')
+    end
+
     it 'skips session-start-hook content' do
       lines = [
         '{"type":"user","message":{"content":"<session-start-hook>stuff"}}',
@@ -575,6 +583,33 @@ RSpec.describe ClaudeAgentSDK::Sessions do
         expect(messages.length).to eq(2)
         expect(messages[0].uuid).to eq('msg-2')
         expect(messages[1].uuid).to eq('msg-3')
+      end
+    end
+
+    it 'keeps isCompactSummary messages visible' do
+      Dir.mktmpdir do |config_dir|
+        allow(described_class).to receive(:config_dir).and_return(config_dir)
+
+        session_id = '12345678-1234-1234-1234-123456789abc'
+        project_dir = File.join(config_dir, 'projects', '-test')
+        FileUtils.mkdir_p(project_dir)
+
+        entries = [
+          { type: 'user', uuid: 'compact-summary', sessionId: session_id,
+            isCompactSummary: true, message: { content: 'Summary of prior conversation' } },
+          { type: 'assistant', uuid: 'reply-1', parentUuid: 'compact-summary', sessionId: session_id,
+            message: { content: 'Continuing from summary' } }
+        ]
+
+        File.write(
+          File.join(project_dir, "#{session_id}.jsonl"),
+          entries.map(&:to_json).join("\n")
+        )
+
+        messages = described_class.get_session_messages(session_id: session_id)
+        expect(messages.length).to eq(2)
+        expect(messages[0].uuid).to eq('compact-summary')
+        expect(messages[1].uuid).to eq('reply-1')
       end
     end
   end

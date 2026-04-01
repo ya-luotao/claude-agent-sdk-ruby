@@ -109,6 +109,61 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::CompactBoundaryMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(subtype: 'compact_boundary', data: {})
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.subtype).to eq('compact_boundary')
+        expect(msg.compact_metadata).to be_nil
+      end
+
+      it 'stores compact metadata' do
+        metadata = ClaudeAgentSDK::CompactMetadata.new(pre_tokens: 95_000, post_tokens: 12_000, trigger: 'auto')
+        msg = described_class.new(subtype: 'compact_boundary', data: {}, compact_metadata: metadata)
+        expect(msg.compact_metadata.pre_tokens).to eq(95_000)
+        expect(msg.compact_metadata.post_tokens).to eq(12_000)
+        expect(msg.compact_metadata.trigger).to eq('auto')
+      end
+    end
+
+    describe ClaudeAgentSDK::CompactMetadata do
+      it 'stores all fields' do
+        meta = described_class.new(
+          pre_tokens: 95_000, post_tokens: 12_000,
+          trigger: 'manual', custom_instructions: 'Focus on code'
+        )
+        expect(meta.pre_tokens).to eq(95_000)
+        expect(meta.post_tokens).to eq(12_000)
+        expect(meta.trigger).to eq('manual')
+        expect(meta.custom_instructions).to eq('Focus on code')
+      end
+
+      it 'creates from hash with symbol keys' do
+        meta = described_class.from_hash({ pre_tokens: 100, post_tokens: 50, trigger: 'auto' })
+        expect(meta.pre_tokens).to eq(100)
+        expect(meta.post_tokens).to eq(50)
+        expect(meta.trigger).to eq('auto')
+      end
+
+      it 'creates from hash with string keys' do
+        meta = described_class.from_hash({ 'pre_tokens' => 100, 'post_tokens' => 50, 'trigger' => 'manual' })
+        expect(meta.pre_tokens).to eq(100)
+        expect(meta.trigger).to eq('manual')
+      end
+
+      it 'creates from hash with camelCase keys' do
+        meta = described_class.from_hash({ preTokens: 100, postTokens: 50, customInstructions: 'Keep it brief' })
+        expect(meta.pre_tokens).to eq(100)
+        expect(meta.post_tokens).to eq(50)
+        expect(meta.custom_instructions).to eq('Keep it brief')
+      end
+
+      it 'returns nil for non-hash input' do
+        expect(described_class.from_hash(nil)).to be_nil
+        expect(described_class.from_hash('not a hash')).to be_nil
+      end
+    end
+
     describe ClaudeAgentSDK::TaskUsage do
       it 'stores usage fields with defaults' do
         usage = described_class.new

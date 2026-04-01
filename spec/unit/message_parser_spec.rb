@@ -294,6 +294,39 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.usage).to eq({ total_tokens: 1000, tool_uses: 5, duration_ms: 5000 })
       end
 
+      it 'parses compact_boundary as CompactBoundaryMessage' do
+        data = {
+          type: 'system',
+          subtype: 'compact_boundary',
+          compact_metadata: {
+            pre_tokens: 95_000,
+            post_tokens: 12_000,
+            trigger: 'auto'
+          }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::CompactBoundaryMessage)
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.subtype).to eq('compact_boundary')
+        expect(msg.compact_metadata).to be_a(ClaudeAgentSDK::CompactMetadata)
+        expect(msg.compact_metadata.pre_tokens).to eq(95_000)
+        expect(msg.compact_metadata.post_tokens).to eq(12_000)
+        expect(msg.compact_metadata.trigger).to eq('auto')
+        expect(msg.data).to eq(data)
+      end
+
+      it 'parses compact_boundary with nil metadata' do
+        data = {
+          type: 'system',
+          subtype: 'compact_boundary'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::CompactBoundaryMessage)
+        expect(msg.compact_metadata).to be_nil
+      end
+
       it 'falls back to SystemMessage for unknown subtypes' do
         data = {
           type: 'system',

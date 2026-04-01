@@ -499,6 +499,13 @@ module ClaudeAgentSDK
       entries
     end
 
+    # Build the conversation chain by finding the leaf and walking parentUuid.
+    # Returns messages in chronological order (root -> leaf).
+    #
+    # Note: logicalParentUuid (set on compact_boundary entries) is intentionally
+    # NOT followed. This matches VS Code IDE behavior — post-compaction, the
+    # isCompactSummary message replaces earlier messages, so following logical
+    # parents would duplicate content.
     def build_conversation_chain(entries)
       return [] if entries.empty?
 
@@ -563,6 +570,11 @@ module ClaudeAgentSDK
         next if entry['isMeta']
         next if entry['isSidechain']
         next if entry['teamName']
+
+        # NOTE: isCompactSummary messages are intentionally included. They contain
+        # the summarized content from compacted conversations and are the only
+        # representation of that content post-compaction. This matches VS Code IDE
+        # behavior (transcriptToSessionMessage does not filter them).
 
         SessionMessage.new(
           type: entry['type'],

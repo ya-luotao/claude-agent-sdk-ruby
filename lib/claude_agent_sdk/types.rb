@@ -125,6 +125,40 @@ module ClaudeAgentSDK
     end
   end
 
+  # Compact boundary system message (emitted after context compaction completes)
+  class CompactBoundaryMessage < SystemMessage
+    attr_accessor :compact_metadata
+
+    def initialize(subtype:, data:, compact_metadata: nil)
+      super(subtype: subtype, data: data)
+      @compact_metadata = compact_metadata
+    end
+  end
+
+  # Metadata about a compaction event
+  class CompactMetadata
+    attr_accessor :pre_tokens, :post_tokens, :trigger, :custom_instructions
+
+    def initialize(pre_tokens: nil, post_tokens: nil, trigger: nil, custom_instructions: nil)
+      @pre_tokens = pre_tokens
+      @post_tokens = post_tokens
+      @trigger = trigger # "manual" or "auto"
+      @custom_instructions = custom_instructions
+    end
+
+    def self.from_hash(hash)
+      return nil unless hash.is_a?(Hash)
+
+      new(
+        pre_tokens: hash[:pre_tokens] || hash['pre_tokens'] || hash[:preTokens] || hash['preTokens'],
+        post_tokens: hash[:post_tokens] || hash['post_tokens'] || hash[:postTokens] || hash['postTokens'],
+        trigger: hash[:trigger] || hash['trigger'],
+        custom_instructions: hash[:custom_instructions] || hash['custom_instructions'] ||
+                             hash[:customInstructions] || hash['customInstructions']
+      )
+    end
+  end
+
   # Task lifecycle notification statuses
   TASK_NOTIFICATION_STATUSES = %w[completed failed stopped].freeze
 
