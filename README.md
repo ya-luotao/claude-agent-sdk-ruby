@@ -1466,10 +1466,13 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 |---------|-------------|
 | [examples/quick_start.rb](examples/quick_start.rb) | Basic `query()` usage with options |
 | [examples/client_example.rb](examples/client_example.rb) | Interactive Client usage |
+| [examples/message_types_example.rb](examples/message_types_example.rb) | Handling all 24 SDK message types |
 | [examples/streaming_input_example.rb](examples/streaming_input_example.rb) | Streaming input for multi-turn conversations |
 | [examples/session_resumption_example.rb](examples/session_resumption_example.rb) | Multi-turn conversations with session persistence |
 | [examples/structured_output_example.rb](examples/structured_output_example.rb) | JSON schema structured output |
 | [examples/error_handling_example.rb](examples/error_handling_example.rb) | Error handling with `AssistantMessage.error` |
+| [examples/bare_mode_example.rb](examples/bare_mode_example.rb) | Minimal startup with `bare: true` |
+| [examples/sandbox_example.rb](examples/sandbox_example.rb) | Full sandbox settings (network, filesystem, violations) |
 
 ### MCP Server Examples
 
@@ -1484,7 +1487,8 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 | Example | Description |
 |---------|-------------|
 | [examples/hooks_example.rb](examples/hooks_example.rb) | Using hooks to control tool execution |
-| [examples/advanced_hooks_example.rb](examples/advanced_hooks_example.rb) | Typed hook inputs/outputs |
+| [examples/advanced_hooks_example.rb](examples/advanced_hooks_example.rb) | Typed hook inputs/outputs (PreToolUse, PostToolUse) |
+| [examples/lifecycle_hooks_example.rb](examples/lifecycle_hooks_example.rb) | All 27 hook events (SessionStart, Stop, PostCompact, etc.) |
 | [examples/permission_callback_example.rb](examples/permission_callback_example.rb) | Dynamic tool permission control |
 
 ### Advanced Features
