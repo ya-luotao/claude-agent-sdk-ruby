@@ -136,6 +136,7 @@ module ClaudeAgentSDK
 
       cmd << '--include-partial-messages' if @options.include_partial_messages
       cmd << '--fork-session' if @options.fork_session
+      cmd << '--bare' if @options.bare
 
       # Note: agents are now sent via the initialize control request (not CLI args)
       # to avoid OS ARG_MAX limits with large agent configurations.

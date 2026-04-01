@@ -1392,6 +1392,16 @@ RSpec.describe ClaudeAgentSDK do
         options = ClaudeAgentSDK::ClaudeAgentOptions.new(effort: 'high')
         expect(options.effort).to eq('high')
       end
+
+      it 'accepts bare option' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(bare: true)
+        expect(options.bare).to eq(true)
+      end
+
+      it 'defaults bare to nil' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new
+        expect(options.bare).to be_nil
+      end
     end
 
     describe ClaudeAgentSDK::ThinkingConfigAdaptive do

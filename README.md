@@ -896,6 +896,40 @@ ClaudeAgentSDK.query(prompt: "Run some commands", options: options) do |message|
 end
 ```
 
+## Bare Mode
+
+Bare mode (`--bare`) is a minimal startup mode that skips hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. It sets `CLAUDE_CODE_SIMPLE=1` internally. This is useful for scripted/programmatic usage where you want fast startup and full control over what's loaded.
+
+```ruby
+# Sugar option
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  bare: true,
+  system_prompt: 'You are a code reviewer.',
+  permission_mode: 'bypassPermissions'
+)
+
+ClaudeAgentSDK.query(prompt: "Review this function", options: options) do |message|
+  # ...
+end
+```
+
+In bare mode, explicitly provide any context you need:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  bare: true,
+  system_prompt: 'You are a helpful assistant.',
+  add_dirs: ['/path/to/project'],       # CLAUDE.md directories (auto-discovery is off)
+  setting_sources: ['project'],          # load .claude/settings.json
+  allowed_tools: ['Read', 'Grep', 'Glob'],
+  permission_mode: 'bypassPermissions'
+)
+```
+
+**What bare mode skips:** hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, CLAUDE.md auto-discovery, teammate snapshots, release notes.
+
+**What still works:** skills (via `/skill-name`), explicit `--add-dir` CLAUDE.md, `--settings`, `--mcp-config`, `--agents`, `--plugin-dir`, API key from `ANTHROPIC_API_KEY` env var.
+
 ## File Checkpointing & Rewind
 
 Enable file checkpointing to revert file changes to a previous state:

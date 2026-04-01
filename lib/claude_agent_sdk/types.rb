@@ -1720,7 +1720,7 @@ module ClaudeAgentSDK
                   :output_format, :max_budget_usd, :max_thinking_tokens,
                   :fallback_model, :plugins, :debug_stderr,
                   :betas, :tools, :sandbox, :enable_file_checkpointing, :append_allowed_tools,
-                  :thinking, :effort
+                  :thinking, :effort, :bare
 
     # Non-nil defaults for options that need them.
     # Keys absent from here default to nil.
