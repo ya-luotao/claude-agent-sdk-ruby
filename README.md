@@ -1,60 +1,54 @@
 # Claude Agent SDK for Ruby
 
-> **Disclaimer**: This is an **unofficial, community-maintained** Ruby SDK for Claude Agent. It is not officially supported by Anthropic. For official SDK support, see the [Python SDK](https://docs.claude.com/en/api/agent-sdk/python).
->
-> This implementation is based on the official Python SDK and aims to provide feature parity for Ruby developers. Use at your own risk.
-
 [![Gem Version](https://badge.fury.io/rb/claude-agent-sdk.svg?icon=si%3Arubygems)](https://badge.fury.io/rb/claude-agent-sdk)
 
-### Feature Parity with Python SDK (v0.1.48) + Ruby Extras
+An **unofficial, community-maintained** Ruby SDK for the [Claude Code](https://docs.claude.com/en/docs/claude-code-overview) agent runtime. Not affiliated with or supported by Anthropic.
 
-| Feature | Python | Ruby |
-|---------|:------:|:----:|
-| One-shot `query()` | `query()` | `query()` |
-| Bidirectional `Client` | `ClaudeSDKClient` | `Client` |
-| Streaming input | `AsyncIterable` | `Enumerator` |
-| Custom tools (SDK MCP servers) | `@tool` decorator | `create_tool` block |
-| MCP resources & prompts | ✅ | ✅ |
-| Hooks (all 10 events) | ✅ | ✅ |
-| Permission callbacks (`can_use_tool`) | ✅ | ✅ |
-| Structured output | ✅ | ✅ |
-| Thinking config (adaptive/enabled/disabled) | ✅ | ✅ |
-| Effort levels | ✅ | ✅ |
-| Programmatic subagents | ✅ | ✅ |
-| Sandbox settings | ✅ | ✅ |
-| Beta features (1M context) | ✅ | ✅ |
-| File checkpointing & rewind | ✅ | ✅ |
-| Session browsing (`list_sessions`, `get_session_messages`) | ✅ | ✅ |
-| Session mutations (`rename_session`, `tag_session`) | ✅ | ✅ |
-| Task message types (started/progress/notification) | ✅ | ✅ |
-| MCP server control (reconnect/toggle/stop) | ✅ | ✅ |
-| Subagent context on hook inputs | ✅ | ✅ |
-| Typed MCP status response | ✅ | ✅ |
-| `stop_reason` on `ResultMessage` | ✅ | ✅ |
-| `usage` on `AssistantMessage` | ✅ | ✅ |
-| Fallback model | ✅ | ✅ |
-| Plugin support | ✅ | ✅ |
-| Custom transport (pluggable I/O layer) | — | ✅ |
-| Rails integration (configure block, ActionCable) | — | ✅ |
-| Bundled CLI binary | ✅ | — |
+### Official SDKs
+
+- **TypeScript** (official): [anthropics/claude-agent-sdk-typescript](https://github.com/anthropics/claude-agent-sdk-typescript)
+- **Python** (official): [anthropics/claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python)
+
+### Why a Ruby SDK?
+
+Ruby powers a massive ecosystem — Rails, Sidekiq, Kamal, countless production web apps — but has no official Claude Agent SDK. This gem fills that gap so Ruby and Rails developers can build AI agents, automate coding workflows, and integrate Claude into existing applications without switching languages or shelling out to Python/Node.
+
+All three SDKs share the same underlying mechanism: they spawn the `claude` CLI as a subprocess and communicate over stream-JSON on stdin/stdout. The wire protocol is identical, so Ruby gets the same capabilities as the official SDKs.
+
+### Comparison with Official SDKs
+
+| Capability | TypeScript | Python | Ruby (this gem) |
+|---|:---:|:---:|:---:|
+| One-shot `query()` | ✅ | ✅ | ✅ |
+| Bidirectional `Client` | ✅ | ✅ | ✅ |
+| Streaming input | `AsyncIterable` | `AsyncIterable` | `Enumerator` |
+| Custom tools (SDK MCP servers) | `tool()` | `@tool` decorator | `create_tool` block |
+| Hooks (all 27 events) | ✅ | ✅ | ✅ |
+| Permission callbacks | ✅ | ✅ | ✅ |
+| Structured output | ✅ | ✅ | ✅ |
+| All 24 message types | ✅ | partial | ✅ |
+| Full sandbox settings | ✅ | partial | ✅ |
+| Bare mode (`--bare`) | ✅ | ✅ | ✅ |
+| File checkpointing & rewind | ✅ | ✅ | ✅ |
+| Session browsing & mutations | ✅ | ✅ | ✅ |
+| Programmatic subagents | ✅ | ✅ | ✅ |
+| Bundled CLI binary | ✅ | ✅ | — (install `claude` separately) |
+| Custom transport (pluggable I/O) | — | — | ✅ |
+| Rails integration | — | — | ✅ |
+| Global config defaults | — | — | ✅ |
+
+**Where Ruby goes further:** Custom transport support lets you swap the subprocess for any I/O layer (e.g., connect to a remote Claude Code instance over SSH or a container). Rails integration provides a `configure` block for initializers and plays well with ActionCable for real-time streaming. The Ruby SDK also has full typed coverage for all 24 CLI message types and all 27 hook events — some of which the Python SDK hasn't typed yet (falling through to generic `SystemMessage`).
+
+**What's missing:** The Ruby gem does not bundle the `claude` CLI binary. You need to install Claude Code separately (`npm install -g @anthropic-ai/claude-code`).
 
 <details>
-<summary><strong>Usage & Implementation Differences</strong></summary>
+<summary><strong>Implementation differences from the official SDKs</strong></summary>
 
 #### Async model
 
-Python uses `async`/`await` with `anyio` (works with both asyncio and Trio). Ruby uses the [`async`](https://github.com/socketry/async) gem with fibers — no `await` keyword needed, blocking calls yield automatically.
-
-```python
-# Python
-async with ClaudeSDKClient(options) as client:
-    await client.query("Hello")
-    async for msg in client.receive_messages():
-        print(msg)
-```
+TypeScript uses native `async`/`await`. Python uses `async`/`await` with `anyio`. Ruby uses the [`async`](https://github.com/socketry/async) gem with fibers — no `await` keyword needed, blocking calls yield automatically inside an `Async` block.
 
 ```ruby
-# Ruby
 Async do
   client = ClaudeAgentSDK::Client.new(options: options)
   client.connect
@@ -64,61 +58,13 @@ Async do
 end.wait
 ```
 
-#### Custom tools
-
-Python uses a `@tool` decorator. Ruby uses `create_tool` with a block.
-
-```python
-# Python
-@tool(name="add", description="Add numbers", input_schema={...})
-def add(a: int, b: int) -> str:
-    return str(a + b)
-```
-
-```ruby
-# Ruby
-add = ClaudeAgentSDK.create_tool("add", "Add numbers", { a: :number, b: :number }) do |args|
-  { content: [{ type: "text", text: (args[:a] + args[:b]).to_s }] }
-end
-```
-
-#### Streaming input
-
-Python uses `AsyncIterable`. Ruby uses `Enumerator` or any `#each`-able.
-
-```python
-# Python
-async def messages():
-    yield {"type": "user", "message": {"role": "user", "content": "Hello"}}
-
-async for msg in query(prompt=messages(), options=options):
-    print(msg)
-```
-
-```ruby
-# Ruby
-messages = ClaudeAgentSDK::Streaming.from_array(["Hello", "Follow up"])
-ClaudeAgentSDK.query(prompt: messages) { |msg| puts msg }
-```
-
 #### Types
 
-Python uses `dataclass` with type annotations and `TypedDict`. Ruby uses plain classes with `attr_accessor` and keyword args — no runtime type checking, but the same structure.
-
-#### Configuration defaults
-
-Python passes options directly. Ruby adds `ClaudeAgentSDK.configure` for global defaults that merge with per-call options — handy for Rails initializers.
-
-```ruby
-# Ruby-only: global defaults
-ClaudeAgentSDK.configure do |config|
-  config.default_options = { model: "sonnet", permission_mode: "bypassPermissions" }
-end
-```
+TypeScript has Zod schemas with inferred types. Python uses `dataclass` with type annotations. Ruby uses plain classes with `attr_accessor` and keyword args — no runtime type checking, but the same structure and field names.
 
 #### Subprocess transport
 
-Both SDKs spawn `claude` CLI as a subprocess with stream-JSON over stdin/stdout. Python uses `anyio.open_process`; Ruby uses `Open3.popen3` with a background `Thread` for stderr. The wire protocol is identical.
+All three SDKs spawn `claude` CLI as a subprocess with stream-JSON over stdin/stdout. TypeScript uses Node `child_process`, Python uses `anyio.open_process`, Ruby uses `Open3.popen3`. The wire protocol is identical.
 
 </details>
 
@@ -139,6 +85,7 @@ Both SDKs spawn `claude` CLI as a subprocess with stream-JSON over stdin/stdout.
 - [Beta Features](#beta-features)
 - [Tools Configuration](#tools-configuration)
 - [Sandbox Settings](#sandbox-settings)
+- [Bare Mode](#bare-mode)
 - [File Checkpointing & Rewind](#file-checkpointing--rewind)
 - [Session Browsing](#session-browsing)
 - [Session Mutations](#session-mutations)
@@ -896,6 +843,40 @@ ClaudeAgentSDK.query(prompt: "Run some commands", options: options) do |message|
 end
 ```
 
+## Bare Mode
+
+Bare mode (`--bare`) is a minimal startup mode that skips hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. It sets `CLAUDE_CODE_SIMPLE=1` internally. This is useful for scripted/programmatic usage where you want fast startup and full control over what's loaded.
+
+```ruby
+# Sugar option
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  bare: true,
+  system_prompt: 'You are a code reviewer.',
+  permission_mode: 'bypassPermissions'
+)
+
+ClaudeAgentSDK.query(prompt: "Review this function", options: options) do |message|
+  # ...
+end
+```
+
+In bare mode, explicitly provide any context you need:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  bare: true,
+  system_prompt: 'You are a helpful assistant.',
+  add_dirs: ['/path/to/project'],       # CLAUDE.md directories (auto-discovery is off)
+  setting_sources: ['project'],          # load .claude/settings.json
+  allowed_tools: ['Read', 'Grep', 'Glob'],
+  permission_mode: 'bypassPermissions'
+)
+```
+
+**What bare mode skips:** hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, CLAUDE.md auto-discovery, teammate snapshots, release notes.
+
+**What still works:** skills (via `/skill-name`), explicit `--add-dir` CLAUDE.md, `--settings`, `--mcp-config`, `--agents`, `--plugin-dir`, API key from `ANTHROPIC_API_KEY` env var.
+
 ## File Checkpointing & Rewind
 
 Enable file checkpointing to revert file changes to a previous state:
@@ -1485,10 +1466,13 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 |---------|-------------|
 | [examples/quick_start.rb](examples/quick_start.rb) | Basic `query()` usage with options |
 | [examples/client_example.rb](examples/client_example.rb) | Interactive Client usage |
+| [examples/message_types_example.rb](examples/message_types_example.rb) | Handling all 24 SDK message types |
 | [examples/streaming_input_example.rb](examples/streaming_input_example.rb) | Streaming input for multi-turn conversations |
 | [examples/session_resumption_example.rb](examples/session_resumption_example.rb) | Multi-turn conversations with session persistence |
 | [examples/structured_output_example.rb](examples/structured_output_example.rb) | JSON schema structured output |
 | [examples/error_handling_example.rb](examples/error_handling_example.rb) | Error handling with `AssistantMessage.error` |
+| [examples/bare_mode_example.rb](examples/bare_mode_example.rb) | Minimal startup with `bare: true` |
+| [examples/sandbox_example.rb](examples/sandbox_example.rb) | Full sandbox settings (network, filesystem, violations) |
 
 ### MCP Server Examples
 
@@ -1503,7 +1487,8 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 | Example | Description |
 |---------|-------------|
 | [examples/hooks_example.rb](examples/hooks_example.rb) | Using hooks to control tool execution |
-| [examples/advanced_hooks_example.rb](examples/advanced_hooks_example.rb) | Typed hook inputs/outputs |
+| [examples/advanced_hooks_example.rb](examples/advanced_hooks_example.rb) | Typed hook inputs/outputs (PreToolUse, PostToolUse) |
+| [examples/lifecycle_hooks_example.rb](examples/lifecycle_hooks_example.rb) | All 27 hook events (SessionStart, Stop, PostCompact, etc.) |
 | [examples/permission_callback_example.rb](examples/permission_callback_example.rb) | Dynamic tool permission control |
 
 ### Advanced Features

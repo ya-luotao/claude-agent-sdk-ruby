@@ -39,7 +39,9 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     end
 
     expect(captured_options).not_to be_nil
-    expect(captured_options.env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb')
+    # CLAUDE_CODE_ENTRYPOINT is now set as a default-if-absent by the transport,
+    # not by query(). The caller's env should pass through without an override.
+    expect(captured_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
     expect(captured_options.env['EXTRA']).to eq('1')
     expect(options.env['CLAUDE_CODE_ENTRYPOINT']).to be_nil
     expect(ENV['CLAUDE_CODE_ENTRYPOINT']).to be_nil

@@ -69,6 +69,14 @@ module ClaudeAgentSDK
     Sessions.list_sessions(directory: directory, limit: limit, include_worktrees: include_worktrees)
   end
 
+  # Read metadata for a single session by ID (no full directory scan)
+  # @param session_id [String] UUID of the session to look up
+  # @param directory [String, nil] Project directory path
+  # @return [SDKSessionInfo, nil] Session info, or nil if not found
+  def self.get_session_info(session_id:, directory: nil)
+    Sessions.get_session_info(session_id: session_id, directory: directory)
+  end
+
   # Get messages from a session transcript
   # @param session_id [String] The session UUID
   # @param directory [String, nil] Working directory to search in
@@ -111,10 +119,6 @@ module ClaudeAgentSDK
 
       configured_options = options.dup_with(permission_prompt_tool_name: 'stdio')
     end
-
-    configured_options = configured_options.dup_with(
-      env: (configured_options.env || {}).merge('CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb')
-    )
 
     Async do
       # Always use streaming mode with control protocol (matches Python SDK).
@@ -274,10 +278,6 @@ module ClaudeAgentSDK
         # Set permission_prompt_tool_name to stdio for control protocol
         configured_options = @options.dup_with(permission_prompt_tool_name: 'stdio')
       end
-
-      configured_options = configured_options.dup_with(
-        env: (configured_options.env || {}).merge('CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb-client')
-      )
 
       # Client always uses streaming mode; keep stdin open for bidirectional communication.
       @transport = @transport_class.new(configured_options, **@transport_args)

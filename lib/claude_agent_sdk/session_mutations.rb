@@ -116,14 +116,11 @@ module ClaudeAgentSDK
     # ENOENT if the file does not exist. Returns false for missing
     # files or zero-byte files; true on successful write.
     def try_append(path, data)
-      file = File.open(path, File::WRONLY | File::APPEND)
-      begin
+      File.open(path, File::WRONLY | File::APPEND) do |file|
         return false if file.stat.size.zero? # rubocop:disable Style/ZeroLengthPredicate
 
         file.write(data)
         true
-      ensure
-        file.close
       end
     rescue Errno::ENOENT, Errno::ENOTDIR
       false

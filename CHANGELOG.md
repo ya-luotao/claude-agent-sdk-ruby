@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-04-01
+
+Full Claude Code parity release — cross-referenced against the Claude Code source (`coreSchemas.ts`) and TypeScript SDK to bring every message type, hook event, and sandbox setting into the Ruby SDK.
+
+### Added
+
+#### All 24 Message Types (full CLI parity)
+- `InitMessage` — session start / `/clear` with uuid, session_id, agents, api_key_source, betas, claude_code_version, cwd, tools, mcp_servers, model, permission_mode, slash_commands, output_style, skills, plugins, fast_mode_state
+- `CompactBoundaryMessage` — context compaction with uuid, session_id, compact_metadata (pre_tokens, trigger, preserved_segment)
+- `StatusMessage` — compacting status, permission mode changes
+- `APIRetryMessage` — attempt, max_retries, retry_delay_ms, error_status, error
+- `LocalCommandOutputMessage` — local command output content
+- `HookStartedMessage`, `HookProgressMessage`, `HookResponseMessage` — hook lifecycle with hook_id, hook_name, hook_event, stdout, stderr, output, exit_code, outcome
+- `SessionStateChangedMessage` — idle/running/requires_action state
+- `FilesPersistedMessage` — files, failed, processed_at
+- `ElicitationCompleteMessage` — MCP elicitation completion
+- `ToolProgressMessage` — per-tool elapsed time tracking (type: `tool_progress`)
+- `AuthStatusMessage` — authentication status (type: `auth_status`)
+- `ToolUseSummaryMessage` — tool use summaries (type: `tool_use_summary`)
+- `PromptSuggestionMessage` — predicted next prompts (type: `prompt_suggestion`)
+
+#### All 27 Hook Events (full CLI parity)
+- New hook input types: `SessionStartHookInput`, `SessionEndHookInput`, `StopFailureHookInput`, `PostCompactHookInput`, `PermissionDeniedHookInput`, `SetupHookInput`, `TeammateIdleHookInput`, `TaskCreatedHookInput`, `TaskCompletedHookInput`, `ElicitationHookInput`, `ElicitationResultHookInput`, `ConfigChangeHookInput`, `InstructionsLoadedHookInput`, `CwdChangedHookInput`, `FileChangedHookInput`, `WorktreeCreateHookInput`, `WorktreeRemoveHookInput`
+- New hook specific output types: `SetupHookSpecificOutput`, `PermissionDeniedHookSpecificOutput`, `CwdChangedHookSpecificOutput`, `FileChangedHookSpecificOutput`
+- `StopHookInput` and `SubagentStopHookInput` now include `last_assistant_message`
+
+#### Bare Mode
+- `bare: true` option on `ClaudeAgentOptions` — sugar for `--bare` CLI flag (skips hooks, LSP, plugin sync, CLAUDE.md auto-discovery, auto-memory, keychain reads)
+
+#### Full Sandbox Settings (CC parity)
+- `SandboxFilesystemConfig` — new class with allow_write, deny_write, deny_read, allow_read, allow_managed_read_paths_only
+- `SandboxNetworkConfig` — added allowed_domains, allow_managed_domains_only
+- `SandboxSettings` — added fail_if_unavailable, filesystem, enable_weaker_network_isolation, ripgrep
+- `ignore_violations` now accepts a plain Hash (matching CC's `Record<string, string[]>`)
+- Removed `SandboxIgnoreViolations` class (CC uses generic hash, not typed struct)
+
+#### Expanded Existing Types
+- `ResultMessage` — added uuid, fast_mode_state, model_usage, permission_denials, errors
+- `TaskStartedMessage` — added workflow_name, prompt
+- `TaskProgressMessage` — added summary
+- `CompactMetadata` — added preserved_segment
+- `ASSISTANT_MESSAGE_ERRORS` — added max_output_tokens
+
+#### Session Browsing
+- `get_session_info(session_id:, directory:)` — single-session metadata lookup without scanning full directory
+- `SDKSessionInfo` — added tag, created_at fields; improved title/summary extraction
+
+#### Examples
+- `message_types_example.rb` — comprehensive handler for all 24 message types
+- `lifecycle_hooks_example.rb` — all 27 hook events with typed inputs/outputs
+- `bare_mode_example.rb` — minimal startup patterns
+- `sandbox_example.rb` — full sandbox config (network, filesystem, violations)
+
+### Fixed
+- Graceful subprocess shutdown: wait before SIGTERM to avoid race conditions
+- `CLAUDE_CODE_ENTRYPOINT` uses default-if-absent semantics (doesn't override caller env)
+- Pre-existing `Time.zone` spec failures in sessions_spec.rb
+- Pre-existing `File.open` without block in session_mutations.rb
+
+### Changed
+- README restructured: positioned as community Ruby SDK (not Python mirror), 3-way comparison table (TS/Python/Ruby), links to official SDKs
+- Skill updated to cover all new types and hook events
+
 ## [0.11.0] - 2026-03-20
 
 ### Added

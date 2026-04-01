@@ -19,7 +19,8 @@ RSpec.describe ClaudeAgentSDK::Client do
     client.connect
 
     expect(received_options).to be_a(ClaudeAgentSDK::ClaudeAgentOptions)
-    expect(received_options.env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb-client')
+    # CLAUDE_CODE_ENTRYPOINT is now set as a default-if-absent by the transport layer
+    expect(received_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
   end
 
   it 'sends an initial String prompt as a user message after connecting' do
@@ -74,7 +75,7 @@ RSpec.describe ClaudeAgentSDK::Client do
     client.connect
 
     expect(received_options.permission_prompt_tool_name).to eq('stdio')
-    expect(received_options.env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb-client')
+    expect(received_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
   end
 
   it 'does not mutate global CLAUDE_CODE_ENTRYPOINT' do
@@ -261,7 +262,7 @@ RSpec.describe ClaudeAgentSDK::Client do
       client.connect
 
       expect(received_options.permission_prompt_tool_name).to eq('stdio')
-      expect(received_options.env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb-client')
+      expect(received_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
     end
 
     it 'defaults transport_class to SubprocessCLITransport' do

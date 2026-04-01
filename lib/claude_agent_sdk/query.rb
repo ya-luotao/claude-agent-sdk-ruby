@@ -386,6 +386,7 @@ module ClaudeAgentSDK
       when 'Stop'
         StopHookInput.new(
           stop_hook_active: fetch.call(:stop_hook_active),
+          last_assistant_message: fetch.call(:last_assistant_message),
           **base_args
         )
       when 'SubagentStop'
@@ -394,6 +395,7 @@ module ClaudeAgentSDK
           agent_id: fetch.call(:agent_id),
           agent_transcript_path: fetch.call(:agent_transcript_path),
           agent_type: fetch.call(:agent_type),
+          last_assistant_message: fetch.call(:last_assistant_message),
           **base_args
         )
       when 'Notification'
@@ -420,6 +422,124 @@ module ClaudeAgentSDK
         PreCompactHookInput.new(
           trigger: fetch.call(:trigger),
           custom_instructions: fetch.call(:custom_instructions),
+          **base_args
+        )
+      when 'SessionStart'
+        SessionStartHookInput.new(
+          source: fetch.call(:source),
+          agent_type: fetch.call(:agent_type),
+          model: fetch.call(:model),
+          **base_args
+        )
+      when 'SessionEnd'
+        SessionEndHookInput.new(
+          reason: fetch.call(:reason),
+          **base_args
+        )
+      when 'Setup'
+        SetupHookInput.new(
+          trigger: fetch.call(:trigger),
+          **base_args
+        )
+      when 'TeammateIdle'
+        TeammateIdleHookInput.new(
+          teammate_name: fetch.call(:teammate_name),
+          team_name: fetch.call(:team_name),
+          **base_args
+        )
+      when 'TaskCompleted'
+        TaskCompletedHookInput.new(
+          task_id: fetch.call(:task_id),
+          task_subject: fetch.call(:task_subject),
+          task_description: fetch.call(:task_description),
+          teammate_name: fetch.call(:teammate_name),
+          team_name: fetch.call(:team_name),
+          **base_args
+        )
+      when 'ConfigChange'
+        ConfigChangeHookInput.new(
+          source: fetch.call(:source),
+          file_path: fetch.call(:file_path),
+          **base_args
+        )
+      when 'WorktreeCreate'
+        WorktreeCreateHookInput.new(
+          name: fetch.call(:name),
+          **base_args
+        )
+      when 'WorktreeRemove'
+        WorktreeRemoveHookInput.new(
+          worktree_path: fetch.call(:worktree_path),
+          **base_args
+        )
+      when 'StopFailure'
+        StopFailureHookInput.new(
+          error: fetch.call(:error),
+          error_details: fetch.call(:error_details),
+          last_assistant_message: fetch.call(:last_assistant_message),
+          **base_args
+        )
+      when 'PostCompact'
+        PostCompactHookInput.new(
+          trigger: fetch.call(:trigger),
+          compact_summary: fetch.call(:compact_summary),
+          **base_args
+        )
+      when 'PermissionDenied'
+        PermissionDeniedHookInput.new(
+          tool_name: fetch.call(:tool_name),
+          tool_input: fetch.call(:tool_input),
+          tool_use_id: fetch.call(:tool_use_id),
+          reason: fetch.call(:reason),
+          **subagent_args, **base_args
+        )
+      when 'TaskCreated'
+        TaskCreatedHookInput.new(
+          task_id: fetch.call(:task_id),
+          task_subject: fetch.call(:task_subject),
+          task_description: fetch.call(:task_description),
+          teammate_name: fetch.call(:teammate_name),
+          team_name: fetch.call(:team_name),
+          **base_args
+        )
+      when 'Elicitation'
+        ElicitationHookInput.new(
+          mcp_server_name: fetch.call(:mcp_server_name),
+          message: fetch.call(:message),
+          mode: fetch.call(:mode),
+          url: fetch.call(:url),
+          elicitation_id: fetch.call(:elicitation_id),
+          requested_schema: fetch.call(:requested_schema),
+          **base_args
+        )
+      when 'ElicitationResult'
+        ElicitationResultHookInput.new(
+          mcp_server_name: fetch.call(:mcp_server_name),
+          elicitation_id: fetch.call(:elicitation_id),
+          mode: fetch.call(:mode),
+          action: fetch.call(:action),
+          content: fetch.call(:content),
+          **base_args
+        )
+      when 'InstructionsLoaded'
+        InstructionsLoadedHookInput.new(
+          file_path: fetch.call(:file_path),
+          memory_type: fetch.call(:memory_type),
+          load_reason: fetch.call(:load_reason),
+          globs: fetch.call(:globs),
+          trigger_file_path: fetch.call(:trigger_file_path),
+          **base_args
+        )
+      when 'CwdChanged'
+        CwdChangedHookInput.new(
+          old_cwd: fetch.call(:old_cwd),
+          new_cwd: fetch.call(:new_cwd),
+          **base_args
+        )
+      when 'FileChanged'
+        FileChangedHookInput.new(
+          file_path: fetch.call(:file_path),
+          event: fetch.call(:event),
           **base_args
         )
       else
