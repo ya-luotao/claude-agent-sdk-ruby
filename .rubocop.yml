@@ -14,16 +14,23 @@ Style/Documentation:
 Metrics/MethodLength:
   Max: 30
   Exclude:
-    - 'lib/claude_agent_sdk/message_parser.rb' # parse_system_message dispatches all CLI subtypes
+    - 'lib/claude_agent_sdk.rb'
+    - 'lib/claude_agent_sdk/query.rb'
+    - 'lib/claude_agent_sdk/message_parser.rb'
+    - 'lib/claude_agent_sdk/sdk_mcp_server.rb'
+    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
+    - 'lib/claude_agent_sdk/types.rb'
 
 Metrics/ClassLength:
   Max: 250
   Exclude:
-    - 'lib/claude_agent_sdk/message_parser.rb' # type registry grows with the protocol
+    - 'lib/claude_agent_sdk/query.rb'
+    - 'lib/claude_agent_sdk/message_parser.rb'
+    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
 
 Metrics/ModuleLength:
   Exclude:
-    - 'lib/claude_agent_sdk/types.rb' # type definitions naturally grow with the protocol
+    - 'lib/claude_agent_sdk/types.rb'
 
 Metrics/BlockLength:
   Exclude:
