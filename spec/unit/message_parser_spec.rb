@@ -294,6 +294,21 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.usage).to eq({ total_tokens: 1000, tool_uses: 5, duration_ms: 5000 })
       end
 
+      it 'parses init as InitMessage' do
+        data = {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'new-session-uuid'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::InitMessage)
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.subtype).to eq('init')
+        expect(msg.session_id).to eq('new-session-uuid')
+        expect(msg.data).to eq(data)
+      end
+
       it 'parses compact_boundary as CompactBoundaryMessage' do
         data = {
           type: 'system',

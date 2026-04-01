@@ -125,6 +125,16 @@ module ClaudeAgentSDK
     end
   end
 
+  # Init system message (emitted after /clear resets the conversation)
+  class InitMessage < SystemMessage
+    attr_accessor :session_id
+
+    def initialize(subtype:, data:, session_id: nil)
+      super(subtype: subtype, data: data)
+      @session_id = session_id
+    end
+  end
+
   # Compact boundary system message (emitted after context compaction completes)
   class CompactBoundaryMessage < SystemMessage
     attr_accessor :compact_metadata

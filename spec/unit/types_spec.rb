@@ -109,6 +109,20 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::InitMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(subtype: 'init', data: {})
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.subtype).to eq('init')
+        expect(msg.session_id).to be_nil
+      end
+
+      it 'stores session_id' do
+        msg = described_class.new(subtype: 'init', data: {}, session_id: 'new-sess-123')
+        expect(msg.session_id).to eq('new-sess-123')
+      end
+    end
+
     describe ClaudeAgentSDK::CompactBoundaryMessage do
       it 'is a SystemMessage subclass' do
         msg = described_class.new(subtype: 'compact_boundary', data: {})

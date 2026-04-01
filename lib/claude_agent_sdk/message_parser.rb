@@ -68,6 +68,11 @@ module ClaudeAgentSDK
 
     def self.parse_system_message(data)
       case data[:subtype]
+      when 'init'
+        InitMessage.new(
+          subtype: data[:subtype], data: data,
+          session_id: data[:session_id]
+        )
       when 'compact_boundary'
         raw_metadata = data[:compact_metadata]
         CompactBoundaryMessage.new(
