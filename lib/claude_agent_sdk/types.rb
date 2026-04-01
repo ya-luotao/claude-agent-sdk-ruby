@@ -1569,17 +1569,22 @@ module ClaudeAgentSDK
 
   # Sandbox network configuration
   class SandboxNetworkConfig
-    attr_accessor :allow_unix_sockets, :allow_all_unix_sockets, :allow_local_binding,
+    attr_accessor :allowed_domains, :allow_managed_domains_only,
+                  :allow_unix_sockets, :allow_all_unix_sockets, :allow_local_binding,
                   :http_proxy_port, :socks_proxy_port
 
     def initialize(
+      allowed_domains: nil,
+      allow_managed_domains_only: nil,
       allow_unix_sockets: nil,
       allow_all_unix_sockets: nil,
       allow_local_binding: nil,
       http_proxy_port: nil,
       socks_proxy_port: nil
     )
-      @allow_unix_sockets = allow_unix_sockets
+      @allowed_domains = allowed_domains # Array of domain strings
+      @allow_managed_domains_only = allow_managed_domains_only
+      @allow_unix_sockets = allow_unix_sockets # macOS only: Array of socket paths
       @allow_all_unix_sockets = allow_all_unix_sockets
       @allow_local_binding = allow_local_binding
       @http_proxy_port = http_proxy_port
@@ -1588,6 +1593,8 @@ module ClaudeAgentSDK
 
     def to_h
       result = {}
+      result[:allowedDomains] = @allowed_domains if @allowed_domains
+      result[:allowManagedDomainsOnly] = @allow_managed_domains_only unless @allow_managed_domains_only.nil?
       result[:allowUnixSockets] = @allow_unix_sockets unless @allow_unix_sockets.nil?
       result[:allowAllUnixSockets] = @allow_all_unix_sockets unless @allow_all_unix_sockets.nil?
       result[:allowLocalBinding] = @allow_local_binding unless @allow_local_binding.nil?
@@ -1597,60 +1604,76 @@ module ClaudeAgentSDK
     end
   end
 
-  # Sandbox ignore violations configuration
-  class SandboxIgnoreViolations
-    attr_accessor :file, :network
+  # Sandbox filesystem configuration
+  class SandboxFilesystemConfig
+    attr_accessor :allow_write, :deny_write, :deny_read, :allow_read, :allow_managed_read_paths_only
 
-    def initialize(file: nil, network: nil)
-      @file = file # Array of file paths to ignore
-      @network = network # Array of network patterns to ignore
+    def initialize(allow_write: nil, deny_write: nil, deny_read: nil, allow_read: nil,
+                   allow_managed_read_paths_only: nil)
+      @allow_write = allow_write # Array of paths to allow writing
+      @deny_write = deny_write   # Array of paths to deny writing
+      @deny_read = deny_read     # Array of paths to deny reading
+      @allow_read = allow_read   # Array of paths to re-allow reading within denyRead
+      @allow_managed_read_paths_only = allow_managed_read_paths_only
     end
 
     def to_h
       result = {}
-      result[:file] = @file if @file
-      result[:network] = @network if @network
+      result[:allowWrite] = @allow_write if @allow_write
+      result[:denyWrite] = @deny_write if @deny_write
+      result[:denyRead] = @deny_read if @deny_read
+      result[:allowRead] = @allow_read if @allow_read
+      result[:allowManagedReadPathsOnly] = @allow_managed_read_paths_only unless @allow_managed_read_paths_only.nil?
       result
     end
   end
 
   # Sandbox settings for isolated command execution
   class SandboxSettings
-    attr_accessor :enabled, :auto_allow_bash_if_sandboxed, :excluded_commands,
-                  :allow_unsandboxed_commands, :network, :ignore_violations,
-                  :enable_weaker_nested_sandbox
+    attr_accessor :enabled, :fail_if_unavailable, :auto_allow_bash_if_sandboxed,
+                  :excluded_commands, :allow_unsandboxed_commands, :network, :filesystem,
+                  :ignore_violations, :enable_weaker_nested_sandbox,
+                  :enable_weaker_network_isolation, :ripgrep
 
     def initialize(
       enabled: nil,
+      fail_if_unavailable: nil,
       auto_allow_bash_if_sandboxed: nil,
       excluded_commands: nil,
       allow_unsandboxed_commands: nil,
       network: nil,
+      filesystem: nil,
       ignore_violations: nil,
-      enable_weaker_nested_sandbox: nil
+      enable_weaker_nested_sandbox: nil,
+      enable_weaker_network_isolation: nil,
+      ripgrep: nil
     )
       @enabled = enabled
+      @fail_if_unavailable = fail_if_unavailable
       @auto_allow_bash_if_sandboxed = auto_allow_bash_if_sandboxed
       @excluded_commands = excluded_commands # Array of commands to exclude
       @allow_unsandboxed_commands = allow_unsandboxed_commands
       @network = network # SandboxNetworkConfig instance
-      @ignore_violations = ignore_violations # SandboxIgnoreViolations instance
+      @filesystem = filesystem # SandboxFilesystemConfig instance
+      @ignore_violations = ignore_violations # Hash of { category => [patterns] }
       @enable_weaker_nested_sandbox = enable_weaker_nested_sandbox
+      @enable_weaker_network_isolation = enable_weaker_network_isolation # macOS only
+      @ripgrep = ripgrep # Hash with :command and optional :args
     end
 
     def to_h
       result = {}
       result[:enabled] = @enabled unless @enabled.nil?
+      result[:failIfUnavailable] = @fail_if_unavailable unless @fail_if_unavailable.nil?
       result[:autoAllowBashIfSandboxed] = @auto_allow_bash_if_sandboxed unless @auto_allow_bash_if_sandboxed.nil?
       result[:excludedCommands] = @excluded_commands if @excluded_commands
       result[:allowUnsandboxedCommands] = @allow_unsandboxed_commands unless @allow_unsandboxed_commands.nil?
-      if @network
-        result[:network] = @network.is_a?(SandboxNetworkConfig) ? @network.to_h : @network
-      end
-      if @ignore_violations
-        result[:ignoreViolations] = @ignore_violations.is_a?(SandboxIgnoreViolations) ? @ignore_violations.to_h : @ignore_violations
-      end
+      result[:network] = @network.is_a?(SandboxNetworkConfig) ? @network.to_h : @network if @network
+      result[:filesystem] = @filesystem.is_a?(SandboxFilesystemConfig) ? @filesystem.to_h : @filesystem if @filesystem
+      result[:ignoreViolations] = @ignore_violations if @ignore_violations
       result[:enableWeakerNestedSandbox] = @enable_weaker_nested_sandbox unless @enable_weaker_nested_sandbox.nil?
+      result[:enableWeakerNetworkIsolation] = @enable_weaker_network_isolation unless @enable_weaker_network_isolation.nil?
+      result[:ripgrep] = @ripgrep if @ripgrep
       result
     end
   end

@@ -1150,11 +1150,13 @@ RSpec.describe ClaudeAgentSDK do
     describe ClaudeAgentSDK::SandboxNetworkConfig do
       it 'stores network configuration' do
         config = described_class.new(
+          allowed_domains: ['example.com'],
           allow_unix_sockets: ['/tmp/socket'],
           allow_local_binding: true,
           http_proxy_port: 8080
         )
 
+        expect(config.allowed_domains).to eq(['example.com'])
         expect(config.allow_unix_sockets).to eq(['/tmp/socket'])
         expect(config.allow_local_binding).to eq(true)
         expect(config.http_proxy_port).to eq(8080)
@@ -1162,11 +1164,15 @@ RSpec.describe ClaudeAgentSDK do
 
       it 'converts to hash with camelCase keys' do
         config = described_class.new(
+          allowed_domains: ['api.example.com'],
+          allow_managed_domains_only: true,
           allow_local_binding: true,
           http_proxy_port: 8080
         )
 
         hash = config.to_h
+        expect(hash[:allowedDomains]).to eq(['api.example.com'])
+        expect(hash[:allowManagedDomainsOnly]).to eq(true)
         expect(hash[:allowLocalBinding]).to eq(true)
         expect(hash[:httpProxyPort]).to eq(8080)
       end
@@ -1177,26 +1183,37 @@ RSpec.describe ClaudeAgentSDK do
 
         expect(hash.key?(:allowLocalBinding)).to eq(true)
         expect(hash.key?(:allowUnixSockets)).to eq(false)
+        expect(hash.key?(:allowedDomains)).to eq(false)
       end
     end
 
-    describe ClaudeAgentSDK::SandboxIgnoreViolations do
-      it 'stores file and network patterns' do
+    describe ClaudeAgentSDK::SandboxFilesystemConfig do
+      it 'stores filesystem configuration' do
         config = described_class.new(
-          file: ['/tmp/*'],
-          network: ['localhost:*']
+          allow_write: ['/tmp'],
+          deny_write: ['/etc'],
+          deny_read: ['/secrets'],
+          allow_read: ['/secrets/public']
         )
 
-        expect(config.file).to eq(['/tmp/*'])
-        expect(config.network).to eq(['localhost:*'])
+        expect(config.allow_write).to eq(['/tmp'])
+        expect(config.deny_write).to eq(['/etc'])
+        expect(config.deny_read).to eq(['/secrets'])
+        expect(config.allow_read).to eq(['/secrets/public'])
       end
 
-      it 'converts to hash' do
-        config = described_class.new(file: ['/tmp/*'])
-        hash = config.to_h
+      it 'converts to hash with camelCase keys' do
+        config = described_class.new(
+          allow_write: ['/tmp'],
+          deny_read: ['/secrets'],
+          allow_managed_read_paths_only: true
+        )
 
-        expect(hash[:file]).to eq(['/tmp/*'])
-        expect(hash.key?(:network)).to eq(false)
+        hash = config.to_h
+        expect(hash[:allowWrite]).to eq(['/tmp'])
+        expect(hash[:denyRead]).to eq(['/secrets'])
+        expect(hash[:allowManagedReadPathsOnly]).to eq(true)
+        expect(hash.key?(:denyWrite)).to eq(false)
       end
     end
 
@@ -1226,27 +1243,39 @@ RSpec.describe ClaudeAgentSDK do
       end
 
       it 'handles all configuration options' do
-        network = ClaudeAgentSDK::SandboxNetworkConfig.new(allow_local_binding: true)
-        ignore = ClaudeAgentSDK::SandboxIgnoreViolations.new(file: ['/tmp/*'])
+        network = ClaudeAgentSDK::SandboxNetworkConfig.new(
+          allowed_domains: ['api.example.com'], allow_local_binding: true
+        )
+        filesystem = ClaudeAgentSDK::SandboxFilesystemConfig.new(
+          allow_write: ['/tmp'], deny_read: ['/secrets']
+        )
 
         sandbox = described_class.new(
           enabled: true,
+          fail_if_unavailable: true,
           auto_allow_bash_if_sandboxed: true,
           excluded_commands: ['rm'],
           allow_unsandboxed_commands: false,
           network: network,
-          ignore_violations: ignore,
-          enable_weaker_nested_sandbox: false
+          filesystem: filesystem,
+          ignore_violations: { 'file' => ['/tmp/*'] },
+          enable_weaker_nested_sandbox: false,
+          enable_weaker_network_isolation: true,
+          ripgrep: { command: '/usr/bin/rg', args: ['--hidden'] }
         )
 
         hash = sandbox.to_h
         expect(hash[:enabled]).to eq(true)
+        expect(hash[:failIfUnavailable]).to eq(true)
         expect(hash[:autoAllowBashIfSandboxed]).to eq(true)
         expect(hash[:excludedCommands]).to eq(['rm'])
         expect(hash[:allowUnsandboxedCommands]).to eq(false)
-        expect(hash[:network]).to be_a(Hash)
-        expect(hash[:ignoreViolations]).to be_a(Hash)
+        expect(hash[:network][:allowedDomains]).to eq(['api.example.com'])
+        expect(hash[:filesystem][:allowWrite]).to eq(['/tmp'])
+        expect(hash[:ignoreViolations]).to eq({ 'file' => ['/tmp/*'] })
         expect(hash[:enableWeakerNestedSandbox]).to eq(false)
+        expect(hash[:enableWeakerNetworkIsolation]).to eq(true)
+        expect(hash[:ripgrep]).to eq({ command: '/usr/bin/rg', args: ['--hidden'] })
       end
     end
 
