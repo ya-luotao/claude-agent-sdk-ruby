@@ -568,6 +568,311 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
       end
     end
 
+    context 'new system message subtypes' do
+      it 'parses status as StatusMessage' do
+        data = {
+          type: 'system',
+          subtype: 'status',
+          uuid: 'u1',
+          session_id: 's1',
+          status: 'compacting',
+          permissionMode: 'default'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::StatusMessage)
+        expect(msg.status).to eq('compacting')
+        expect(msg.permission_mode).to eq('default')
+      end
+
+      it 'parses api_retry as APIRetryMessage' do
+        data = {
+          type: 'system',
+          subtype: 'api_retry',
+          uuid: 'u1',
+          session_id: 's1',
+          attempt: 2,
+          maxRetries: 5,
+          retryDelayMs: 1000,
+          errorStatus: 429,
+          error: 'Rate limited'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::APIRetryMessage)
+        expect(msg.attempt).to eq(2)
+        expect(msg.max_retries).to eq(5)
+        expect(msg.retry_delay_ms).to eq(1000)
+        expect(msg.error_status).to eq(429)
+        expect(msg.error).to eq('Rate limited')
+      end
+
+      it 'parses local_command_output as LocalCommandOutputMessage' do
+        data = {
+          type: 'system',
+          subtype: 'local_command_output',
+          uuid: 'u1',
+          session_id: 's1',
+          content: 'command output here'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::LocalCommandOutputMessage)
+        expect(msg.content).to eq('command output here')
+      end
+
+      it 'parses hook_started as HookStartedMessage' do
+        data = {
+          type: 'system',
+          subtype: 'hook_started',
+          uuid: 'u1',
+          session_id: 's1',
+          hookId: 'h1',
+          hookName: 'my-hook',
+          hookEvent: 'PreToolUse'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::HookStartedMessage)
+        expect(msg.hook_id).to eq('h1')
+        expect(msg.hook_name).to eq('my-hook')
+        expect(msg.hook_event).to eq('PreToolUse')
+      end
+
+      it 'parses hook_progress as HookProgressMessage' do
+        data = {
+          type: 'system',
+          subtype: 'hook_progress',
+          uuid: 'u1',
+          session_id: 's1',
+          hookId: 'h1',
+          hookName: 'my-hook',
+          hookEvent: 'PreToolUse',
+          stdout: 'out',
+          stderr: 'err',
+          output: 'combined'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::HookProgressMessage)
+        expect(msg.stdout).to eq('out')
+        expect(msg.stderr).to eq('err')
+        expect(msg.output).to eq('combined')
+      end
+
+      it 'parses hook_response as HookResponseMessage' do
+        data = {
+          type: 'system',
+          subtype: 'hook_response',
+          uuid: 'u1',
+          session_id: 's1',
+          hookId: 'h1',
+          hookName: 'my-hook',
+          hookEvent: 'PostToolUse',
+          output: 'result',
+          stdout: 'out',
+          stderr: 'err',
+          exitCode: 0,
+          outcome: 'success'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::HookResponseMessage)
+        expect(msg.exit_code).to eq(0)
+        expect(msg.outcome).to eq('success')
+        expect(msg.hook_id).to eq('h1')
+      end
+
+      it 'parses session_state_changed as SessionStateChangedMessage' do
+        data = {
+          type: 'system',
+          subtype: 'session_state_changed',
+          uuid: 'u1',
+          session_id: 's1',
+          state: 'running'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::SessionStateChangedMessage)
+        expect(msg.state).to eq('running')
+      end
+
+      it 'parses files_persisted as FilesPersistedMessage' do
+        data = {
+          type: 'system',
+          subtype: 'files_persisted',
+          uuid: 'u1',
+          session_id: 's1',
+          files: [{ filename: 'a.txt', file_id: 'f1' }],
+          failed: [{ filename: 'b.txt', error: 'too big' }],
+          processedAt: '2026-04-01T00:00:00Z'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::FilesPersistedMessage)
+        expect(msg.files.length).to eq(1)
+        expect(msg.failed.length).to eq(1)
+        expect(msg.processed_at).to eq('2026-04-01T00:00:00Z')
+      end
+
+      it 'parses elicitation_complete as ElicitationCompleteMessage' do
+        data = {
+          type: 'system',
+          subtype: 'elicitation_complete',
+          uuid: 'u1',
+          session_id: 's1',
+          mcpServerName: 'my-server',
+          elicitationId: 'e1'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::ElicitationCompleteMessage)
+        expect(msg.mcp_server_name).to eq('my-server')
+        expect(msg.elicitation_id).to eq('e1')
+      end
+    end
+
+    context 'expanded task messages' do
+      it 'parses task_started with workflow_name and prompt' do
+        data = {
+          type: 'system',
+          subtype: 'task_started',
+          task_id: 'task_1',
+          description: 'Running deploy',
+          uuid: 'u1',
+          session_id: 's1',
+          workflowName: 'deploy',
+          prompt: 'Deploy to prod'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::TaskStartedMessage)
+        expect(msg.workflow_name).to eq('deploy')
+        expect(msg.prompt).to eq('Deploy to prod')
+      end
+
+      it 'parses task_progress with summary' do
+        data = {
+          type: 'system',
+          subtype: 'task_progress',
+          task_id: 'task_1',
+          description: 'Working',
+          usage: {},
+          uuid: 'u1',
+          session_id: 's1',
+          summary: 'Halfway done'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::TaskProgressMessage)
+        expect(msg.summary).to eq('Halfway done')
+      end
+    end
+
+    context 'result message new fields' do
+      it 'parses uuid and fast_mode_state' do
+        data = {
+          type: 'result',
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'test',
+          uuid: 'result_uuid',
+          fastModeState: 'on'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::ResultMessage)
+        expect(msg.uuid).to eq('result_uuid')
+        expect(msg.fast_mode_state).to eq('on')
+      end
+    end
+
+    context 'init message fast_mode_state' do
+      it 'parses fast_mode_state from camelCase' do
+        data = {
+          type: 'system',
+          subtype: 'init',
+          uuid: 'u1',
+          session_id: 's1',
+          fastModeState: 'cooldown'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::InitMessage)
+        expect(msg.fast_mode_state).to eq('cooldown')
+      end
+    end
+
+    context 'new top-level message types' do
+      it 'parses tool_progress messages' do
+        data = {
+          type: 'tool_progress',
+          uuid: 'u1',
+          session_id: 's1',
+          toolUseId: 'tu1',
+          toolName: 'Bash',
+          parentToolUseId: 'ptu1',
+          elapsedTimeSeconds: 5.2,
+          taskId: 't1'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::ToolProgressMessage)
+        expect(msg.tool_use_id).to eq('tu1')
+        expect(msg.tool_name).to eq('Bash')
+        expect(msg.parent_tool_use_id).to eq('ptu1')
+        expect(msg.elapsed_time_seconds).to eq(5.2)
+        expect(msg.task_id).to eq('t1')
+      end
+
+      it 'parses auth_status messages' do
+        data = {
+          type: 'auth_status',
+          uuid: 'u1',
+          session_id: 's1',
+          isAuthenticating: true,
+          output: 'Opening browser...',
+          error: nil
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::AuthStatusMessage)
+        expect(msg.is_authenticating).to eq(true)
+        expect(msg.output).to eq('Opening browser...')
+      end
+
+      it 'parses tool_use_summary messages' do
+        data = {
+          type: 'tool_use_summary',
+          uuid: 'u1',
+          session_id: 's1',
+          summary: 'Read 3 files',
+          precedingToolUseIds: %w[tu1 tu2 tu3]
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::ToolUseSummaryMessage)
+        expect(msg.summary).to eq('Read 3 files')
+        expect(msg.preceding_tool_use_ids).to eq(%w[tu1 tu2 tu3])
+      end
+
+      it 'parses prompt_suggestion messages' do
+        data = {
+          type: 'prompt_suggestion',
+          uuid: 'u1',
+          session_id: 's1',
+          suggestion: 'Try asking about the API'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::PromptSuggestionMessage)
+        expect(msg.suggestion).to eq('Try asking about the API')
+      end
+    end
+
     context 'error handling' do
       it 'raises error for malformed user message' do
         data = { type: 'user' } # Missing message field

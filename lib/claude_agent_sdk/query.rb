@@ -472,6 +472,76 @@ module ClaudeAgentSDK
           worktree_path: fetch.call(:worktree_path),
           **base_args
         )
+      when 'StopFailure'
+        StopFailureHookInput.new(
+          error: fetch.call(:error),
+          error_details: fetch.call(:error_details),
+          last_assistant_message: fetch.call(:last_assistant_message),
+          **base_args
+        )
+      when 'PostCompact'
+        PostCompactHookInput.new(
+          trigger: fetch.call(:trigger),
+          compact_summary: fetch.call(:compact_summary),
+          **base_args
+        )
+      when 'PermissionDenied'
+        PermissionDeniedHookInput.new(
+          tool_name: fetch.call(:tool_name),
+          tool_input: fetch.call(:tool_input),
+          tool_use_id: fetch.call(:tool_use_id),
+          reason: fetch.call(:reason),
+          **subagent_args, **base_args
+        )
+      when 'TaskCreated'
+        TaskCreatedHookInput.new(
+          task_id: fetch.call(:task_id),
+          task_subject: fetch.call(:task_subject),
+          task_description: fetch.call(:task_description),
+          teammate_name: fetch.call(:teammate_name),
+          team_name: fetch.call(:team_name),
+          **base_args
+        )
+      when 'Elicitation'
+        ElicitationHookInput.new(
+          mcp_server_name: fetch.call(:mcp_server_name),
+          message: fetch.call(:message),
+          mode: fetch.call(:mode),
+          url: fetch.call(:url),
+          elicitation_id: fetch.call(:elicitation_id),
+          requested_schema: fetch.call(:requested_schema),
+          **base_args
+        )
+      when 'ElicitationResult'
+        ElicitationResultHookInput.new(
+          mcp_server_name: fetch.call(:mcp_server_name),
+          elicitation_id: fetch.call(:elicitation_id),
+          mode: fetch.call(:mode),
+          action: fetch.call(:action),
+          content: fetch.call(:content),
+          **base_args
+        )
+      when 'InstructionsLoaded'
+        InstructionsLoadedHookInput.new(
+          file_path: fetch.call(:file_path),
+          memory_type: fetch.call(:memory_type),
+          load_reason: fetch.call(:load_reason),
+          globs: fetch.call(:globs),
+          trigger_file_path: fetch.call(:trigger_file_path),
+          **base_args
+        )
+      when 'CwdChanged'
+        CwdChangedHookInput.new(
+          old_cwd: fetch.call(:old_cwd),
+          new_cwd: fetch.call(:new_cwd),
+          **base_args
+        )
+      when 'FileChanged'
+        FileChangedHookInput.new(
+          file_path: fetch.call(:file_path),
+          event: fetch.call(:event),
+          **base_args
+        )
       else
         # Return base input for unknown event types
         BaseHookInput.new(**base_args)

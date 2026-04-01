@@ -18,21 +18,30 @@ module ClaudeAgentSDK
     PreToolUse
     PostToolUse
     PostToolUseFailure
+    Notification
     UserPromptSubmit
     SessionStart
     SessionEnd
     Stop
+    StopFailure
     SubagentStart
     SubagentStop
     PreCompact
-    Notification
+    PostCompact
     PermissionRequest
+    PermissionDenied
     Setup
     TeammateIdle
+    TaskCreated
     TaskCompleted
+    Elicitation
+    ElicitationResult
     ConfigChange
     WorktreeCreate
     WorktreeRemove
+    InstructionsLoaded
+    CwdChanged
+    FileChanged
   ].freeze
 
   # Type constants for assistant message errors
@@ -137,13 +146,14 @@ module ClaudeAgentSDK
   class InitMessage < SystemMessage
     attr_accessor :uuid, :session_id, :agents, :api_key_source, :betas,
                   :claude_code_version, :cwd, :tools, :mcp_servers, :model,
-                  :permission_mode, :slash_commands, :output_style, :skills, :plugins
+                  :permission_mode, :slash_commands, :output_style, :skills, :plugins,
+                  :fast_mode_state
 
     def initialize(subtype:, data:, uuid: nil, session_id: nil, agents: nil,
                    api_key_source: nil, betas: nil, claude_code_version: nil,
                    cwd: nil, tools: nil, mcp_servers: nil, model: nil,
                    permission_mode: nil, slash_commands: nil, output_style: nil,
-                   skills: nil, plugins: nil)
+                   skills: nil, plugins: nil, fast_mode_state: nil)
       super(subtype: subtype, data: data)
       @uuid = uuid
       @session_id = session_id
@@ -160,6 +170,7 @@ module ClaudeAgentSDK
       @output_style = output_style
       @skills = skills
       @plugins = plugins
+      @fast_mode_state = fast_mode_state # "off", "cooldown", or "on"
     end
   end
 
@@ -177,25 +188,164 @@ module ClaudeAgentSDK
 
   # Metadata about a compaction event
   class CompactMetadata
-    attr_accessor :pre_tokens, :post_tokens, :trigger, :custom_instructions
+    attr_accessor :pre_tokens, :post_tokens, :trigger, :custom_instructions, :preserved_segment
 
-    def initialize(pre_tokens: nil, post_tokens: nil, trigger: nil, custom_instructions: nil)
+    def initialize(pre_tokens: nil, post_tokens: nil, trigger: nil, custom_instructions: nil, preserved_segment: nil)
       @pre_tokens = pre_tokens
       @post_tokens = post_tokens
       @trigger = trigger # "manual" or "auto"
       @custom_instructions = custom_instructions
+      @preserved_segment = preserved_segment # Hash with head_uuid, anchor_uuid, tail_uuid
     end
 
     def self.from_hash(hash)
       return nil unless hash.is_a?(Hash)
+
+      preserved = hash[:preserved_segment] || hash['preserved_segment'] ||
+                  hash[:preservedSegment] || hash['preservedSegment']
 
       new(
         pre_tokens: hash[:pre_tokens] || hash['pre_tokens'] || hash[:preTokens] || hash['preTokens'],
         post_tokens: hash[:post_tokens] || hash['post_tokens'] || hash[:postTokens] || hash['postTokens'],
         trigger: hash[:trigger] || hash['trigger'],
         custom_instructions: hash[:custom_instructions] || hash['custom_instructions'] ||
-                             hash[:customInstructions] || hash['customInstructions']
+                             hash[:customInstructions] || hash['customInstructions'],
+        preserved_segment: preserved
       )
+    end
+  end
+
+  # Status system message (compacting status, permission mode changes)
+  class StatusMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :status, :permission_mode
+
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, status: nil, permission_mode: nil)
+      super(subtype: subtype, data: data)
+      @uuid = uuid
+      @session_id = session_id
+      @status = status # "compacting" or nil
+      @permission_mode = permission_mode
+    end
+  end
+
+  # API retry system message
+  class APIRetryMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :attempt, :max_retries, :retry_delay_ms, :error_status, :error
+
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, attempt: nil, max_retries: nil,
+                   retry_delay_ms: nil, error_status: nil, error: nil)
+      super(subtype: subtype, data: data)
+      @uuid = uuid
+      @session_id = session_id
+      @attempt = attempt
+      @max_retries = max_retries
+      @retry_delay_ms = retry_delay_ms
+      @error_status = error_status
+      @error = error
+    end
+  end
+
+  # Local command output system message
+  class LocalCommandOutputMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :content
+
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, content: nil)
+      super(subtype: subtype, data: data)
+      @uuid = uuid
+      @session_id = session_id
+      @content = content
+    end
+  end
+
+  # Hook started system message
+  class HookStartedMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :hook_id, :hook_name, :hook_event
+
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, hook_id: nil, hook_name: nil, hook_event: nil)
+      super(subtype: subtype, data: data)
+      @uuid = uuid
+      @session_id = session_id
+      @hook_id = hook_id
+      @hook_name = hook_name
+      @hook_event = hook_event
+    end
+  end
+
+  # Hook progress system message
+  class HookProgressMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :hook_id, :hook_name, :hook_event, :stdout, :stderr, :output
+
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, hook_id: nil, hook_name: nil,
+                   hook_event: nil, stdout: nil, stderr: nil, output: nil)
+      super(subtype: subtype, data: data)
+      @uuid = uuid
+      @session_id = session_id
+      @hook_id = hook_id
+      @hook_name = hook_name
+      @hook_event = hook_event
+      @stdout = stdout
+      @stderr = stderr
+      @output = output
+    end
+  end
+
+  # Hook response system message
+  class HookResponseMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :hook_id, :hook_name, :hook_event,
+                  :output, :stdout, :stderr, :exit_code, :outcome
+
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, hook_id: nil, hook_name: nil,
+                   hook_event: nil, output: nil, stdout: nil, stderr: nil, exit_code: nil, outcome: nil)
+      super(subtype: subtype, data: data)
+      @uuid = uuid
+      @session_id = session_id
+      @hook_id = hook_id
+      @hook_name = hook_name
+      @hook_event = hook_event
+      @output = output
+      @stdout = stdout
+      @stderr = stderr
+      @exit_code = exit_code
+      @outcome = outcome # "success", "error", or "cancelled"
+    end
+  end
+
+  # Session state changed system message
+  class SessionStateChangedMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :state
+
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, state: nil)
+      super(subtype: subtype, data: data)
+      @uuid = uuid
+      @session_id = session_id
+      @state = state # "idle", "running", or "requires_action"
+    end
+  end
+
+  # Files persisted system message
+  class FilesPersistedMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :files, :failed, :processed_at
+
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, files: nil, failed: nil, processed_at: nil)
+      super(subtype: subtype, data: data)
+      @uuid = uuid
+      @session_id = session_id
+      @files = files # Array of { filename:, file_id: }
+      @failed = failed # Array of { filename:, error: }
+      @processed_at = processed_at
+    end
+  end
+
+  # Elicitation complete system message
+  class ElicitationCompleteMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :mcp_server_name, :elicitation_id
+
+    def initialize(subtype:, data:, uuid: nil, session_id: nil, mcp_server_name: nil, elicitation_id: nil)
+      super(subtype: subtype, data: data)
+      @uuid = uuid
+      @session_id = session_id
+      @mcp_server_name = mcp_server_name
+      @elicitation_id = elicitation_id
     end
   end
 
@@ -225,10 +375,11 @@ module ClaudeAgentSDK
 
   # Task started system message (subagent/background task started)
   class TaskStartedMessage < SystemMessage
-    attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type
+    attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type,
+                  :workflow_name, :prompt
 
     def initialize(subtype:, data:, task_id:, description:, uuid:, session_id:,
-                   tool_use_id: nil, task_type: nil)
+                   tool_use_id: nil, task_type: nil, workflow_name: nil, prompt: nil)
       super(subtype: subtype, data: data)
       @task_id = task_id
       @description = description
@@ -236,15 +387,17 @@ module ClaudeAgentSDK
       @session_id = session_id
       @tool_use_id = tool_use_id
       @task_type = task_type
+      @workflow_name = workflow_name
+      @prompt = prompt
     end
   end
 
   # Task progress system message (periodic update from a running task)
   class TaskProgressMessage < SystemMessage
-    attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name
+    attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name, :summary
 
     def initialize(subtype:, data:, task_id:, description:, usage:, uuid:, session_id:,
-                   tool_use_id: nil, last_tool_name: nil)
+                   tool_use_id: nil, last_tool_name: nil, summary: nil)
       super(subtype: subtype, data: data)
       @task_id = task_id
       @description = description
@@ -253,6 +406,7 @@ module ClaudeAgentSDK
       @session_id = session_id
       @tool_use_id = tool_use_id
       @last_tool_name = last_tool_name
+      @summary = summary
     end
   end
 
@@ -278,12 +432,14 @@ module ClaudeAgentSDK
   class ResultMessage
     attr_accessor :subtype, :duration_ms, :duration_api_ms, :is_error,
                   :num_turns, :session_id, :stop_reason, :total_cost_usd, :usage,
-                  :result, :structured_output, :model_usage, :permission_denials, :errors
+                  :result, :structured_output, :model_usage, :permission_denials, :errors,
+                  :uuid, :fast_mode_state
 
     def initialize(subtype:, duration_ms:, duration_api_ms:, is_error:,
                    num_turns:, session_id:, stop_reason: nil, total_cost_usd: nil,
                    usage: nil, result: nil, structured_output: nil,
-                   model_usage: nil, permission_denials: nil, errors: nil)
+                   model_usage: nil, permission_denials: nil, errors: nil,
+                   uuid: nil, fast_mode_state: nil)
       @subtype = subtype
       @duration_ms = duration_ms
       @duration_api_ms = duration_api_ms
@@ -298,6 +454,8 @@ module ClaudeAgentSDK
       @model_usage = model_usage # Hash of { model_name => usage_data }
       @permission_denials = permission_denials # Array of { tool_name:, tool_use_id:, tool_input: }
       @errors = errors # Array of error strings (present on error subtypes)
+      @uuid = uuid
+      @fast_mode_state = fast_mode_state # "off", "cooldown", or "on"
     end
   end
 
@@ -310,6 +468,59 @@ module ClaudeAgentSDK
       @session_id = session_id
       @event = event
       @parent_tool_use_id = parent_tool_use_id
+    end
+  end
+
+  # Tool progress message (type: 'tool_progress')
+  class ToolProgressMessage
+    attr_accessor :uuid, :session_id, :tool_use_id, :tool_name, :parent_tool_use_id,
+                  :elapsed_time_seconds, :task_id
+
+    def initialize(uuid: nil, session_id: nil, tool_use_id: nil, tool_name: nil,
+                   parent_tool_use_id: nil, elapsed_time_seconds: nil, task_id: nil)
+      @uuid = uuid
+      @session_id = session_id
+      @tool_use_id = tool_use_id
+      @tool_name = tool_name
+      @parent_tool_use_id = parent_tool_use_id
+      @elapsed_time_seconds = elapsed_time_seconds
+      @task_id = task_id
+    end
+  end
+
+  # Auth status message (type: 'auth_status')
+  class AuthStatusMessage
+    attr_accessor :uuid, :session_id, :is_authenticating, :output, :error
+
+    def initialize(uuid: nil, session_id: nil, is_authenticating: nil, output: nil, error: nil)
+      @uuid = uuid
+      @session_id = session_id
+      @is_authenticating = is_authenticating
+      @output = output
+      @error = error
+    end
+  end
+
+  # Tool use summary message (type: 'tool_use_summary')
+  class ToolUseSummaryMessage
+    attr_accessor :uuid, :session_id, :summary, :preceding_tool_use_ids
+
+    def initialize(uuid: nil, session_id: nil, summary: nil, preceding_tool_use_ids: nil)
+      @uuid = uuid
+      @session_id = session_id
+      @summary = summary
+      @preceding_tool_use_ids = preceding_tool_use_ids
+    end
+  end
+
+  # Prompt suggestion message (type: 'prompt_suggestion')
+  class PromptSuggestionMessage
+    attr_accessor :uuid, :session_id, :suggestion
+
+    def initialize(uuid: nil, session_id: nil, suggestion: nil)
+      @uuid = uuid
+      @session_id = session_id
+      @suggestion = suggestion
     end
   end
 
@@ -752,6 +963,139 @@ module ClaudeAgentSDK
     end
   end
 
+  # StopFailure hook input
+  class StopFailureHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :error, :error_details, :last_assistant_message
+
+    def initialize(hook_event_name: 'StopFailure', error: nil, error_details: nil,
+                   last_assistant_message: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @error = error
+      @error_details = error_details
+      @last_assistant_message = last_assistant_message
+    end
+  end
+
+  # PostCompact hook input
+  class PostCompactHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :trigger, :compact_summary
+
+    def initialize(hook_event_name: 'PostCompact', trigger: nil, compact_summary: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @trigger = trigger # "manual" or "auto"
+      @compact_summary = compact_summary
+    end
+  end
+
+  # PermissionDenied hook input
+  class PermissionDeniedHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :tool_name, :tool_input, :tool_use_id, :reason, :agent_id, :agent_type
+
+    def initialize(hook_event_name: 'PermissionDenied', tool_name: nil, tool_input: nil, tool_use_id: nil,
+                   reason: nil, agent_id: nil, agent_type: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @tool_name = tool_name
+      @tool_input = tool_input
+      @tool_use_id = tool_use_id
+      @reason = reason
+      @agent_id = agent_id
+      @agent_type = agent_type
+    end
+  end
+
+  # TaskCreated hook input
+  class TaskCreatedHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :task_id, :task_subject, :task_description, :teammate_name, :team_name
+
+    def initialize(hook_event_name: 'TaskCreated', task_id: nil, task_subject: nil, task_description: nil,
+                   teammate_name: nil, team_name: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @task_id = task_id
+      @task_subject = task_subject
+      @task_description = task_description
+      @teammate_name = teammate_name
+      @team_name = team_name
+    end
+  end
+
+  # Elicitation hook input
+  class ElicitationHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :mcp_server_name, :message, :mode, :url,
+                  :elicitation_id, :requested_schema
+
+    def initialize(hook_event_name: 'Elicitation', mcp_server_name: nil, message: nil, mode: nil,
+                   url: nil, elicitation_id: nil, requested_schema: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @mcp_server_name = mcp_server_name
+      @message = message
+      @mode = mode
+      @url = url
+      @elicitation_id = elicitation_id
+      @requested_schema = requested_schema
+    end
+  end
+
+  # ElicitationResult hook input
+  class ElicitationResultHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :mcp_server_name, :elicitation_id, :mode, :action, :content
+
+    def initialize(hook_event_name: 'ElicitationResult', mcp_server_name: nil, elicitation_id: nil,
+                   mode: nil, action: nil, content: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @mcp_server_name = mcp_server_name
+      @elicitation_id = elicitation_id
+      @mode = mode
+      @action = action
+      @content = content
+    end
+  end
+
+  # InstructionsLoaded hook input
+  class InstructionsLoadedHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :file_path, :memory_type, :load_reason, :globs, :trigger_file_path
+
+    def initialize(hook_event_name: 'InstructionsLoaded', file_path: nil, memory_type: nil,
+                   load_reason: nil, globs: nil, trigger_file_path: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @file_path = file_path
+      @memory_type = memory_type
+      @load_reason = load_reason
+      @globs = globs
+      @trigger_file_path = trigger_file_path
+    end
+  end
+
+  # CwdChanged hook input
+  class CwdChangedHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :old_cwd, :new_cwd
+
+    def initialize(hook_event_name: 'CwdChanged', old_cwd: nil, new_cwd: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @old_cwd = old_cwd
+      @new_cwd = new_cwd
+    end
+  end
+
+  # FileChanged hook input
+  class FileChangedHookInput < BaseHookInput
+    attr_accessor :hook_event_name, :file_path, :event
+
+    def initialize(hook_event_name: 'FileChanged', file_path: nil, event: nil, **base_args)
+      super(**base_args)
+      @hook_event_name = hook_event_name
+      @file_path = file_path
+      @event = event # "change", "add", or "unlink"
+    end
+  end
+
   # Setup hook specific output
   class SetupHookSpecificOutput
     attr_accessor :hook_event_name, :additional_context
@@ -902,6 +1246,54 @@ module ClaudeAgentSDK
     def to_h
       result = { hookEventName: @hook_event_name }
       result[:additionalContext] = @additional_context if @additional_context
+      result
+    end
+  end
+
+  # PermissionDenied hook specific output
+  class PermissionDeniedHookSpecificOutput
+    attr_accessor :hook_event_name, :retry
+
+    def initialize(retry_: false)
+      @hook_event_name = 'PermissionDenied'
+      @retry = retry_
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:retry] = @retry unless @retry.nil?
+      result
+    end
+  end
+
+  # CwdChanged hook specific output
+  class CwdChangedHookSpecificOutput
+    attr_accessor :hook_event_name, :watch_paths
+
+    def initialize(watch_paths: nil)
+      @hook_event_name = 'CwdChanged'
+      @watch_paths = watch_paths
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:watchPaths] = @watch_paths if @watch_paths
+      result
+    end
+  end
+
+  # FileChanged hook specific output
+  class FileChangedHookSpecificOutput
+    attr_accessor :hook_event_name, :watch_paths
+
+    def initialize(watch_paths: nil)
+      @hook_event_name = 'FileChanged'
+      @watch_paths = watch_paths
+    end
+
+    def to_h
+      result = { hookEventName: @hook_event_name }
+      result[:watchPaths] = @watch_paths if @watch_paths
       result
     end
   end

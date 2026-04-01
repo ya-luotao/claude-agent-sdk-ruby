@@ -1447,6 +1447,436 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    # New system message types
+
+    describe ClaudeAgentSDK::StatusMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(subtype: 'status', data: {}, status: 'compacting')
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.status).to eq('compacting')
+      end
+
+      it 'stores all fields' do
+        msg = described_class.new(
+          subtype: 'status', data: {}, uuid: 'u1', session_id: 's1',
+          status: 'compacting', permission_mode: 'default'
+        )
+        expect(msg.uuid).to eq('u1')
+        expect(msg.session_id).to eq('s1')
+        expect(msg.status).to eq('compacting')
+        expect(msg.permission_mode).to eq('default')
+      end
+    end
+
+    describe ClaudeAgentSDK::APIRetryMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(subtype: 'api_retry', data: {})
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+      end
+
+      it 'stores all fields' do
+        msg = described_class.new(
+          subtype: 'api_retry', data: {}, uuid: 'u1', session_id: 's1',
+          attempt: 2, max_retries: 5, retry_delay_ms: 1000,
+          error_status: 429, error: 'Rate limited'
+        )
+        expect(msg.attempt).to eq(2)
+        expect(msg.max_retries).to eq(5)
+        expect(msg.retry_delay_ms).to eq(1000)
+        expect(msg.error_status).to eq(429)
+        expect(msg.error).to eq('Rate limited')
+      end
+    end
+
+    describe ClaudeAgentSDK::LocalCommandOutputMessage do
+      it 'is a SystemMessage subclass' do
+        msg = described_class.new(subtype: 'local_command_output', data: {}, content: 'output text')
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.content).to eq('output text')
+      end
+    end
+
+    describe ClaudeAgentSDK::HookStartedMessage do
+      it 'stores all fields' do
+        msg = described_class.new(
+          subtype: 'hook_started', data: {}, uuid: 'u1', session_id: 's1',
+          hook_id: 'h1', hook_name: 'my-hook', hook_event: 'PreToolUse'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.hook_id).to eq('h1')
+        expect(msg.hook_name).to eq('my-hook')
+        expect(msg.hook_event).to eq('PreToolUse')
+      end
+    end
+
+    describe ClaudeAgentSDK::HookProgressMessage do
+      it 'stores all fields' do
+        msg = described_class.new(
+          subtype: 'hook_progress', data: {}, uuid: 'u1', session_id: 's1',
+          hook_id: 'h1', hook_name: 'my-hook', hook_event: 'PreToolUse',
+          stdout: 'out', stderr: 'err', output: 'combined'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.stdout).to eq('out')
+        expect(msg.stderr).to eq('err')
+        expect(msg.output).to eq('combined')
+      end
+    end
+
+    describe ClaudeAgentSDK::HookResponseMessage do
+      it 'stores all fields' do
+        msg = described_class.new(
+          subtype: 'hook_response', data: {}, uuid: 'u1', session_id: 's1',
+          hook_id: 'h1', hook_name: 'my-hook', hook_event: 'PreToolUse',
+          output: 'result', stdout: 'out', stderr: 'err',
+          exit_code: 0, outcome: 'success'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.exit_code).to eq(0)
+        expect(msg.outcome).to eq('success')
+      end
+    end
+
+    describe ClaudeAgentSDK::SessionStateChangedMessage do
+      it 'stores state' do
+        msg = described_class.new(
+          subtype: 'session_state_changed', data: {}, uuid: 'u1', session_id: 's1',
+          state: 'running'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.state).to eq('running')
+      end
+    end
+
+    describe ClaudeAgentSDK::FilesPersistedMessage do
+      it 'stores all fields' do
+        files = [{ filename: 'a.txt', file_id: 'f1' }]
+        failed = [{ filename: 'b.txt', error: 'too big' }]
+        msg = described_class.new(
+          subtype: 'files_persisted', data: {}, uuid: 'u1', session_id: 's1',
+          files: files, failed: failed, processed_at: '2026-04-01T00:00:00Z'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.files).to eq(files)
+        expect(msg.failed).to eq(failed)
+        expect(msg.processed_at).to eq('2026-04-01T00:00:00Z')
+      end
+    end
+
+    describe ClaudeAgentSDK::ElicitationCompleteMessage do
+      it 'stores all fields' do
+        msg = described_class.new(
+          subtype: 'elicitation_complete', data: {}, uuid: 'u1', session_id: 's1',
+          mcp_server_name: 'my-server', elicitation_id: 'e1'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.mcp_server_name).to eq('my-server')
+        expect(msg.elicitation_id).to eq('e1')
+      end
+    end
+
+    # New non-system message types
+
+    describe ClaudeAgentSDK::ToolProgressMessage do
+      it 'stores all fields' do
+        msg = described_class.new(
+          uuid: 'u1', session_id: 's1', tool_use_id: 'tu1',
+          tool_name: 'Bash', parent_tool_use_id: 'ptu1',
+          elapsed_time_seconds: 5.2, task_id: 't1'
+        )
+        expect(msg.uuid).to eq('u1')
+        expect(msg.tool_use_id).to eq('tu1')
+        expect(msg.tool_name).to eq('Bash')
+        expect(msg.parent_tool_use_id).to eq('ptu1')
+        expect(msg.elapsed_time_seconds).to eq(5.2)
+        expect(msg.task_id).to eq('t1')
+      end
+
+      it 'defaults all fields to nil' do
+        msg = described_class.new
+        expect(msg.uuid).to be_nil
+        expect(msg.tool_use_id).to be_nil
+      end
+    end
+
+    describe ClaudeAgentSDK::AuthStatusMessage do
+      it 'stores all fields' do
+        msg = described_class.new(
+          uuid: 'u1', session_id: 's1', is_authenticating: true,
+          output: 'Please authenticate', error: nil
+        )
+        expect(msg.is_authenticating).to eq(true)
+        expect(msg.output).to eq('Please authenticate')
+        expect(msg.error).to be_nil
+      end
+    end
+
+    describe ClaudeAgentSDK::ToolUseSummaryMessage do
+      it 'stores all fields' do
+        msg = described_class.new(
+          uuid: 'u1', session_id: 's1', summary: 'Read 3 files',
+          preceding_tool_use_ids: %w[tu1 tu2 tu3]
+        )
+        expect(msg.summary).to eq('Read 3 files')
+        expect(msg.preceding_tool_use_ids).to eq(%w[tu1 tu2 tu3])
+      end
+    end
+
+    describe ClaudeAgentSDK::PromptSuggestionMessage do
+      it 'stores all fields' do
+        msg = described_class.new(
+          uuid: 'u1', session_id: 's1', suggestion: 'Try asking about...'
+        )
+        expect(msg.suggestion).to eq('Try asking about...')
+      end
+    end
+
+    # New hook input types
+
+    describe ClaudeAgentSDK::StopFailureHookInput do
+      it 'stores all fields' do
+        input = described_class.new(
+          error: 'timeout', error_details: 'Process timed out',
+          last_assistant_message: 'Working on it...'
+        )
+        expect(input.hook_event_name).to eq('StopFailure')
+        expect(input.error).to eq('timeout')
+        expect(input.error_details).to eq('Process timed out')
+        expect(input.last_assistant_message).to eq('Working on it...')
+      end
+    end
+
+    describe ClaudeAgentSDK::PostCompactHookInput do
+      it 'stores all fields' do
+        input = described_class.new(
+          trigger: 'auto', compact_summary: 'Reduced to 12k tokens'
+        )
+        expect(input.hook_event_name).to eq('PostCompact')
+        expect(input.trigger).to eq('auto')
+        expect(input.compact_summary).to eq('Reduced to 12k tokens')
+      end
+    end
+
+    describe ClaudeAgentSDK::PermissionDeniedHookInput do
+      it 'stores all fields' do
+        input = described_class.new(
+          tool_name: 'Bash', tool_input: { command: 'rm -rf /' },
+          tool_use_id: 'tu1', reason: 'Destructive command',
+          agent_id: 'a1', agent_type: 'coder'
+        )
+        expect(input.hook_event_name).to eq('PermissionDenied')
+        expect(input.tool_name).to eq('Bash')
+        expect(input.reason).to eq('Destructive command')
+        expect(input.agent_id).to eq('a1')
+      end
+    end
+
+    describe ClaudeAgentSDK::TaskCreatedHookInput do
+      it 'stores all fields' do
+        input = described_class.new(
+          task_id: 't1', task_subject: 'Fix bug',
+          task_description: 'Fix the null pointer', teammate_name: 'coder', team_name: 'dev'
+        )
+        expect(input.hook_event_name).to eq('TaskCreated')
+        expect(input.task_id).to eq('t1')
+        expect(input.task_subject).to eq('Fix bug')
+        expect(input.teammate_name).to eq('coder')
+      end
+    end
+
+    describe ClaudeAgentSDK::ElicitationHookInput do
+      it 'stores all fields' do
+        input = described_class.new(
+          mcp_server_name: 'srv', message: 'Auth needed',
+          mode: 'oauth', url: 'https://example.com',
+          elicitation_id: 'e1', requested_schema: { type: 'object' }
+        )
+        expect(input.hook_event_name).to eq('Elicitation')
+        expect(input.mcp_server_name).to eq('srv')
+        expect(input.message).to eq('Auth needed')
+        expect(input.mode).to eq('oauth')
+        expect(input.url).to eq('https://example.com')
+        expect(input.elicitation_id).to eq('e1')
+        expect(input.requested_schema).to eq({ type: 'object' })
+      end
+    end
+
+    describe ClaudeAgentSDK::ElicitationResultHookInput do
+      it 'stores all fields' do
+        input = described_class.new(
+          mcp_server_name: 'srv', elicitation_id: 'e1',
+          mode: 'oauth', action: 'submit', content: 'token123'
+        )
+        expect(input.hook_event_name).to eq('ElicitationResult')
+        expect(input.mcp_server_name).to eq('srv')
+        expect(input.action).to eq('submit')
+        expect(input.content).to eq('token123')
+      end
+    end
+
+    describe ClaudeAgentSDK::InstructionsLoadedHookInput do
+      it 'stores all fields' do
+        input = described_class.new(
+          file_path: 'CLAUDE.md', memory_type: 'project',
+          load_reason: 'startup', globs: ['*.md'],
+          trigger_file_path: 'src/main.rb'
+        )
+        expect(input.hook_event_name).to eq('InstructionsLoaded')
+        expect(input.file_path).to eq('CLAUDE.md')
+        expect(input.memory_type).to eq('project')
+        expect(input.load_reason).to eq('startup')
+        expect(input.globs).to eq(['*.md'])
+        expect(input.trigger_file_path).to eq('src/main.rb')
+      end
+    end
+
+    describe ClaudeAgentSDK::CwdChangedHookInput do
+      it 'stores all fields' do
+        input = described_class.new(old_cwd: '/old', new_cwd: '/new')
+        expect(input.hook_event_name).to eq('CwdChanged')
+        expect(input.old_cwd).to eq('/old')
+        expect(input.new_cwd).to eq('/new')
+      end
+    end
+
+    describe ClaudeAgentSDK::FileChangedHookInput do
+      it 'stores all fields' do
+        input = described_class.new(file_path: '/src/main.rb', event: 'change')
+        expect(input.hook_event_name).to eq('FileChanged')
+        expect(input.file_path).to eq('/src/main.rb')
+        expect(input.event).to eq('change')
+      end
+    end
+
+    # New hook specific output types
+
+    describe ClaudeAgentSDK::PermissionDeniedHookSpecificOutput do
+      it 'converts to CLI format' do
+        output = described_class.new(retry_: true)
+        hash = output.to_h
+        expect(hash[:hookEventName]).to eq('PermissionDenied')
+        expect(hash[:retry]).to eq(true)
+      end
+    end
+
+    describe ClaudeAgentSDK::CwdChangedHookSpecificOutput do
+      it 'converts to CLI format' do
+        output = described_class.new(watch_paths: ['/src', '/test'])
+        hash = output.to_h
+        expect(hash[:hookEventName]).to eq('CwdChanged')
+        expect(hash[:watchPaths]).to eq(['/src', '/test'])
+      end
+
+      it 'omits watchPaths when nil' do
+        output = described_class.new
+        hash = output.to_h
+        expect(hash.key?(:watchPaths)).to eq(false)
+      end
+    end
+
+    describe ClaudeAgentSDK::FileChangedHookSpecificOutput do
+      it 'converts to CLI format' do
+        output = described_class.new(watch_paths: ['/src/**/*.rb'])
+        hash = output.to_h
+        expect(hash[:hookEventName]).to eq('FileChanged')
+        expect(hash[:watchPaths]).to eq(['/src/**/*.rb'])
+      end
+    end
+
+    # CompactMetadata preserved_segment
+
+    describe 'CompactMetadata preserved_segment' do
+      it 'stores preserved_segment' do
+        meta = ClaudeAgentSDK::CompactMetadata.new(
+          pre_tokens: 100, post_tokens: 50, trigger: 'auto',
+          preserved_segment: { head_uuid: 'h1', anchor_uuid: 'a1', tail_uuid: 't1' }
+        )
+        expect(meta.preserved_segment).to eq({ head_uuid: 'h1', anchor_uuid: 'a1', tail_uuid: 't1' })
+      end
+
+      it 'parses preserved_segment from hash with snake_case' do
+        meta = ClaudeAgentSDK::CompactMetadata.from_hash({
+                                                           pre_tokens: 100, preserved_segment: { head_uuid: 'h1' }
+                                                         })
+        expect(meta.preserved_segment).to eq({ head_uuid: 'h1' })
+      end
+
+      it 'parses preserved_segment from hash with camelCase' do
+        meta = ClaudeAgentSDK::CompactMetadata.from_hash({
+                                                           preTokens: 100, preservedSegment: { headUuid: 'h1' }
+                                                         })
+        expect(meta.preserved_segment).to eq({ headUuid: 'h1' })
+      end
+    end
+
+    # TaskStartedMessage new fields
+
+    describe 'TaskStartedMessage workflow_name and prompt' do
+      it 'stores workflow_name and prompt' do
+        msg = ClaudeAgentSDK::TaskStartedMessage.new(
+          subtype: 'task_started', data: {},
+          task_id: 't1', description: 'desc', uuid: 'u1', session_id: 's1',
+          workflow_name: 'deploy', prompt: 'Deploy to production'
+        )
+        expect(msg.workflow_name).to eq('deploy')
+        expect(msg.prompt).to eq('Deploy to production')
+      end
+
+      it 'defaults to nil' do
+        msg = ClaudeAgentSDK::TaskStartedMessage.new(
+          subtype: 'task_started', data: {},
+          task_id: 't1', description: 'desc', uuid: 'u1', session_id: 's1'
+        )
+        expect(msg.workflow_name).to be_nil
+        expect(msg.prompt).to be_nil
+      end
+    end
+
+    # TaskProgressMessage summary
+
+    describe 'TaskProgressMessage summary' do
+      it 'stores summary' do
+        msg = ClaudeAgentSDK::TaskProgressMessage.new(
+          subtype: 'task_progress', data: {},
+          task_id: 't1', description: 'desc', usage: {},
+          uuid: 'u1', session_id: 's1', summary: 'Halfway done'
+        )
+        expect(msg.summary).to eq('Halfway done')
+      end
+
+      it 'defaults to nil' do
+        msg = ClaudeAgentSDK::TaskProgressMessage.new(
+          subtype: 'task_progress', data: {},
+          task_id: 't1', description: 'desc', usage: {},
+          uuid: 'u1', session_id: 's1'
+        )
+        expect(msg.summary).to be_nil
+      end
+    end
+
+    # ResultMessage uuid and fast_mode_state
+
+    describe 'ResultMessage uuid and fast_mode_state' do
+      it 'stores uuid and fast_mode_state' do
+        msg = ClaudeAgentSDK::ResultMessage.new(
+          subtype: 'success', duration_ms: 1000, duration_api_ms: 800,
+          is_error: false, num_turns: 1, session_id: 's1',
+          uuid: 'u1', fast_mode_state: 'on'
+        )
+        expect(msg.uuid).to eq('u1')
+        expect(msg.fast_mode_state).to eq('on')
+      end
+
+      it 'defaults to nil' do
+        msg = ClaudeAgentSDK::ResultMessage.new(
+          subtype: 'success', duration_ms: 1000, duration_api_ms: 800,
+          is_error: false, num_turns: 1, session_id: 's1'
+        )
+        expect(msg.uuid).to be_nil
+        expect(msg.fast_mode_state).to be_nil
+      end
+    end
+
     describe ClaudeAgentSDK::SdkMcpTool do
       it 'stores annotations' do
         handler = ->(_args) { { content: [] } }
