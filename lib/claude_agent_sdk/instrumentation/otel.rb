@@ -140,7 +140,9 @@ module ClaudeAgentSDK
           'gen_ai.response.model' => message.model,
           'gen_ai.usage.input_tokens' => input_tokens,
           'gen_ai.usage.output_tokens' => output_tokens,
-          'gen_ai.completion' => truncate(combined_text)
+          'gen_ai.completion' => truncate(combined_text),
+          # OpenInference: Langfuse maps output.value to the Preview Output field
+          'output.value' => truncate(combined_text)
         }
 
         OpenTelemetry::Context.with_current(@root_context) do
@@ -219,9 +221,12 @@ module ClaudeAgentSDK
       def start_tool_span(block)
         return unless @root_context
 
+        input_json = truncate(safe_json(block.input))
         attrs = {
           'tool.name' => block.name,
-          'tool.input' => truncate(safe_json(block.input))
+          # OpenInference: Langfuse maps these to the Preview Input/Output fields
+          'input.value' => input_json,
+          'input.mime_type' => 'application/json'
         }
 
         OpenTelemetry::Context.with_current(@root_context) do
@@ -234,7 +239,8 @@ module ClaudeAgentSDK
         span = @tool_spans.delete(block.tool_use_id)
         return unless span
 
-        span.set_attribute('tool.output', truncate(block.content.to_s))
+        # OpenInference: Langfuse maps output.value to the Preview Output field
+        span.set_attribute('output.value', truncate(block.content.to_s))
         span.status = OpenTelemetry::Trace::Status.error('tool error') if block.is_error
         span.finish
       end

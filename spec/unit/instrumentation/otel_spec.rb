@@ -274,7 +274,8 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
 
       span = tool_spans.first
       expect(span.attributes['tool.name']).to eq('Read')
-      expect(span.attributes['tool.input']).to include('file_path')
+      expect(span.attributes['input.value']).to include('file_path')
+      expect(span.attributes['input.mime_type']).to eq('application/json')
       expect(span.finished).to be false
     end
 
@@ -285,7 +286,7 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       observer.on_message(user_with_tool_result)
 
       expect(tool_span.finished).to be true
-      expect(tool_span.attributes['tool.output']).to eq('puts "hello"')
+      expect(tool_span.attributes['output.value']).to eq('puts "hello"')
     end
 
     it 'sets error status on tool span when is_error is true' do
