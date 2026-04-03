@@ -50,6 +50,8 @@ module ClaudeAgentSDK
         @root_span = nil
         @root_context = nil
         @tool_spans = {} # tool_use_id => span
+        @first_user_input = nil # capture first user prompt for trace input
+        @last_assistant_text = nil # capture last assistant text for trace output
       end
 
       def on_message(message)
@@ -90,8 +92,15 @@ module ClaudeAgentSDK
 
       def start_trace(message)
         attrs = {
+          # gen_ai semantic conventions (recognized by Langfuse, Datadog, etc.)
           'gen_ai.system' => 'anthropic',
           'gen_ai.request.model' => message.model,
+          # OpenInference conventions (recognized by Langfuse, Arize)
+          'openinference.span.kind' => 'AGENT',
+          'llm.model_name' => message.model,
+          'input.mime_type' => 'text/plain',
+          'output.mime_type' => 'text/plain',
+          # Session tracking
           'session.id' => message.session_id
         }.merge(@default_attributes)
 
@@ -119,13 +128,19 @@ module ClaudeAgentSDK
           end
         end
 
+        # Track last assistant text for trace output
+        combined_text = text_parts.join("\n")
+        @last_assistant_text = combined_text unless combined_text.empty?
+
         # Create generation span
         usage = message.usage || {}
+        input_tokens = usage[:input_tokens] || usage['input_tokens']
+        output_tokens = usage[:output_tokens] || usage['output_tokens']
         attrs = {
           'gen_ai.response.model' => message.model,
-          'gen_ai.usage.input_tokens' => usage[:input_tokens] || usage['input_tokens'],
-          'gen_ai.usage.output_tokens' => usage[:output_tokens] || usage['output_tokens'],
-          'gen_ai.completion' => truncate(text_parts.join("\n"))
+          'gen_ai.usage.input_tokens' => input_tokens,
+          'gen_ai.usage.output_tokens' => output_tokens,
+          'gen_ai.completion' => truncate(combined_text)
         }
 
         OpenTelemetry::Context.with_current(@root_context) do
@@ -141,6 +156,17 @@ module ClaudeAgentSDK
         return unless @root_context
 
         content = message.content
+
+        # Capture first user input for trace-level input (shown in Langfuse UI)
+        if @first_user_input.nil?
+          @first_user_input = if content.is_a?(String)
+                                content
+                              elsif content.is_a?(Array)
+                                content.filter_map { |b| b.text if b.is_a?(ClaudeAgentSDK::TextBlock) }.join("\n")
+                              end
+          @root_span.set_attribute('input.value', truncate(@first_user_input)) if @first_user_input && !@first_user_input.empty?
+        end
+
         return unless content.is_a?(Array)
 
         content.each do |block|
@@ -154,18 +180,33 @@ module ClaudeAgentSDK
       def end_trace(message)
         return unless @root_span
 
+        usage = message.usage || {}
+        input_tokens = usage[:input_tokens] || usage['input_tokens']
+        output_tokens = usage[:output_tokens] || usage['output_tokens']
+        total_tokens = (input_tokens || 0) + (output_tokens || 0) if input_tokens || output_tokens
+
+        # Set trace output (last assistant response — shown in Langfuse UI)
+        # ResultMessage.result has the final text; fall back to last tracked assistant text
+        trace_output = message.result || @last_assistant_text
+
         attrs = {
+          # gen_ai conventions
           'gen_ai.usage.cost' => message.total_cost_usd,
+          'gen_ai.usage.input_tokens' => input_tokens,
+          'gen_ai.usage.output_tokens' => output_tokens,
+          # OpenInference conventions (Langfuse maps these to usage/cost)
+          'llm.token_count.prompt' => input_tokens,
+          'llm.token_count.completion' => output_tokens,
+          'llm.token_count.total' => total_tokens,
+          'llm.cost.total' => message.total_cost_usd,
+          # Trace output (Langfuse shows this in the trace detail view)
+          'output.value' => truncate(trace_output),
+          # Session metadata
           'claude_agent.duration_ms' => message.duration_ms,
           'claude_agent.duration_api_ms' => message.duration_api_ms,
           'claude_agent.num_turns' => message.num_turns,
           'claude_agent.stop_reason' => message.stop_reason
         }
-
-        # Add total usage from ResultMessage
-        usage = message.usage || {}
-        attrs['gen_ai.usage.input_tokens'] = usage[:input_tokens] || usage['input_tokens']
-        attrs['gen_ai.usage.output_tokens'] = usage[:output_tokens] || usage['output_tokens']
 
         @root_span.status = OpenTelemetry::Trace::Status.error(message.stop_reason || 'error') if message.is_error
 

@@ -22,7 +22,7 @@ require 'claude_agent_sdk/instrumentation'
 require 'async'
 
 # --- Config ---
-LANGFUSE_HOST = ENV.fetch('LANGFUSE_HOST', 'https://langfuse.dev.navchain.com')
+LANGFUSE_HOST = ENV.fetch('LANGFUSE_HOST', 'https://cloud.langfuse.com')
 public_key    = ENV.fetch('LANGFUSE_PUBLIC_KEY') { abort "Set LANGFUSE_PUBLIC_KEY (from #{LANGFUSE_HOST}/settings)" }
 secret_key    = ENV.fetch('LANGFUSE_SECRET_KEY') { abort "Set LANGFUSE_SECRET_KEY (from #{LANGFUSE_HOST}/settings)" }
 

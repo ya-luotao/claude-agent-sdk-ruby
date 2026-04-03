@@ -31,7 +31,28 @@
       "Bash(GITHUB_TOKEN= gh pr merge:*)",
       "Bash(bundle exec ruby:*)",
       "Bash(timeout 15 ruby:*)",
-      "Bash(git status:*)"
+      "Bash(git status:*)",
+      "Bash(git tag:*)",
+      "Bash(gh release edit:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.warp.dev)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(echo Failed:*)",
+      "Bash(rsync:*)",
+      "Bash(gh pr:*)",
+      "Bash(git log:*)",
+      "Bash(timeout 5 bundle exec:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:develclan.com)",
+      "WebFetch(domain:socketry.github.io)",
+      "WebFetch(domain:rubyllm.com)",
+      "WebFetch(domain:jetthoughts.com)",
+      "Bash(chmod +x:*)",
+      "Bash(bundle install:*)",
+      "Bash(gh workflow:*)",
+      "Bash(gh run:*)",
+      "Bash(gem build:*)",
+      "Bash(gem signin:*)"
     ]
   }
 }
