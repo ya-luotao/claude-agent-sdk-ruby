@@ -20,6 +20,10 @@ module ClaudeAgentSDK
   #     end
   #   end
   module Observer
+    # Called with the user's prompt text (not echoed back by CLI in streaming mode).
+    # @param prompt [String] The user's prompt string
+    def on_user_prompt(prompt); end
+
     # Called for every parsed message (typed object from MessageParser).
     # @param message [Object] A typed message (AssistantMessage, ResultMessage, etc.)
     def on_message(message); end

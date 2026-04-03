@@ -363,25 +363,32 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       expect(root_span.attributes['llm.cost.total']).to eq(0.0042)
     end
 
-    it 'captures input from first UserMessage and output from last AssistantMessage' do
+    it 'captures input from on_user_prompt and output from last AssistantMessage' do
       root_span = created_spans.find { |s| s.name == 'claude_agent.session' }
 
-      # Simulate: user input → assistant response → result
-      user_msg = ClaudeAgentSDK::UserMessage.new(
-        content: [ClaudeAgentSDK::TextBlock.new(text: 'What is 2+2?')]
-      )
+      # Simulate: prompt → assistant response → result
+      observer.on_user_prompt('What is 2+2?')
       assistant_msg = ClaudeAgentSDK::AssistantMessage.new(
         content: [ClaudeAgentSDK::TextBlock.new(text: 'The answer is 4.')],
         model: 'claude-sonnet-4',
         usage: { input_tokens: 10, output_tokens: 8 }
       )
 
-      observer.on_message(user_msg)
       observer.on_message(assistant_msg)
       observer.on_message(result_message)
 
       expect(root_span.attributes['input.value']).to eq('What is 2+2?')
       expect(root_span.attributes['output.value']).to eq('The answer is 4.')
+    end
+
+    it 'only captures the first prompt via on_user_prompt' do
+      root_span = created_spans.find { |s| s.name == 'claude_agent.session' }
+
+      observer.on_user_prompt('First prompt')
+      observer.on_user_prompt('Second prompt')
+      observer.on_message(result_message)
+
+      expect(root_span.attributes['input.value']).to eq('First prompt')
     end
 
     it 'sets error status when is_error is true' do

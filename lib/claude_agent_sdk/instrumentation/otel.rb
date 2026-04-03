@@ -54,6 +54,14 @@ module ClaudeAgentSDK
         @last_assistant_text = nil # capture last assistant text for trace output
       end
 
+      def on_user_prompt(prompt)
+        return unless @root_span
+        return if @first_user_input # only capture the first prompt
+
+        @first_user_input = prompt.to_s
+        @root_span.set_attribute('input.value', truncate(@first_user_input)) unless @first_user_input.empty?
+      end
+
       def on_message(message)
         case message
         when ClaudeAgentSDK::InitMessage
@@ -163,17 +171,6 @@ module ClaudeAgentSDK
         return unless @root_context
 
         content = message.content
-
-        # Capture first user input for trace-level input (shown in Langfuse UI)
-        if @first_user_input.nil?
-          @first_user_input = if content.is_a?(String)
-                                content
-                              elsif content.is_a?(Array)
-                                content.filter_map { |b| b.text if b.is_a?(ClaudeAgentSDK::TextBlock) }.join("\n")
-                              end
-          @root_span.set_attribute('input.value', truncate(@first_user_input)) if @first_user_input && !@first_user_input.empty?
-        end
-
         return unless content.is_a?(Array)
 
         content.each do |block|

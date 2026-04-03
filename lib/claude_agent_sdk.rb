@@ -196,6 +196,7 @@ module ClaudeAgentSDK
 
         # Send prompt(s) as user messages, then close stdin
         if prompt.is_a?(String)
+          ClaudeAgentSDK.notify_observers(resolved_observers, :on_user_prompt, prompt)
           message = {
             type: 'user',
             message: { role: 'user', content: prompt },
@@ -360,6 +361,7 @@ module ClaudeAgentSDK
     def query(prompt, session_id: 'default')
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
+      ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, prompt)
       message = {
         type: 'user',
         message: { role: 'user', content: prompt },

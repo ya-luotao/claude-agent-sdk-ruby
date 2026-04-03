@@ -30,6 +30,7 @@ RSpec.describe ClaudeAgentSDK::Observer do
   describe 'module interface' do
     it 'provides no-op defaults for all methods' do
       obj = Class.new { include ClaudeAgentSDK::Observer }.new
+      expect { obj.on_user_prompt('test prompt') }.not_to raise_error
       expect { obj.on_message('test') }.not_to raise_error
       expect { obj.on_error(StandardError.new) }.not_to raise_error
       expect { obj.on_close }.not_to raise_error
