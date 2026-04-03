@@ -4,6 +4,7 @@ require_relative 'claude_agent_sdk/version'
 require_relative 'claude_agent_sdk/errors'
 require_relative 'claude_agent_sdk/configuration'
 require_relative 'claude_agent_sdk/types'
+require_relative 'claude_agent_sdk/observer'
 require_relative 'claude_agent_sdk/transport'
 require_relative 'claude_agent_sdk/subprocess_cli_transport'
 require_relative 'claude_agent_sdk/message_parser'
@@ -17,6 +18,15 @@ require 'securerandom'
 
 # Claude Agent SDK for Ruby
 module ClaudeAgentSDK
+  # Safely call a method on each observer, suppressing any errors.
+  def self.notify_observers(observers, method, *args)
+    observers.each do |obs|
+      obs.send(method, *args)
+    rescue StandardError
+      nil
+    end
+  end
+
   # Look up a value in a hash that may use symbol or string keys in camelCase or snake_case.
   # Returns the first non-nil value found, preserving false as a meaningful value.
   def self.flexible_fetch(hash, camel_key, snake_key)
@@ -191,9 +201,13 @@ module ClaudeAgentSDK
         # Read and yield messages from the query handler (filters out control messages)
         query_handler.receive_messages do |data|
           message = MessageParser.parse(data)
-          block.call(message) if message
+          if message
+            ClaudeAgentSDK.notify_observers(configured_options.observers, :on_message, message)
+            block.call(message)
+          end
         end
       ensure
+        ClaudeAgentSDK.notify_observers(configured_options.observers, :on_close)
         # query_handler.close stops the background read task and closes the transport
         if query_handler
           query_handler.close
@@ -349,7 +363,10 @@ module ClaudeAgentSDK
 
       @query_handler.receive_messages do |data|
         message = MessageParser.parse(data)
-        block.call(message) if message
+        if message
+          ClaudeAgentSDK.notify_observers(@options.observers, :on_message, message)
+          block.call(message)
+        end
       end
     end
 
@@ -439,6 +456,7 @@ module ClaudeAgentSDK
     def disconnect
       return unless @connected
 
+      ClaudeAgentSDK.notify_observers(@options.observers, :on_close)
       @query_handler&.close
       @query_handler = nil
       @transport = nil
