@@ -27,20 +27,21 @@ All three SDKs share the same underlying mechanism: they spawn the `claude` CLI 
 | Permission callbacks | ✅ | ✅ | ✅ |
 | Structured output | ✅ | ✅ | ✅ |
 | All 24 message types | ✅ | partial | ✅ |
-| Full sandbox settings | ✅ | partial | ✅ |
+| Sandbox settings (CLI `--sandbox`) | ✅ | partial | ✅ |
+| [Sandbox runtime](https://github.com/anthropic-experimental/sandbox-runtime) | ✅ | ✅ | — |
 | Bare mode (`--bare`) | ✅ | ✅ | ✅ |
 | File checkpointing & rewind | ✅ | ✅ | ✅ |
 | Session browsing & mutations | ✅ | ✅ | ✅ |
 | Programmatic subagents | ✅ | ✅ | ✅ |
 | Bundled CLI binary | ✅ | ✅ | — (install `claude` separately) |
+| Observability (OTel / Langfuse) | via [Arize](https://github.com/Arize-ai/openinference) | — | ✅ (built-in) |
 | Custom transport (pluggable I/O) | — | — | ✅ |
-| Observability (OTel / Langfuse) | OTel (via Arize) | — | ✅ (built-in observer) |
-| Rails integration | — | — | ✅ |
 | Global config defaults | — | — | ✅ |
+| Rails integration | — | — | ✅ |
 
-**Where Ruby goes further:** Custom transport support lets you swap the subprocess for any I/O layer (e.g., connect to a remote Claude Code instance over SSH or a container). Rails integration provides a `configure` block for initializers and plays well with ActionCable for real-time streaming. The Ruby SDK also has full typed coverage for all 24 CLI message types and all 27 hook events — some of which the Python SDK hasn't typed yet (falling through to generic `SystemMessage`).
+**Where Ruby goes further:** Built-in OpenTelemetry observer with Langfuse flow diagram support — no third-party instrumentation library needed. Custom transport support lets you swap the subprocess for any I/O layer (e.g., connect to a remote Claude Code instance over SSH or a container). Rails integration provides a `configure` block for initializers with thread-safe observer factories, and plays well with ActionCable for real-time streaming. Full typed coverage for all 24 CLI message types and all 27 hook events — some of which the Python SDK hasn't typed yet.
 
-**What's missing:** The Ruby gem does not bundle the `claude` CLI binary. You need to install Claude Code separately (`npm install -g @anthropic-ai/claude-code`).
+**What's missing:** The Ruby gem does not bundle the `claude` CLI binary (`npm install -g @anthropic-ai/claude-code`). No [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) integration yet — you can still configure sandbox settings via `ClaudeAgentOptions`, but OS-level process sandboxing with `srt` is not wired in.
 
 <details>
 <summary><strong>Implementation differences from the official SDKs</strong></summary>
@@ -824,7 +825,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 ## Sandbox Settings
 
-Run commands in an isolated sandbox for additional security:
+Configure the Claude CLI's built-in sandbox restrictions (network policy, filesystem access). This controls the `--sandbox` CLI flag — for OS-level process isolation, see [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) (not yet integrated in the Ruby SDK).
 
 ```ruby
 sandbox = ClaudeAgentSDK::SandboxSettings.new(
