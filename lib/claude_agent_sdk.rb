@@ -4,6 +4,7 @@ require_relative 'claude_agent_sdk/version'
 require_relative 'claude_agent_sdk/errors'
 require_relative 'claude_agent_sdk/configuration'
 require_relative 'claude_agent_sdk/types'
+require_relative 'claude_agent_sdk/observer'
 require_relative 'claude_agent_sdk/transport'
 require_relative 'claude_agent_sdk/subprocess_cli_transport'
 require_relative 'claude_agent_sdk/message_parser'
@@ -17,6 +18,24 @@ require 'securerandom'
 
 # Claude Agent SDK for Ruby
 module ClaudeAgentSDK
+  # Resolve observers array: callables (Proc/lambda) are invoked to produce
+  # a fresh instance per query/session (thread-safe); plain objects are used as-is.
+  # Array() guards against nil (e.g., when observers: nil is passed explicitly).
+  def self.resolve_observers(observers)
+    Array(observers).map do |obs|
+      obs.respond_to?(:call) ? obs.call : obs
+    end
+  end
+
+  # Safely call a method on each observer, suppressing any errors.
+  def self.notify_observers(observers, method, *args)
+    observers.each do |obs|
+      obs.send(method, *args)
+    rescue StandardError
+      nil
+    end
+  end
+
   # Look up a value in a hash that may use symbol or string keys in camelCase or snake_case.
   # Returns the first non-nil value found, preserving false as a meaningful value.
   def self.flexible_fetch(hash, camel_key, snake_key)
@@ -120,6 +139,9 @@ module ClaudeAgentSDK
       configured_options = options.dup_with(permission_prompt_tool_name: 'stdio')
     end
 
+    # Resolve callable observers into fresh instances (thread-safe for global defaults)
+    resolved_observers = ClaudeAgentSDK.resolve_observers(configured_options.observers)
+
     Async do
       # Always use streaming mode with control protocol (matches Python SDK).
       # This sends agents via initialize request instead of CLI args,
@@ -174,6 +196,7 @@ module ClaudeAgentSDK
 
         # Send prompt(s) as user messages, then close stdin
         if prompt.is_a?(String)
+          ClaudeAgentSDK.notify_observers(resolved_observers, :on_user_prompt, prompt)
           message = {
             type: 'user',
             message: { role: 'user', content: prompt },
@@ -191,9 +214,13 @@ module ClaudeAgentSDK
         # Read and yield messages from the query handler (filters out control messages)
         query_handler.receive_messages do |data|
           message = MessageParser.parse(data)
-          block.call(message) if message
+          if message
+            ClaudeAgentSDK.notify_observers(resolved_observers, :on_message, message)
+            block.call(message)
+          end
         end
       ensure
+        ClaudeAgentSDK.notify_observers(resolved_observers, :on_close)
         # query_handler.close stops the background read task and closes the transport
         if query_handler
           query_handler.close
@@ -308,6 +335,9 @@ module ClaudeAgentSDK
       @query_handler.start
       @query_handler.initialize_protocol
 
+      # Resolve callable observers into fresh instances (thread-safe for global defaults)
+      @resolved_observers = ClaudeAgentSDK.resolve_observers(@options.observers)
+
       @connected = true
 
       # Optionally send initial prompt/messages after connection is ready.
@@ -331,6 +361,7 @@ module ClaudeAgentSDK
     def query(prompt, session_id: 'default')
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
+      ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, prompt)
       message = {
         type: 'user',
         message: { role: 'user', content: prompt },
@@ -349,7 +380,10 @@ module ClaudeAgentSDK
 
       @query_handler.receive_messages do |data|
         message = MessageParser.parse(data)
-        block.call(message) if message
+        if message
+          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
+          block.call(message)
+        end
       end
     end
 
@@ -439,6 +473,7 @@ module ClaudeAgentSDK
     def disconnect
       return unless @connected
 
+      ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close)
       @query_handler&.close
       @query_handler = nil
       @transport = nil

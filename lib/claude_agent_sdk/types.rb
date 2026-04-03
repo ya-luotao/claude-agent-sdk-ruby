@@ -1720,7 +1720,7 @@ module ClaudeAgentSDK
                   :output_format, :max_budget_usd, :max_thinking_tokens,
                   :fallback_model, :plugins, :debug_stderr,
                   :betas, :tools, :sandbox, :enable_file_checkpointing, :append_allowed_tools,
-                  :thinking, :effort, :bare
+                  :thinking, :effort, :bare, :observers
 
     # Non-nil defaults for options that need them.
     # Keys absent from here default to nil.
@@ -1728,7 +1728,8 @@ module ClaudeAgentSDK
       allowed_tools: [], disallowed_tools: [], add_dirs: [],
       mcp_servers: {}, env: {}, extra_args: {},
       continue_conversation: false, include_partial_messages: false,
-      fork_session: false, enable_file_checkpointing: false
+      fork_session: false, enable_file_checkpointing: false,
+      observers: []
     }.freeze
 
     # Valid option names derived from attr_accessor declarations.

@@ -27,19 +27,21 @@ All three SDKs share the same underlying mechanism: they spawn the `claude` CLI 
 | Permission callbacks | ✅ | ✅ | ✅ |
 | Structured output | ✅ | ✅ | ✅ |
 | All 24 message types | ✅ | partial | ✅ |
-| Full sandbox settings | ✅ | partial | ✅ |
+| Sandbox settings (CLI `--sandbox`) | ✅ | partial | ✅ |
+| [Sandbox runtime](https://github.com/anthropic-experimental/sandbox-runtime) | ✅ | ✅ | — |
 | Bare mode (`--bare`) | ✅ | ✅ | ✅ |
 | File checkpointing & rewind | ✅ | ✅ | ✅ |
 | Session browsing & mutations | ✅ | ✅ | ✅ |
 | Programmatic subagents | ✅ | ✅ | ✅ |
 | Bundled CLI binary | ✅ | ✅ | — (install `claude` separately) |
+| Observability (OTel / Langfuse) | via [Arize](https://github.com/Arize-ai/openinference) | — | ✅ (built-in) |
 | Custom transport (pluggable I/O) | — | — | ✅ |
-| Rails integration | — | — | ✅ |
 | Global config defaults | — | — | ✅ |
+| Rails integration | — | — | ✅ |
 
-**Where Ruby goes further:** Custom transport support lets you swap the subprocess for any I/O layer (e.g., connect to a remote Claude Code instance over SSH or a container). Rails integration provides a `configure` block for initializers and plays well with ActionCable for real-time streaming. The Ruby SDK also has full typed coverage for all 24 CLI message types and all 27 hook events — some of which the Python SDK hasn't typed yet (falling through to generic `SystemMessage`).
+**Where Ruby goes further:** Built-in OpenTelemetry observer with Langfuse flow diagram support — no third-party instrumentation library needed. Custom transport support lets you swap the subprocess for any I/O layer (e.g., connect to a remote Claude Code instance over SSH or a container). Rails integration provides a `configure` block for initializers with thread-safe observer factories, and plays well with ActionCable for real-time streaming. Full typed coverage for all 24 CLI message types and all 27 hook events — some of which the Python SDK hasn't typed yet.
 
-**What's missing:** The Ruby gem does not bundle the `claude` CLI binary. You need to install Claude Code separately (`npm install -g @anthropic-ai/claude-code`).
+**What's missing:** The Ruby gem does not bundle the `claude` CLI binary (`npm install -g @anthropic-ai/claude-code`). No [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) integration yet — you can still configure sandbox settings via `ClaudeAgentOptions`, but OS-level process sandboxing with `srt` is not wired in.
 
 <details>
 <summary><strong>Implementation differences from the official SDKs</strong></summary>
@@ -89,6 +91,7 @@ All three SDKs spawn `claude` CLI as a subprocess with stream-JSON over stdin/st
 - [File Checkpointing & Rewind](#file-checkpointing--rewind)
 - [Session Browsing](#session-browsing)
 - [Session Mutations](#session-mutations)
+- [Observability (OpenTelemetry / Langfuse)](#observability-opentelemetry--langfuse)
 - [Rails Integration](#rails-integration)
 - [Types](#types)
 - [Error Handling](#error-handling)
@@ -105,7 +108,7 @@ Add this line to your application's Gemfile:
 gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'
 
 # Or use a stable version from RubyGems
-gem 'claude-agent-sdk', '~> 0.11.0'
+gem 'claude-agent-sdk', '~> 0.13.0'
 ```
 
 And then execute:
@@ -822,7 +825,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 ## Sandbox Settings
 
-Run commands in an isolated sandbox for additional security:
+Configure the Claude CLI's built-in sandbox restrictions (network policy, filesystem access). This controls the `--sandbox` CLI flag — for OS-level process isolation, see [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) (not yet integrated in the Ruby SDK).
 
 ```ruby
 sandbox = ClaudeAgentSDK::SandboxSettings.new(
@@ -1006,6 +1009,137 @@ ClaudeAgentSDK.tag_session(
 
 > **Note:** Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process.
 
+## Observability (OpenTelemetry / Langfuse)
+
+The SDK includes a built-in **observer interface** and an **OpenTelemetry observer** for tracing agent sessions. Traces are emitted using standard `gen_ai.*` semantic conventions, compatible with Langfuse, Jaeger, Datadog, and any OTel backend.
+
+### How It Works
+
+Register observers via `ClaudeAgentOptions`. The SDK calls `on_message` for every parsed message in both `query()` and `Client`, and `on_close` when the session ends. Observer errors are silently rescued so they never crash your application.
+
+```
+claude_agent.session            (root span — one per query/session)
+├── claude_agent.generation     (per AssistantMessage, with model + token usage)
+├── claude_agent.tool.Bash      (per tool call, open on ToolUseBlock, close on ToolResultBlock)
+├── claude_agent.tool.Read
+├── claude_agent.generation
+└── ...
+```
+
+### Setup with Langfuse
+
+**1. Install the OTel gems** (not bundled with the SDK — you choose your exporter):
+
+```bash
+gem install opentelemetry-sdk opentelemetry-exporter-otlp
+```
+
+Or add to your Gemfile:
+
+```ruby
+gem 'opentelemetry-sdk', '~> 1.4'
+gem 'opentelemetry-exporter-otlp', '~> 0.28'
+```
+
+**2. Configure the OTel SDK** to export to your Langfuse instance:
+
+```ruby
+require 'base64'
+require 'opentelemetry/sdk'
+require 'opentelemetry/exporter/otlp'
+
+# Langfuse authenticates via Basic Auth over OTLP
+public_key = ENV['LANGFUSE_PUBLIC_KEY']
+secret_key = ENV['LANGFUSE_SECRET_KEY']
+auth = Base64.strict_encode64("#{public_key}:#{secret_key}")
+
+# Self-hosted or cloud: https://cloud.langfuse.com (EU) / https://us.cloud.langfuse.com (US)
+langfuse_host = ENV.fetch('LANGFUSE_HOST', 'https://cloud.langfuse.com')
+
+OpenTelemetry::SDK.configure do |c|
+  c.service_name = 'my-agent-app'
+  c.add_span_processor(
+    OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(
+      OpenTelemetry::Exporter::OTLP::Exporter.new(
+        endpoint: "#{langfuse_host}/api/public/otel/v1/traces",
+        headers: {
+          'Authorization' => "Basic #{auth}",
+          'x-langfuse-ingestion-version' => '4'
+        }
+      )
+    )
+  )
+end
+```
+
+**3. Create the observer and run a query:**
+
+```ruby
+require 'claude_agent_sdk'
+require 'claude_agent_sdk/instrumentation'
+
+observer = ClaudeAgentSDK::Instrumentation::OTelObserver.new(
+  'langfuse.session.id' => 'my-session-123',  # optional: group traces by session
+  'user.id' => 'user-42'                      # optional: tag with user ID
+)
+
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  observers: [observer],
+  allowed_tools: ['Bash', 'Read'],
+  permission_mode: 'bypassPermissions'
+)
+
+ClaudeAgentSDK.query(prompt: "List files in /tmp", options: options) do |msg|
+  if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
+    msg.content.each do |block|
+      puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
+    end
+  end
+end
+
+# For long-running apps, flush before exit:
+# OpenTelemetry.tracer_provider.shutdown
+```
+
+### Span Attributes
+
+The OTel observer sets attributes using both `gen_ai.*` (OTel GenAI) and OpenInference conventions for maximum backend compatibility:
+
+| Span | Type | Key Attributes |
+|------|------|----------------|
+| `claude_agent.session` | `agent` | `gen_ai.system`, `gen_ai.request.model`, `session.id`, `input.value`, `output.value`, `gen_ai.usage.cost`, `llm.cost.total` |
+| `claude_agent.generation` | `generation` | `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `output.value` |
+| `claude_agent.tool.*` | `tool` | `tool.name`, `input.value`, `output.value` |
+
+Events (`api_retry`, `rate_limit`, `tool_progress`) are recorded on the root span.
+
+The `langfuse.observation.type` attribute is set on each span (`agent`/`generation`/`tool`) to enable Langfuse's **trace flow diagram** (DAG graph visualization).
+
+### Custom Observers
+
+Implement the `Observer` module to build your own instrumentation:
+
+```ruby
+class MyObserver
+  include ClaudeAgentSDK::Observer
+
+  def on_message(message)
+    case message
+    when ClaudeAgentSDK::ResultMessage
+      puts "Cost: $#{message.total_cost_usd}, Tokens: #{message.usage}"
+    end
+  end
+
+  def on_close
+    puts "Session ended"
+  end
+end
+
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [MyObserver.new])
+```
+
+For a complete multi-tool example, see [examples/otel_langfuse_example.rb](examples/otel_langfuse_example.rb).
+
 ## Rails Integration
 
 The SDK integrates well with Rails applications. Here are common patterns:
@@ -1152,6 +1286,55 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   permission_mode: 'bypassPermissions'
 )
 ```
+
+### Observability in Rails
+
+Add OpenTelemetry tracing to your Rails app with a single initializer:
+
+```ruby
+# config/initializers/opentelemetry.rb
+require 'base64'
+require 'opentelemetry/sdk'
+require 'opentelemetry/exporter/otlp'
+
+if ENV['LANGFUSE_PUBLIC_KEY'].present?
+  auth = Base64.strict_encode64("#{ENV['LANGFUSE_PUBLIC_KEY']}:#{ENV['LANGFUSE_SECRET_KEY']}")
+  langfuse_host = ENV.fetch('LANGFUSE_HOST', 'https://cloud.langfuse.com')
+
+  OpenTelemetry::SDK.configure do |c|
+    c.service_name = Rails.application.class.module_parent_name.underscore
+    c.add_span_processor(
+      OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(
+        OpenTelemetry::Exporter::OTLP::Exporter.new(
+          endpoint: "#{langfuse_host}/api/public/otel/v1/traces",
+          headers: {
+            'Authorization' => "Basic #{auth}",
+            'x-langfuse-ingestion-version' => '4'
+          }
+        )
+      )
+    )
+  end
+end
+```
+
+```ruby
+# config/initializers/claude_agent_sdk.rb
+require 'claude_agent_sdk/instrumentation'
+
+ClaudeAgentSDK.configure do |config|
+  config.default_options = {
+    permission_mode: 'bypassPermissions',
+    observers: ENV['LANGFUSE_PUBLIC_KEY'].present? ? [
+      # Use a lambda so each query gets a fresh observer instance (thread-safe).
+      # A single shared instance would have its span state clobbered by concurrent requests.
+      -> { ClaudeAgentSDK::Instrumentation::OTelObserver.new }
+    ] : []
+  }
+end
+```
+
+Then every `ClaudeAgentSDK.query` and `Client` session automatically gets traced — no per-call wiring needed. The lambda factory ensures each request gets its own observer with isolated span state, safe for concurrent Puma/Sidekiq workers.
 
 For complete examples, see:
 - [examples/rails_actioncable_example.rb](examples/rails_actioncable_example.rb)
@@ -1498,6 +1681,12 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 | [examples/budget_control_example.rb](examples/budget_control_example.rb) | Budget control with `max_budget_usd` |
 | [examples/fallback_model_example.rb](examples/fallback_model_example.rb) | Fallback model configuration |
 | [examples/extended_thinking_example.rb](examples/extended_thinking_example.rb) | Extended thinking (API parity) |
+
+### Observability
+
+| Example | Description |
+|---------|-------------|
+| [examples/otel_langfuse_example.rb](examples/otel_langfuse_example.rb) | OpenTelemetry tracing with Langfuse backend |
 
 ### Rails Integration
 
