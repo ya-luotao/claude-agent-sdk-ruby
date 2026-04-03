@@ -47,6 +47,34 @@ RSpec.describe ClaudeAgentSDK::Observer do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [obs])
       expect(options.observers).to eq([obs])
     end
+
+    it 'accepts callable observers (lambda factory)' do
+      factory = -> { observer_class.new }
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [factory])
+      expect(options.observers).to eq([factory])
+    end
+  end
+
+  describe '.resolve_observers' do
+    it 'passes plain observer instances through' do
+      obs = observer_class.new
+      resolved = ClaudeAgentSDK.resolve_observers([obs])
+      expect(resolved).to eq([obs])
+    end
+
+    it 'calls lambdas to create fresh instances' do
+      factory = -> { observer_class.new }
+      resolved = ClaudeAgentSDK.resolve_observers([factory])
+      expect(resolved.length).to eq(1)
+      expect(resolved.first).to be_a(observer_class)
+    end
+
+    it 'creates a new instance each time for lambdas' do
+      factory = -> { observer_class.new }
+      resolved1 = ClaudeAgentSDK.resolve_observers([factory])
+      resolved2 = ClaudeAgentSDK.resolve_observers([factory])
+      expect(resolved1.first).not_to equal(resolved2.first)
+    end
   end
 
   describe 'observer wiring in query()' do
@@ -121,6 +149,21 @@ RSpec.describe ClaudeAgentSDK::Observer do
 
       expect(observer.messages.length).to eq(2)
       expect(observer2.messages.length).to eq(2)
+    end
+
+    it 'resolves callable observers into fresh instances per query' do
+      call_count = 0
+      factory = lambda {
+        call_count += 1
+        observer_class.new
+      }
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [factory])
+
+      Async do
+        ClaudeAgentSDK.query(prompt: 'test', options: options) { |_msg| nil }
+      end.wait
+
+      expect(call_count).to eq(1)
     end
 
     it 'does not propagate observer errors to user block' do

@@ -1325,16 +1325,15 @@ ClaudeAgentSDK.configure do |config|
   config.default_options = {
     permission_mode: 'bypassPermissions',
     observers: ENV['LANGFUSE_PUBLIC_KEY'].present? ? [
-      ClaudeAgentSDK::Instrumentation::OTelObserver.new(
-        'langfuse.session.id' => -> { Current.session_id },
-        'user.id' => -> { Current.user&.id&.to_s }
-      )
+      # Use a lambda so each query gets a fresh observer instance (thread-safe).
+      # A single shared instance would have its span state clobbered by concurrent requests.
+      -> { ClaudeAgentSDK::Instrumentation::OTelObserver.new }
     ] : []
   }
 end
 ```
 
-Then every `ClaudeAgentSDK.query` and `Client` session automatically gets traced — no per-call wiring needed.
+Then every `ClaudeAgentSDK.query` and `Client` session automatically gets traced — no per-call wiring needed. The lambda factory ensures each request gets its own observer with isolated span state, safe for concurrent Puma/Sidekiq workers.
 
 For complete examples, see:
 - [examples/rails_actioncable_example.rb](examples/rails_actioncable_example.rb)

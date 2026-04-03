@@ -18,6 +18,14 @@ require 'securerandom'
 
 # Claude Agent SDK for Ruby
 module ClaudeAgentSDK
+  # Resolve observers array: callables (Proc/lambda) are invoked to produce
+  # a fresh instance per query/session (thread-safe); plain objects are used as-is.
+  def self.resolve_observers(observers)
+    observers.map do |obs|
+      obs.respond_to?(:call) ? obs.call : obs
+    end
+  end
+
   # Safely call a method on each observer, suppressing any errors.
   def self.notify_observers(observers, method, *args)
     observers.each do |obs|
@@ -130,6 +138,9 @@ module ClaudeAgentSDK
       configured_options = options.dup_with(permission_prompt_tool_name: 'stdio')
     end
 
+    # Resolve callable observers into fresh instances (thread-safe for global defaults)
+    resolved_observers = ClaudeAgentSDK.resolve_observers(configured_options.observers)
+
     Async do
       # Always use streaming mode with control protocol (matches Python SDK).
       # This sends agents via initialize request instead of CLI args,
@@ -202,12 +213,12 @@ module ClaudeAgentSDK
         query_handler.receive_messages do |data|
           message = MessageParser.parse(data)
           if message
-            ClaudeAgentSDK.notify_observers(configured_options.observers, :on_message, message)
+            ClaudeAgentSDK.notify_observers(resolved_observers, :on_message, message)
             block.call(message)
           end
         end
       ensure
-        ClaudeAgentSDK.notify_observers(configured_options.observers, :on_close)
+        ClaudeAgentSDK.notify_observers(resolved_observers, :on_close)
         # query_handler.close stops the background read task and closes the transport
         if query_handler
           query_handler.close
@@ -322,6 +333,9 @@ module ClaudeAgentSDK
       @query_handler.start
       @query_handler.initialize_protocol
 
+      # Resolve callable observers into fresh instances (thread-safe for global defaults)
+      @resolved_observers = ClaudeAgentSDK.resolve_observers(@options.observers)
+
       @connected = true
 
       # Optionally send initial prompt/messages after connection is ready.
@@ -364,7 +378,7 @@ module ClaudeAgentSDK
       @query_handler.receive_messages do |data|
         message = MessageParser.parse(data)
         if message
-          ClaudeAgentSDK.notify_observers(@options.observers, :on_message, message)
+          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
           block.call(message)
         end
       end
@@ -456,7 +470,7 @@ module ClaudeAgentSDK
     def disconnect
       return unless @connected
 
-      ClaudeAgentSDK.notify_observers(@options.observers, :on_close)
+      ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close)
       @query_handler&.close
       @query_handler = nil
       @transport = nil
