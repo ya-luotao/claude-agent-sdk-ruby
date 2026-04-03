@@ -55,11 +55,11 @@ module ClaudeAgentSDK
       end
 
       def on_user_prompt(prompt)
-        return unless @root_span
         return if @first_user_input # only capture the first prompt
 
         @first_user_input = prompt.to_s
-        @root_span.set_attribute('input.value', truncate(@first_user_input)) unless @first_user_input.empty?
+        # If root span already exists, set immediately; otherwise start_trace will apply it
+        @root_span&.set_attribute('input.value', truncate(@first_user_input)) unless @first_user_input.empty?
       end
 
       def on_message(message)
@@ -120,6 +120,9 @@ module ClaudeAgentSDK
 
         @root_span = @tracer.start_span('claude_agent.session', attributes: compact_attrs(attrs))
         @root_context = OpenTelemetry::Trace.context_with_span(@root_span)
+
+        # Apply buffered prompt if on_user_prompt was called before InitMessage arrived
+        @root_span.set_attribute('input.value', truncate(@first_user_input)) if @first_user_input && !@first_user_input.empty?
       end
 
       def handle_assistant(message)

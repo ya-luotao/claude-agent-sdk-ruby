@@ -391,6 +391,19 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       expect(root_span.attributes['input.value']).to eq('First prompt')
     end
 
+    it 'applies buffered prompt when on_user_prompt is called before InitMessage' do
+      # This is the real call order: prompt → init → messages → result
+      fresh_observer = described_class.new
+      spans_before = created_spans.length
+
+      fresh_observer.on_user_prompt('Buffered prompt')
+      fresh_observer.on_message(init_message)
+
+      # Find the root span created by the fresh observer (not the before block's)
+      root_span = created_spans[spans_before..].find { |s| s.name == 'claude_agent.session' }
+      expect(root_span.attributes['input.value']).to eq('Buffered prompt')
+    end
+
     it 'sets error status when is_error is true' do
       error_result = ClaudeAgentSDK::ResultMessage.new(
         subtype: 'error',
