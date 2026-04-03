@@ -35,7 +35,6 @@ All three SDKs share the same underlying mechanism: they spawn the `claude` CLI 
 | Bundled CLI binary | ✅ | ✅ | — (install `claude` separately) |
 | Observability (OTel / Langfuse) | via [Arize](https://github.com/Arize-ai/openinference) | — | ✅ (built-in) |
 | Custom transport (pluggable I/O) | — | — | ✅ |
-| Global config defaults | — | — | ✅ |
 | Rails integration | — | — | ✅ |
 
 **Where Ruby goes further:** Built-in OpenTelemetry observer with Langfuse flow diagram support — no third-party instrumentation library needed. Custom transport support lets you swap the subprocess for any I/O layer (e.g., connect to a remote Claude Code instance over SSH or a container). Rails integration provides a `configure` block for initializers with thread-safe observer factories, and plays well with ActionCable for real-time streaming. Full typed coverage for all 24 CLI message types and all 27 hook events — some of which the Python SDK hasn't typed yet.
