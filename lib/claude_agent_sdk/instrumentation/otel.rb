@@ -137,7 +137,9 @@ module ClaudeAgentSDK
         input_tokens = usage[:input_tokens] || usage['input_tokens']
         output_tokens = usage[:output_tokens] || usage['output_tokens']
         attrs = {
+          'openinference.span.kind' => 'LLM',
           'gen_ai.response.model' => message.model,
+          'llm.model_name' => message.model,
           'gen_ai.usage.input_tokens' => input_tokens,
           'gen_ai.usage.output_tokens' => output_tokens,
           'gen_ai.completion' => truncate(combined_text),
@@ -223,6 +225,7 @@ module ClaudeAgentSDK
 
         input_json = truncate(safe_json(block.input))
         attrs = {
+          'openinference.span.kind' => 'TOOL',
           'tool.name' => block.name,
           # OpenInference: Langfuse maps these to the Preview Input/Output fields
           'input.value' => input_json,
