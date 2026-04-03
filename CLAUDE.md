@@ -74,6 +74,16 @@ Only active in streaming/Client mode. Uses `Async::Condition` for request-respon
 - **Outbound requests** (SDK → CLI): `send_control_request` writes JSON, waits on condition, returns response
 - **Inbound requests** (CLI → SDK): `handle_control_request` dispatches to `can_use_tool`, `hook_callback`, or `mcp_message` handlers, writes response back
 
+### Observer / Instrumentation
+
+Optional observability layer for tracing agent sessions (e.g., Langfuse via OpenTelemetry).
+
+- **`Observer`** module (`lib/claude_agent_sdk/observer.rb`) — base interface with no-op defaults: `on_user_prompt(prompt)`, `on_message(message)`, `on_error(error)`, `on_close`
+- **`OTelObserver`** (`lib/claude_agent_sdk/instrumentation/otel.rb`) — emits OTel spans with `gen_ai.*` + OpenInference semantic conventions. Lazy-requires `opentelemetry-api`; not loaded unless user explicitly `require 'claude_agent_sdk/instrumentation'`
+- Observers registered via `ClaudeAgentOptions.new(observers: [...])`. Supports callable factories (lambdas) for thread-safe global defaults in Rails
+- `resolve_observers` materializes callables into fresh instances per query/session; `notify_observers` calls methods with `rescue StandardError` so observers never crash the pipeline
+- `on_user_prompt` is called before the prompt is sent to stdin (before CLI responds with InitMessage), so the OTel observer buffers it and applies to the root span in `start_trace`
+
 ## Key Conventions
 
 - All source in `lib/claude_agent_sdk/`, entry point is `lib/claude_agent_sdk.rb`

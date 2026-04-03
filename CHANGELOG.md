@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-04-03
+
+### Added
+
+#### Observer Interface
+- `Observer` module with `on_user_prompt`, `on_message`, `on_error`, `on_close` — all with no-op defaults
+- `observers` option on `ClaudeAgentOptions` (default `[]`) — register observers for both `query()` and `Client`
+- `resolve_observers` supports callable factories (lambdas) for thread-safe global defaults in Rails/Puma/Sidekiq
+- `notify_observers` rescues per-observer errors so observers never crash the main pipeline
+
+#### OpenTelemetry Instrumentation
+- `ClaudeAgentSDK::Instrumentation::OTelObserver` — emits spans using `gen_ai.*` and OpenInference semantic conventions
+- Span tree: `claude_agent.session` (root) → `claude_agent.generation` + `claude_agent.tool.*` (children)
+- `langfuse.observation.type` set on all spans (`agent`/`generation`/`tool`) to enable Langfuse trace flow diagram
+- `input.value`/`output.value` (OpenInference) for Langfuse Preview Input/Output fields
+- `llm.token_count.*`, `llm.cost.total`, `llm.model_name` for full Langfuse cost/usage tracking
+- `openinference.span.kind` (`AGENT`/`LLM`/`TOOL`) on all spans
+- Events: `api_retry`, `rate_limit`, `tool_progress` recorded on root span
+- Lazy `require 'opentelemetry'` — zero cost for users who don't use it
+
+#### Examples
+- `otel_langfuse_example.rb` — Langfuse-via-OTel setup with OTLP exporter
+- `test_langfuse_otel.rb` — multi-tool integration test (Bash tool calls)
+
+### Changed
+- README: added Observability section with Langfuse setup guide, span attribute reference, custom observer example, Rails initializer patterns
+- README: split sandbox into CLI settings vs sandbox-runtime rows in comparison table
+- README: updated recommended gem version to `~> 0.13.0`
+- CLAUDE.md: documented observer/instrumentation architecture
+
 ## [0.12.0] - 2026-04-01
 
 Full Claude Code parity release — cross-referenced against the Claude Code source (`coreSchemas.ts`) and TypeScript SDK to bring every message type, hook event, and sandbox setting into the Ruby SDK.
