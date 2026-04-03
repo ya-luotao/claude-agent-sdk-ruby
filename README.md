@@ -1102,15 +1102,17 @@ end
 
 ### Span Attributes
 
-The OTel observer sets these attributes, which Langfuse and other backends recognize:
+The OTel observer sets attributes using both `gen_ai.*` (OTel GenAI) and OpenInference conventions for maximum backend compatibility:
 
-| Span | Key Attributes |
-|------|----------------|
-| `claude_agent.session` | `gen_ai.system`, `gen_ai.request.model`, `session.id`, `gen_ai.usage.cost` |
-| `claude_agent.generation` | `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.completion` |
-| `claude_agent.tool.*` | `tool.name`, `tool.input`, `tool.output`, `tool.is_error` |
+| Span | Type | Key Attributes |
+|------|------|----------------|
+| `claude_agent.session` | `agent` | `gen_ai.system`, `gen_ai.request.model`, `session.id`, `input.value`, `output.value`, `gen_ai.usage.cost`, `llm.cost.total` |
+| `claude_agent.generation` | `generation` | `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `output.value` |
+| `claude_agent.tool.*` | `tool` | `tool.name`, `input.value`, `output.value` |
 
 Events (`api_retry`, `rate_limit`, `tool_progress`) are recorded on the root span.
+
+The `langfuse.observation.type` attribute is set on each span (`agent`/`generation`/`tool`) to enable Langfuse's **trace flow diagram** (DAG graph visualization).
 
 ### Custom Observers
 
@@ -1283,6 +1285,56 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   permission_mode: 'bypassPermissions'
 )
 ```
+
+### Observability in Rails
+
+Add OpenTelemetry tracing to your Rails app with a single initializer:
+
+```ruby
+# config/initializers/opentelemetry.rb
+require 'base64'
+require 'opentelemetry/sdk'
+require 'opentelemetry/exporter/otlp'
+
+if ENV['LANGFUSE_PUBLIC_KEY'].present?
+  auth = Base64.strict_encode64("#{ENV['LANGFUSE_PUBLIC_KEY']}:#{ENV['LANGFUSE_SECRET_KEY']}")
+  langfuse_host = ENV.fetch('LANGFUSE_HOST', 'https://cloud.langfuse.com')
+
+  OpenTelemetry::SDK.configure do |c|
+    c.service_name = Rails.application.class.module_parent_name.underscore
+    c.add_span_processor(
+      OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(
+        OpenTelemetry::Exporter::OTLP::Exporter.new(
+          endpoint: "#{langfuse_host}/api/public/otel/v1/traces",
+          headers: {
+            'Authorization' => "Basic #{auth}",
+            'x-langfuse-ingestion-version' => '4'
+          }
+        )
+      )
+    )
+  end
+end
+```
+
+```ruby
+# config/initializers/claude_agent_sdk.rb
+require 'claude_agent_sdk/instrumentation'
+
+ClaudeAgentSDK.configure do |config|
+  config.default_options = {
+    permission_mode: 'bypassPermissions',
+    observers: ENV['LANGFUSE_PUBLIC_KEY'].present? ? [
+      ClaudeAgentSDK::Instrumentation::OTelObserver.new(
+        'langfuse.session.id' => -> { Current.session_id },
+        'user.id' => -> { Current.user&.id&.to_s }
+      )
+    ] : []
+  }
+end
+```
+
+Then every `ClaudeAgentSDK.query` and `Client` session automatically gets traced — no per-call wiring needed.
 
 For complete examples, see:
 - [examples/rails_actioncable_example.rb](examples/rails_actioncable_example.rb)

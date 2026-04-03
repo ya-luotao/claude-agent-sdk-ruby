@@ -20,6 +20,7 @@ Metrics/MethodLength:
     - 'lib/claude_agent_sdk/sdk_mcp_server.rb'
     - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
     - 'lib/claude_agent_sdk/types.rb'
+    - 'lib/claude_agent_sdk/instrumentation/otel.rb'
 
 Metrics/ClassLength:
   Max: 250
