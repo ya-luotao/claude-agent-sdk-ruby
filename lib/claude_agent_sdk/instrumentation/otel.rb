@@ -100,6 +100,8 @@ module ClaudeAgentSDK
           'llm.model_name' => message.model,
           'input.mime_type' => 'text/plain',
           'output.mime_type' => 'text/plain',
+          # Langfuse: 'agent' type triggers the trace flow diagram (DAG graph)
+          'langfuse.observation.type' => 'agent',
           # Session tracking
           'session.id' => message.session_id
         }.merge(@default_attributes)
@@ -138,6 +140,7 @@ module ClaudeAgentSDK
         output_tokens = usage[:output_tokens] || usage['output_tokens']
         attrs = {
           'openinference.span.kind' => 'LLM',
+          'langfuse.observation.type' => 'generation',
           'gen_ai.response.model' => message.model,
           'llm.model_name' => message.model,
           'gen_ai.usage.input_tokens' => input_tokens,
@@ -226,6 +229,7 @@ module ClaudeAgentSDK
         input_json = truncate(safe_json(block.input))
         attrs = {
           'openinference.span.kind' => 'TOOL',
+          'langfuse.observation.type' => 'tool',
           'tool.name' => block.name,
           # OpenInference: Langfuse maps these to the Preview Input/Output fields
           'input.value' => input_json,
