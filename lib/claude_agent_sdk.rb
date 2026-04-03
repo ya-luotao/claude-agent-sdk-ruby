@@ -20,8 +20,9 @@ require 'securerandom'
 module ClaudeAgentSDK
   # Resolve observers array: callables (Proc/lambda) are invoked to produce
   # a fresh instance per query/session (thread-safe); plain objects are used as-is.
+  # Array() guards against nil (e.g., when observers: nil is passed explicitly).
   def self.resolve_observers(observers)
-    observers.map do |obs|
+    Array(observers).map do |obs|
       obs.respond_to?(:call) ? obs.call : obs
     end
   end

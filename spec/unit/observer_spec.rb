@@ -75,6 +75,10 @@ RSpec.describe ClaudeAgentSDK::Observer do
       resolved2 = ClaudeAgentSDK.resolve_observers([factory])
       expect(resolved1.first).not_to equal(resolved2.first)
     end
+
+    it 'handles nil gracefully' do
+      expect(ClaudeAgentSDK.resolve_observers(nil)).to eq([])
+    end
   end
 
   describe 'observer wiring in query()' do
