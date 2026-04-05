@@ -175,6 +175,19 @@ module ClaudeAgentSDK
           @message_queue.enqueue(message)
         end
       end
+    rescue ProcessError => e
+      # The CLI can exit non-zero after delivering a valid result (e.g.,
+      # StructuredOutput tool_use triggers exit code 1). When we already
+      # received a result message, treat the process error as non-fatal.
+      if @first_result_received
+        warn "Claude SDK: Process exited with code #{e.exit_code} after result — ignoring"
+      else
+        @pending_control_responses.dup.each do |request_id, condition|
+          @pending_control_results[request_id] ||= e
+          condition.signal
+        end
+        @message_queue.enqueue({ type: 'error', error: e })
+      end
     rescue StandardError => e
       # Unblock pending control requests (e.g., initialize) so callers don't hang until timeout.
       @pending_control_responses.dup.each do |request_id, condition|
