@@ -130,6 +130,20 @@ gem install claude-agent-sdk
 
 If you're using [Claude Code](https://claude.ai/claude-code) or another agentic coding tool that supports [skills](https://skills.sh), you can install the SDK skill:
 
+**Option 1: Via Plugin Marketplace (recommended)**
+
+This repo is a Claude Code plugin marketplace. Add it once, then install the skill:
+
+```bash
+# Add the marketplace
+/plugin marketplace add ya-luotao/claude-agent-sdk-ruby
+
+# Install the plugin
+/plugin install claude-agent-ruby@claude-agent-sdk-ruby
+```
+
+**Option 2: Via skills.sh**
+
 ```bash
 npx skills add https://github.com/ya-luotao/claude-agent-sdk-ruby --skill claude-agent-sdk-ruby
 ```
