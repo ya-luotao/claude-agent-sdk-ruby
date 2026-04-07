@@ -81,4 +81,9 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 ## Resources
 ### references/
-Use `references/usage-map.md` to map tasks to README sections and gem paths.
+- Read `references/usage-map.md` to map tasks to README sections, gem paths, and minimal skeletons.
+- Read `references/message-handling.md` to extract text/tool blocks, build streaming input, use Client runtime APIs, and capture UUIDs for rewind.
+- Read `references/options.md` to configure `ClaudeAgentOptions` (defaults, tools, permissions, output formats, budgets, sandbox, sessions, agents, custom transports), and to browse/mutate sessions.
+- Read `references/mcp-servers.md` to define in-process SDK MCP tools/resources/prompts, configure external MCP servers, or manage MCP servers at runtime.
+- Read `references/rails.md` for initializers, background jobs, ActionCable streaming, and session resumption patterns.
+- Read `references/troubleshooting.md` for common setup/runtime errors and timeout tuning.
