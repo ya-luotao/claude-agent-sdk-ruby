@@ -121,14 +121,20 @@ module ClaudeAgentSDK
 
   # Assistant message with content blocks
   class AssistantMessage
-    attr_accessor :content, :model, :parent_tool_use_id, :error, :usage
+    attr_accessor :content, :model, :parent_tool_use_id, :error, :usage,
+                  :message_id, :stop_reason, :session_id, :uuid
 
-    def initialize(content:, model:, parent_tool_use_id: nil, error: nil, usage: nil)
+    def initialize(content:, model:, parent_tool_use_id: nil, error: nil, usage: nil,
+                   message_id: nil, stop_reason: nil, session_id: nil, uuid: nil)
       @content = content
       @model = model
       @parent_tool_use_id = parent_tool_use_id
       @error = error # One of: authentication_failed, billing_error, rate_limit, invalid_request, server_error, unknown
       @usage = usage # Token usage info from the API response
+      @message_id = message_id # Unique message identifier from the API (message.id)
+      @stop_reason = stop_reason # Why the assistant stopped (e.g., "end_turn", "max_tokens")
+      @session_id = session_id # Session the message belongs to
+      @uuid = uuid # Unique message UUID in the session transcript
     end
   end
 

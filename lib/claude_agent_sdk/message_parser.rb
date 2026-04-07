@@ -70,7 +70,11 @@ module ClaudeAgentSDK
         model: data.dig(:message, :model),
         parent_tool_use_id: data[:parent_tool_use_id],
         error: data[:error], # authentication_failed, billing_error, rate_limit, invalid_request, server_error, unknown
-        usage: data.dig(:message, :usage)
+        usage: data.dig(:message, :usage),
+        message_id: data.dig(:message, :id),
+        stop_reason: data.dig(:message, :stop_reason),
+        session_id: data[:session_id],
+        uuid: data[:uuid]
       )
     end
 
