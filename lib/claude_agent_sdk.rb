@@ -82,10 +82,11 @@ module ClaudeAgentSDK
   # List sessions for a directory (or all sessions)
   # @param directory [String, nil] Working directory to list sessions for
   # @param limit [Integer, nil] Maximum number of sessions to return
+  # @param offset [Integer] Number of sessions to skip (for pagination)
   # @param include_worktrees [Boolean] Whether to include git worktree sessions
   # @return [Array<SDKSessionInfo>] Sessions sorted by last_modified descending
-  def self.list_sessions(directory: nil, limit: nil, include_worktrees: true)
-    Sessions.list_sessions(directory: directory, limit: limit, include_worktrees: include_worktrees)
+  def self.list_sessions(directory: nil, limit: nil, offset: 0, include_worktrees: true)
+    Sessions.list_sessions(directory: directory, limit: limit, offset: offset, include_worktrees: include_worktrees)
   end
 
   # Read metadata for a single session by ID (no full directory scan)
