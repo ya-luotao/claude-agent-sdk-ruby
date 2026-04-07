@@ -1838,14 +1838,15 @@ module ClaudeAgentSDK
 
   # SDK MCP Tool definition
   class SdkMcpTool
-    attr_accessor :name, :description, :input_schema, :handler, :annotations
+    attr_accessor :name, :description, :input_schema, :handler, :annotations, :meta
 
-    def initialize(name:, description:, input_schema:, handler:, annotations: nil)
+    def initialize(name:, description:, input_schema:, handler:, annotations: nil, meta: nil)
       @name = name
       @description = description
       @input_schema = input_schema
       @handler = handler
       @annotations = annotations # MCP tool annotations (e.g., { title: '...', readOnlyHint: true })
+      @meta = meta # MCP _meta field (e.g., { 'anthropic/maxResultSizeChars' => 100000 })
     end
   end
 
