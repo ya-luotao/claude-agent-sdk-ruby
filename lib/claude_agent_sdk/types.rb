@@ -1695,6 +1695,21 @@ module ClaudeAgentSDK
     end
   end
 
+  # API-side task budget in tokens.
+  # When set, the model is made aware of its remaining token budget so it can
+  # pace tool use and wrap up before the limit.
+  class TaskBudget
+    attr_accessor :total
+
+    def initialize(total:)
+      @total = total
+    end
+
+    def to_h
+      { total: @total }
+    end
+  end
+
   # System prompt file configuration — loads system prompt from a file path
   class SystemPromptFile
     attr_accessor :type, :path
@@ -1743,7 +1758,7 @@ module ClaudeAgentSDK
   # Claude Agent Options for configuring queries
   class ClaudeAgentOptions
     attr_accessor :allowed_tools, :system_prompt, :mcp_servers, :permission_mode,
-                  :continue_conversation, :resume, :max_turns, :disallowed_tools,
+                  :continue_conversation, :resume, :session_id, :max_turns, :disallowed_tools,
                   :model, :permission_prompt_tool_name, :cwd, :cli_path, :settings,
                   :add_dirs, :env, :extra_args, :max_buffer_size, :stderr,
                   :can_use_tool, :hooks, :user, :include_partial_messages,
@@ -1751,7 +1766,7 @@ module ClaudeAgentSDK
                   :output_format, :max_budget_usd, :max_thinking_tokens,
                   :fallback_model, :plugins, :debug_stderr,
                   :betas, :tools, :sandbox, :enable_file_checkpointing, :append_allowed_tools,
-                  :thinking, :effort, :bare, :observers
+                  :thinking, :effort, :bare, :observers, :task_budget
 
     # Non-nil defaults for options that need them.
     # Keys absent from here default to nil.

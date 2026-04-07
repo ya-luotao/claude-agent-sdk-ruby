@@ -108,6 +108,12 @@ module ClaudeAgentSDK
       # Budget limit option
       cmd.concat(['--max-budget-usd', @options.max_budget_usd.to_s]) if @options.max_budget_usd
 
+      # Task budget (API-side token budget)
+      if @options.task_budget
+        total = @options.task_budget.is_a?(TaskBudget) ? @options.task_budget.total : @options.task_budget[:total]
+        cmd.concat(['--task-budget', total.to_s]) if total
+      end
+
       # Thinking configuration (takes precedence over deprecated max_thinking_tokens)
       thinking_tokens = resolve_thinking_tokens
       cmd.concat(['--max-thinking-tokens', thinking_tokens.to_s]) unless thinking_tokens.nil?
