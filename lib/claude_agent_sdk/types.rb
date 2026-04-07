@@ -1695,6 +1695,15 @@ module ClaudeAgentSDK
     end
   end
 
+  # Result of a session fork operation
+  class ForkSessionResult
+    attr_accessor :session_id
+
+    def initialize(session_id:)
+      @session_id = session_id
+    end
+  end
+
   # API-side task budget in tokens.
   # When set, the model is made aware of its remaining token budget so it can
   # pace tool use and wrap up before the limit.

@@ -130,6 +130,17 @@ module ClaudeAgentSDK
     SessionMutations.delete_session(session_id: session_id, directory: directory)
   end
 
+  # Fork a session into a new branch with fresh UUIDs.
+  # @param session_id [String] UUID of the session to fork
+  # @param directory [String, nil] Project directory path
+  # @param up_to_message_id [String, nil] Truncate the fork at this message UUID
+  # @param title [String, nil] Custom title for the fork
+  # @return [ForkSessionResult] Result containing the new session ID
+  def self.fork_session(session_id:, directory: nil, up_to_message_id: nil, title: nil)
+    SessionMutations.fork_session(session_id: session_id, directory: directory,
+                                  up_to_message_id: up_to_message_id, title: title)
+  end
+
   def self.query(prompt:, options: nil, &block)
     return enum_for(:query, prompt: prompt, options: options) unless block
 

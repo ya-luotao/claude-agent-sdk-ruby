@@ -1,15 +1,16 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'securerandom'
 require_relative 'sessions'
 
 module ClaudeAgentSDK
-  # Session mutation functions: rename and tag sessions.
+  # Session mutation functions: rename, tag, delete, and fork sessions.
   #
   # Ported from Python SDK's _internal/session_mutations.py.
   # Appends typed metadata entries to the session's JSONL file,
   # matching the CLI pattern. Safe to call from any SDK host process.
-  module SessionMutations
+  module SessionMutations # rubocop:disable Metrics/ModuleLength
     module_function
 
     # Rename a session by appending a custom-title entry.
@@ -82,9 +83,211 @@ module ClaudeAgentSDK
       end
     end
 
+    # Fork a session into a new branch with fresh UUIDs.
+    #
+    # Creates a copy of the session transcript (or a prefix up to up_to_message_id)
+    # with remapped UUIDs and a new session ID. Sidechains are filtered out,
+    # progress entries are excluded from the written output but used for
+    # parentUuid chain walking.
+    #
+    # @param session_id [String] UUID of the session to fork
+    # @param directory [String, nil] Project directory path
+    # @param up_to_message_id [String, nil] Truncate the fork at this message UUID
+    # @param title [String, nil] Custom title for the fork (auto-generated if omitted)
+    # @return [ForkSessionResult] Result containing the new session ID
+    # @raise [ArgumentError] if session_id or up_to_message_id is invalid
+    # @raise [Errno::ENOENT] if the session file cannot be found
+    def fork_session(session_id:, directory: nil, up_to_message_id: nil, title: nil) # rubocop:disable Metrics/MethodLength
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+
+      raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}" if up_to_message_id && !up_to_message_id.match?(Sessions::UUID_RE)
+
+      result = find_session_file_with_dir(session_id, directory)
+      raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}" unless result
+
+      file_path, project_dir = result
+      content = File.read(file_path)
+      raise ArgumentError, "Session #{session_id} has no messages to fork" if content.empty?
+
+      transcript, content_replacements = parse_fork_transcript(content, session_id)
+      transcript.reject! { |e| e['isSidechain'] }
+      raise ArgumentError, "Session #{session_id} has no messages to fork" if transcript.empty?
+
+      if up_to_message_id
+        cutoff = transcript.index { |e| e['uuid'] == up_to_message_id }
+        raise ArgumentError, "Message #{up_to_message_id} not found in session #{session_id}" unless cutoff
+
+        transcript = transcript[0..cutoff]
+      end
+
+      # Build UUID mapping (including progress entries for parentUuid chain walk)
+      uuid_mapping = {}
+      transcript.each { |e| uuid_mapping[e['uuid']] = SecureRandom.uuid }
+
+      by_uuid = transcript.each_with_object({}) { |e, h| h[e['uuid']] = e }
+
+      # Filter out progress messages from written output
+      writable = transcript.reject { |e| e['type'] == 'progress' }
+      raise ArgumentError, "Session #{session_id} has no messages to fork" if writable.empty?
+
+      forked_session_id = SecureRandom.uuid
+      now = Time.now.utc.strftime('%Y-%m-%dT%H:%M:%S.%3NZ')
+
+      lines = writable.each_with_index.map do |original, i|
+        build_forked_entry(original, i, writable.size, uuid_mapping, by_uuid,
+                           forked_session_id, session_id, now)
+      end
+
+      # Append content-replacement entry if any
+      if content_replacements && !content_replacements.empty?
+        lines << JSON.generate({
+                                 'type' => 'content-replacement',
+                                 'sessionId' => forked_session_id,
+                                 'replacements' => content_replacements
+                               })
+      end
+
+      # Derive title
+      fork_title = title&.strip
+      if fork_title.nil? || fork_title.empty?
+        head = content[0, Sessions::LITE_READ_BUF_SIZE] || ''
+        tail = content.length > Sessions::LITE_READ_BUF_SIZE ? content[-Sessions::LITE_READ_BUF_SIZE..] : head
+        base = Sessions.send(:extract_json_string_field, tail, 'customTitle', last: true) ||
+               Sessions.send(:extract_json_string_field, head, 'customTitle', last: true) ||
+               Sessions.send(:extract_json_string_field, tail, 'aiTitle', last: true) ||
+               Sessions.send(:extract_json_string_field, head, 'aiTitle', last: true) ||
+               Sessions.send(:extract_first_prompt_from_head, head) ||
+               'Forked session'
+        fork_title = "#{base} (fork)"
+      end
+
+      lines << JSON.generate({
+                               'type' => 'custom-title',
+                               'sessionId' => forked_session_id,
+                               'customTitle' => fork_title
+                             })
+
+      fork_path = File.join(project_dir, "#{forked_session_id}.jsonl")
+      fd = IO.sysopen(fork_path, File::WRONLY | File::CREAT | File::EXCL, 0o600)
+      begin
+        io = IO.new(fd)
+        io.write("#{lines.join("\n")}\n")
+      ensure
+        io&.close
+      end
+
+      ForkSessionResult.new(session_id: forked_session_id)
+    end
+
     # -- Private helpers --
 
-    # Locate the JSONL file for a session (used by delete and fork).
+    # Locate the JSONL file for a session and return [file_path, project_dir].
+    def find_session_file_with_dir(session_id, directory)
+      file_name = "#{session_id}.jsonl"
+      return find_in_directory(file_name, directory) if directory
+
+      find_in_all_projects(file_name)
+    end
+
+    def find_in_directory(file_name, directory)
+      path = File.realpath(directory).unicode_normalize(:nfc)
+      result = try_project_dir(file_name, Sessions.find_project_dir(path))
+      return result if result
+
+      worktree_paths = Sessions.detect_worktrees(path) rescue [] # rubocop:disable Style/RescueModifier
+      worktree_paths.each do |wt_path|
+        next if wt_path == path
+
+        result = try_project_dir(file_name, Sessions.find_project_dir(wt_path))
+        return result if result
+      end
+      nil
+    end
+
+    def try_project_dir(file_name, project_dir)
+      return nil unless project_dir
+
+      candidate = File.join(project_dir, file_name)
+      File.exist?(candidate) ? [candidate, project_dir] : nil
+    end
+
+    def find_in_all_projects(file_name)
+      projects_dir = File.join(Sessions.config_dir, 'projects')
+      return nil unless File.directory?(projects_dir)
+
+      Dir.children(projects_dir).each do |child|
+        pd = File.join(projects_dir, child)
+        next unless File.directory?(pd)
+
+        candidate = File.join(pd, file_name)
+        return [candidate, pd] if File.exist?(candidate)
+      end
+      nil
+    end
+
+    # Parse a fork transcript, extracting entries and content-replacement data.
+    def parse_fork_transcript(content, _session_id)
+      transcript = []
+      content_replacements = nil
+
+      content.each_line do |line|
+        entry = JSON.parse(line.strip)
+        next unless entry.is_a?(Hash) && entry['uuid']
+
+        if entry['type'] == 'content-replacement'
+          content_replacements = entry['replacements']
+          next
+        end
+        transcript << entry
+      rescue JSON::ParserError
+        next
+      end
+
+      [transcript, content_replacements]
+    end
+
+    # Build a single forked entry with remapped UUIDs.
+    def build_forked_entry(original, index, total, uuid_mapping, by_uuid,
+                           forked_session_id, source_session_id, now)
+      new_uuid = uuid_mapping[original['uuid']]
+
+      # Resolve parentUuid, skipping progress ancestors
+      new_parent_uuid = resolve_parent_uuid(original['parentUuid'], by_uuid, uuid_mapping)
+
+      # Only update timestamp on the last message
+      timestamp = index == total - 1 ? now : (original['timestamp'] || now)
+
+      # Remap logicalParentUuid
+      logical_parent = original['logicalParentUuid']
+      new_logical_parent = logical_parent ? uuid_mapping[logical_parent] : logical_parent
+
+      forked = original.merge(
+        'uuid' => new_uuid,
+        'parentUuid' => new_parent_uuid,
+        'logicalParentUuid' => new_logical_parent,
+        'sessionId' => forked_session_id,
+        'timestamp' => timestamp,
+        'isSidechain' => false,
+        'forkedFrom' => { 'sessionId' => source_session_id, 'messageUuid' => original['uuid'] }
+      )
+      %w[teamName agentName slug sourceToolAssistantUUID].each { |k| forked.delete(k) }
+
+      JSON.generate(forked)
+    end
+
+    # Walk up parentUuid chain skipping progress entries.
+    def resolve_parent_uuid(parent_id, by_uuid, uuid_mapping)
+      while parent_id
+        parent = by_uuid[parent_id]
+        break unless parent
+        return uuid_mapping[parent_id] if parent['type'] != 'progress'
+
+        parent_id = parent['parentUuid']
+      end
+      nil
+    end
+
+    # Locate the JSONL file for a session (used by delete).
     # Returns the full path or nil.
     def find_session_file_for_mutation(session_id, directory)
       file_name = "#{session_id}.jsonl"
@@ -219,7 +422,9 @@ module ClaudeAgentSDK
       'Other'
     end
 
-    private_class_method :find_session_file_for_mutation,
+    private_class_method :find_session_file_for_mutation, :find_session_file_with_dir,
+                         :find_in_directory, :try_project_dir, :find_in_all_projects,
+                         :parse_fork_transcript, :build_forked_entry, :resolve_parent_uuid,
                          :append_to_session, :append_to_session_in_directory,
                          :append_to_session_global, :try_append, :sanitize_unicode, :unicode_category
   end
