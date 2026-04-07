@@ -123,6 +123,13 @@ module ClaudeAgentSDK
     SessionMutations.tag_session(session_id: session_id, tag: tag, directory: directory)
   end
 
+  # Delete a session by removing its JSONL file (hard delete).
+  # @param session_id [String] UUID of the session to delete
+  # @param directory [String, nil] Project directory path
+  def self.delete_session(session_id:, directory: nil)
+    SessionMutations.delete_session(session_id: session_id, directory: directory)
+  end
+
   def self.query(prompt:, options: nil, &block)
     return enum_for(:query, prompt: prompt, options: options) unless block
 

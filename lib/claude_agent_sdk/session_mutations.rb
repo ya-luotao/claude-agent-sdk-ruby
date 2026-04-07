@@ -60,7 +60,70 @@ module ClaudeAgentSDK
       append_to_session(session_id, data, directory)
     end
 
+    # Delete a session by removing its JSONL file.
+    #
+    # This is a hard delete — the file is removed permanently. For soft-delete
+    # semantics, use tag_session(id, '__hidden') and filter on listing instead.
+    #
+    # @param session_id [String] UUID of the session to delete
+    # @param directory [String, nil] Project directory path
+    # @raise [ArgumentError] if session_id is invalid
+    # @raise [Errno::ENOENT] if the session file cannot be found
+    def delete_session(session_id:, directory: nil)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+
+      path = find_session_file_for_mutation(session_id, directory)
+      raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}" unless path
+
+      begin
+        File.delete(path)
+      rescue Errno::ENOENT
+        raise Errno::ENOENT, "Session #{session_id} not found"
+      end
+    end
+
     # -- Private helpers --
+
+    # Locate the JSONL file for a session (used by delete and fork).
+    # Returns the full path or nil.
+    def find_session_file_for_mutation(session_id, directory)
+      file_name = "#{session_id}.jsonl"
+
+      if directory
+        path = File.realpath(directory).unicode_normalize(:nfc)
+        project_dir = Sessions.find_project_dir(path)
+        if project_dir
+          candidate = File.join(project_dir, file_name)
+          return candidate if File.exist?(candidate)
+        end
+
+        # Worktree fallback
+        begin
+          worktree_paths = Sessions.detect_worktrees(path)
+        rescue StandardError
+          worktree_paths = []
+        end
+        worktree_paths.each do |wt_path|
+          next if wt_path == path
+
+          wt_project_dir = Sessions.find_project_dir(wt_path)
+          next unless wt_project_dir
+
+          candidate = File.join(wt_project_dir, file_name)
+          return candidate if File.exist?(candidate)
+        end
+      else
+        projects_dir = File.join(Sessions.config_dir, 'projects')
+        return nil unless File.directory?(projects_dir)
+
+        Dir.children(projects_dir).each do |child|
+          candidate = File.join(projects_dir, child, file_name)
+          return candidate if File.exist?(candidate)
+        end
+      end
+
+      nil
+    end
 
     def append_to_session(session_id, data, directory)
       file_name = "#{session_id}.jsonl"
@@ -156,7 +219,8 @@ module ClaudeAgentSDK
       'Other'
     end
 
-    private_class_method :append_to_session, :append_to_session_in_directory,
+    private_class_method :find_session_file_for_mutation,
+                         :append_to_session, :append_to_session_in_directory,
                          :append_to_session_global, :try_append, :sanitize_unicode, :unicode_category
   end
 end
