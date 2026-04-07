@@ -813,6 +813,12 @@ module ClaudeAgentSDK
 
     public
 
+    # Get a breakdown of current context window usage by category.
+    # @return [Hash] Context usage response with categories, totalTokens, maxTokens, etc.
+    def get_context_usage
+      send_control_request({ subtype: 'get_context_usage' })
+    end
+
     # Get current MCP server connection status (only works with streaming mode)
     # @return [Hash] MCP status information, including mcpServers list
     def get_mcp_status

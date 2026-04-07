@@ -474,6 +474,15 @@ module ClaudeAgentSDK
       @query_handler&.instance_variable_get(:@initialization_result)
     end
 
+    # Get a breakdown of current context window usage by category.
+    # Returns token counts per category (system prompt, tools, messages, etc.),
+    # total/max tokens, model info, MCP tools, memory files, and more.
+    # @return [Hash] Context usage response
+    def get_context_usage
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.get_context_usage
+    end
+
     # Get current MCP server connection status (only works with streaming mode)
     # @return [Hash] MCP status information, including mcpServers list
     def get_mcp_status
