@@ -101,6 +101,7 @@ module ClaudeAgentSDK
       cmd.concat(['--permission-mode', @options.permission_mode]) if @options.permission_mode
       cmd << '--continue' if @options.continue_conversation
       cmd.concat(['--resume', @options.resume]) if @options.resume
+      cmd.concat(['--session-id', @options.session_id]) if @options.session_id
 
       # Settings handling with sandbox merge
       build_settings_args(cmd)
