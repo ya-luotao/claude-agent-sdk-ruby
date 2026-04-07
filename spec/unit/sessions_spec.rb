@@ -670,7 +670,7 @@ end
 RSpec.describe 'ClaudeAgentSDK top-level session functions' do
   it 'delegates list_sessions to Sessions module' do
     expect(ClaudeAgentSDK::Sessions).to receive(:list_sessions)
-      .with(directory: '/test', limit: 5, include_worktrees: false)
+      .with(directory: '/test', limit: 5, offset: 0, include_worktrees: false)
       .and_return([])
 
     ClaudeAgentSDK.list_sessions(directory: '/test', limit: 5, include_worktrees: false)

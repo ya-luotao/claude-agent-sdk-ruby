@@ -2,7 +2,7 @@
 
 module ClaudeAgentSDK
   # Type constants for permission modes
-  PERMISSION_MODES = %w[default acceptEdits plan bypassPermissions].freeze
+  PERMISSION_MODES = %w[default acceptEdits plan bypassPermissions dontAsk auto].freeze
 
   # Type constants for setting sources
   SETTING_SOURCES = %w[user project local].freeze
@@ -121,14 +121,20 @@ module ClaudeAgentSDK
 
   # Assistant message with content blocks
   class AssistantMessage
-    attr_accessor :content, :model, :parent_tool_use_id, :error, :usage
+    attr_accessor :content, :model, :parent_tool_use_id, :error, :usage,
+                  :message_id, :stop_reason, :session_id, :uuid
 
-    def initialize(content:, model:, parent_tool_use_id: nil, error: nil, usage: nil)
+    def initialize(content:, model:, parent_tool_use_id: nil, error: nil, usage: nil,
+                   message_id: nil, stop_reason: nil, session_id: nil, uuid: nil)
       @content = content
       @model = model
       @parent_tool_use_id = parent_tool_use_id
       @error = error # One of: authentication_failed, billing_error, rate_limit, invalid_request, server_error, unknown
       @usage = usage # Token usage info from the API response
+      @message_id = message_id # Unique message identifier from the API (message.id)
+      @stop_reason = stop_reason # Why the assistant stopped (e.g., "end_turn", "max_tokens")
+      @session_id = session_id # Session the message belongs to
+      @uuid = uuid # Unique message UUID in the session transcript
     end
   end
 
@@ -597,16 +603,25 @@ module ClaudeAgentSDK
 
   # Agent definition configuration
   class AgentDefinition
-    attr_accessor :description, :prompt, :tools, :model, :skills, :memory, :mcp_servers
+    attr_accessor :description, :prompt, :tools, :disallowed_tools, :model, :skills, :memory, :mcp_servers,
+                  :initial_prompt, :max_turns, :background, :effort, :permission_mode
 
-    def initialize(description:, prompt:, tools: nil, model: nil, skills: nil, memory: nil, mcp_servers: nil)
+    def initialize(description:, prompt:, tools: nil, disallowed_tools: nil, model: nil, skills: nil,
+                   memory: nil, mcp_servers: nil, initial_prompt: nil, max_turns: nil,
+                   background: nil, effort: nil, permission_mode: nil)
       @description = description
       @prompt = prompt
       @tools = tools
+      @disallowed_tools = disallowed_tools # Array of tool names to disallow
       @model = model
       @skills = skills # Array of skill names
       @memory = memory # One of: 'user', 'project', 'local'
       @mcp_servers = mcp_servers # Array of server names or config hashes
+      @initial_prompt = initial_prompt # Initial prompt sent when agent starts
+      @max_turns = max_turns # Maximum conversation turns for the agent
+      @background = background # Whether this agent runs in background
+      @effort = effort # "low", "medium", "high", "max", or Integer
+      @permission_mode = permission_mode # Permission mode for the agent
     end
   end
 
@@ -660,11 +675,13 @@ module ClaudeAgentSDK
 
   # Tool permission context
   class ToolPermissionContext
-    attr_accessor :signal, :suggestions
+    attr_accessor :signal, :suggestions, :tool_use_id, :agent_id
 
-    def initialize(signal: nil, suggestions: [])
+    def initialize(signal: nil, suggestions: [], tool_use_id: nil, agent_id: nil)
       @signal = signal
       @suggestions = suggestions
+      @tool_use_id = tool_use_id # Unique ID for this tool call within the assistant message
+      @agent_id = agent_id # Sub-agent ID if running within an agent context
     end
   end
 
@@ -1678,6 +1695,44 @@ module ClaudeAgentSDK
     end
   end
 
+  # Result of a session fork operation
+  class ForkSessionResult
+    attr_accessor :session_id
+
+    def initialize(session_id:)
+      @session_id = session_id
+    end
+  end
+
+  # API-side task budget in tokens.
+  # When set, the model is made aware of its remaining token budget so it can
+  # pace tool use and wrap up before the limit.
+  class TaskBudget
+    attr_accessor :total
+
+    def initialize(total:)
+      @total = total
+    end
+
+    def to_h
+      { total: @total }
+    end
+  end
+
+  # System prompt file configuration — loads system prompt from a file path
+  class SystemPromptFile
+    attr_accessor :type, :path
+
+    def initialize(path:)
+      @type = 'file'
+      @path = path
+    end
+
+    def to_h
+      { type: @type, path: @path }
+    end
+  end
+
   # System prompt preset configuration
   class SystemPromptPreset
     attr_accessor :type, :preset, :append
@@ -1712,7 +1767,7 @@ module ClaudeAgentSDK
   # Claude Agent Options for configuring queries
   class ClaudeAgentOptions
     attr_accessor :allowed_tools, :system_prompt, :mcp_servers, :permission_mode,
-                  :continue_conversation, :resume, :max_turns, :disallowed_tools,
+                  :continue_conversation, :resume, :session_id, :max_turns, :disallowed_tools,
                   :model, :permission_prompt_tool_name, :cwd, :cli_path, :settings,
                   :add_dirs, :env, :extra_args, :max_buffer_size, :stderr,
                   :can_use_tool, :hooks, :user, :include_partial_messages,
@@ -1720,7 +1775,7 @@ module ClaudeAgentSDK
                   :output_format, :max_budget_usd, :max_thinking_tokens,
                   :fallback_model, :plugins, :debug_stderr,
                   :betas, :tools, :sandbox, :enable_file_checkpointing, :append_allowed_tools,
-                  :thinking, :effort, :bare, :observers
+                  :thinking, :effort, :bare, :observers, :task_budget
 
     # Non-nil defaults for options that need them.
     # Keys absent from here default to nil.
@@ -1783,14 +1838,15 @@ module ClaudeAgentSDK
 
   # SDK MCP Tool definition
   class SdkMcpTool
-    attr_accessor :name, :description, :input_schema, :handler, :annotations
+    attr_accessor :name, :description, :input_schema, :handler, :annotations, :meta
 
-    def initialize(name:, description:, input_schema:, handler:, annotations: nil)
+    def initialize(name:, description:, input_schema:, handler:, annotations: nil, meta: nil)
       @name = name
       @description = description
       @input_schema = input_schema
       @handler = handler
       @annotations = annotations # MCP tool annotations (e.g., { title: '...', readOnlyHint: true })
+      @meta = meta # MCP _meta field (e.g., { 'anthropic/maxResultSizeChars' => 100000 })
     end
   end
 

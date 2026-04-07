@@ -66,6 +66,7 @@ module ClaudeAgentSDK
           inputSchema: convert_input_schema(tool.input_schema)
         }
         entry[:annotations] = tool.annotations if tool.annotations
+        entry[:_meta] = tool.meta if tool.meta
         entry
       end
     end
@@ -400,15 +401,23 @@ module ClaudeAgentSDK
   #       { content: [{ type: 'text', text: "Result: #{result}" }] }
   #     end
   #   end
-  def self.create_tool(name, description, input_schema, annotations: nil, &handler)
+  def self.create_tool(name, description, input_schema, annotations: nil, meta: nil, &handler)
     raise ArgumentError, 'Block required for tool handler' unless handler
+
+    # Auto-populate _meta with maxResultSizeChars from annotations if present
+    resolved_meta = meta
+    if resolved_meta.nil? && annotations
+      max_chars = annotations[:maxResultSizeChars] || annotations['maxResultSizeChars']
+      resolved_meta = { 'anthropic/maxResultSizeChars' => max_chars } if max_chars
+    end
 
     SdkMcpTool.new(
       name: name,
       description: description,
       input_schema: input_schema,
       handler: handler,
-      annotations: annotations
+      annotations: annotations,
+      meta: resolved_meta
     )
   end
 

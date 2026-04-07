@@ -963,6 +963,9 @@ end
 # List sessions for a specific directory
 sessions = ClaudeAgentSDK.list_sessions(directory: '/path/to/project', limit: 10)
 
+# Paginate with offset
+page2 = ClaudeAgentSDK.list_sessions(directory: '.', limit: 10, offset: 10)
+
 # Include git worktree sessions
 sessions = ClaudeAgentSDK.list_sessions(directory: '.', include_worktrees: true)
 ```
@@ -1019,7 +1022,34 @@ ClaudeAgentSDK.tag_session(
 )
 ```
 
-> **Note:** Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process.
+### Deleting a Session
+
+```ruby
+# Hard-delete a session (removes the JSONL file permanently)
+ClaudeAgentSDK.delete_session(
+  session_id: '550e8400-e29b-41d4-a716-446655440000',
+  directory: '/path/to/project'  # optional
+)
+```
+
+### Forking a Session
+
+```ruby
+# Fork a session into a new branch with fresh UUIDs
+result = ClaudeAgentSDK.fork_session(
+  session_id: '550e8400-e29b-41d4-a716-446655440000',
+  title: 'Experiment branch'  # optional, auto-generated if omitted
+)
+puts result.session_id  # UUID of the new forked session
+
+# Fork up to a specific message (partial fork)
+result = ClaudeAgentSDK.fork_session(
+  session_id: '550e8400-e29b-41d4-a716-446655440000',
+  up_to_message_id: 'message-uuid-here'
+)
+```
+
+> **Note:** Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process. `fork_session` uses `O_CREAT | O_EXCL` to prevent race conditions.
 
 ## Observability (OpenTelemetry / Langfuse)
 

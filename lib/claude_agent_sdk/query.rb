@@ -89,10 +89,16 @@ module ClaudeAgentSDK
             description: agent_def.description,
             prompt: agent_def.prompt,
             tools: agent_def.tools,
+            disallowedTools: agent_def.disallowed_tools,
             model: agent_def.model,
             skills: agent_def.skills,
             memory: agent_def.memory,
-            mcpServers: agent_def.mcp_servers
+            mcpServers: agent_def.mcp_servers,
+            initialPrompt: agent_def.initial_prompt,
+            maxTurns: agent_def.max_turns,
+            background: agent_def.background,
+            effort: agent_def.effort,
+            permissionMode: agent_def.permission_mode
           }.compact
         end
       end
@@ -283,7 +289,9 @@ module ClaudeAgentSDK
 
       context = ToolPermissionContext.new(
         signal: nil,
-        suggestions: request_data[:permission_suggestions] || []
+        suggestions: request_data[:permission_suggestions] || [],
+        tool_use_id: request_data[:tool_use_id],
+        agent_id: request_data[:agent_id]
       )
 
       response = @can_use_tool.call(
@@ -804,6 +812,12 @@ module ClaudeAgentSDK
     end
 
     public
+
+    # Get a breakdown of current context window usage by category.
+    # @return [Hash] Context usage response with categories, totalTokens, maxTokens, etc.
+    def get_context_usage
+      send_control_request({ subtype: 'get_context_usage' })
+    end
 
     # Get current MCP server connection status (only works with streaming mode)
     # @return [Hash] MCP status information, including mcpServers list

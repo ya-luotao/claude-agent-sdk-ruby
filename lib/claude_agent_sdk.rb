@@ -82,10 +82,11 @@ module ClaudeAgentSDK
   # List sessions for a directory (or all sessions)
   # @param directory [String, nil] Working directory to list sessions for
   # @param limit [Integer, nil] Maximum number of sessions to return
+  # @param offset [Integer] Number of sessions to skip (for pagination)
   # @param include_worktrees [Boolean] Whether to include git worktree sessions
   # @return [Array<SDKSessionInfo>] Sessions sorted by last_modified descending
-  def self.list_sessions(directory: nil, limit: nil, include_worktrees: true)
-    Sessions.list_sessions(directory: directory, limit: limit, include_worktrees: include_worktrees)
+  def self.list_sessions(directory: nil, limit: nil, offset: 0, include_worktrees: true)
+    Sessions.list_sessions(directory: directory, limit: limit, offset: offset, include_worktrees: include_worktrees)
   end
 
   # Read metadata for a single session by ID (no full directory scan)
@@ -120,6 +121,24 @@ module ClaudeAgentSDK
   # @param directory [String, nil] Project directory path
   def self.tag_session(session_id:, tag:, directory: nil)
     SessionMutations.tag_session(session_id: session_id, tag: tag, directory: directory)
+  end
+
+  # Delete a session by removing its JSONL file (hard delete).
+  # @param session_id [String] UUID of the session to delete
+  # @param directory [String, nil] Project directory path
+  def self.delete_session(session_id:, directory: nil)
+    SessionMutations.delete_session(session_id: session_id, directory: directory)
+  end
+
+  # Fork a session into a new branch with fresh UUIDs.
+  # @param session_id [String] UUID of the session to fork
+  # @param directory [String, nil] Project directory path
+  # @param up_to_message_id [String, nil] Truncate the fork at this message UUID
+  # @param title [String, nil] Custom title for the fork
+  # @return [ForkSessionResult] Result containing the new session ID
+  def self.fork_session(session_id:, directory: nil, up_to_message_id: nil, title: nil)
+    SessionMutations.fork_session(session_id: session_id, directory: directory,
+                                  up_to_message_id: up_to_message_id, title: title)
   end
 
   def self.query(prompt:, options: nil, &block)
@@ -453,6 +472,15 @@ module ClaudeAgentSDK
     # @return [Hash, nil] Server info or nil
     def server_info
       @query_handler&.instance_variable_get(:@initialization_result)
+    end
+
+    # Get a breakdown of current context window usage by category.
+    # Returns token counts per category (system prompt, tools, messages, etc.),
+    # total/max tokens, model info, MCP tools, memory files, and more.
+    # @return [Hash] Context usage response
+    def get_context_usage
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.get_context_usage
     end
 
     # Get current MCP server connection status (only works with streaming mode)

@@ -254,6 +254,80 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect { transport.build_command }.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Settings file not found/)
     end
 
+    it 'passes --system-prompt-file for SystemPromptFile objects' do
+      prompt_file = ClaudeAgentSDK::SystemPromptFile.new(path: '/tmp/prompt.txt')
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        system_prompt: prompt_file
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--system-prompt-file', '/tmp/prompt.txt')
+      expect(cmd).not_to include('--system-prompt')
+    end
+
+    it 'passes --system-prompt-file for Hash with type: file' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        system_prompt: { type: 'file', path: '/tmp/prompt.txt' }
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--system-prompt-file', '/tmp/prompt.txt')
+    end
+
+    it 'passes --session-id flag' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        session_id: '550e8400-e29b-41d4-a716-446655440000'
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--session-id', '550e8400-e29b-41d4-a716-446655440000')
+    end
+
+    it 'passes --task-budget from TaskBudget object' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        task_budget: ClaudeAgentSDK::TaskBudget.new(total: 50_000)
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--task-budget', '50000')
+    end
+
+    it 'passes --task-budget from Hash with symbol keys' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        task_budget: { total: 30_000 }
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--task-budget', '30000')
+    end
+
+    it 'passes --task-budget from Hash with string keys' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        task_budget: { 'total' => 25_000 }
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--task-budget', '25000')
+    end
+
     it 'does not add the deprecated enable-file-checkpointing flag' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',

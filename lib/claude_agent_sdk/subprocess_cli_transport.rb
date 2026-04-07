@@ -74,13 +74,18 @@ module ClaudeAgentSDK
         cmd.concat(['--system-prompt', ''])
       elsif @options.system_prompt.is_a?(String)
         cmd.concat(['--system-prompt', @options.system_prompt])
+      elsif @options.system_prompt.is_a?(SystemPromptFile)
+        cmd.concat(['--system-prompt-file', @options.system_prompt.path])
       elsif @options.system_prompt.is_a?(SystemPromptPreset)
         # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
         # Only --append-system-prompt is passed if append text is provided
         cmd.concat(['--append-system-prompt', @options.system_prompt.append]) if @options.system_prompt.append
       elsif @options.system_prompt.is_a?(Hash)
         prompt_type = @options.system_prompt[:type] || @options.system_prompt['type']
-        if prompt_type == 'preset'
+        if prompt_type == 'file'
+          prompt_path = @options.system_prompt[:path] || @options.system_prompt['path']
+          cmd.concat(['--system-prompt-file', prompt_path]) if prompt_path
+        elsif prompt_type == 'preset'
           append = @options.system_prompt[:append] || @options.system_prompt['append']
           # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
           cmd.concat(['--append-system-prompt', append]) if append
@@ -96,12 +101,23 @@ module ClaudeAgentSDK
       cmd.concat(['--permission-mode', @options.permission_mode]) if @options.permission_mode
       cmd << '--continue' if @options.continue_conversation
       cmd.concat(['--resume', @options.resume]) if @options.resume
+      cmd.concat(['--session-id', @options.session_id]) if @options.session_id
 
       # Settings handling with sandbox merge
       build_settings_args(cmd)
 
       # Budget limit option
       cmd.concat(['--max-budget-usd', @options.max_budget_usd.to_s]) if @options.max_budget_usd
+
+      # Task budget (API-side token budget)
+      if @options.task_budget
+        total = if @options.task_budget.is_a?(TaskBudget)
+                  @options.task_budget.total
+                else
+                  @options.task_budget[:total] || @options.task_budget['total']
+                end
+        cmd.concat(['--task-budget', total.to_s]) if total
+      end
 
       # Thinking configuration (takes precedence over deprecated max_thinking_tokens)
       thinking_tokens = resolve_thinking_tokens
