@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - Python SDK v0.1.51–0.1.56 Parity
+
+### Added
+
+#### Type Completeness
+- `AssistantMessage`: `message_id`, `stop_reason`, `session_id`, `uuid` fields (populated from CLI message data)
+- `AgentDefinition`: `disallowed_tools`, `max_turns`, `initial_prompt`, `background`, `effort`, `permission_mode` fields (serialized to CLI via initialize request)
+- `ToolPermissionContext`: `tool_use_id`, `agent_id` fields for distinguishing parallel permission requests and sub-agent context
+- `PERMISSION_MODES`: added `dontAsk` and `auto` values
+
+#### New Types and Options
+- `SystemPromptFile` class — loads system prompt from a file path via `--system-prompt-file` CLI flag
+- `TaskBudget` class — API-side token budget, passed as `--task-budget` CLI flag
+- `ForkSessionResult` class — returned by `fork_session()` with the new session ID
+- `session_id` option on `ClaudeAgentOptions` — specify a custom session ID via `--session-id` CLI flag
+- `task_budget` option on `ClaudeAgentOptions`
+
+#### Session Management
+- `ClaudeAgentSDK.delete_session(session_id:, directory:)` — hard-deletes a session JSONL file
+- `ClaudeAgentSDK.fork_session(session_id:, directory:, up_to_message_id:, title:)` — filesystem-level fork with UUID remapping, sidechain filtering, content-replacement forwarding, and auto-generated titles
+- `offset` parameter on `ClaudeAgentSDK.list_sessions` for cursor-based pagination
+
+#### Client Introspection
+- `Client#get_context_usage` / `Query#get_context_usage` — sends `get_context_usage` control request for context window breakdown (tokens by category, model, MCP tools, memory files, etc.)
+
+#### MCP Robustness
+- `SdkMcpTool#meta` field and `_meta` forwarding in `tools/list` responses — prevents silent truncation of large tool results (>50K chars) by forwarding `anthropic/maxResultSizeChars` through the MCP `_meta` field
+- `create_tool` auto-populates `_meta` from `annotations[:maxResultSizeChars]` when present
+
 ## [0.13.1] - 2026-04-05
 
 ### Fixed

@@ -32,6 +32,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
   - Other: `LocalCommandOutputMessage`, `ElicitationCompleteMessage`, `PromptSuggestionMessage`
   - Unknown message types return `nil` (forward-compatible)
 - Handle content blocks: `TextBlock`, `ThinkingBlock`, `ToolUseBlock`, `ToolResultBlock`, `UnknownBlock`
+- `AssistantMessage` carries: `content`, `model`, `parent_tool_use_id`, `error`, `usage`, `message_id` (API message ID), `stop_reason`, `session_id`, `uuid` (transcript UUID)
 - `ResultMessage` carries: `stop_reason`, `model_usage` (per-model breakdown), `permission_denials`, `errors` (on error subtypes), `uuid`, `fast_mode_state`
 - Use `output_format` for JSON schema structured output
 - Use `thinking:` with `ThinkingConfigAdaptive`, `ThinkingConfigEnabled(budget_tokens:)`, or `ThinkingConfigDisabled`. Use `effort:` for effort level.
@@ -62,10 +63,16 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 ## SDK MCP Tools
 - Include `mcp__<server>__<tool>` in `allowed_tools`
 - Use `annotations:` on `create_tool` for MCP tool annotations
+- Use `meta:` on `create_tool` for `_meta` field forwarding (e.g., `{ 'anthropic/maxResultSizeChars' => 100000 }` to prevent truncation of large results)
+- If `annotations[:maxResultSizeChars]` is set, `_meta` is auto-populated
 - Both symbol-keyed and string-keyed `input_schema` hashes are accepted
 
 ## Session Management
-- `resume`, `session_id`, `fork_session` for session handling
+- `resume`, `session_id`, `fork_session` option for session handling
+- `ClaudeAgentSDK.delete_session(session_id:, directory:)` — hard-deletes a session
+- `ClaudeAgentSDK.fork_session(session_id:, directory:, up_to_message_id:, title:)` → `ForkSessionResult` — filesystem fork with UUID remapping
+- `ClaudeAgentSDK.list_sessions(directory:, limit:, offset:, include_worktrees:)` — supports `offset` for pagination
+- `Client#get_context_usage` — context window breakdown (tokens by category, model, MCP tools, etc.)
 - `Client#reconnect_mcp_server(name)`, `Client#toggle_mcp_server(name, enabled)`, `Client#stop_task(task_id)` for live control
 - `Client#rewind_files(uuid)` with `enable_file_checkpointing: true`
 - `McpStatusResponse.parse(client.get_mcp_status)` for typed MCP status
