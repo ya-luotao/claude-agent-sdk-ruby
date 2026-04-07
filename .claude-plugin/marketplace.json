@@ -1,0 +1,23 @@
+{
+  "name": "claude-agent-sdk-ruby",
+  "owner": {
+    "name": "ya-luotao",
+    "email": "ya.luotao@gmail.com"
+  },
+  "metadata": {
+    "description": "Skills and plugins for the Claude Agent SDK for Ruby (claude-agent-sdk gem)",
+    "version": "1.0.0",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "claude-agent-ruby",
+      "source": "./plugins/claude-agent-ruby",
+      "description": "Build AI agents in Ruby using the claude-agent-sdk gem. Covers query() one-shot calls, Client sessions, hooks, MCP servers, streaming, structured output, sandbox settings, session management, and Rails integration.",
+      "version": "0.13.1",
+      "author": {
+        "name": "ya-luotao"
+      }
+    }
+  ]
+}

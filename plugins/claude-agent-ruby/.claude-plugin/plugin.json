@@ -1,0 +1,23 @@
+{
+  "name": "claude-agent-ruby",
+  "version": "0.13.1",
+  "description": "Implement or modify Ruby code using the claude-agent-sdk gem. Covers query() one-shot calls, Client-based interactive sessions, streaming input, all 27 hook events, permission callbacks, SDK MCP servers, structured output, bare mode, sandbox settings, session management, Rails integration, and custom transports.",
+  "author": {
+    "name": "ya-luotao",
+    "email": "ya.luotao@gmail.com"
+  },
+  "homepage": "https://github.com/ya-luotao/claude-agent-sdk-ruby",
+  "repository": "https://github.com/ya-luotao/claude-agent-sdk-ruby",
+  "license": "MIT",
+  "keywords": [
+    "ruby",
+    "claude",
+    "agent",
+    "sdk",
+    "claude-code",
+    "rails",
+    "mcp",
+    "hooks",
+    "streaming"
+  ]
+}
