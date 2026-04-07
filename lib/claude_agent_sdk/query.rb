@@ -289,7 +289,9 @@ module ClaudeAgentSDK
 
       context = ToolPermissionContext.new(
         signal: nil,
-        suggestions: request_data[:permission_suggestions] || []
+        suggestions: request_data[:permission_suggestions] || [],
+        tool_use_id: request_data[:tool_use_id],
+        agent_id: request_data[:agent_id]
       )
 
       response = @can_use_tool.call(

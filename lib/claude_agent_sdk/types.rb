@@ -675,11 +675,13 @@ module ClaudeAgentSDK
 
   # Tool permission context
   class ToolPermissionContext
-    attr_accessor :signal, :suggestions
+    attr_accessor :signal, :suggestions, :tool_use_id, :agent_id
 
-    def initialize(signal: nil, suggestions: [])
+    def initialize(signal: nil, suggestions: [], tool_use_id: nil, agent_id: nil)
       @signal = signal
       @suggestions = suggestions
+      @tool_use_id = tool_use_id # Unique ID for this tool call within the assistant message
+      @agent_id = agent_id # Sub-agent ID if running within an agent context
     end
   end
 
