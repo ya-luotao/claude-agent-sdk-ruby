@@ -89,10 +89,16 @@ module ClaudeAgentSDK
             description: agent_def.description,
             prompt: agent_def.prompt,
             tools: agent_def.tools,
+            disallowedTools: agent_def.disallowed_tools,
             model: agent_def.model,
             skills: agent_def.skills,
             memory: agent_def.memory,
-            mcpServers: agent_def.mcp_servers
+            mcpServers: agent_def.mcp_servers,
+            initialPrompt: agent_def.initial_prompt,
+            maxTurns: agent_def.max_turns,
+            background: agent_def.background,
+            effort: agent_def.effort,
+            permissionMode: agent_def.permission_mode
           }.compact
         end
       end

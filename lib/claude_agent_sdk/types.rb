@@ -603,16 +603,25 @@ module ClaudeAgentSDK
 
   # Agent definition configuration
   class AgentDefinition
-    attr_accessor :description, :prompt, :tools, :model, :skills, :memory, :mcp_servers
+    attr_accessor :description, :prompt, :tools, :disallowed_tools, :model, :skills, :memory, :mcp_servers,
+                  :initial_prompt, :max_turns, :background, :effort, :permission_mode
 
-    def initialize(description:, prompt:, tools: nil, model: nil, skills: nil, memory: nil, mcp_servers: nil)
+    def initialize(description:, prompt:, tools: nil, disallowed_tools: nil, model: nil, skills: nil,
+                   memory: nil, mcp_servers: nil, initial_prompt: nil, max_turns: nil,
+                   background: nil, effort: nil, permission_mode: nil)
       @description = description
       @prompt = prompt
       @tools = tools
+      @disallowed_tools = disallowed_tools # Array of tool names to disallow
       @model = model
       @skills = skills # Array of skill names
       @memory = memory # One of: 'user', 'project', 'local'
       @mcp_servers = mcp_servers # Array of server names or config hashes
+      @initial_prompt = initial_prompt # Initial prompt sent when agent starts
+      @max_turns = max_turns # Maximum conversation turns for the agent
+      @background = background # Whether this agent runs in background
+      @effort = effort # "low", "medium", "high", "max", or Integer
+      @permission_mode = permission_mode # Permission mode for the agent
     end
   end
 
