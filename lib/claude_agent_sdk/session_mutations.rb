@@ -126,7 +126,7 @@ module ClaudeAgentSDK
       uuid_mapping = {}
       transcript.each { |e| uuid_mapping[e['uuid']] = SecureRandom.uuid }
 
-      by_uuid = transcript.each_with_object({}) { |e, h| h[e['uuid']] = e }
+      by_uuid = transcript.to_h { |e| [e['uuid'], e] }
 
       # Filter out progress messages from written output
       writable = transcript.reject { |e| e['type'] == 'progress' }
