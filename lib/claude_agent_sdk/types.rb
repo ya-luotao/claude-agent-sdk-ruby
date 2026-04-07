@@ -1695,6 +1695,20 @@ module ClaudeAgentSDK
     end
   end
 
+  # System prompt file configuration — loads system prompt from a file path
+  class SystemPromptFile
+    attr_accessor :type, :path
+
+    def initialize(path:)
+      @type = 'file'
+      @path = path
+    end
+
+    def to_h
+      { type: @type, path: @path }
+    end
+  end
+
   # System prompt preset configuration
   class SystemPromptPreset
     attr_accessor :type, :preset, :append

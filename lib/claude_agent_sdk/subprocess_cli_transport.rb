@@ -74,13 +74,18 @@ module ClaudeAgentSDK
         cmd.concat(['--system-prompt', ''])
       elsif @options.system_prompt.is_a?(String)
         cmd.concat(['--system-prompt', @options.system_prompt])
+      elsif @options.system_prompt.is_a?(SystemPromptFile)
+        cmd.concat(['--system-prompt-file', @options.system_prompt.path])
       elsif @options.system_prompt.is_a?(SystemPromptPreset)
         # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
         # Only --append-system-prompt is passed if append text is provided
         cmd.concat(['--append-system-prompt', @options.system_prompt.append]) if @options.system_prompt.append
       elsif @options.system_prompt.is_a?(Hash)
         prompt_type = @options.system_prompt[:type] || @options.system_prompt['type']
-        if prompt_type == 'preset'
+        if prompt_type == 'file'
+          prompt_path = @options.system_prompt[:path] || @options.system_prompt['path']
+          cmd.concat(['--system-prompt-file', prompt_path]) if prompt_path
+        elsif prompt_type == 'preset'
           append = @options.system_prompt[:append] || @options.system_prompt['append']
           # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
           cmd.concat(['--append-system-prompt', append]) if append
