@@ -154,11 +154,11 @@ module ClaudeAgentSDK
       if fork_title.nil? || fork_title.empty?
         head = content[0, Sessions::LITE_READ_BUF_SIZE] || ''
         tail = content.length > Sessions::LITE_READ_BUF_SIZE ? content[-Sessions::LITE_READ_BUF_SIZE..] : head
-        base = Sessions.send(:extract_json_string_field, tail, 'customTitle', last: true) ||
-               Sessions.send(:extract_json_string_field, head, 'customTitle', last: true) ||
-               Sessions.send(:extract_json_string_field, tail, 'aiTitle', last: true) ||
-               Sessions.send(:extract_json_string_field, head, 'aiTitle', last: true) ||
-               Sessions.send(:extract_first_prompt_from_head, head) ||
+        base = Sessions.extract_json_string_field(tail, 'customTitle', last: true) ||
+               Sessions.extract_json_string_field(head, 'customTitle', last: true) ||
+               Sessions.extract_json_string_field(tail, 'aiTitle', last: true) ||
+               Sessions.extract_json_string_field(head, 'aiTitle', last: true) ||
+               Sessions.extract_first_prompt_from_head(head) ||
                'Forked session'
         fork_title = "#{base} (fork)"
       end
@@ -201,7 +201,11 @@ module ClaudeAgentSDK
       result = try_project_dir(file_name, Sessions.find_project_dir(path))
       return result if result
 
-      worktree_paths = Sessions.detect_worktrees(path) rescue [] # rubocop:disable Style/RescueModifier
+      worktree_paths = begin
+        Sessions.detect_worktrees(path)
+      rescue Errno::ENOENT, Errno::EACCES
+        []
+      end
       worktree_paths.each do |wt_path|
         next if wt_path == path
 
@@ -264,7 +268,9 @@ module ClaudeAgentSDK
       # Only update timestamp on the last message
       timestamp = index == total - 1 ? now : (original['timestamp'] || now)
 
-      # Remap logicalParentUuid
+      # Remap logicalParentUuid — unlike parentUuid (which walks the chain and nils on miss),
+      # logicalParentUuid preserves the original UUID when unmapped because it may reference
+      # a message outside the forked range (e.g., a prior conversation branch).
       logical_parent = original['logicalParentUuid']
       new_logical_parent = logical_parent ? (uuid_mapping[logical_parent] || logical_parent) : logical_parent
 
