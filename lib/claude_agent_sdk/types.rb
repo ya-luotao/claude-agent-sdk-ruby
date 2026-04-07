@@ -2,7 +2,7 @@
 
 module ClaudeAgentSDK
   # Type constants for permission modes
-  PERMISSION_MODES = %w[default acceptEdits plan bypassPermissions].freeze
+  PERMISSION_MODES = %w[default acceptEdits plan bypassPermissions dontAsk auto].freeze
 
   # Type constants for setting sources
   SETTING_SOURCES = %w[user project local].freeze
