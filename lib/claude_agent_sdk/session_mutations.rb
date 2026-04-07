@@ -73,8 +73,10 @@ module ClaudeAgentSDK
     def delete_session(session_id:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
 
-      path = find_session_file_for_mutation(session_id, directory)
-      raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}" unless path
+      result = find_session_file_with_dir(session_id, directory)
+      raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}" unless result
+
+      path = result[0]
 
       begin
         File.delete(path)
@@ -168,12 +170,17 @@ module ClaudeAgentSDK
                              })
 
       fork_path = File.join(project_dir, "#{forked_session_id}.jsonl")
+      io = nil
       fd = IO.sysopen(fork_path, File::WRONLY | File::CREAT | File::EXCL, 0o600)
       begin
         io = IO.new(fd)
         io.write("#{lines.join("\n")}\n")
       ensure
-        io&.close
+        if io
+          io.close
+        else
+          IO.for_fd(fd).close rescue nil # rubocop:disable Style/RescueModifier
+        end
       end
 
       ForkSessionResult.new(session_id: forked_session_id)
@@ -259,7 +266,7 @@ module ClaudeAgentSDK
 
       # Remap logicalParentUuid
       logical_parent = original['logicalParentUuid']
-      new_logical_parent = logical_parent ? uuid_mapping[logical_parent] : logical_parent
+      new_logical_parent = logical_parent ? (uuid_mapping[logical_parent] || logical_parent) : logical_parent
 
       forked = original.merge(
         'uuid' => new_uuid,
@@ -284,47 +291,6 @@ module ClaudeAgentSDK
 
         parent_id = parent['parentUuid']
       end
-      nil
-    end
-
-    # Locate the JSONL file for a session (used by delete).
-    # Returns the full path or nil.
-    def find_session_file_for_mutation(session_id, directory)
-      file_name = "#{session_id}.jsonl"
-
-      if directory
-        path = File.realpath(directory).unicode_normalize(:nfc)
-        project_dir = Sessions.find_project_dir(path)
-        if project_dir
-          candidate = File.join(project_dir, file_name)
-          return candidate if File.exist?(candidate)
-        end
-
-        # Worktree fallback
-        begin
-          worktree_paths = Sessions.detect_worktrees(path)
-        rescue StandardError
-          worktree_paths = []
-        end
-        worktree_paths.each do |wt_path|
-          next if wt_path == path
-
-          wt_project_dir = Sessions.find_project_dir(wt_path)
-          next unless wt_project_dir
-
-          candidate = File.join(wt_project_dir, file_name)
-          return candidate if File.exist?(candidate)
-        end
-      else
-        projects_dir = File.join(Sessions.config_dir, 'projects')
-        return nil unless File.directory?(projects_dir)
-
-        Dir.children(projects_dir).each do |child|
-          candidate = File.join(projects_dir, child, file_name)
-          return candidate if File.exist?(candidate)
-        end
-      end
-
       nil
     end
 
@@ -422,7 +388,7 @@ module ClaudeAgentSDK
       'Other'
     end
 
-    private_class_method :find_session_file_for_mutation, :find_session_file_with_dir,
+    private_class_method :find_session_file_with_dir,
                          :find_in_directory, :try_project_dir, :find_in_all_projects,
                          :parse_fork_transcript, :build_forked_entry, :resolve_parent_uuid,
                          :append_to_session, :append_to_session_in_directory,

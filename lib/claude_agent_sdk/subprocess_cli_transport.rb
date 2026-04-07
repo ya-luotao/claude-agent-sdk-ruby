@@ -111,7 +111,11 @@ module ClaudeAgentSDK
 
       # Task budget (API-side token budget)
       if @options.task_budget
-        total = @options.task_budget.is_a?(TaskBudget) ? @options.task_budget.total : @options.task_budget[:total]
+        total = if @options.task_budget.is_a?(TaskBudget)
+                  @options.task_budget.total
+                else
+                  @options.task_budget[:total] || @options.task_budget['total']
+                end
         cmd.concat(['--task-budget', total.to_s]) if total
       end
 
