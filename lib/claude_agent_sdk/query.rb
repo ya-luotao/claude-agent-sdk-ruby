@@ -25,13 +25,15 @@ module ClaudeAgentSDK
     STREAM_CLOSE_TIMEOUT_ENV_VAR = 'CLAUDE_CODE_STREAM_CLOSE_TIMEOUT'
     DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS = 60.0
 
-    def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil)
+    def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
+                   exclude_dynamic_sections: nil)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
       @hooks = hooks || {}
       @sdk_mcp_servers = sdk_mcp_servers || {}
       @agents = agents
+      @exclude_dynamic_sections = exclude_dynamic_sections
 
       # Control protocol state
       @pending_control_responses = {}
@@ -109,6 +111,7 @@ module ClaudeAgentSDK
         hooks: hooks_config.empty? ? nil : hooks_config,
         agents: agents_dict
       }
+      request[:excludeDynamicSections] = @exclude_dynamic_sections unless @exclude_dynamic_sections.nil?
 
       response = send_control_request(request)
       @initialized = true

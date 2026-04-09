@@ -1735,17 +1735,19 @@ module ClaudeAgentSDK
 
   # System prompt preset configuration
   class SystemPromptPreset
-    attr_accessor :type, :preset, :append
+    attr_accessor :type, :preset, :append, :exclude_dynamic_sections
 
-    def initialize(preset:, append: nil)
+    def initialize(preset:, append: nil, exclude_dynamic_sections: nil)
       @type = 'preset'
       @preset = preset
       @append = append
+      @exclude_dynamic_sections = exclude_dynamic_sections
     end
 
     def to_h
       result = { type: @type, preset: @preset }
       result[:append] = @append if @append
+      result[:exclude_dynamic_sections] = @exclude_dynamic_sections unless @exclude_dynamic_sections.nil?
       result
     end
   end

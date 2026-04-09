@@ -120,8 +120,7 @@ module ClaudeAgentSDK
       end
 
       # Thinking configuration (takes precedence over deprecated max_thinking_tokens)
-      thinking_tokens = resolve_thinking_tokens
-      cmd.concat(['--max-thinking-tokens', thinking_tokens.to_s]) unless thinking_tokens.nil?
+      build_thinking_args(cmd)
 
       # Effort level (valid values: low, medium, high, max)
       cmd.concat(['--effort', @options.effort.to_s]) if @options.effort
@@ -494,8 +493,6 @@ module ClaudeAgentSDK
       @ready
     end
 
-    DEFAULT_ADAPTIVE_THINKING_TOKENS = 32_000
-
     private
 
     def build_settings_args(cmd)
@@ -599,18 +596,18 @@ module ClaudeAgentSDK
       JSON.parse(File.read(path))
     end
 
-    def resolve_thinking_tokens
+    def build_thinking_args(cmd)
       if @options.thinking
         case @options.thinking
         when ThinkingConfigAdaptive
-          DEFAULT_ADAPTIVE_THINKING_TOKENS
+          cmd.concat(['--thinking', 'adaptive'])
         when ThinkingConfigEnabled
-          @options.thinking.budget_tokens
+          cmd.concat(['--max-thinking-tokens', @options.thinking.budget_tokens.to_s])
         when ThinkingConfigDisabled
-          0
+          cmd.concat(['--thinking', 'disabled'])
         end
       elsif @options.max_thinking_tokens
-        @options.max_thinking_tokens
+        cmd.concat(['--max-thinking-tokens', @options.max_thinking_tokens.to_s])
       end
     end
   end

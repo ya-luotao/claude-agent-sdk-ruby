@@ -80,7 +80,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(cmd).not_to include('--agents')
     end
 
-    it 'passes --max-thinking-tokens for ThinkingConfigAdaptive' do
+    it 'passes --thinking adaptive for ThinkingConfigAdaptive' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
         thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new
@@ -89,9 +89,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       transport = described_class.new('hi', options)
       cmd = transport.build_command
 
-      idx = cmd.index('--max-thinking-tokens')
+      idx = cmd.index('--thinking')
       expect(idx).not_to be_nil
-      expect(cmd[idx + 1]).to eq('32000')
+      expect(cmd[idx + 1]).to eq('adaptive')
+      expect(cmd).not_to include('--max-thinking-tokens')
     end
 
     it 'passes --max-thinking-tokens for ThinkingConfigEnabled' do
@@ -106,9 +107,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       idx = cmd.index('--max-thinking-tokens')
       expect(idx).not_to be_nil
       expect(cmd[idx + 1]).to eq('50000')
+      expect(cmd).not_to include('--thinking')
     end
 
-    it 'passes --max-thinking-tokens 0 for ThinkingConfigDisabled' do
+    it 'passes --thinking disabled for ThinkingConfigDisabled' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
         thinking: ClaudeAgentSDK::ThinkingConfigDisabled.new
@@ -117,24 +119,26 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       transport = described_class.new('hi', options)
       cmd = transport.build_command
 
-      idx = cmd.index('--max-thinking-tokens')
+      idx = cmd.index('--thinking')
       expect(idx).not_to be_nil
-      expect(cmd[idx + 1]).to eq('0')
+      expect(cmd[idx + 1]).to eq('disabled')
+      expect(cmd).not_to include('--max-thinking-tokens')
     end
 
     it 'thinking takes precedence over deprecated max_thinking_tokens' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
-        thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 10_000),
+        thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new,
         max_thinking_tokens: 99_999
       )
 
       transport = described_class.new('hi', options)
       cmd = transport.build_command
 
-      idx = cmd.index('--max-thinking-tokens')
+      idx = cmd.index('--thinking')
       expect(idx).not_to be_nil
-      expect(cmd[idx + 1]).to eq('10000')
+      expect(cmd[idx + 1]).to eq('adaptive')
+      expect(cmd).not_to include('--max-thinking-tokens')
     end
 
     it 'falls back to max_thinking_tokens when thinking is nil' do
