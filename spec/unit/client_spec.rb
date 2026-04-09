@@ -276,6 +276,76 @@ RSpec.describe ClaudeAgentSDK::Client do
     end
   end
 
+  context 'with exclude_dynamic_sections' do
+    let(:transport) { instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil) }
+    let(:query_handler) { instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true) }
+
+    before do
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    end
+
+    it 'passes exclude_dynamic_sections from SystemPromptPreset to Query' do
+      received_kwargs = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        received_kwargs = kwargs
+        query_handler
+      end
+
+      preset = ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', exclude_dynamic_sections: true)
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: preset)
+      client = described_class.new(options: options)
+      client.connect
+
+      expect(received_kwargs[:exclude_dynamic_sections]).to eq(true)
+    end
+
+    it 'passes exclude_dynamic_sections from Hash with symbol keys to Query' do
+      received_kwargs = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        received_kwargs = kwargs
+        query_handler
+      end
+
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        system_prompt: { type: 'preset', preset: 'claude_code', exclude_dynamic_sections: true }
+      )
+      client = described_class.new(options: options)
+      client.connect
+
+      expect(received_kwargs[:exclude_dynamic_sections]).to eq(true)
+    end
+
+    it 'handles false correctly from Hash with symbol keys' do
+      received_kwargs = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        received_kwargs = kwargs
+        query_handler
+      end
+
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        system_prompt: { type: 'preset', preset: 'claude_code', exclude_dynamic_sections: false }
+      )
+      client = described_class.new(options: options)
+      client.connect
+
+      expect(received_kwargs[:exclude_dynamic_sections]).to eq(false)
+    end
+
+    it 'passes nil when system_prompt is a plain string' do
+      received_kwargs = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        received_kwargs = kwargs
+        query_handler
+      end
+
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: 'You are a helper')
+      client = described_class.new(options: options)
+      client.connect
+
+      expect(received_kwargs[:exclude_dynamic_sections]).to be_nil
+    end
+  end
+
   context 'with default configuration' do
     after { ClaudeAgentSDK.reset_configuration }
 

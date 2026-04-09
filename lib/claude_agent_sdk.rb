@@ -540,7 +540,7 @@ module ClaudeAgentSDK
       elsif system_prompt.is_a?(Hash)
         type = system_prompt[:type] || system_prompt['type']
         if type == 'preset'
-          eds = system_prompt[:exclude_dynamic_sections] || system_prompt['exclude_dynamic_sections']
+          eds = system_prompt.fetch(:exclude_dynamic_sections) { system_prompt['exclude_dynamic_sections'] }
           return eds if [true, false].include?(eds)
         end
       end
