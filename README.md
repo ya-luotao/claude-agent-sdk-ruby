@@ -106,7 +106,7 @@ Add this line to your application's Gemfile:
 gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'
 
 # Or use a stable version from RubyGems
-gem 'claude-agent-sdk', '~> 0.13.1'
+gem 'claude-agent-sdk', '~> 0.14.1'
 ```
 
 And then execute:
