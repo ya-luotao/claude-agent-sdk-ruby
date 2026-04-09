@@ -724,12 +724,12 @@ For complete examples, see [examples/structured_output_example.rb](examples/stru
 Control extended thinking behavior with typed configuration objects. The `thinking` option takes precedence over the deprecated `max_thinking_tokens`.
 
 ```ruby
-# Adaptive thinking — uses a default budget of 32,000 tokens
+# Adaptive thinking — CLI dynamically adjusts budget based on task complexity
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new
 )
 
-# Enabled thinking with custom budget
+# Enabled thinking with explicit token budget
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 50_000)
 )
@@ -749,6 +749,22 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 ```
 
 > **Note:** When `system_prompt` is `nil` (the default), the SDK passes `--system-prompt ""` to the CLI, which suppresses the default Claude Code system prompt. To use the default system prompt, use a `SystemPromptPreset`.
+
+### Cross-User Prompt Caching
+
+When running a multi-user fleet with shared preset prompts, enable `exclude_dynamic_sections` to make the system prompt byte-identical across users for prompt-caching hits:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  system_prompt: ClaudeAgentSDK::SystemPromptPreset.new(
+    preset: 'claude_code',
+    append: '...your shared domain instructions...',
+    exclude_dynamic_sections: true
+  )
+)
+```
+
+When set, the CLI strips per-user dynamic sections (working directory, auto-memory, git status) from the system prompt and re-injects them into the first user message instead. Older CLIs silently ignore this option.
 
 ## Budget Control
 
@@ -1565,9 +1581,9 @@ end
 | `PermissionResultAllow` | Permission callback result to allow tool use |
 | `PermissionResultDeny` | Permission callback result to deny tool use |
 | `AgentDefinition` | Agent definition with description, prompt, tools, model, skills, memory, mcp_servers |
-| `ThinkingConfigAdaptive` | Adaptive thinking mode (32,000 token default budget) |
+| `ThinkingConfigAdaptive` | Adaptive thinking mode (CLI dynamically adjusts budget) |
 | `ThinkingConfigEnabled` | Enabled thinking with explicit `budget_tokens` |
-| `ThinkingConfigDisabled` | Disabled thinking (0 tokens) |
+| `ThinkingConfigDisabled` | Disabled thinking |
 | `SdkMcpTool` | SDK MCP tool definition with name, description, input_schema, handler, annotations |
 | `McpStdioServerConfig` | MCP server config for stdio transport |
 | `McpSSEServerConfig` | MCP server config for SSE transport |
