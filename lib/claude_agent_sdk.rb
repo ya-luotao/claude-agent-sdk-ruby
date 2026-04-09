@@ -340,6 +340,10 @@ module ClaudeAgentSDK
       # Convert hooks to internal format
       hooks = convert_hooks_to_internal_format(configured_options.hooks) if configured_options.hooks
 
+      # Extract exclude_dynamic_sections from preset system prompt for the
+      # initialize request (older CLIs ignore unknown initialize fields)
+      exclude_dynamic_sections = extract_exclude_dynamic_sections(configured_options.system_prompt)
+
       # Create Query handler
       @query_handler = Query.new(
         transport: @transport,
@@ -347,7 +351,8 @@ module ClaudeAgentSDK
         can_use_tool: configured_options.can_use_tool,
         hooks: hooks,
         sdk_mcp_servers: sdk_mcp_servers,
-        agents: configured_options.agents
+        agents: configured_options.agents,
+        exclude_dynamic_sections: exclude_dynamic_sections
       )
 
       # Start query handler and initialize
@@ -526,6 +531,20 @@ module ClaudeAgentSDK
         end
       end
       internal_hooks
+    end
+
+    def extract_exclude_dynamic_sections(system_prompt)
+      if system_prompt.is_a?(SystemPromptPreset)
+        eds = system_prompt.exclude_dynamic_sections
+        return eds if [true, false].include?(eds)
+      elsif system_prompt.is_a?(Hash)
+        type = system_prompt[:type] || system_prompt['type']
+        if type == 'preset'
+          eds = system_prompt.fetch(:exclude_dynamic_sections) { system_prompt['exclude_dynamic_sections'] }
+          return eds if [true, false].include?(eds)
+        end
+      end
+      nil
     end
   end
 end

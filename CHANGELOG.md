@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-04-09
+
+### Fixed
+- **Thinking configuration**: Use `--thinking adaptive` / `--thinking disabled` CLI flags instead of mapping to `--max-thinking-tokens`. Previously, `ThinkingConfigAdaptive` was mapped to `--max-thinking-tokens 32000` (fixed budget) and `ThinkingConfigDisabled` to `--max-thinking-tokens 0`, which put the CLI into the wrong mode. Only `ThinkingConfigEnabled` now uses `--max-thinking-tokens`. (Parity with [Python SDK #796](https://github.com/anthropics/claude-agent-sdk-python/pull/796))
+
+### Added
+- **`exclude_dynamic_sections`** on `SystemPromptPreset`: When set to `true`, the CLI strips per-user dynamic sections (working directory, auto-memory, git status) from the preset system prompt and re-injects them into the first user message. This makes the system prompt byte-identical across users, enabling cross-user prompt-caching hits. Sent via `excludeDynamicSections` in the initialize control message; older CLIs silently ignore it. (Parity with [Python SDK #797](https://github.com/anthropics/claude-agent-sdk-python/pull/797))
+
 ## [0.14.0] - 2026-04-08 — Python SDK v0.1.51–0.1.56 Parity
 
 ### Added

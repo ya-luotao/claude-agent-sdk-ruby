@@ -22,14 +22,14 @@ Notes:
 
 ## Core knobs
 
-- `system_prompt`: Set an overall instruction as a string, or use `ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: '...')` to extend a preset prompt.
+- `system_prompt`: Set an overall instruction as a string, use `ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: '...', exclude_dynamic_sections: true)` to extend a preset (with optional cross-user caching), or use `ClaudeAgentSDK::SystemPromptFile.new(path: '/path/to/prompt.txt')` to load from a file.
 - `model`: Select the model.
 - `fallback_model`: Use when the primary model is unavailable.
 - `max_turns`: Cap the number of turns.
 - `max_budget_usd`: Cap total spend (USD).
 - `include_partial_messages`: Include partial assistant messages in the stream when supported.
 - `cwd`: Run Claude Code in a specific working directory.
-- `max_thinking_tokens`: Stored for API parity, but not currently passed through to Claude CLI.
+- `max_thinking_tokens`: Deprecated — use `thinking:` instead (`ThinkingConfigAdaptive`, `ThinkingConfigEnabled`, or `ThinkingConfigDisabled`). Falls back to `--max-thinking-tokens` when `thinking` is unset.
 
 ## Tools and permissions
 

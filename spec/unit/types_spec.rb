@@ -1318,6 +1318,25 @@ RSpec.describe ClaudeAgentSDK do
 
         expect(hash.key?(:append)).to eq(false)
       end
+
+      it 'stores exclude_dynamic_sections' do
+        preset = described_class.new(preset: 'claude_code', exclude_dynamic_sections: true)
+        expect(preset.exclude_dynamic_sections).to eq(true)
+      end
+
+      it 'includes exclude_dynamic_sections in to_h when set' do
+        preset = described_class.new(preset: 'claude_code', exclude_dynamic_sections: true)
+        hash = preset.to_h
+
+        expect(hash[:exclude_dynamic_sections]).to eq(true)
+      end
+
+      it 'omits exclude_dynamic_sections from to_h when nil' do
+        preset = described_class.new(preset: 'claude_code')
+        hash = preset.to_h
+
+        expect(hash.key?(:exclude_dynamic_sections)).to eq(false)
+      end
     end
 
     describe 'ClaudeAgentOptions new options' do
