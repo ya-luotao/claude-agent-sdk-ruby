@@ -1750,3 +1750,14 @@ After checking out the repo, run `bundle install` to install dependencies. Then,
 ## License
 
 The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=ya-luotao%2Fclaude-agent-sdk-ruby&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ya-luotao/claude-agent-sdk-ruby&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ya-luotao/claude-agent-sdk-ruby&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ya-luotao/claude-agent-sdk-ruby&type=date&legend=top-left" />
+ </picture>
+</a>
