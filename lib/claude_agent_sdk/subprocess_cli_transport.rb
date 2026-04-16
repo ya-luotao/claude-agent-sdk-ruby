@@ -122,7 +122,9 @@ module ClaudeAgentSDK
       # Thinking configuration (takes precedence over deprecated max_thinking_tokens)
       build_thinking_args(cmd)
 
-      # Effort level (valid values: low, medium, high, max)
+      # Effort level — see ClaudeAgentSDK::EFFORT_LEVELS. The set of supported
+      # levels is model-dependent; the CLI falls back to the highest supported
+      # level at or below the one requested (e.g. `xhigh` → `high` on Opus 4.6).
       cmd.concat(['--effort', @options.effort.to_s]) if @options.effort
 
       # Betas option for enabling experimental features

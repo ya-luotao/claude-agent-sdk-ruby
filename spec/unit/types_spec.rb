@@ -3,6 +3,13 @@
 require 'spec_helper'
 
 RSpec.describe ClaudeAgentSDK do
+  describe 'Module constants' do
+    it 'exposes EFFORT_LEVELS' do
+      expect(ClaudeAgentSDK::EFFORT_LEVELS).to eq(%w[low medium high xhigh max])
+      expect(ClaudeAgentSDK::EFFORT_LEVELS).to be_frozen
+    end
+  end
+
   describe 'Type Classes' do
     describe ClaudeAgentSDK::TextBlock do
       it 'stores text content' do
@@ -1410,6 +1417,11 @@ RSpec.describe ClaudeAgentSDK do
       it 'accepts effort option' do
         options = ClaudeAgentSDK::ClaudeAgentOptions.new(effort: 'high')
         expect(options.effort).to eq('high')
+      end
+
+      it 'accepts xhigh effort level' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(effort: 'xhigh')
+        expect(options.effort).to eq('xhigh')
       end
 
       it 'accepts bare option' do
