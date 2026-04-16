@@ -306,6 +306,7 @@ module ClaudeAgentSDK
     # @param include_worktrees [Boolean] Whether to include git worktree sessions
     # @return [Array<SDKSessionInfo>] Sessions sorted by last_modified descending
     def list_sessions(directory: nil, limit: nil, offset: 0, include_worktrees: true)
+      offset ||= 0
       sessions = if directory
                    list_sessions_for_directory(directory, include_worktrees)
                  else
@@ -353,6 +354,8 @@ module ClaudeAgentSDK
     # @return [Array<SessionMessage>] Ordered messages from the session
     def get_session_messages(session_id:, directory: nil, limit: nil, offset: 0)
       return [] unless session_id.match?(UUID_RE)
+
+      offset ||= 0
 
       file_path = find_session_file(session_id, directory)
       return [] unless file_path && File.exist?(file_path)
