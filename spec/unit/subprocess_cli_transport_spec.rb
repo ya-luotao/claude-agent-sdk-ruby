@@ -413,6 +413,30 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
   end
 
+  describe '#wait_process_with_timeout' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+
+    it 'returns the process value when the process exits within the timeout' do
+      process = double('Process::Waiter', pid: 1234)
+      allow(process).to receive(:alive?).and_return(true, false)
+      allow(process).to receive(:value).and_return(:exited)
+
+      transport.instance_variable_set(:@process, process)
+
+      expect(transport.send(:wait_process_with_timeout, 1)).to eq(:exited)
+    end
+
+    it 'raises Timeout::Error when the process stays alive past the deadline' do
+      process = double('Process::Waiter', pid: 1234)
+      allow(process).to receive(:alive?).and_return(true)
+
+      transport.instance_variable_set(:@process, process)
+
+      expect { transport.send(:wait_process_with_timeout, 0.1) }.to raise_error(Timeout::Error)
+    end
+  end
+
   describe 'environment variable handling' do
     it 'converts symbol keys in env to strings for spawn compatibility' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(

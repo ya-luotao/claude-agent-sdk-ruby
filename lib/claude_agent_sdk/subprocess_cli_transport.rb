@@ -344,15 +344,12 @@ module ClaudeAgentSDK
       # EOF on stdin. Without this grace period, SIGTERM can interrupt the
       # write and cause the last assistant message to be lost.
       begin
-        if @process.alive?
-          # Give the process up to 5 seconds to exit on its own
-          Timeout.timeout(5) { @process.value }
-        end
+        wait_process_with_timeout(5) if @process.alive?
       rescue Timeout::Error
         # Graceful shutdown timed out — send SIGTERM
         begin
           Process.kill('TERM', @process.pid)
-          Timeout.timeout(2) { @process.value }
+          wait_process_with_timeout(2)
         rescue Timeout::Error
           # SIGTERM didn't work — force kill
           begin
@@ -381,6 +378,22 @@ module ClaudeAgentSDK
       @stderr = nil
       @stderr_task = nil
       @exit_error = nil
+    end
+
+    # Wait for the spawned process to exit, up to +timeout_seconds+. Polls
+    # @process.alive? rather than using stdlib Timeout.timeout, which raises
+    # across threads via Thread#raise and corrupts Async fiber-scheduler state
+    # (close is always called inside an Async task). Yields to the current
+    # Async task when one is active so the reactor keeps running.
+    def wait_process_with_timeout(timeout_seconds)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
+      task = defined?(Async::Task) ? Async::Task.current? : nil
+      while @process.alive?
+        raise Timeout::Error if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        task ? task.sleep(0.05) : sleep(0.05)
+      end
+      @process.value
     end
 
     def write(data)
