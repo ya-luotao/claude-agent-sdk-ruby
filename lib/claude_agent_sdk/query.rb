@@ -162,14 +162,17 @@ module ClaudeAgentSDK
           handle_control_response(message)
         when 'control_request'
           request_id = message[:request_id] || message[:requestId]
-          task = Async do
+          # Spawn as a child of the current task so @task.stop cascades and
+          # nothing keeps running after close; bare Async do may root at the
+          # reactor and leak past shutdown.
+          handler_task = Async::Task.current.async do
             begin
               handle_control_request(message)
             ensure
               @inflight_control_request_tasks.delete(request_id) if request_id
             end
           end
-          @inflight_control_request_tasks[request_id] = task if request_id
+          @inflight_control_request_tasks[request_id] = handler_task if request_id
         when 'control_cancel_request'
           request_id = message[:request_id] || message[:requestId]
           task = request_id ? @inflight_control_request_tasks[request_id] : nil
