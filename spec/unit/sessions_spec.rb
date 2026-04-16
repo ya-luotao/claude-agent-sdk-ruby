@@ -23,6 +23,13 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       expect(result).to be_a(String)
       expect(result.length).to be > 0
     end
+
+    it 'uses UTF-16 code units so supplementary chars match JS charCodeAt' do
+      # '😀' (U+1F600) encodes as UTF-16 surrogate pair D83D DE00 (55357, 56832).
+      # A codepoint-based implementation would hash the single value 128512 and
+      # produce a different result.
+      expect(described_class.simple_hash('😀')).to eq('11zz7')
+    end
   end
 
   describe '.sanitize_path' do

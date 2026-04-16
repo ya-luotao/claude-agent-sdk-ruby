@@ -58,11 +58,13 @@ module ClaudeAgentSDK
 
     module_function
 
-    # Match TypeScript's simpleHash: signed 32-bit integer, base-36 output
+    # Match TypeScript's simpleHash: signed 32-bit integer, base-36 output.
+    # JS's charCodeAt returns UTF-16 code units, so supplementary characters
+    # (emoji, CJK extensions) emit two surrogate code units — iterate over
+    # UTF-16LE shorts instead of Unicode codepoints to preserve parity.
     def simple_hash(str)
       h = 0
-      str.each_char do |ch|
-        char_code = ch.ord
+      str.encode('UTF-16LE').unpack('v*').each do |char_code|
         h = ((h << 5) - h + char_code) & 0xFFFFFFFF
         h -= 0x100000000 if h >= 0x80000000
       end
