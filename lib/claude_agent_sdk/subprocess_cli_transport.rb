@@ -12,6 +12,7 @@ module ClaudeAgentSDK
   class SubprocessCLITransport < Transport
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
+    EXTRA_ARG_FLAG_RE = /\A[a-z0-9][a-z0-9-]*\z/
 
     def initialize(options_or_prompt = nil, options = nil)
       # Support both new single-arg form and legacy two-arg form
@@ -166,10 +167,15 @@ module ClaudeAgentSDK
 
       # Extra args
       @options.extra_args.each do |flag, value|
+        flag_str = flag.to_s
+        unless EXTRA_ARG_FLAG_RE.match?(flag_str)
+          raise ArgumentError, "Invalid extra_args flag name: #{flag.inspect} (expected lowercase kebab-case)"
+        end
+
         if value.nil?
-          cmd << "--#{flag}"
+          cmd << "--#{flag_str}"
         else
-          cmd.concat(["--#{flag}", value.to_s])
+          cmd.concat(["--#{flag_str}", value.to_s])
         end
       end
 

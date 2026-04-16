@@ -101,6 +101,41 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(cmd).not_to include('--agents')
     end
 
+    it 'passes valid extra_args flags as --flag value' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        extra_args: { 'debug-to-stderr' => nil, 'custom-flag' => 'value' }
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--debug-to-stderr')
+      expect(cmd).to include('--custom-flag', 'value')
+    end
+
+    it 'rejects extra_args keys that contain spaces or invalid characters' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        extra_args: { 'permission-mode bypassPermissions' => nil }
+      )
+
+      transport = described_class.new('hi', options)
+
+      expect { transport.build_command }.to raise_error(ArgumentError, /Invalid extra_args flag name/)
+    end
+
+    it 'rejects extra_args keys that are empty or start with --' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        extra_args: { '--permission-mode' => 'bypassPermissions' }
+      )
+
+      transport = described_class.new('hi', options)
+
+      expect { transport.build_command }.to raise_error(ArgumentError, /Invalid extra_args flag name/)
+    end
+
     it 'passes --thinking adaptive for ThinkingConfigAdaptive' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
