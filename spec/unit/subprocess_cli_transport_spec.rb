@@ -64,6 +64,27 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(cmd).to include('--input-format', 'stream-json')
     end
 
+    it 'omits --setting-sources when setting_sources is nil' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).not_to include('--setting-sources')
+    end
+
+    it 'emits --setting-sources joined by commas when set' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        setting_sources: %w[user project]
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--setting-sources', 'user,project')
+    end
+
     it 'does not include --agents in CLI args' do
       agent = ClaudeAgentSDK::AgentDefinition.new(
         description: 'Test agent',

@@ -160,8 +160,9 @@ module ClaudeAgentSDK
       build_plugins_args(cmd)
 
       # Setting sources
-      sources_value = @options.setting_sources ? @options.setting_sources.join(',') : ''
-      cmd.concat(['--setting-sources', sources_value])
+      if @options.setting_sources
+        cmd.concat(['--setting-sources', @options.setting_sources.join(',')])
+      end
 
       # Extra args
       @options.extra_args.each do |flag, value|
