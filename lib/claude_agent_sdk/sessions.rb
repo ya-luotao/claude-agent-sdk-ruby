@@ -1,9 +1,8 @@
 # frozen_string_literal: true
 
-require 'English'
 require 'json'
+require 'open3'
 require 'pathname'
-require 'shellwords'
 
 module ClaudeAgentSDK
   # Session info returned by list_sessions
@@ -442,8 +441,8 @@ module ClaudeAgentSDK
     end
 
     def detect_worktrees(path)
-      output = `git -C #{Shellwords.escape(path)} worktree list --porcelain 2>/dev/null`
-      return [path] unless $CHILD_STATUS.success?
+      output, _err, status = Open3.capture3('git', '-C', path, 'worktree', 'list', '--porcelain')
+      return [path] unless status.success?
 
       paths = output.lines.filter_map do |line|
         line.strip.delete_prefix('worktree ') if line.start_with?('worktree ')
