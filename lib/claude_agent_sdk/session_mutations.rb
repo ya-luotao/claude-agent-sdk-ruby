@@ -413,7 +413,7 @@ module ClaudeAgentSDK
 
     private_class_method :find_session_file_with_dir,
                          :find_in_directory, :try_project_dir, :find_in_all_projects,
-                         :parse_fork_transcript, :build_forked_entry, :resolve_parent_uuid,
+                         :parse_fork_transcript, :derive_fork_title, :build_forked_entry, :resolve_parent_uuid,
                          :append_to_session, :append_to_session_in_directory,
                          :append_to_session_global, :try_append, :sanitize_unicode, :unicode_category
   end
