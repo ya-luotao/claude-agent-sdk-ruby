@@ -111,8 +111,9 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 10_000)
 )
 
-# Effort level
-options = ClaudeAgentSDK::ClaudeAgentOptions.new(effort: 'high')
+# Effort level — see ClaudeAgentSDK::EFFORT_LEVELS
+# ('low', 'medium', 'high', 'xhigh', 'max'; model-dependent)
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(effort: 'xhigh')
 ```
 
 Full sandbox configuration:

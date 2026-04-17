@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`EFFORT_LEVELS` constant** exposing `%w[low medium high xhigh max]`. Consumers can reference `ClaudeAgentSDK::EFFORT_LEVELS` for validation instead of hard-coding the list.
+- **`xhigh` effort level**: documented in the SDK to match the Claude Code CLI (2.1.111+). Supported on Opus 4.7; the CLI auto-falls-back to the highest supported level on older models (e.g. `xhigh` → `high` on Opus 4.6).
+
+### Changed
+- Inline comments and README updated to reference `ClaudeAgentSDK::EFFORT_LEVELS` rather than a stale hard-coded level list.
+
 ## [0.14.1] - 2026-04-09
 
 ### Fixed

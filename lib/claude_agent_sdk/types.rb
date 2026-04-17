@@ -7,6 +7,12 @@ module ClaudeAgentSDK
   # Type constants for setting sources
   SETTING_SOURCES = %w[user project local].freeze
 
+  # Effort levels for `ClaudeAgentOptions#effort`. The CLI (Claude Code 2.1.111+)
+  # accepts these values; the set of *supported* levels is model-dependent
+  # (e.g. `xhigh` is only supported on Opus 4.7 and falls back to `high` on
+  # Opus 4.6 / Sonnet 4.6). An Integer is also accepted and forwarded verbatim.
+  EFFORT_LEVELS = %w[low medium high xhigh max].freeze
+
   # Type constants for permission update destinations
   PERMISSION_UPDATE_DESTINATIONS = %w[userSettings projectSettings localSettings session].freeze
 
@@ -620,7 +626,7 @@ module ClaudeAgentSDK
       @initial_prompt = initial_prompt # Initial prompt sent when agent starts
       @max_turns = max_turns # Maximum conversation turns for the agent
       @background = background # Whether this agent runs in background
-      @effort = effort # "low", "medium", "high", "max", or Integer
+      @effort = effort # See ClaudeAgentSDK::EFFORT_LEVELS or an Integer
       @permission_mode = permission_mode # Permission mode for the agent
     end
   end
