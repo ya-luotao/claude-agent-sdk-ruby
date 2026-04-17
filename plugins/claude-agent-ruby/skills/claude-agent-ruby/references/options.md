@@ -27,6 +27,8 @@ Notes:
 - `fallback_model`: Use when the primary model is unavailable.
 - `max_turns`: Cap the number of turns.
 - `max_budget_usd`: Cap total spend (USD).
+- `task_budget`: API-side token budget — `ClaudeAgentSDK::TaskBudget.new(total: 50000)` or `{ total: 50000 }`. The model paces tool use and wraps up before the limit.
+- `session_id`: Specify a custom session ID upfront (string).
 - `include_partial_messages`: Include partial assistant messages in the stream when supported.
 - `cwd`: Run Claude Code in a specific working directory.
 - `max_thinking_tokens`: Deprecated — use `thinking:` instead (`ThinkingConfigAdaptive`, `ThinkingConfigEnabled`, or `ThinkingConfigDisabled`). Falls back to `--max-thinking-tokens` when `thinking` is unset.
@@ -37,7 +39,7 @@ Notes:
 - `allowed_tools`: Explicit allow-list (examples: `Read`, `Write`, `Edit`, `Bash`, and `mcp__name__tool`).
 - `append_allowed_tools`: Append to tool allow-list without replacing it.
 - `disallowed_tools`: Explicit block-list.
-- `permission_mode`: Common values include `default`, `acceptEdits`, and `bypassPermissions`.
+- `permission_mode`: Valid values: `default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`.
 
 ## Permission callback (programmable allow/deny)
 
@@ -114,8 +116,8 @@ client = ClaudeAgentSDK::Client.new(
 These are standalone functions — they do not require a `Client` or running CLI process.
 
 ```ruby
-# List recent sessions for a directory
-sessions = ClaudeAgentSDK.list_sessions(directory: "/path/to/project", limit: 10)
+# List recent sessions for a directory (supports offset for pagination)
+sessions = ClaudeAgentSDK.list_sessions(directory: "/path/to/project", limit: 10, offset: 0)
 sessions.each do |s|
   puts "#{s.session_id} — #{s.summary} (#{s.custom_title})"
 end
@@ -127,8 +129,19 @@ messages = ClaudeAgentSDK.get_session_messages(session_id: "uuid-here", limit: 5
 ClaudeAgentSDK.rename_session(session_id: "uuid-here", title: "My session")
 ClaudeAgentSDK.tag_session(session_id: "uuid-here", tag: "production")
 ClaudeAgentSDK.tag_session(session_id: "uuid-here", tag: nil)  # clear tag
+
+# Delete a session (hard delete — removes JSONL file permanently)
+ClaudeAgentSDK.delete_session(session_id: "uuid-here", directory: "/path/to/project")
+
+# Fork a session into a new branch with fresh UUIDs
+result = ClaudeAgentSDK.fork_session(session_id: "uuid-here", title: "Experiment")
+puts result.session_id  # new session UUID
+
+# Fork up to a specific message (partial fork)
+result = ClaudeAgentSDK.fork_session(session_id: "uuid-here", up_to_message_id: "msg-uuid")
 ```
 
 Return types:
 - `list_sessions` → `Array<SDKSessionInfo>` (fields: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`)
 - `get_session_messages` → `Array<SessionMessage>` (fields: `type`, `uuid`, `session_id`, `message`, `parent_tool_use_id`)
+- `fork_session` → `ForkSessionResult` (field: `session_id`)

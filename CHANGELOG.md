@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.14.2] - 2026-04-17
+## [0.15.0] - 2026-04-17
+
+### Fixed
+
+#### Protocol & CLI
+- `--setting-sources` is now only emitted when the option is explicitly configured. Previously every invocation sent `--setting-sources ""`, which the CLI can interpret as "no setting sources" rather than "use defaults", overriding the CLI's own source resolution.
+- `extra_args` flag names are validated against a lowercase kebab-case pattern and raise `ArgumentError` otherwise. Prevents option injection from multi-tenant configs (e.g. an attacker-controlled hash injecting `--permission-mode bypassPermissions` and relying on CLI last-wins to defeat SDK-chosen safety).
+
+#### Concurrency
+- `SubprocessCLITransport#close` replaced `Timeout.timeout` with Async-safe polling on `@process.alive?`. Stdlib `Timeout.timeout` raises via `Thread#raise`, which can corrupt fiber-scheduler state when `close` runs inside the Async reactor. Still raises `Timeout::Error` so existing rescue clauses keep working.
+- Inbound `control_request` handlers are now spawned as children of the current read task via `Async::Task.current.async`. Bare `Async do` had ambiguous parent linkage; `@task.stop` could leave handler tasks writing to a closed transport.
+
+#### Sessions
+- `list_sessions` and `get_session_messages` coerce `offset: nil` to 0. Previously callers splatting from an options hash crashed on `nil.positive?` / `messages[nil..]`.
+- `fork_session` streams the source JSONL via `File.foreach` instead of `File.read`, and scrubs non-UTF-8 bytes on each line. Fixes `Encoding::InvalidByteSequenceError` on stray bytes in tool output and avoids slurping sessions that can reach hundreds of MB.
+- `simple_hash` (used for project-dir hashing) now iterates UTF-16 code units to match JavaScript's `charCodeAt`. Previously `each_char` + `ord` diverged from the official tools for supplementary characters (emoji, CJK extensions), so paths containing them hashed to different project directories and silently returned no sessions.
+
+#### Security
+- Replaced shell backticks with `Open3.capture3` (array args) in worktree detection. The path argument was already `Shellwords.escape`d, but running via `/bin/sh` leaves a latent shell-injection surface — any future interpolation without escaping would be exploitable.
+
+### Changed
+- `derive_fork_title` helper is now `private_class_method`, matching its siblings on `SessionMutations`.
+
+
 
 ### Added
 - **`EFFORT_LEVELS` constant** exposing `%w[low medium high xhigh max]`. Consumers can reference `ClaudeAgentSDK::EFFORT_LEVELS` for validation instead of hard-coding the list.
