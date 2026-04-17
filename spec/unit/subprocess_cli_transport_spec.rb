@@ -203,6 +203,18 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(cmd).not_to include('--effort')
     end
 
+    it 'forwards an Integer effort verbatim' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        effort: 8000
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--effort', '8000')
+    end
+
     it 'maps tools preset objects to the CLI default tool set' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
