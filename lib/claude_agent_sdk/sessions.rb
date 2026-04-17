@@ -1,9 +1,8 @@
 # frozen_string_literal: true
 
-require 'English'
 require 'json'
+require 'open3'
 require 'pathname'
-require 'shellwords'
 
 module ClaudeAgentSDK
   # Session info returned by list_sessions
@@ -59,11 +58,13 @@ module ClaudeAgentSDK
 
     module_function
 
-    # Match TypeScript's simpleHash: signed 32-bit integer, base-36 output
+    # Match TypeScript's simpleHash: signed 32-bit integer, base-36 output.
+    # JS's charCodeAt returns UTF-16 code units, so supplementary characters
+    # (emoji, CJK extensions) emit two surrogate code units — iterate over
+    # UTF-16LE shorts instead of Unicode codepoints to preserve parity.
     def simple_hash(str)
       h = 0
-      str.each_char do |ch|
-        char_code = ch.ord
+      str.encode('UTF-16LE').unpack('v*').each do |char_code|
         h = ((h << 5) - h + char_code) & 0xFFFFFFFF
         h -= 0x100000000 if h >= 0x80000000
       end
@@ -306,6 +307,7 @@ module ClaudeAgentSDK
     # @param include_worktrees [Boolean] Whether to include git worktree sessions
     # @return [Array<SDKSessionInfo>] Sessions sorted by last_modified descending
     def list_sessions(directory: nil, limit: nil, offset: 0, include_worktrees: true)
+      offset ||= 0
       sessions = if directory
                    list_sessions_for_directory(directory, include_worktrees)
                  else
@@ -353,6 +355,8 @@ module ClaudeAgentSDK
     # @return [Array<SessionMessage>] Ordered messages from the session
     def get_session_messages(session_id:, directory: nil, limit: nil, offset: 0)
       return [] unless session_id.match?(UUID_RE)
+
+      offset ||= 0
 
       file_path = find_session_file(session_id, directory)
       return [] unless file_path && File.exist?(file_path)
@@ -439,8 +443,8 @@ module ClaudeAgentSDK
     end
 
     def detect_worktrees(path)
-      output = `git -C #{Shellwords.escape(path)} worktree list --porcelain 2>/dev/null`
-      return [path] unless $CHILD_STATUS.success?
+      output, _err, status = Open3.capture3('git', '-C', path, 'worktree', 'list', '--porcelain')
+      return [path] unless status.success?
 
       paths = output.lines.filter_map do |line|
         line.strip.delete_prefix('worktree ') if line.start_with?('worktree ')

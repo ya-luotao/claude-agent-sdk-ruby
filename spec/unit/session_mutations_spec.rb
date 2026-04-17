@@ -237,6 +237,20 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
         .to raise_error(ArgumentError, /Invalid up_to_message_id/)
     end
 
+    it 'tolerates non-UTF-8 bytes in the session file' do
+      Dir.mktmpdir do |tmpdir|
+        entry = { 'type' => 'user', 'uuid' => msg1_uuid, 'parentUuid' => nil,
+                  'message' => { 'content' => 'hello' } }
+        # Embed an invalid UTF-8 byte (0xFF) alongside valid JSONL entries.
+        content = "#{JSON.generate(entry)}\n".b + "\xFF\n".b
+        setup_session(tmpdir, content)
+
+        expect do
+          described_class.fork_session(session_id: session_id, directory: tmpdir)
+        end.not_to raise_error
+      end
+    end
+
     it 'forks a session with UUID remapping' do
       Dir.mktmpdir do |tmpdir|
         content = build_session_content([

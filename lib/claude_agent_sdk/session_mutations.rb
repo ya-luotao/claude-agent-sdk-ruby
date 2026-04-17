@@ -108,10 +108,10 @@ module ClaudeAgentSDK
       raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}" unless result
 
       file_path, project_dir = result
-      content = File.read(file_path)
-      raise ArgumentError, "Session #{session_id} has no messages to fork" if content.empty?
+      file_size = File.size(file_path)
+      raise ArgumentError, "Session #{session_id} has no messages to fork" if file_size.zero?
 
-      transcript, content_replacements = parse_fork_transcript(content, session_id)
+      transcript, content_replacements = parse_fork_transcript(file_path)
       transcript.reject! { |e| e['isSidechain'] }
       raise ArgumentError, "Session #{session_id} has no messages to fork" if transcript.empty?
 
@@ -149,19 +149,9 @@ module ClaudeAgentSDK
                                })
       end
 
-      # Derive title
+      # Derive title — only read head/tail chunks when we need to generate one
       fork_title = title&.strip
-      if fork_title.nil? || fork_title.empty?
-        head = content[0, Sessions::LITE_READ_BUF_SIZE] || ''
-        tail = content.length > Sessions::LITE_READ_BUF_SIZE ? content[-Sessions::LITE_READ_BUF_SIZE..] : head
-        base = Sessions.extract_json_string_field(tail, 'customTitle', last: true) ||
-               Sessions.extract_json_string_field(head, 'customTitle', last: true) ||
-               Sessions.extract_json_string_field(tail, 'aiTitle', last: true) ||
-               Sessions.extract_json_string_field(head, 'aiTitle', last: true) ||
-               Sessions.extract_first_prompt_from_head(head) ||
-               'Forked session'
-        fork_title = "#{base} (fork)"
-      end
+      fork_title = "#{derive_fork_title(file_path, file_size)} (fork)" if fork_title.nil? || fork_title.empty?
 
       lines << JSON.generate({
                                'type' => 'custom-title',
@@ -236,13 +226,20 @@ module ClaudeAgentSDK
       nil
     end
 
-    # Parse a fork transcript, extracting entries and content-replacement data.
-    def parse_fork_transcript(content, _session_id)
+    # Parse a fork transcript by streaming the JSONL file line-by-line.
+    # Opens in binary mode and scrubs invalid UTF-8 so stray non-UTF-8
+    # bytes in tool results do not raise Encoding::InvalidByteSequenceError.
+    def parse_fork_transcript(file_path)
       transcript = []
       content_replacements = nil
 
-      content.each_line do |line|
-        entry = JSON.parse(line.strip)
+      File.foreach(file_path, mode: 'rb') do |line|
+        line = line.force_encoding('UTF-8').scrub
+        begin
+          entry = JSON.parse(line.strip)
+        rescue JSON::ParserError
+          next
+        end
         next unless entry.is_a?(Hash) && entry['uuid']
 
         if entry['type'] == 'content-replacement'
@@ -250,11 +247,31 @@ module ClaudeAgentSDK
           next
         end
         transcript << entry
-      rescue JSON::ParserError
-        next
       end
 
       [transcript, content_replacements]
+    end
+
+    # Derive a fork title from the source file's head/tail chunks without
+    # slurping the entire file. Matches the lookup order used for
+    # SDKSessionInfo.custom_title / ai_title / first_prompt.
+    def derive_fork_title(file_path, file_size)
+      buf_size = [Sessions::LITE_READ_BUF_SIZE, file_size].min
+      File.open(file_path, 'rb') do |f|
+        head = (f.read(buf_size) || '').force_encoding('UTF-8').scrub
+        tail = if file_size > Sessions::LITE_READ_BUF_SIZE
+                 f.seek(-buf_size, IO::SEEK_END)
+                 (f.read(buf_size) || '').force_encoding('UTF-8').scrub
+               else
+                 head
+               end
+        Sessions.extract_json_string_field(tail, 'customTitle', last: true) ||
+          Sessions.extract_json_string_field(head, 'customTitle', last: true) ||
+          Sessions.extract_json_string_field(tail, 'aiTitle', last: true) ||
+          Sessions.extract_json_string_field(head, 'aiTitle', last: true) ||
+          Sessions.extract_first_prompt_from_head(head) ||
+          'Forked session'
+      end
     end
 
     # Build a single forked entry with remapped UUIDs.
@@ -396,7 +413,7 @@ module ClaudeAgentSDK
 
     private_class_method :find_session_file_with_dir,
                          :find_in_directory, :try_project_dir, :find_in_all_projects,
-                         :parse_fork_transcript, :build_forked_entry, :resolve_parent_uuid,
+                         :parse_fork_transcript, :derive_fork_title, :build_forked_entry, :resolve_parent_uuid,
                          :append_to_session, :append_to_session_in_directory,
                          :append_to_session_global, :try_append, :sanitize_unicode, :unicode_category
   end

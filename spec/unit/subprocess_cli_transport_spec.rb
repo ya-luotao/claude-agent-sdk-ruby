@@ -64,6 +64,27 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(cmd).to include('--input-format', 'stream-json')
     end
 
+    it 'omits --setting-sources when setting_sources is nil' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).not_to include('--setting-sources')
+    end
+
+    it 'emits --setting-sources joined by commas when set' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        setting_sources: %w[user project]
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--setting-sources', 'user,project')
+    end
+
     it 'does not include --agents in CLI args' do
       agent = ClaudeAgentSDK::AgentDefinition.new(
         description: 'Test agent',
@@ -78,6 +99,41 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       cmd = transport.build_command
 
       expect(cmd).not_to include('--agents')
+    end
+
+    it 'passes valid extra_args flags as --flag value' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        extra_args: { 'debug-to-stderr' => nil, 'custom-flag' => 'value' }
+      )
+
+      transport = described_class.new('hi', options)
+      cmd = transport.build_command
+
+      expect(cmd).to include('--debug-to-stderr')
+      expect(cmd).to include('--custom-flag', 'value')
+    end
+
+    it 'rejects extra_args keys that contain spaces or invalid characters' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        extra_args: { 'permission-mode bypassPermissions' => nil }
+      )
+
+      transport = described_class.new('hi', options)
+
+      expect { transport.build_command }.to raise_error(ArgumentError, /Invalid extra_args flag name/)
+    end
+
+    it 'rejects extra_args keys that are empty or start with --' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude',
+        extra_args: { '--permission-mode' => 'bypassPermissions' }
+      )
+
+      transport = described_class.new('hi', options)
+
+      expect { transport.build_command }.to raise_error(ArgumentError, /Invalid extra_args flag name/)
     end
 
     it 'passes --thinking adaptive for ThinkingConfigAdaptive' do
@@ -390,6 +446,30 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
                                          .and_return(["2.1.22 (Claude Code)\n", '', nil])
 
       transport.send(:check_claude_version)
+    end
+  end
+
+  describe '#wait_process_with_timeout' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+
+    it 'returns the process value when the process exits within the timeout' do
+      process = double('Process::Waiter', pid: 1234)
+      allow(process).to receive(:alive?).and_return(true, false)
+      allow(process).to receive(:value).and_return(:exited)
+
+      transport.instance_variable_set(:@process, process)
+
+      expect(transport.send(:wait_process_with_timeout, 1)).to eq(:exited)
+    end
+
+    it 'raises Timeout::Error when the process stays alive past the deadline' do
+      process = double('Process::Waiter', pid: 1234)
+      allow(process).to receive(:alive?).and_return(true)
+
+      transport.instance_variable_set(:@process, process)
+
+      expect { transport.send(:wait_process_with_timeout, 0.1) }.to raise_error(Timeout::Error)
     end
   end
 

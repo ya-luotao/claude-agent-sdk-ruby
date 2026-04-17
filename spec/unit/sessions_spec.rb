@@ -23,6 +23,13 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       expect(result).to be_a(String)
       expect(result.length).to be > 0
     end
+
+    it 'uses UTF-16 code units so supplementary chars match JS charCodeAt' do
+      # '😀' (U+1F600) encodes as UTF-16 surrogate pair D83D DE00 (55357, 56832).
+      # A codepoint-based implementation would hash the single value 128512 and
+      # produce a different result.
+      expect(described_class.simple_hash('😀')).to eq('11zz7')
+    end
   end
 
   describe '.sanitize_path' do
@@ -351,6 +358,11 @@ RSpec.describe ClaudeAgentSDK::Sessions do
         expect(sessions.first.session_id).to eq(uuid_new)
       end
     end
+
+    it 'treats offset: nil the same as offset: 0' do
+      allow(described_class).to receive(:config_dir).and_return('/nonexistent')
+      expect { described_class.list_sessions(offset: nil) }.not_to raise_error
+    end
   end
 
   describe '.get_session_info' do
@@ -433,6 +445,16 @@ RSpec.describe ClaudeAgentSDK::Sessions do
     it 'returns empty when session file not found' do
       allow(described_class).to receive(:config_dir).and_return('/nonexistent')
       expect(described_class.get_session_messages(session_id: '12345678-1234-1234-1234-123456789abc')).to eq([])
+    end
+
+    it 'treats offset: nil the same as offset: 0' do
+      allow(described_class).to receive(:config_dir).and_return('/nonexistent')
+      expect do
+        described_class.get_session_messages(
+          session_id: '12345678-1234-1234-1234-123456789abc',
+          offset: nil
+        )
+      end.not_to raise_error
     end
 
     it 'parses a simple conversation' do

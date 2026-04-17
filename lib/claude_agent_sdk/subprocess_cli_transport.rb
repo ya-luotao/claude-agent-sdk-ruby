@@ -12,6 +12,7 @@ module ClaudeAgentSDK
   class SubprocessCLITransport < Transport
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
+    EXTRA_ARG_FLAG_RE = /\A[a-z0-9][a-z0-9-]*\z/
 
     def initialize(options_or_prompt = nil, options = nil)
       # Support both new single-arg form and legacy two-arg form
@@ -162,15 +163,21 @@ module ClaudeAgentSDK
       build_plugins_args(cmd)
 
       # Setting sources
-      sources_value = @options.setting_sources ? @options.setting_sources.join(',') : ''
-      cmd.concat(['--setting-sources', sources_value])
+      if @options.setting_sources
+        cmd.concat(['--setting-sources', @options.setting_sources.join(',')])
+      end
 
       # Extra args
       @options.extra_args.each do |flag, value|
+        flag_str = flag.to_s
+        unless EXTRA_ARG_FLAG_RE.match?(flag_str)
+          raise ArgumentError, "Invalid extra_args flag name: #{flag.inspect} (expected lowercase kebab-case)"
+        end
+
         if value.nil?
-          cmd << "--#{flag}"
+          cmd << "--#{flag_str}"
         else
-          cmd.concat(["--#{flag}", value.to_s])
+          cmd.concat(["--#{flag_str}", value.to_s])
         end
       end
 
@@ -339,15 +346,12 @@ module ClaudeAgentSDK
       # EOF on stdin. Without this grace period, SIGTERM can interrupt the
       # write and cause the last assistant message to be lost.
       begin
-        if @process.alive?
-          # Give the process up to 5 seconds to exit on its own
-          Timeout.timeout(5) { @process.value }
-        end
+        wait_process_with_timeout(5) if @process.alive?
       rescue Timeout::Error
         # Graceful shutdown timed out — send SIGTERM
         begin
           Process.kill('TERM', @process.pid)
-          Timeout.timeout(2) { @process.value }
+          wait_process_with_timeout(2)
         rescue Timeout::Error
           # SIGTERM didn't work — force kill
           begin
@@ -376,6 +380,22 @@ module ClaudeAgentSDK
       @stderr = nil
       @stderr_task = nil
       @exit_error = nil
+    end
+
+    # Wait for the spawned process to exit, up to +timeout_seconds+. Polls
+    # @process.alive? rather than using stdlib Timeout.timeout, which raises
+    # across threads via Thread#raise and corrupts Async fiber-scheduler state
+    # (close is always called inside an Async task). Yields to the current
+    # Async task when one is active so the reactor keeps running.
+    def wait_process_with_timeout(timeout_seconds)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
+      task = defined?(Async::Task) ? Async::Task.current? : nil
+      while @process.alive?
+        raise Timeout::Error if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        task ? task.sleep(0.05) : sleep(0.05)
+      end
+      @process.value
     end
 
     def write(data)
