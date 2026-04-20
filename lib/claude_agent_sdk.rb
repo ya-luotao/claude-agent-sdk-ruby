@@ -13,6 +13,7 @@ require_relative 'claude_agent_sdk/sdk_mcp_server'
 require_relative 'claude_agent_sdk/streaming'
 require_relative 'claude_agent_sdk/sessions'
 require_relative 'claude_agent_sdk/session_mutations'
+require_relative 'claude_agent_sdk/fiber_boundary'
 require 'async'
 require 'securerandom'
 
@@ -28,9 +29,12 @@ module ClaudeAgentSDK
   end
 
   # Safely call a method on each observer, suppressing any errors.
+  # Each observer is invoked through FiberBoundary so that user code runs
+  # on a plain thread (no Fiber scheduler) even when called from inside
+  # the SDK's Async reactor.
   def self.notify_observers(observers, method, *args)
     observers.each do |obs|
-      obs.send(method, *args)
+      FiberBoundary.invoke { obs.send(method, *args) }
     rescue StandardError
       nil
     end
@@ -230,12 +234,14 @@ module ClaudeAgentSDK
           end
         end
 
-        # Read and yield messages from the query handler (filters out control messages)
+        # Read and yield messages from the query handler (filters out control messages).
+        # User block is invoked through FiberBoundary so ActiveRecord / PG calls
+        # inside it don't see the async gem's Fiber scheduler.
         query_handler.receive_messages do |data|
           message = MessageParser.parse(data)
           if message
             ClaudeAgentSDK.notify_observers(resolved_observers, :on_message, message)
-            block.call(message)
+            FiberBoundary.invoke { block.call(message) }
           end
         end
       ensure
@@ -406,7 +412,7 @@ module ClaudeAgentSDK
         message = MessageParser.parse(data)
         if message
           ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
-          block.call(message)
+          FiberBoundary.invoke { block.call(message) }
         end
       end
     end

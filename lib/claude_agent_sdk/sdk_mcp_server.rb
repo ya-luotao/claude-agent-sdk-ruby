@@ -79,8 +79,9 @@ module ClaudeAgentSDK
       tool = @tools.find { |t| t.name == name }
       raise "Tool '#{name}' not found" unless tool
 
-      # Call the tool's handler
-      result = tool.handler.call(arguments)
+      # Call the tool's handler on a plain thread so the async gem's
+      # Fiber scheduler is not visible to user code (which may hit AR/PG).
+      result = FiberBoundary.invoke { tool.handler.call(arguments) }
 
       # Ensure result has the expected format
       unless result.is_a?(Hash) && result[:content]
@@ -180,8 +181,9 @@ module ClaudeAgentSDK
             end
 
             def call(server_context: nil, **args)
-              # Filter out server_context and pass remaining args to handler
-              result = @tool_def.handler.call(args)
+              # Filter out server_context and pass remaining args to handler.
+              # Hop to a plain thread so user handlers don't see the Fiber scheduler.
+              result = FiberBoundary.invoke { @tool_def.handler.call(args) }
 
               content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content')
               unless result.is_a?(Hash) && content

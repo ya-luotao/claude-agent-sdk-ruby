@@ -300,11 +300,11 @@ module ClaudeAgentSDK
         agent_id: request_data[:agent_id]
       )
 
-      response = @can_use_tool.call(
-        request_data[:tool_name],
-        request_data[:input],
-        context
-      )
+      # User-supplied permission callback runs on a plain thread, not the
+      # Async reactor, so AR/PG calls inside it aren't intercepted.
+      response = FiberBoundary.invoke do
+        @can_use_tool.call(request_data[:tool_name], request_data[:input], context)
+      end
 
       # Convert PermissionResult to expected format
       case response
@@ -338,19 +338,21 @@ module ClaudeAgentSDK
       # Create typed HookContext
       context = HookContext.new(signal: nil)
 
-      hook_output = callback.call(
-        hook_input,
-        request_data[:tool_use_id],
-        context
-      ) unless @hook_callback_timeouts[callback_id]
+      # Hop off the Fiber scheduler before invoking user hook code. The
+      # Async-side timeout still wraps the hop; if it fires, .value returns
+      # early with an exception and the worker thread is left to finish on
+      # its own (matches prior best-effort cancellation semantics).
+      unless @hook_callback_timeouts[callback_id]
+        hook_output = FiberBoundary.invoke do
+          callback.call(hook_input, request_data[:tool_use_id], context)
+        end
+      end
 
       if (timeout = @hook_callback_timeouts[callback_id])
         hook_output = Async::Task.current.with_timeout(timeout) do
-          callback.call(
-            hook_input,
-            request_data[:tool_use_id],
-            context
-          )
+          FiberBoundary.invoke do
+            callback.call(hook_input, request_data[:tool_use_id], context)
+          end
         end
       end
 
