@@ -1,6 +1,6 @@
 # Claude Agent SDK for Ruby
 
-![Claude Agent SDK for Ruby banner](doc/images/claude-agent-sdk-ruby-banner.png)
+![Claude Agent SDK for Ruby banner](assets/claude-agent-sdk-ruby-banner.png)
 
 [![Gem Version](https://badge.fury.io/rb/claude-agent-sdk.svg?icon=si%3Arubygems)](https://badge.fury.io/rb/claude-agent-sdk)
 
