@@ -1,5 +1,7 @@
 # Claude Agent SDK for Ruby
 
+![Claude Agent SDK for Ruby banner](doc/images/claude-agent-sdk-ruby-banner.png)
+
 [![Gem Version](https://badge.fury.io/rb/claude-agent-sdk.svg?icon=si%3Arubygems)](https://badge.fury.io/rb/claude-agent-sdk)
 
 An **unofficial, community-maintained** Ruby SDK for the [Claude Code](https://docs.claude.com/en/docs/claude-code-overview) agent runtime. Not affiliated with or supported by Anthropic.
