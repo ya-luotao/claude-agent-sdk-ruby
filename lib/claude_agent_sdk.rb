@@ -71,11 +71,7 @@ module ClaudeAgentSDK
   #     permission_mode: 'acceptEdits'
   #   )
   #   ClaudeAgentSDK.query(prompt: "Create a hello.rb file", options: options) do |msg|
-  #     if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
-  #       msg.content.each do |block|
-  #         puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
-  #       end
-  #     end
+  #     puts msg.text if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
   #   end
   #
   # @example Streaming input

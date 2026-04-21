@@ -687,6 +687,111 @@ RSpec.describe ClaudeAgentSDK::SessionMessage do
     expect(msg.message).to eq({ 'role' => 'user', 'content' => 'Hello' })
     expect(msg.parent_tool_use_id).to be_nil
   end
+
+  def build(message)
+    described_class.new(type: 'assistant', uuid: 'u', session_id: 's', message: message)
+  end
+
+  describe '#text' do
+    it 'returns "" when message is nil' do
+      expect(build(nil).text).to eq('')
+    end
+
+    it 'returns "" when message is not a Hash' do
+      expect(build('raw string').text).to eq('')
+    end
+
+    it 'returns the raw string when content is a String' do
+      expect(build({ 'role' => 'user', 'content' => 'Hello' }).text).to eq('Hello')
+    end
+
+    it 'concatenates text blocks in an Array content, skipping non-text blocks' do
+      msg = build(
+        'role' => 'assistant',
+        'content' => [
+          { 'type' => 'text', 'text' => 'First' },
+          { 'type' => 'tool_use', 'id' => 't1', 'name' => 'Read', 'input' => {} },
+          { 'type' => 'text', 'text' => 'Second' }
+        ]
+      )
+      expect(msg.text).to eq("First\n\nSecond")
+    end
+
+    it 'returns "" when content is an empty Array' do
+      expect(build('content' => []).text).to eq('')
+    end
+
+    it 'accepts symbol-keyed blocks as a fallback' do
+      msg = build(
+        content: [
+          { type: 'text', text: 'Sym' }
+        ]
+      )
+      expect(msg.text).to eq('Sym')
+    end
+
+    it 'aliases #to_s to #text' do
+      msg = build('content' => 'Hello')
+      expect(msg.to_s).to eq('Hello')
+      expect("got: #{msg}").to eq('got: Hello')
+    end
+  end
+
+  describe '#content_blocks' do
+    it 'returns [] when message is nil' do
+      expect(build(nil).content_blocks).to eq([])
+    end
+
+    it 'returns [] when message is not a Hash' do
+      expect(build(42).content_blocks).to eq([])
+    end
+
+    it 'returns [] when content is a String (no blocks existed in the transcript)' do
+      expect(build('content' => 'Hello').content_blocks).to eq([])
+    end
+
+    it 'parses typed blocks from an Array content' do
+      msg = build(
+        'content' => [
+          { 'type' => 'text', 'text' => 'Hi' },
+          { 'type' => 'tool_use', 'id' => 't1', 'name' => 'Read', 'input' => { 'path' => '/tmp/x' } },
+          { 'type' => 'thinking', 'thinking' => 'hmm', 'signature' => 'sig' },
+          { 'type' => 'tool_result', 'tool_use_id' => 't1', 'content' => 'ok', 'is_error' => false }
+        ]
+      )
+      blocks = msg.content_blocks
+      expect(blocks.map(&:class)).to eq(
+        [
+          ClaudeAgentSDK::TextBlock,
+          ClaudeAgentSDK::ToolUseBlock,
+          ClaudeAgentSDK::ThinkingBlock,
+          ClaudeAgentSDK::ToolResultBlock
+        ]
+      )
+      expect(blocks[0].text).to eq('Hi')
+      expect(blocks[1].id).to eq('t1')
+      expect(blocks[1].name).to eq('Read')
+      expect(blocks[1].input).to eq({ 'path' => '/tmp/x' })
+      expect(blocks[3].tool_use_id).to eq('t1')
+    end
+
+    it 'yields UnknownBlock for unrecognized block types' do
+      msg = build(
+        'content' => [
+          { 'type' => 'image', 'source' => { 'type' => 'base64', 'data' => '...' } }
+        ]
+      )
+      block = msg.content_blocks.first
+      expect(block).to be_a(ClaudeAgentSDK::UnknownBlock)
+      expect(block.type).to eq('image')
+    end
+
+    it 'skips non-Hash entries in a mixed Array' do
+      msg = build('content' => [{ 'type' => 'text', 'text' => 'ok' }, 'bare string', nil])
+      expect(msg.content_blocks.size).to eq(1)
+      expect(msg.content_blocks[0]).to be_a(ClaudeAgentSDK::TextBlock)
+    end
+  end
 end
 
 RSpec.describe 'ClaudeAgentSDK top-level session functions' do

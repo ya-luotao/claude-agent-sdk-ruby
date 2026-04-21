@@ -123,6 +123,19 @@ module ClaudeAgentSDK
       @parent_tool_use_id = parent_tool_use_id
       @tool_use_result = tool_use_result # Tool result data when message is a tool response
     end
+
+    # Concatenated text of this message. Handles both String content
+    # (plain-text user prompt) and Array-of-blocks content (typed content).
+    # Returns "" when there is no text.
+    def text
+      case @content
+      when String then @content
+      when Array then @content.grep(TextBlock).map(&:text).join("\n\n")
+      else ''
+      end
+    end
+
+    alias to_s text
   end
 
   # Assistant message with content blocks
@@ -142,6 +155,14 @@ module ClaudeAgentSDK
       @session_id = session_id # Session the message belongs to
       @uuid = uuid # Unique message UUID in the session transcript
     end
+
+    # Concatenated text across every TextBlock in this message's content.
+    # Returns "" when the message has no text (e.g., a pure tool_use turn).
+    def text
+      Array(@content).grep(TextBlock).map(&:text).join("\n\n")
+    end
+
+    alias to_s text
   end
 
   # System message with metadata

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`#text` on every message type that carries content.** No more hand-rolling a `select { TextBlock }.map(&:text).join` in every consumer.
+  - `AssistantMessage#text` — joins text across `TextBlock`s in the content array.
+  - `UserMessage#text` — handles both String content (plain prompt) and Array-of-blocks content.
+  - `SessionMessage#text` — joins text across parsed content blocks from a historical transcript.
+  - `#to_s` on each message type is aliased to `#text`, so `puts message` and string interpolation just work.
+  - Non-text blocks (`ToolUseBlock`, `ThinkingBlock`, `ToolResultBlock`, `UnknownBlock`) intentionally do **not** answer `#text` — only `TextBlock` is textual. The message helpers use `Array#grep(TextBlock)` to select text blocks.
+- **`SessionMessage#content_blocks`** returns typed block objects (`TextBlock`, `ThinkingBlock`, `ToolUseBlock`, `ToolResultBlock`, `UnknownBlock`) instead of the raw hash blocks from the JSONL transcript. Unknown block types become `UnknownBlock` for forward compatibility with newer CLI versions.
+
+### Changed
+- Rails Integration / Quick Start / Observability / File Checkpointing README examples dropped the `content.select { is_a?(TextBlock) }.map(&:text).join` dance in favor of `message.text`.
+
 ## [0.15.1] - 2026-04-22
 
 ### Fixed
