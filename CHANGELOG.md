@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-04-22
+
 ### Added
 - **`#text` on every message type that carries content.** No more hand-rolling a `select { TextBlock }.map(&:text).join` in every consumer.
   - `AssistantMessage#text` — joins text across `TextBlock`s in the content array.
