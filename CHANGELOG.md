@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-04-22
+
 ### Fixed
 - **Thread-keyed libraries are now safe inside SDK callbacks.** The SDK internally hops to a plain thread at every user-callback boundary — blocks passed to `ClaudeAgentSDK.query` / `Client#receive_messages`, SDK MCP tool handlers, hooks, permission callbacks, and observer methods — so the `async` gem's Fiber scheduler is no longer visible to user code. Previously, any library that keys state on `Thread.current` (ActiveRecord and every DB driver keyed by thread — `pg`, `mysql2`, `sqlite3` — plus per-thread HTTP/cache pools, request stores, etc.) could be corrupted by the scheduler interleaving two fibers onto one checked-out connection. Rails/Sidekiq/Kamal consumers no longer need a caller-side wrapper to avoid this. See the "Thread-keyed libraries are safe inside SDK callbacks" subsection under Rails Integration in the README.
 
