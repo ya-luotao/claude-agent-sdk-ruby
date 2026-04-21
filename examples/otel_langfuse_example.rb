@@ -17,7 +17,9 @@
 # The same observer pattern works with any OTel backend (Jaeger, Datadog, etc.)
 # by configuring a different exporter.
 
-require 'bundler/setup'
+require 'bundler'
+Bundler.setup(:default, :instrumentation)
+
 require 'base64'
 require 'opentelemetry/sdk'
 require 'opentelemetry/exporter/otlp'
