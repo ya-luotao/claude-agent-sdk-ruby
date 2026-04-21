@@ -418,9 +418,15 @@ module ClaudeAgentSDK
     def receive_response(&block)
       return enum_for(:receive_response) unless block
 
+      # Flag-based rather than `break`: `receive_messages` hops this
+      # block onto a plain thread via `FiberBoundary.invoke`, which
+      # severs break's unwind target.
+      result_seen = false
       receive_messages do |message|
+        next if result_seen
+
         block.call(message)
-        break if message.is_a?(ResultMessage)
+        result_seen = true if message.is_a?(ResultMessage)
       end
     end
 
