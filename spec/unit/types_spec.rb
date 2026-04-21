@@ -108,6 +108,78 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe '#text uniform contract' do
+      let(:text_block) { ClaudeAgentSDK::TextBlock.new(text: 'Hi') }
+      let(:tool_use_block) { ClaudeAgentSDK::ToolUseBlock.new(id: 't1', name: 'Read', input: {}) }
+      let(:thinking_block) { ClaudeAgentSDK::ThinkingBlock.new(thinking: 'hmm', signature: 'sig') }
+      let(:tool_result_block) { ClaudeAgentSDK::ToolResultBlock.new(tool_use_id: 't1', content: 'ok') }
+      let(:unknown_block) { ClaudeAgentSDK::UnknownBlock.new(type: 'image', data: {}) }
+
+      describe 'content blocks' do
+        it 'TextBlock#text returns the text' do
+          expect(text_block.text).to eq('Hi')
+        end
+
+        it 'non-text blocks do not respond to #text' do
+          expect(tool_use_block).not_to respond_to(:text)
+          expect(thinking_block).not_to respond_to(:text)
+          expect(tool_result_block).not_to respond_to(:text)
+          expect(unknown_block).not_to respond_to(:text)
+        end
+      end
+
+      describe 'AssistantMessage#text' do
+        it 'concatenates text across typed blocks, skipping non-text' do
+          msg = ClaudeAgentSDK::AssistantMessage.new(
+            content: [
+              ClaudeAgentSDK::TextBlock.new(text: 'First'),
+              tool_use_block,
+              ClaudeAgentSDK::TextBlock.new(text: 'Second')
+            ],
+            model: 'claude-sonnet-4'
+          )
+          expect(msg.text).to eq("First\n\nSecond")
+        end
+
+        it 'returns "" when no text blocks are present' do
+          msg = ClaudeAgentSDK::AssistantMessage.new(content: [tool_use_block], model: 'claude-sonnet-4')
+          expect(msg.text).to eq('')
+        end
+
+        it 'aliases #to_s to #text' do
+          msg = ClaudeAgentSDK::AssistantMessage.new(content: [text_block], model: 'claude-sonnet-4')
+          expect(msg.to_s).to eq('Hi')
+          expect("got: #{msg}").to eq('got: Hi')
+        end
+      end
+
+      describe 'UserMessage#text' do
+        it 'returns the raw string when content is a String' do
+          expect(ClaudeAgentSDK::UserMessage.new(content: 'Hello').text).to eq('Hello')
+        end
+
+        it 'concatenates text across typed blocks' do
+          msg = ClaudeAgentSDK::UserMessage.new(
+            content: [
+              ClaudeAgentSDK::TextBlock.new(text: 'A'),
+              tool_use_block,
+              ClaudeAgentSDK::TextBlock.new(text: 'B')
+            ]
+          )
+          expect(msg.text).to eq("A\n\nB")
+        end
+
+        it 'returns "" when content is nil' do
+          expect(ClaudeAgentSDK::UserMessage.new(content: nil).text).to eq('')
+        end
+
+        it 'aliases #to_s to #text' do
+          msg = ClaudeAgentSDK::UserMessage.new(content: 'Hello')
+          expect(msg.to_s).to eq('Hello')
+        end
+      end
+    end
+
     describe ClaudeAgentSDK::SystemMessage do
       it 'stores system message data' do
         msg = described_class.new(subtype: 'info', data: { message: 'Test' })

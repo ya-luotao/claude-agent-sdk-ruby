@@ -288,24 +288,32 @@ module ClaudeAgentSDK
       )
     end
 
+    # Accepts blocks with either symbol or string keys — live CLI messages
+    # arrive symbol-keyed (parsed via `symbolize_names: true`), session
+    # transcripts arrive string-keyed (parsed via `symbolize_names: false`).
+    # Uses a nil-aware fallback so `is_error: false` survives.
     def self.parse_content_block(block)
-      case block[:type]
+      get = lambda do |key|
+        v = block[key]
+        v.nil? ? block[key.to_s] : v
+      end
+      case get.call(:type)
       when 'text'
-        TextBlock.new(text: block[:text])
+        TextBlock.new(text: get.call(:text))
       when 'thinking'
-        ThinkingBlock.new(thinking: block[:thinking], signature: block[:signature])
+        ThinkingBlock.new(thinking: get.call(:thinking), signature: get.call(:signature))
       when 'tool_use'
-        ToolUseBlock.new(id: block[:id], name: block[:name], input: block[:input])
+        ToolUseBlock.new(id: get.call(:id), name: get.call(:name), input: get.call(:input))
       when 'tool_result'
         ToolResultBlock.new(
-          tool_use_id: block[:tool_use_id],
-          content: block[:content],
-          is_error: block[:is_error]
+          tool_use_id: get.call(:tool_use_id),
+          content: get.call(:content),
+          is_error: get.call(:is_error)
         )
       else
         # Forward-compatible: preserve unrecognized content block types (e.g., "document", "image")
         # so newer CLI versions don't crash older SDK versions.
-        UnknownBlock.new(type: block[:type], data: block)
+        UnknownBlock.new(type: get.call(:type), data: block)
       end
     end
   end

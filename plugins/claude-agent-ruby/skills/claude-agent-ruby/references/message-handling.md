@@ -41,15 +41,10 @@ end
 
 ## Extract assistant text
 
-```ruby
-def assistant_text(message)
-  return "" unless message.is_a?(ClaudeAgentSDK::AssistantMessage)
+`AssistantMessage`, `UserMessage`, and `SessionMessage` all answer `#text` (joined visible text, `""` when empty). `#to_s` is aliased to `#text`, so `puts message` works.
 
-  message.content
-    .select { |b| b.is_a?(ClaudeAgentSDK::TextBlock) }
-    .map(&:text)
-    .join("\n\n")
-end
+```ruby
+puts message.text if message.is_a?(ClaudeAgentSDK::AssistantMessage)
 ```
 
 ## Handle tool calls
@@ -58,7 +53,7 @@ end
 def tool_uses(message)
   return [] unless message.is_a?(ClaudeAgentSDK::AssistantMessage)
 
-  message.content.select { |b| b.is_a?(ClaudeAgentSDK::ToolUseBlock) }
+  Array(message.content).grep(ClaudeAgentSDK::ToolUseBlock)
 end
 ```
 
@@ -72,7 +67,7 @@ When using `Client#receive_response`, stop when you see `ClaudeAgentSDK::ResultM
 client.receive_response do |message|
   case message
   when ClaudeAgentSDK::AssistantMessage
-    puts assistant_text(message)
+    puts message.text
   when ClaudeAgentSDK::ResultMessage
     puts "Cost: $#{message.total_cost_usd}" if message.total_cost_usd
     puts "Session: #{message.session_id}"

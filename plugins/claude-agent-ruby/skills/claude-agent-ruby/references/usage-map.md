@@ -173,9 +173,7 @@ ClaudeAgentSDK.query(prompt: "Do something", options: options) do |msg|
   when ClaudeAgentSDK::InitMessage
     puts "Session started: #{msg.session_id} (#{msg.claude_code_version})"
   when ClaudeAgentSDK::AssistantMessage
-    msg.content.each do |block|
-      puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
-    end
+    puts msg.text
   when ClaudeAgentSDK::CompactBoundaryMessage
     puts "Compacted: #{msg.compact_metadata&.pre_tokens} tokens (#{msg.compact_metadata&.trigger})"
   when ClaudeAgentSDK::StatusMessage

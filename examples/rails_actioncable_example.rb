@@ -65,31 +65,17 @@ module ChatChannel
   end
 end
 
-# Helper methods for extracting content from messages
+# Helper methods for extracting non-text content. Text extraction uses
+# the SDK's built-in `message.text`.
 module MessageExtractor
-  def self.extract_text(message)
-    return '' unless message.content.is_a?(Array)
-
-    message.content
-      .select { |block| block.is_a?(ClaudeAgentSDK::TextBlock) }
-      .map(&:text)
-      .join("\n\n")
-  end
-
   def self.extract_thinking(message)
-    return [] unless message.content.is_a?(Array)
-
-    message.content
-      .select { |block| block.is_a?(ClaudeAgentSDK::ThinkingBlock) }
-      .map(&:thinking)
+    Array(message.content).grep(ClaudeAgentSDK::ThinkingBlock).map(&:thinking)
   end
 
   def self.extract_tool_uses(message)
-    return [] unless message.content.is_a?(Array)
-
-    message.content
-      .select { |block| block.is_a?(ClaudeAgentSDK::ToolUseBlock) }
-      .map { |block| { name: block.name, input: block.input } }
+    Array(message.content).grep(ClaudeAgentSDK::ToolUseBlock).map do |block|
+      { name: block.name, input: block.input }
+    end
   end
 end
 
@@ -141,10 +127,9 @@ class ChatExecutor
           end
 
           # Broadcast text content
-          text = MessageExtractor.extract_text(message)
-          unless text.empty?
+          unless message.text.empty?
             ChatChannel.broadcast_chunk(@chat_id,
-              content: text,
+              content: message.text,
               message_id: @message_id
             )
           end

@@ -38,6 +38,36 @@ module ClaudeAgentSDK
       @message = message
       @parent_tool_use_id = parent_tool_use_id
     end
+
+    # Concatenated text across every TextBlock in this message.
+    # Returns "" when the message has no text content (nil message,
+    # non-Hash message, empty content, or only non-text blocks).
+    def text
+      raw = @message.is_a?(Hash) ? (@message['content'] || @message[:content]) : nil
+      case raw
+      when String then raw
+      when Array  then content_blocks.grep(TextBlock).map(&:text).join("\n\n")
+      else ''
+      end
+    end
+
+    alias to_s text
+
+    # Typed content blocks for this message. Each entry is one of
+    # TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, or
+    # UnknownBlock (for forward-compatibility with newer CLI block types).
+    # Returns [] when the message has no array-of-blocks content (nil
+    # message, non-Hash message, String content, missing content).
+    def content_blocks
+      return [] unless @message.is_a?(Hash)
+
+      raw = @message['content'] || @message[:content]
+      return [] unless raw.is_a?(Array)
+
+      raw.filter_map do |block|
+        MessageParser.parse_content_block(block) if block.is_a?(Hash)
+      end
+    end
   end
 
   # Session browsing functions

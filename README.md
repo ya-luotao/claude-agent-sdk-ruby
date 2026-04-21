@@ -159,11 +159,7 @@ require 'claude_agent_sdk'
 
 # Simple query
 ClaudeAgentSDK.query(prompt: "Hello Claude") do |message|
-  if message.is_a?(ClaudeAgentSDK::AssistantMessage)
-    message.content.each do |block|
-      puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
-    end
-  end
+  puts message.text if message.is_a?(ClaudeAgentSDK::AssistantMessage)
 end
 
 # With options
@@ -260,11 +256,10 @@ Async do
 
     # Receive the response
     client.receive_response do |msg|
-      if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
-        msg.content.each do |block|
-          puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
-        end
-      elsif msg.is_a?(ClaudeAgentSDK::ResultMessage)
+      case msg
+      when ClaudeAgentSDK::AssistantMessage
+        puts msg.text
+      when ClaudeAgentSDK::ResultMessage
         puts "Cost: $#{msg.total_cost_usd}" if msg.total_cost_usd
       end
     end
@@ -928,10 +923,7 @@ Async do
       # Capture UUID for rewind capability
       user_message_uuids << message.uuid if message.uuid
     when ClaudeAgentSDK::AssistantMessage
-      # Handle assistant responses
-      message.content.each do |block|
-        puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
-      end
+      puts message.text
     when ClaudeAgentSDK::ResultMessage
       puts "Query completed (cost: $#{message.total_cost_usd})"
     end
@@ -1140,11 +1132,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 
 ClaudeAgentSDK.query(prompt: "List files in /tmp", options: options) do |msg|
-  if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
-    msg.content.each do |block|
-      puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
-    end
-  end
+  puts msg.text if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
 end
 
 # For long-running apps, flush before exit:
@@ -1219,8 +1207,7 @@ class ChatAgentJob < ApplicationJob
         client.receive_response do |message|
           case message
           when ClaudeAgentSDK::AssistantMessage
-            text = extract_text(message)
-            ChatChannel.broadcast_to(chat_id, { type: 'chunk', content: text })
+            ChatChannel.broadcast_to(chat_id, { type: 'chunk', content: message.text })
 
           when ClaudeAgentSDK::ResultMessage
             ChatChannel.broadcast_to(chat_id, {
@@ -1234,15 +1221,6 @@ class ChatAgentJob < ApplicationJob
         client.disconnect
       end
     end.wait
-  end
-
-  private
-
-  def extract_text(message)
-    message.content
-      .select { |b| b.is_a?(ClaudeAgentSDK::TextBlock) }
-      .map(&:text)
-      .join("\n\n")
   end
 end
 ```
