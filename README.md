@@ -1194,6 +1194,45 @@ For a complete multi-tool example, see [examples/otel_langfuse_example.rb](examp
 
 The SDK integrates well with Rails applications. Here are common patterns:
 
+### Thread-keyed libraries are safe inside SDK callbacks
+
+The SDK depends on [`async`](https://github.com/socketry/async), which installs
+a Fiber scheduler that multiplexes fibers onto a single OS thread and
+intercepts IO so blocking calls yield to siblings. Most mature Ruby libraries
+are thread-safe but not fiber-safe — they key state (checked-out DB
+connections, per-thread caches, request stores) on `Thread.current`. When the
+scheduler interleaves two fibers on one thread, those fibers share the same
+state slot, and interleaved IO on a shared connection silently corrupts wire
+protocols. This affects every DB driver keyed by thread (`pg`, `mysql2`,
+`sqlite3`), ActiveRecord's connection pool, and HTTP/cache clients pooled per
+thread.
+
+You do **not** need to think about this. The SDK hops to a plain thread at
+every user-callback boundary — message blocks given to `query` / `Client`, SDK
+MCP tool handlers, hooks, permission callbacks, and observer methods — so
+your code runs with no Fiber scheduler active and inherits the ordinary
+thread-keyed assumptions every Rails / Sidekiq / Kamal app already makes:
+
+```ruby
+tool = ClaudeAgentSDK.create_tool('lookup_user', 'Look up a user', { id: Integer }) do |args|
+  user = User.find(args[:id])                # just works
+  { content: [{ type: 'text', text: user.name }] }
+end
+
+ClaudeAgentSDK.query(prompt: '...') do |message|
+  Message.create!(role: 'assistant', body: message.to_s)   # just works
+end
+```
+
+The trade-off: because callbacks run on a plain thread rather than inside
+an `Async::Task`, fiber-specific primitives aren't available to them —
+`Async::Task.current` will raise "No async task available". If a callback
+wants cooperative concurrency it should open its own `Async { }` block. In
+practice, callbacks typically do some Ruby work, call external services, and
+return — so this rarely matters. If you wrap your own call site in an outer
+`Async { }` block, the scheduler is visible to your code again; you've opted
+in, and whatever fiber-safety rules your app uses apply there.
+
 ### ActionCable Streaming
 
 Stream Claude responses to the frontend in real-time:

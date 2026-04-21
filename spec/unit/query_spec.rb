@@ -244,7 +244,7 @@ RSpec.describe ClaudeAgentSDK::Query do
       query = described_class.new(transport: transport, is_streaming_mode: true)
 
       callback = lambda do |_input, _tool_use_id, _context|
-        Async::Task.current.sleep(0.05)
+        sleep(0.05)
         {}
       end
 
