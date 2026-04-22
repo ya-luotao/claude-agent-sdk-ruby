@@ -78,6 +78,33 @@ RSpec.describe 'Fiber scheduler boundary' do
     ensure
       client&.disconnect
     end
+
+    # Regression: `Client#receive_response` used to `break` on `ResultMessage`,
+    # but `receive_messages` hops to a plain thread via `FiberBoundary.invoke`
+    # when a Fiber scheduler is active. A thread hop severs the block from its
+    # defining method's call frame, so `break` raises `LocalJumpError` instead
+    # of unwinding. Must work inside an Async reactor.
+    it 'receive_response returns after ResultMessage without LocalJumpError inside Async' do
+      stub_transport
+      stub_query_handler_yielding(
+        { type: 'assistant', message: { role: 'assistant', model: 'claude', content: [{ type: 'text', text: 'hi' }] } },
+        { type: 'result', subtype: 'success', duration_ms: 1, duration_api_ms: 1, is_error: false, num_turns: 1,
+          session_id: 's', total_cost_usd: 0 }
+      )
+
+      received = []
+      Async do
+        client = ClaudeAgentSDK::Client.new
+        client.connect
+        begin
+          client.receive_response { |msg| received << msg.class }
+        ensure
+          client.disconnect
+        end
+      end.wait
+
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+    end
   end
 
   describe 'SDK MCP tool handler' do
