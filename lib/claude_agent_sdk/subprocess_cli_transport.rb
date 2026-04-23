@@ -13,6 +13,7 @@ module ClaudeAgentSDK
   class SubprocessCLITransport < Transport
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
+    RECENT_STDERR_LINES_LIMIT = 20
 
     def initialize(options_or_prompt = nil, options = nil)
       # Support both new single-arg form and legacy two-arg form
@@ -145,11 +146,7 @@ module ClaudeAgentSDK
         line_str = line.chomp
         next if line_str.empty?
 
-        # Accumulate recent lines for inclusion in ProcessError
-        @recent_stderr_mutex.synchronize do
-          @recent_stderr << line_str
-          @recent_stderr.shift if @recent_stderr.size > 20
-        end
+        record_bounded_stderr(line_str)
 
         # Call stderr callback if provided
         @options.stderr&.call(line_str)
@@ -174,10 +171,7 @@ module ClaudeAgentSDK
         line_str = line.chomp
         next if line_str.empty?
 
-        @recent_stderr_mutex.synchronize do
-          @recent_stderr << line_str
-          @recent_stderr.shift if @recent_stderr.size > 20
-        end
+        record_bounded_stderr(line_str)
       end
     end
 
@@ -282,7 +276,6 @@ module ClaudeAgentSDK
     def write(data)
       raise CLIConnectionError, 'ProcessTransport is not ready for writing' unless @ready && @stdin
       raise CLIConnectionError, "Cannot write to terminated process" if @process && !@process.alive?
-
       raise CLIConnectionError, "Cannot write to process that exited with error: #{@exit_error}" if @exit_error
 
       begin
@@ -394,6 +387,18 @@ module ClaudeAgentSDK
 
     def ready?
       @ready
+    end
+
+    private
+
+    # Append a stderr line to the recent-stderr ring, dropping the oldest
+    # entry once the buffer exceeds RECENT_STDERR_LINES_LIMIT. Used to surface the
+    # last few lines in ProcessError when the CLI exits non-zero.
+    def record_bounded_stderr(line)
+      @recent_stderr_mutex.synchronize do
+        @recent_stderr << line
+        @recent_stderr.shift if @recent_stderr.size > RECENT_STDERR_LINES_LIMIT
+      end
     end
   end
 end
