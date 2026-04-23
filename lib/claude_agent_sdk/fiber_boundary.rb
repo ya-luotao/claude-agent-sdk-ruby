@@ -23,6 +23,10 @@ module ClaudeAgentSDK
   # user's app makes.
   #
   # No-op when no scheduler is active, so it's cheap to use unconditionally.
+  #
+  # The thread hop severs `break`/`return`/`next` from the surrounding method,
+  # so SDK loops yielding user callbacks must keep loop control outside the
+  # invoked block (see `Client#receive_response`).
   module FiberBoundary
     module_function
 

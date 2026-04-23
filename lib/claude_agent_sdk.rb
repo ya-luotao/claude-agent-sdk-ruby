@@ -418,15 +418,18 @@ module ClaudeAgentSDK
     def receive_response(&block)
       return enum_for(:receive_response) unless block
 
-      # Flag-based rather than `break`: `receive_messages` hops this
-      # block onto a plain thread via `FiberBoundary.invoke`, which
-      # severs break's unwind target.
-      result_seen = false
-      receive_messages do |message|
-        next if result_seen
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-        block.call(message)
-        result_seen = true if message.is_a?(ResultMessage)
+      # Keep `break` on the same fiber as the underlying dequeue. Going through
+      # Client#receive_messages would put the FiberBoundary hop above the break
+      # and hang in Client mode — the CLI keeps stdin open and never emits `:end`.
+      @query_handler.receive_messages do |data|
+        message = MessageParser.parse(data)
+        next unless message
+
+        ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
+        FiberBoundary.invoke { block.call(message) }
+        break if message.is_a?(ResultMessage)
       end
     end
 
