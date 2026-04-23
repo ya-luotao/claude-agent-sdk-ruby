@@ -105,6 +105,54 @@ RSpec.describe 'Fiber scheduler boundary' do
 
       expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
     end
+
+    # Regression: in Client mode the CLI keeps stdin open after a result, so
+    # `dequeue` blocks indefinitely. `receive_response` must break itself
+    # rather than wait for an `:end` sentinel that never arrives. The
+    # finite-array stub above hides this; a real Async::Queue exposes it.
+    it 'receive_response returns even when the message stream never terminates' do
+      stub_transport
+
+      # Real queue + no `:end` mirrors interactive Client behaviour.
+      queue = Async::Queue.new
+      handler = instance_double(
+        ClaudeAgentSDK::Query,
+        start: true, initialize_protocol: nil,
+        wait_for_result_and_end_input: nil, close: nil
+      )
+      allow(handler).to receive(:receive_messages) do |&block|
+        loop { block.call(queue.dequeue) }
+      end
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(handler)
+
+      received = []
+      Async do |task|
+        client = ClaudeAgentSDK::Client.new
+        client.connect
+        begin
+          # Feed from a sibling so the responder unblocks on each dequeue;
+          # if it doesn't break on ResultMessage, the timeout fires.
+          task.async do
+            queue.enqueue(
+              type: 'assistant',
+              message: { role: 'assistant', model: 'claude', content: [{ type: 'text', text: 'hi' }] }
+            )
+            queue.enqueue(
+              type: 'result', subtype: 'success', duration_ms: 1, duration_api_ms: 1,
+              is_error: false, num_turns: 1, session_id: 's', total_cost_usd: 0
+            )
+          end
+
+          task.with_timeout(2.0) do
+            client.receive_response { |msg| received << msg.class }
+          end
+        ensure
+          client.disconnect
+        end
+      end.wait
+
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+    end
   end
 
   describe 'SDK MCP tool handler' do
