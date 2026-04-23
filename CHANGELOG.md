@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.3] - 2026-04-23
+
+### Changed
+- Internal: extracted `SubprocessCLITransport#record_bounded_stderr` helper to deduplicate the recent-stderr ring-buffer append/trim logic shared by `handle_stderr` and `drain_stderr_with_accumulation`, and replaced the inlined `20` cap with a named `RECENT_STDERR_LINES_LIMIT` constant. No public behavior change.
+
 ## [0.16.2] - 2026-04-23
 
 ### Changed
