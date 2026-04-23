@@ -1,6 +1,6 @@
 {
   "name": "claude-agent-ruby",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "description": "Implement or modify Ruby code using the claude-agent-sdk gem. Covers query() one-shot calls, Client-based interactive sessions, streaming input, all 27 hook events, permission callbacks, SDK MCP servers, structured output, bare mode, sandbox settings, session management, Rails integration, and custom transports.",
   "author": {
     "name": "ya-luotao",

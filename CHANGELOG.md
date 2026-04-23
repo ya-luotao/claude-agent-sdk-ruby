@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-04-23
+
+### Changed
+- Extracted `ClaudeAgentSDK::CommandBuilder` from `SubprocessCLITransport`. CLI argv assembly now lives in its own class and can be exercised in isolation — `CommandBuilder.new(cli_path, options).build` returns the argv array without booting a transport. No public behavior change; `SubprocessCLITransport#build_command` still works and now delegates to `CommandBuilder`.
+
 ## [0.16.1] - 2026-04-21
 
 ### Fixed
