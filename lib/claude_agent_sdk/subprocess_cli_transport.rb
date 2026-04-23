@@ -6,13 +6,13 @@ require 'timeout'
 require_relative 'transport'
 require_relative 'errors'
 require_relative 'version'
+require_relative 'command_builder'
 
 module ClaudeAgentSDK
   # Subprocess transport using Claude Code CLI
   class SubprocessCLITransport < Transport
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
-    EXTRA_ARG_FLAG_RE = /\A[a-z0-9][a-z0-9-]*\z/
 
     def initialize(options_or_prompt = nil, options = nil)
       # Support both new single-arg form and legacy two-arg form
@@ -67,126 +67,7 @@ module ClaudeAgentSDK
     end
 
     def build_command
-      cmd = [@cli_path, '--output-format', 'stream-json', '--verbose']
-
-      # System prompt handling
-      # When nil, pass empty string to ensure predictable behavior without default Claude Code system prompt
-      if @options.system_prompt.nil?
-        cmd.concat(['--system-prompt', ''])
-      elsif @options.system_prompt.is_a?(String)
-        cmd.concat(['--system-prompt', @options.system_prompt])
-      elsif @options.system_prompt.is_a?(SystemPromptFile)
-        cmd.concat(['--system-prompt-file', @options.system_prompt.path])
-      elsif @options.system_prompt.is_a?(SystemPromptPreset)
-        # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
-        # Only --append-system-prompt is passed if append text is provided
-        cmd.concat(['--append-system-prompt', @options.system_prompt.append]) if @options.system_prompt.append
-      elsif @options.system_prompt.is_a?(Hash)
-        prompt_type = @options.system_prompt[:type] || @options.system_prompt['type']
-        if prompt_type == 'file'
-          prompt_path = @options.system_prompt[:path] || @options.system_prompt['path']
-          cmd.concat(['--system-prompt-file', prompt_path]) if prompt_path
-        elsif prompt_type == 'preset'
-          append = @options.system_prompt[:append] || @options.system_prompt['append']
-          # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
-          cmd.concat(['--append-system-prompt', append]) if append
-        end
-      end
-
-      cmd.concat(['--allowedTools', @options.allowed_tools.join(',')]) unless @options.allowed_tools.empty?
-      cmd.concat(['--max-turns', @options.max_turns.to_s]) if @options.max_turns
-      cmd.concat(['--disallowedTools', @options.disallowed_tools.join(',')]) unless @options.disallowed_tools.empty?
-      cmd.concat(['--model', @options.model]) if @options.model
-      cmd.concat(['--fallback-model', @options.fallback_model]) if @options.fallback_model
-      cmd.concat(['--permission-prompt-tool', @options.permission_prompt_tool_name]) if @options.permission_prompt_tool_name
-      cmd.concat(['--permission-mode', @options.permission_mode]) if @options.permission_mode
-      cmd << '--continue' if @options.continue_conversation
-      cmd.concat(['--resume', @options.resume]) if @options.resume
-      cmd.concat(['--session-id', @options.session_id]) if @options.session_id
-
-      # Settings handling with sandbox merge
-      build_settings_args(cmd)
-
-      # Budget limit option
-      cmd.concat(['--max-budget-usd', @options.max_budget_usd.to_s]) if @options.max_budget_usd
-
-      # Task budget (API-side token budget)
-      if @options.task_budget
-        total = if @options.task_budget.is_a?(TaskBudget)
-                  @options.task_budget.total
-                else
-                  @options.task_budget[:total] || @options.task_budget['total']
-                end
-        cmd.concat(['--task-budget', total.to_s]) if total
-      end
-
-      # Thinking configuration (takes precedence over deprecated max_thinking_tokens)
-      build_thinking_args(cmd)
-
-      # Effort level — see ClaudeAgentSDK::EFFORT_LEVELS. The set of supported
-      # levels is model-dependent; the CLI falls back to the highest supported
-      # level at or below the one requested (e.g. `xhigh` → `high` on Opus 4.6).
-      cmd.concat(['--effort', @options.effort.to_s]) if @options.effort
-
-      # Betas option for enabling experimental features
-      if @options.betas && !@options.betas.empty?
-        cmd.concat(['--betas', @options.betas.join(',')])
-      end
-
-      # Tools option for base tools selection
-      build_tools_args(cmd)
-
-      # Append allowed tools option
-      if @options.append_allowed_tools && !@options.append_allowed_tools.empty?
-        cmd.concat(['--append-allowed-tools', @options.append_allowed_tools.join(',')])
-      end
-
-      # JSON schema for structured output
-      build_output_format_args(cmd)
-
-      # Add directories
-      @options.add_dirs.each do |dir|
-        cmd.concat(['--add-dir', dir.to_s])
-      end
-
-      # MCP servers
-      build_mcp_servers_args(cmd)
-
-      cmd << '--include-partial-messages' if @options.include_partial_messages
-      cmd << '--fork-session' if @options.fork_session
-      cmd << '--bare' if @options.bare
-
-      # Note: agents are now sent via the initialize control request (not CLI args)
-      # to avoid OS ARG_MAX limits with large agent configurations.
-
-      # Plugins
-      build_plugins_args(cmd)
-
-      # Setting sources
-      if @options.setting_sources
-        cmd.concat(['--setting-sources', @options.setting_sources.join(',')])
-      end
-
-      # Extra args
-      @options.extra_args.each do |flag, value|
-        flag_str = flag.to_s
-        unless EXTRA_ARG_FLAG_RE.match?(flag_str)
-          raise ArgumentError, "Invalid extra_args flag name: #{flag.inspect} (expected lowercase kebab-case)"
-        end
-
-        if value.nil?
-          cmd << "--#{flag_str}"
-        else
-          cmd.concat(["--#{flag_str}", value.to_s])
-        end
-      end
-
-      # Always use streaming mode for bidirectional control protocol.
-      # Prompts and agents are sent via stdin (initialize + user messages),
-      # which avoids OS ARG_MAX limits for large prompts and agent configurations.
-      cmd.concat(['--input-format', 'stream-json'])
-
-      cmd
+      CommandBuilder.new(@cli_path, @options).build
     end
 
     def connect
@@ -513,124 +394,6 @@ module ClaudeAgentSDK
 
     def ready?
       @ready
-    end
-
-    private
-
-    def build_settings_args(cmd)
-      return unless @options.settings || @options.sandbox
-
-      settings_hash = {}
-      settings_is_path = false
-
-      if @options.settings
-        if @options.settings.is_a?(String)
-          begin
-            settings_hash = JSON.parse(@options.settings)
-          rescue JSON::ParserError
-            if @options.sandbox
-              settings_hash = load_settings_file(@options.settings)
-            else
-              settings_is_path = true
-              cmd.concat(['--settings', @options.settings])
-            end
-          end
-        elsif @options.settings.is_a?(Hash)
-          settings_hash = @options.settings.dup
-        end
-      end
-
-      if !settings_is_path && @options.sandbox
-        sandbox_hash = @options.sandbox.is_a?(SandboxSettings) ? @options.sandbox.to_h : @options.sandbox
-        settings_hash[:sandbox] = sandbox_hash unless sandbox_hash.empty?
-      end
-
-      cmd.concat(['--settings', JSON.generate(settings_hash)]) if !settings_is_path && !settings_hash.empty?
-    end
-
-    def build_tools_args(cmd)
-      return if @options.tools.nil?
-
-      if @options.tools.is_a?(Array)
-        tools_value = @options.tools.empty? ? '' : @options.tools.join(',')
-        cmd.concat(['--tools', tools_value])
-      elsif @options.tools.is_a?(ToolsPreset)
-        cmd.concat(['--tools', 'default'])
-      elsif @options.tools.is_a?(Hash)
-        if (@options.tools[:type] || @options.tools['type']) == 'preset'
-          cmd.concat(['--tools', 'default'])
-        else
-          cmd.concat(['--tools', JSON.generate(@options.tools)])
-        end
-      end
-    end
-
-    def build_output_format_args(cmd)
-      return unless @options.output_format
-
-      schema = if @options.output_format.is_a?(Hash) && @options.output_format[:type] == 'json_schema'
-                 @options.output_format[:schema]
-               elsif @options.output_format.is_a?(Hash) && @options.output_format['type'] == 'json_schema'
-                 @options.output_format['schema']
-               else
-                 @options.output_format
-               end
-      schema_json = schema.is_a?(String) ? schema : JSON.generate(schema)
-      cmd.concat(['--json-schema', schema_json])
-    end
-
-    def build_mcp_servers_args(cmd)
-      return unless @options.mcp_servers && !@options.mcp_servers.empty?
-
-      if @options.mcp_servers.is_a?(Hash)
-        servers_for_cli = {}
-        @options.mcp_servers.each do |name, config|
-          servers_for_cli[name] = if config.is_a?(Hash) && config[:type] == 'sdk'
-                                    config.reject { |k, _| k == :instance }
-                                  else
-                                    config
-                                  end
-        end
-        cmd.concat(['--mcp-config', JSON.generate({ mcpServers: servers_for_cli })]) unless servers_for_cli.empty?
-      else
-        cmd.concat(['--mcp-config', @options.mcp_servers.to_s])
-      end
-    end
-
-    def build_plugins_args(cmd)
-      return unless @options.plugins && !@options.plugins.empty?
-
-      @options.plugins.each do |plugin|
-        plugin_config = plugin.is_a?(SdkPluginConfig) ? plugin.to_h : plugin
-        plugin_type = plugin_config[:type] || plugin_config['type']
-        plugin_path = plugin_config[:path] || plugin_config['path']
-
-        raise ArgumentError, "Unsupported plugin type: #{plugin_type.inspect}" unless %w[local plugin].include?(plugin_type)
-        next unless plugin_path
-
-        cmd.concat(['--plugin-dir', plugin_path])
-      end
-    end
-
-    def load_settings_file(path)
-      raise CLIConnectionError, "Settings file not found: #{path}" unless File.file?(path)
-
-      JSON.parse(File.read(path))
-    end
-
-    def build_thinking_args(cmd)
-      if @options.thinking
-        case @options.thinking
-        when ThinkingConfigAdaptive
-          cmd.concat(['--thinking', 'adaptive'])
-        when ThinkingConfigEnabled
-          cmd.concat(['--max-thinking-tokens', @options.thinking.budget_tokens.to_s])
-        when ThinkingConfigDisabled
-          cmd.concat(['--thinking', 'disabled'])
-        end
-      elsif @options.max_thinking_tokens
-        cmd.concat(['--max-thinking-tokens', @options.max_thinking_tokens.to_s])
-      end
     end
   end
 end
