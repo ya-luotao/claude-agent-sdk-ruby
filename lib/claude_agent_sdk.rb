@@ -374,9 +374,7 @@ module ClaudeAgentSDK
         query(prompt)
       else
         prompt.each do |message_json|
-          message_json = message_json.to_s
-          message_json += "\n" unless message_json.end_with?("\n")
-          @transport.write(message_json)
+          writeln(message_json.to_s)
         end
       end
     end
@@ -394,7 +392,7 @@ module ClaudeAgentSDK
         parent_tool_use_id: nil,
         session_id: session_id
       }
-      @transport.write(JSON.generate(message) + "\n")
+      writeln(JSON.generate(message))
     end
 
     # Receive all messages from Claude
@@ -553,6 +551,14 @@ module ClaudeAgentSDK
         end
       end
       nil
+    end
+
+    def writeln(string)
+      write string.end_with?("\n") ? string : "#{string}\n"
+    end
+
+    def write(string)
+      @transport.write(string)
     end
   end
 end
