@@ -182,6 +182,41 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       expect(cmd).to include('--thinking', 'adaptive')
       expect(cmd).not_to include('--max-thinking-tokens')
     end
+
+    it 'passes --thinking-display summarized for adaptive with display' do
+      thinking = ClaudeAgentSDK::ThinkingConfigAdaptive.new(display: 'summarized')
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: thinking)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--thinking', 'adaptive')
+      expect(cmd).to include('--thinking-display', 'summarized')
+    end
+
+    it 'passes --thinking-display omitted for adaptive with display' do
+      thinking = ClaudeAgentSDK::ThinkingConfigAdaptive.new(display: 'omitted')
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: thinking)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--thinking-display', 'omitted')
+    end
+
+    it 'passes --thinking-display for enabled with display' do
+      thinking = ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 5_000, display: 'summarized')
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: thinking)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--max-thinking-tokens', '5000')
+      expect(cmd).to include('--thinking-display', 'summarized')
+    end
+
+    it 'omits --thinking-display when display is nil' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).not_to include('--thinking-display')
+    end
+
+    it 'raises when display value is invalid' do
+      expect do
+        ClaudeAgentSDK::ThinkingConfigAdaptive.new(display: 'full')
+      end.to raise_error(ArgumentError, /invalid thinking display/)
+    end
   end
 
   describe 'mcp_servers' do

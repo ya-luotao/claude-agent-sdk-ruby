@@ -1512,6 +1512,22 @@ RSpec.describe ClaudeAgentSDK do
         config = described_class.new
         expect(config.type).to eq('adaptive')
       end
+
+      it 'defaults display to nil' do
+        expect(described_class.new.display).to be_nil
+      end
+
+      it 'accepts display: "summarized"' do
+        expect(described_class.new(display: 'summarized').display).to eq('summarized')
+      end
+
+      it 'accepts display: "omitted"' do
+        expect(described_class.new(display: 'omitted').display).to eq('omitted')
+      end
+
+      it 'rejects unknown display values' do
+        expect { described_class.new(display: 'full') }.to raise_error(ArgumentError, /invalid thinking display/)
+      end
     end
 
     describe ClaudeAgentSDK::ThinkingConfigEnabled do
@@ -1519,6 +1535,17 @@ RSpec.describe ClaudeAgentSDK do
         config = described_class.new(budget_tokens: 16_000)
         expect(config.type).to eq('enabled')
         expect(config.budget_tokens).to eq(16_000)
+      end
+
+      it 'accepts display: "summarized"' do
+        config = described_class.new(budget_tokens: 16_000, display: 'summarized')
+        expect(config.display).to eq('summarized')
+      end
+
+      it 'rejects unknown display values' do
+        expect do
+          described_class.new(budget_tokens: 16_000, display: 'verbose')
+        end.to raise_error(ArgumentError, /invalid thinking display/)
       end
     end
 
