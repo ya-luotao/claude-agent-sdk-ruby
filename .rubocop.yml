@@ -11,29 +11,6 @@ AllCops:
 Style/Documentation:
   Enabled: false
 
-Style/StringLiterals:
-  EnforcedStyle: double_quotes
-
-Style/StringLiteralsInInterpolation:
-  EnforcedStyle: double_quotes
-
-Layout/IndentationConsistency:
-  Enabled: true
-  EnforcedStyle: indented_internal_methods
-
-Layout/EmptyLinesAroundAccessModifier:
-  Enabled: true
-  EnforcedStyle: only_before
-
-Layout/LineLength:
-  Enabled: false
-
-Layout/TrailingEmptyLines:
-  Enabled: true
-
-Layout/TrailingWhitespace:
-  Enabled: true
-
 Metrics/MethodLength:
   Max: 30
   Exclude:
