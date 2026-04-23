@@ -1894,7 +1894,7 @@ RSpec.describe ClaudeAgentSDK do
 
     describe ClaudeAgentSDK::PermissionDeniedHookSpecificOutput do
       it 'converts to CLI format' do
-        output = described_class.new(retry_: true)
+        output = described_class.new(retry: true)
         hash = output.to_h
         expect(hash[:hookEventName]).to eq('PermissionDenied')
         expect(hash[:retry]).to eq(true)
