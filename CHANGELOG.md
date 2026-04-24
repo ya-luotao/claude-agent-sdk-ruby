@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `display:` option on `ThinkingConfigAdaptive` and `ThinkingConfigEnabled`, forwarded to the CLI as `--thinking-display <summarized|omitted>`. Opus 4.7 defaults thinking display to `"omitted"` (empty `thinking` field, signature only), so pass `ThinkingConfigAdaptive.new(display: "summarized")` to receive plaintext summarized thinking text. Invalid values raise `ArgumentError` at construction. See [adaptive thinking docs](https://docs.claude.com/en/docs/build-with-claude/adaptive-thinking).
+
 ## [0.16.4] - 2026-04-23
 
 ### Fixed

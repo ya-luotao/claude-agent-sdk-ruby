@@ -158,14 +158,25 @@ module ClaudeAgentSDK
         case @options.thinking
         when ThinkingConfigAdaptive
           cmd.push("--thinking", "adaptive")
+          append_thinking_display(cmd, @options.thinking.display)
         when ThinkingConfigEnabled
           cmd.push("--max-thinking-tokens", @options.thinking.budget_tokens.to_s)
+          append_thinking_display(cmd, @options.thinking.display)
         when ThinkingConfigDisabled
           cmd.push("--thinking", "disabled")
         end
       elsif @options.max_thinking_tokens
         cmd.push("--max-thinking-tokens", @options.max_thinking_tokens.to_s)
       end
+    end
+
+    # `--thinking-display` toggles between `"summarized"` (visible thinking
+    # text) and `"omitted"` (empty thinking, signature only). Opus 4.7 defaults
+    # to `"omitted"`, so pass `display: "summarized"` to see reasoning.
+    def append_thinking_display(cmd, display)
+      return if display.nil?
+
+      cmd.push("--thinking-display", display.to_s)
     end
 
     # The set of supported levels is model-dependent; the CLI falls back to

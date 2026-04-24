@@ -599,23 +599,53 @@ module ClaudeAgentSDK
   end
 
   # Thinking configuration types
+  #
+  # `display` controls how thinking content appears in responses. Valid values
+  # are `"summarized"` (plaintext summary) and `"omitted"` (empty thinking
+  # field, signature only). Defaults are model-dependent: Opus 4.6/Sonnet 4.6
+  # default to `"summarized"`; Opus 4.7 and Mythos Preview default to
+  # `"omitted"`. Pass `display: "summarized"` explicitly on Opus 4.7 to get
+  # visible thinking text. Not supported with `ThinkingConfigDisabled`.
+  THINKING_DISPLAY_VALUES = %w[summarized omitted].freeze
 
   # Adaptive thinking: uses a default budget of 32000 tokens
   class ThinkingConfigAdaptive
-    attr_accessor :type
+    attr_accessor :type, :display
 
-    def initialize
+    def initialize(display: nil)
       @type = 'adaptive'
+      @display = validate_display(display)
+    end
+
+    private
+
+    def validate_display(value)
+      return nil if value.nil?
+      return value if THINKING_DISPLAY_VALUES.include?(value.to_s)
+
+      raise ArgumentError,
+            "invalid thinking display #{value.inspect}; expected one of #{THINKING_DISPLAY_VALUES.inspect}"
     end
   end
 
   # Enabled thinking: uses a user-specified budget
   class ThinkingConfigEnabled
-    attr_accessor :type, :budget_tokens
+    attr_accessor :type, :budget_tokens, :display
 
-    def initialize(budget_tokens:)
+    def initialize(budget_tokens:, display: nil)
       @type = 'enabled'
       @budget_tokens = budget_tokens
+      @display = validate_display(display)
+    end
+
+    private
+
+    def validate_display(value)
+      return nil if value.nil?
+      return value if THINKING_DISPLAY_VALUES.include?(value.to_s)
+
+      raise ArgumentError,
+            "invalid thinking display #{value.inspect}; expected one of #{THINKING_DISPLAY_VALUES.inspect}"
     end
   end
 
