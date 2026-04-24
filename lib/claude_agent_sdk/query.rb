@@ -261,7 +261,7 @@ module ClaudeAgentSDK
           response: response_data
         }
       }
-      @transport.write(JSON.generate(success_response) + "\n")
+      writeln(JSON.generate(success_response))
     rescue Async::Stop
       # Cancellation requested; respond with an error so the CLI can unblock.
       cancelled_response = {
@@ -273,7 +273,7 @@ module ClaudeAgentSDK
           error: 'Cancelled'
         }
       }
-      @transport.write(JSON.generate(cancelled_response) + "\n")
+      writeln(JSON.generate(cancelled_response))
     rescue StandardError => e
       # Send error response
       error_response = {
@@ -285,7 +285,7 @@ module ClaudeAgentSDK
           error: e.message
         }
       }
-      @transport.write(JSON.generate(error_response) + "\n")
+      writeln(JSON.generate(error_response))
     end
 
     def handle_permission_request(request_data)
@@ -642,7 +642,7 @@ module ClaudeAgentSDK
         request: request
       }
 
-      @transport.write(JSON.generate(control_request) + "\n")
+      writeln(JSON.generate(control_request))
 
       # Wait for response with timeout (default 1200s to handle slow CLI startup)
       Async do |task|
@@ -913,19 +913,22 @@ module ClaudeAgentSDK
     def stream_input(stream)
       stream.each do |message|
         break if @closed
-        serialized = if message.is_a?(Hash)
-                       JSON.generate(message) + "\n"
-                     else
-                       message.to_s
-                     end
-        serialized += "\n" unless serialized.end_with?("\n")
-        @transport.write(serialized)
+        serialized = message.is_a?(Hash) ? JSON.generate(message) : message.to_s
+        writeln(serialized)
       end
     rescue StandardError => e
       # Log error but don't raise
       warn "Error streaming input: #{e.message}"
     ensure
       wait_for_result_and_end_input
+    end
+
+    def writeln(string)
+      write string.end_with?("\n") ? string : "#{string}\n"
+    end
+
+    def write(string)
+      @transport.write(string)
     end
 
     # Receive SDK messages (not control messages)
