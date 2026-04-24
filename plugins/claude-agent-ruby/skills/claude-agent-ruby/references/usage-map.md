@@ -111,6 +111,13 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 10_000)
 )
 
+# Opus 4.7 defaults thinking display to "omitted" (empty thinking field,
+# signature only). Pass display: "summarized" to receive plaintext
+# thinking text. Valid values: "summarized", "omitted".
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new(display: 'summarized')
+)
+
 # Effort level — see ClaudeAgentSDK::EFFORT_LEVELS
 # ('low', 'medium', 'high', 'xhigh', 'max'; model-dependent)
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(effort: 'xhigh')
