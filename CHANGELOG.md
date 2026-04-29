@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.6] - 2026-04-29
+
+### Added
+- Type classes now accept hash construction with mixed key shapes — symbols or strings, snake_case or camelCase — and support bracket access (`obj[:field]`, `obj['field']`). `UserMessage.new({"sessionId" => "abc"})` works the same as `UserMessage.new(session_id: "abc")`. `Type.from_hash(nil)` and `Type.wrap(nil)` are nil-safe.
+- `ClaudeAgentOptions.new(nil)` is accepted and yields an options object populated with configured defaults.
+
+### Changed
+- Discriminator fields on type classes (`type` on `SystemPromptFile`/`McpStdioServerConfig`/etc., `behavior` on `PermissionResultAllow`/`Deny`, `hook_event_name` on every hook input/output) are now `attr_reader`-only, set authoritatively in `initialize`. They cannot be overwritten externally.
+- `ClaudeAgentOptions` continues to raise `ArgumentError` on unknown keys (constructor, `dup_with`, and `[]=`); other type subclasses silently drop unknown keys for forward-compatibility with newer CLI output.
+
+### Internal
+- Unified ~50 type classes (messages, hook inputs/outputs, MCP configs, system prompt configs, sandbox settings) under a shared `Type` base class. `lib/claude_agent_sdk/types.rb` shrank from 1510 to 588 lines; `MessageParser`'s system-message dispatch went from 215 lines to a 14-entry lookup table.
+
 ## [0.16.5] - 2026-04-24
 
 ### Added
