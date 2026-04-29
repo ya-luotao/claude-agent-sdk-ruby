@@ -11,6 +11,25 @@ RSpec.describe ClaudeAgentSDK do
   end
 
   describe 'Type Classes' do
+    describe ClaudeAgentSDK::Type do
+      describe '.wrap' do
+        it 'returns the object as-is when already an instance' do
+          block = ClaudeAgentSDK::TextBlock.new(text: 'Hi')
+          expect(ClaudeAgentSDK::TextBlock.wrap(block)).to be(block)
+        end
+
+        it 'constructs a new instance from a hash' do
+          wrapped = ClaudeAgentSDK::TextBlock.wrap(text: 'Hi')
+          expect(wrapped).to be_a(ClaudeAgentSDK::TextBlock)
+          expect(wrapped.text).to eq('Hi')
+        end
+
+        it 'returns nil when given nil' do
+          expect(ClaudeAgentSDK::TextBlock.wrap(nil)).to be_nil
+        end
+      end
+    end
+
     describe ClaudeAgentSDK::TextBlock do
       it 'stores text content' do
         block = described_class.new(text: 'Hello, world!')
@@ -688,6 +707,23 @@ RSpec.describe ClaudeAgentSDK do
 
         expect(new_options.max_turns).to eq(10)
         expect(new_options.model).to eq('claude-opus-4')
+      end
+
+      it 'raises ArgumentError for unknown keys at construction' do
+        expect { described_class.new(modle: 'claude-opus-4') }
+          .to raise_error(ArgumentError, /unknown ClaudeAgentOptions option:.*modle/)
+      end
+
+      it 'raises ArgumentError for unknown keys via dup_with' do
+        options = described_class.new
+        expect { options.dup_with(modle: 'claude-opus-4') }
+          .to raise_error(ArgumentError, /unknown ClaudeAgentOptions option:.*modle/)
+      end
+
+      it 'raises ArgumentError for unknown keys via bracket assignment' do
+        options = described_class.new
+        expect { options[:modle] = 'x' }
+          .to raise_error(ArgumentError, /unknown ClaudeAgentOptions option:.*modle/)
       end
     end
 
@@ -1921,7 +1957,7 @@ RSpec.describe ClaudeAgentSDK do
 
     describe ClaudeAgentSDK::PermissionDeniedHookSpecificOutput do
       it 'converts to CLI format' do
-        output = described_class.new(retry_: true)
+        output = described_class.new(retry: true)
         hash = output.to_h
         expect(hash[:hookEventName]).to eq('PermissionDenied')
         expect(hash[:retry]).to eq(true)
