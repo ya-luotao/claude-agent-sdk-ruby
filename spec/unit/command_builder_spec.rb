@@ -380,6 +380,29 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
     end
   end
 
+  describe 'mutually exclusive session flags' do
+    it 'raises ArgumentError when both continue_conversation and resume are set' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        continue_conversation: true,
+        resume: 'session-id'
+      )
+      expect { described_class.new('/usr/bin/claude', options).build }
+        .to raise_error(ArgumentError, /continue_conversation and resume are mutually exclusive/)
+    end
+
+    it 'allows continue_conversation alone' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(continue_conversation: true)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--continue')
+    end
+
+    it 'allows resume alone' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(resume: 'session-id')
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--resume', 'session-id')
+    end
+  end
+
   describe 'standalone loading' do
     it 'CommandBuilder can be required on its own' do
       output = `#{RbConfig.ruby} -Ilib -rclaude_agent_sdk/command_builder -e "puts ClaudeAgentSDK::CommandBuilder.name" 2>&1`

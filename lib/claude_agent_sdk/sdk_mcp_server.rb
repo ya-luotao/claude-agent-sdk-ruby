@@ -111,8 +111,10 @@ module ClaudeAgentSDK
       resource = @resources.find { |r| r.uri == uri }
       raise "Resource '#{uri}' not found" unless resource
 
-      # Call the resource's reader
-      content = resource.reader.call
+      # Hop off the Fiber scheduler before invoking user code — same reason
+      # as `call_tool` above: reader blocks may touch Thread.current-keyed
+      # libraries (ActiveRecord, pg, ...) and must run on a plain thread.
+      content = FiberBoundary.invoke { resource.reader.call }
 
       # Ensure content has the expected format
       unless content.is_a?(Hash) && content[:contents]
@@ -142,8 +144,9 @@ module ClaudeAgentSDK
       prompt = @prompts.find { |p| p.name == name }
       raise "Prompt '#{name}' not found" unless prompt
 
-      # Call the prompt's generator
-      result = prompt.generator.call(arguments)
+      # Hop off the Fiber scheduler before invoking user code — same reason
+      # as `call_tool` above.
+      result = FiberBoundary.invoke { prompt.generator.call(arguments) }
 
       # Ensure result has the expected format
       unless result.is_a?(Hash) && result[:messages]
@@ -276,7 +279,9 @@ module ClaudeAgentSDK
             end
 
             def read
-              result = @resource_def.reader.call
+              # Hop off the Fiber scheduler before invoking user code so the
+              # async gem's scheduler is not visible to ActiveRecord / pg.
+              result = ClaudeAgentSDK::FiberBoundary.invoke { @resource_def.reader.call }
 
               # Convert to MCP format
               result[:contents].map do |content|
@@ -315,7 +320,8 @@ module ClaudeAgentSDK
             end
 
             def get(**args)
-              result = @prompt_def.generator.call(args)
+              # Hop off the Fiber scheduler before invoking user code (see read above).
+              result = ClaudeAgentSDK::FiberBoundary.invoke { @prompt_def.generator.call(args) }
 
               # Convert to MCP format
               {

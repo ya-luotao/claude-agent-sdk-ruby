@@ -22,6 +22,10 @@ module ClaudeAgentSDK
 
     CONTROL_REQUEST_TIMEOUT_ENV_VAR = 'CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS'
     DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
+    # NOTE: CLAUDE_CODE_STREAM_CLOSE_TIMEOUT is defined by the CLI in
+    # MILLISECONDS (Python SDK uses `int(os.environ[...])/1000`); the SDK
+    # divides by 1000 to obtain seconds. The default below is *seconds*
+    # for direct use without env conversion (60 s = the CLI's 60000 ms).
     STREAM_CLOSE_TIMEOUT_ENV_VAR = 'CLAUDE_CODE_STREAM_CLOSE_TIMEOUT'
     DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS = 60.0
 
@@ -119,13 +123,31 @@ module ClaudeAgentSDK
       response
     end
 
-    # Start reading messages from transport
+    # Start reading messages from transport.
+    #
+    # Spawns `read_messages` as a direct child task of the current Async
+    # task and stores that child in `@task`. An earlier version wrapped
+    # `task.async { read_messages }` inside an outer `Async do ... end` and
+    # assigned the outer task to `@task`; the outer task completed almost
+    # immediately after spawning, so `close`'s `@task.stop` never reached
+    # the actual `read_messages` fiber and the read loop kept running
+    # until the transport raised. Now `@task.stop` stops the read loop.
+    #
+    # Must be called inside an Async{} block (matches `query()` which wraps
+    # its own internals in Async, and the documented `Client#connect`
+    # pattern). If invoked outside a reactor, raise a clear error rather
+    # than letting Async::Task.current raise an opaque "No async task
+    # available!" — earlier versions of this method *appeared* to work
+    # from synchronous callers but actually hung indefinitely because the
+    # outer Async{} root task waited for read_messages to finish, which
+    # never happens for a live Client.
     def start
       return if @task
 
-      @task = Async do |task|
-        task.async { read_messages }
-      end
+      parent = Async::Task.current?
+      raise CLIConnectionError, 'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})' unless parent
+
+      @task = parent.async { read_messages }
     end
 
     private
@@ -644,23 +666,30 @@ module ClaudeAgentSDK
 
       writeln(JSON.generate(control_request))
 
-      # Wait for response with timeout (default 1200s to handle slow CLI startup)
-      Async do |task|
-        task.with_timeout(timeout_seconds) do
+      # Wait for response with timeout. Use the current task's timeout so we
+      # stay in the caller's fiber (a nested `Async do ... end.wait` spawned a
+      # separate task and could leak the pending entries when an Async::Stop
+      # propagated through `.wait` before either the success-path or the
+      # timeout-path cleanup ran). Control requests must run inside an Async
+      # reactor — `Query#start` already enforces this precondition, so the
+      # cleanest place to surface the contract is the start hand-off; here we
+      # assume an active task is present.
+      begin
+        Async::Task.current.with_timeout(timeout_seconds) do
           condition.wait
         end
-
-        result = @pending_control_results.delete(request_id)
-        @pending_control_responses.delete(request_id)
-
+        result = @pending_control_results[request_id]
         raise result if result.is_a?(Exception)
 
-        result[:response] || {}
-      end.wait
-    rescue Async::TimeoutError
-      @pending_control_responses.delete(request_id)
-      @pending_control_results.delete(request_id)
-      raise ControlRequestTimeoutError, "Control request timeout: #{request[:subtype]}"
+        result&.[](:response) || {}
+      rescue Async::TimeoutError
+        raise ControlRequestTimeoutError, "Control request timeout: #{request[:subtype]}"
+      ensure
+        # Always evict the entries so a late control_response (after timeout)
+        # or an Async::Stop propagating through wait does not leak state.
+        @pending_control_responses.delete(request_id)
+        @pending_control_results.delete(request_id)
+      end
     end
 
     def handle_sdk_mcp_request(server_name, message)

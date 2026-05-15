@@ -180,10 +180,30 @@ module ClaudeAgentSDK
     attr_accessor :tool_use_id, :content, :is_error
   end
 
+  # Server-side tool use (CLI's built-in tools that execute server-side
+  # rather than as MCP tools — advisor, web_search, code_execution, etc.).
+  # Mirrors Python's `ServerToolUseBlock`.
+  class ServerToolUseBlock < Type
+    attr_accessor :id, :name, :input
+  end
+
+  # Result of a server-side tool execution. Mirrors Python's
+  # `ServerToolResultBlock`.
+  class ServerToolResultBlock < Type
+    attr_accessor :tool_use_id, :content, :is_error
+  end
+
   # Generic content block for types the SDK doesn't explicitly handle (e.g., "document", "image").
   # Preserves the raw hash data for forward compatibility with newer CLI versions.
   class UnknownBlock < Type
     attr_accessor :type, :data
+  end
+
+  # Deferred tool use, emitted on `ResultMessage` when a PreToolUse hook
+  # returned `permissionDecision: "defer"`. The session can be resumed later
+  # to execute the deferred call. Mirrors Python's `DeferredToolUse`.
+  class DeferredToolUse < Type
+    attr_accessor :id, :name, :input
   end
 
   # Message Types
@@ -343,7 +363,14 @@ module ClaudeAgentSDK
                   :permission_denials, # Array of { tool_name:, tool_use_id:, tool_input: }
                   :errors,             # Array of error strings (present on error subtypes)
                   :uuid,
-                  :fast_mode_state     # "off", "cooldown", or "on"
+                  :fast_mode_state,    # "off", "cooldown", or "on"
+                  :api_error_status    # Integer HTTP status (429, 500, 529) on api_error subtype (CLI 2.1.110+)
+
+    attr_reader :deferred_tool_use     # DeferredToolUse, populated when a PreToolUse hook deferred
+
+    def deferred_tool_use=(value)
+      @deferred_tool_use = value.is_a?(Hash) ? DeferredToolUse.from_hash(value) : value
+    end
   end
 
   # Stream event for partial message updates
@@ -518,9 +545,16 @@ module ClaudeAgentSDK
     end
   end
 
-  # Tool permission context
+  # Tool permission context delivered to `can_use_tool` callbacks.
+  # CLI 2.1.110+ began populating the four pre-formatted display fields
+  # (`title`, `display_name`, `description`, `blocked_path`,
+  # `decision_reason`) so the SDK consumer can render the same prompt UI
+  # the CLI would have shown. Older fields (`signal`, `suggestions`,
+  # `tool_use_id`, `agent_id`) remain unchanged.
   class ToolPermissionContext < Type
-    attr_accessor :signal, :suggestions, :tool_use_id, :agent_id
+    attr_accessor :signal, :suggestions, :tool_use_id, :agent_id,
+                  :title, :display_name, :description,
+                  :blocked_path, :decision_reason
 
     def initialize(attributes = {})
       super
@@ -885,9 +919,15 @@ module ClaudeAgentSDK
     end
   end
 
-  # PostToolUse hook specific output
+  # PostToolUse hook specific output.
+  #
+  # `updated_tool_output` (CLI 2.1.110+) replaces the tool's output entirely
+  # — works for any tool, MCP or built-in. `updated_mcp_tool_output` is the
+  # legacy MCP-only field that pre-dates the unified one; the CLI still
+  # honors it, so both are emitted when set. Mirrors Python's
+  # `PostToolUseHookSpecificOutput`.
   class PostToolUseHookSpecificOutput < Type
-    attr_accessor :additional_context, :updated_mcp_tool_output
+    attr_accessor :additional_context, :updated_mcp_tool_output, :updated_tool_output
     attr_reader :hook_event_name
 
     def initialize(attributes = {})
@@ -898,6 +938,7 @@ module ClaudeAgentSDK
     def to_h
       result = { hookEventName: @hook_event_name }
       result[:additionalContext] = @additional_context if @additional_context
+      result[:updatedToolOutput] = @updated_tool_output unless @updated_tool_output.nil?
       result[:updatedMCPToolOutput] = @updated_mcp_tool_output if @updated_mcp_tool_output
       result
     end

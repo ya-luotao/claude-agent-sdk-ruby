@@ -472,16 +472,56 @@ module ClaudeAgentSDK
       by_id.values
     end
 
+    # Probe git for the worktree list with a hard 5-second cap. A stale
+    # git lock or hung network mount must not block the listing path
+    # forever. Stdlib `Timeout.timeout` raises across threads via
+    # `Thread#raise`, which corrupts the Async fiber-scheduler state when
+    # the caller is inside a reactor, so we drain stdout/stderr on side
+    # threads (so a full pipe buffer can't deadlock git) and SIGKILL the
+    # child if the deadline passes. Matches Python's
+    # `subprocess.run(..., timeout=5)`.
     def detect_worktrees(path)
-      output, _err, status = Open3.capture3('git', '-C', path, 'worktree', 'list', '--porcelain')
-      return [path] unless status.success?
+      stdin, stdout, stderr, wait_thr = Open3.popen3('git', '-C', path, 'worktree', 'list', '--porcelain')
+      stdin.close
 
-      paths = output.lines.filter_map do |line|
+      # Drain stdout/stderr concurrently — without this, a repo with enough
+      # worktrees to overrun the 64 KB pipe buffer causes git to block on
+      # write, wait_thr never finishes, and we hit the 5-second watchdog
+      # and silently lose every worktree path.
+      stdout_buf = +''
+      stdout_reader = Thread.new { stdout_buf << stdout.read.to_s }
+      stderr_reader = Thread.new { stderr.read }
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5.0
+      until wait_thr.join(0.1)
+        next if Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+
+        begin
+          Process.kill('KILL', wait_thr.pid)
+        rescue Errno::ESRCH
+          # Already exited between the join check and the kill.
+        end
+        wait_thr.join
+        stdout_reader.join(0.5)
+        stderr_reader.join(0.5)
+        return [path]
+      end
+
+      stdout_reader.join
+      stderr_reader.join
+
+      return [path] unless wait_thr.value.success?
+
+      paths = stdout_buf.lines.filter_map do |line|
         line.strip.delete_prefix('worktree ') if line.start_with?('worktree ')
       end
       paths.empty? ? [path] : paths
     rescue StandardError
       [path]
+    ensure
+      stdout_reader&.kill if stdout_reader&.alive?
+      stderr_reader&.kill if stderr_reader&.alive?
+      [stdout, stderr].each { |io| io&.close rescue nil } # rubocop:disable Style/RescueModifier
     end
 
     def find_session_file(session_id, directory)

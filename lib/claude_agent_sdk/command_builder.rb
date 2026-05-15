@@ -103,6 +103,11 @@ module ClaudeAgentSDK
     end
 
     def append_session(cmd)
+      # `--continue` and `--resume <id>` are mutually exclusive session-restore
+      # modes. Passing both surfaces as a generic non-zero CLI exit, which is
+      # painful to debug at the caller; raise early in the SDK stack instead.
+      raise ArgumentError, "continue_conversation and resume are mutually exclusive" if @options.continue_conversation && @options.resume
+
       cmd.push("--continue") if @options.continue_conversation
       cmd.push("--resume", @options.resume) if @options.resume
       append_resume_session_at(cmd)
