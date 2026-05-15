@@ -21,7 +21,7 @@ Gem::Specification.new do |spec|
   spec.metadata['allowed_push_host'] = 'https://rubygems.org'
 
   # Specify which files should be added to the gem when it is released.
-  spec.files = Dir['lib/**/*', 'README.md', 'LICENSE', 'CHANGELOG.md']
+  spec.files = Dir['lib/**/*', 'docs/**/*', 'README.md', 'LICENSE', 'CHANGELOG.md']
   spec.require_paths = ['lib']
 
   # Runtime dependencies

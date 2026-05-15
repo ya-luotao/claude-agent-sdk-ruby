@@ -70,7 +70,8 @@ The Ruby SDK has been fully implemented with the following components:
 
 ### Documentation
 
-- **README.md** - Comprehensive documentation with examples
+- **README.md** - Overview, install, comparison table, quick start, and minimal API examples
+- **docs/** - Topic subpages (client, MCP servers, hooks, configuration, sessions, observability, Rails, types, errors) linked from the README
 - **CHANGELOG.md** - Version history
 - **IMPLEMENTATION.md** - This file
 
@@ -277,7 +278,7 @@ The Ruby SDK successfully implements **complete feature parity** with the Python
 - **Core implementation:** ~1,700 lines of production code
 - **Test suite:** RSpec coverage for major components
 - **Examples:** Multiple runnable scripts under `examples/`
-- **Documentation:** Complete README, CHANGELOG, and implementation guide
+- **Documentation:** Slim README + 9 topic subpages in `docs/`, CHANGELOG, and implementation guide
 - **Dependencies:** Minimal (only `async` gem + Ruby stdlib)
 - **Ruby version:** 3.2+ required
 

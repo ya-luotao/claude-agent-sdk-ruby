@@ -6,7 +6,7 @@ description: Implement or modify Ruby code using the claude-agent-sdk gem. Cover
 # Claude Agent Ruby SDK
 
 ## Overview
-Use this skill to build or refactor Ruby integrations with Claude Code via `claude-agent-sdk`, favoring the gem's README and types for exact APIs.
+Use this skill to build or refactor Ruby integrations with Claude Code via `claude-agent-sdk`, favoring the gem's README, the `docs/` topic subpages, and `lib/` types for exact APIs.
 
 ## Decision Guide
 - Choose `ClaudeAgentSDK.query` for one-shot queries or streaming input. Internally uses the control protocol (streaming mode).
@@ -79,16 +79,17 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 ## Where To Look For Exact Details
 - Locate the gem: `bundle show claude-agent-sdk`
-- Read `<gem_path>/README.md` for canonical usage and option examples
+- Read `<gem_path>/README.md` for the overview, install, and minimal API examples
+- Read `<gem_path>/docs/*.md` for topic subpages — `client.md` (bidirectional + custom transports), `mcp-servers.md` (SDK MCP tools/resources/prompts), `hooks-and-permissions.md` (27 hook events + permission callbacks), `configuration.md` (structured output, thinking, budget, sandbox, bare mode, file checkpointing), `sessions.md` (list/read/rename/tag/fork/resume), `observability.md` (OTel + Langfuse), `rails.md` (ActionCable, jobs, initializers), `types.md` (message/content-block/configuration types), `errors.md` (error hierarchy + timeout)
 - Inspect `<gem_path>/lib/claude_agent_sdk/types.rb` for all types
 - Inspect `<gem_path>/lib/claude_agent_sdk/message_parser.rb` for message parsing
 - Inspect `<gem_path>/lib/claude_agent_sdk/sessions.rb` for session browsing
 - Inspect `<gem_path>/lib/claude_agent_sdk/errors.rb` for error classes
-- Use `references/usage-map.md` for a README section map and minimal skeletons
+- Use `references/usage-map.md` for a documentation map (README + docs/) and minimal skeletons
 
 ## Resources
 ### references/
-- Read `references/usage-map.md` to map tasks to README sections, gem paths, and minimal skeletons.
+- Read `references/usage-map.md` to map tasks to README and `docs/` subpages, gem paths, and minimal skeletons.
 - Read `references/message-handling.md` to extract text/tool blocks, build streaming input, use Client runtime APIs, and capture UUIDs for rewind.
 - Read `references/options.md` to configure `ClaudeAgentOptions` (defaults, tools, permissions, output formats, budgets, sandbox, sessions, agents, custom transports), and to browse/mutate sessions.
 - Read `references/mcp-servers.md` to define in-process SDK MCP tools/resources/prompts, configure external MCP servers, or manage MCP servers at runtime.

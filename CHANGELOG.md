@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- README restructured: the 1857-line single-file reference was slimmed to ~285 lines covering intro, comparison table, install, Quick Start, and minimal `query()`/`Client`/MCP/Hooks examples. Detailed sections moved into a new `docs/` directory with nine topic subpages (`client.md`, `mcp-servers.md`, `hooks-and-permissions.md`, `configuration.md`, `sessions.md`, `observability.md`, `rails.md`, `types.md`, `errors.md`). The README now links to each subpage from a single "Advanced Topics" table.
+- `claude-agent-sdk.gemspec` now ships `docs/**/*` so `gem install` includes the topic subpages — the Agentic Coding Skill (and humans browsing `<gem_path>` after `bundle show claude-agent-sdk`) can read the full documentation set without a repo clone.
+
 ## [0.16.7] - 2026-05-15
 
 ### Added

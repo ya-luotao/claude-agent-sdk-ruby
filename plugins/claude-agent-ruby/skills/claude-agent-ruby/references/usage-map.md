@@ -3,31 +3,27 @@
 ## Locate gem docs (no repo needed)
 - Bundler: `bundle show claude-agent-sdk`
 - RubyGems: `ruby -e 'puts Gem::Specification.find_by_name("claude-agent-sdk").full_gem_path'`
-- Open `<gem_path>/README.md`, `<gem_path>/lib/claude_agent_sdk/types.rb`, and `<gem_path>/lib/claude_agent_sdk/errors.rb`.
+- Open `<gem_path>/README.md` for the overview and minimal examples
+- Browse `<gem_path>/docs/*.md` for topic subpages (shipped with the gem since 0.16.7+)
+- Inspect `<gem_path>/lib/claude_agent_sdk/types.rb` and `<gem_path>/lib/claude_agent_sdk/errors.rb` for canonical types
 
-## README section map
-- Installation
-- Quick Start
-- Basic Usage: query()
-- Client
-- Custom Transport
-- Custom Tools (SDK MCP Servers)
-- Hooks
-- Permission Callbacks
-- Structured Output
-- Thinking Configuration
-- Budget Control
-- Fallback Model
-- Beta Features
-- Tools Configuration
-- Sandbox Settings
-- Bare Mode
-- File Checkpointing & Rewind
-- Session Browsing
-- Session Mutations
-- Rails Integration
-- Types
-- Error Handling
+## Documentation map
+
+`README.md` covers: Installation, Quick Start, `query()` basic usage with options/tools/streaming input, minimal `Client` example, minimal SDK MCP tool example, the Comparison-with-Official-SDKs table, and an Examples index.
+
+For everything else, open the matching `docs/` subpage:
+
+| Topic | Subpage |
+|-------|---------|
+| Bidirectional `Client` advanced features (`interrupt`, mid-session model/permission switching, MCP status); custom transports (E2B example, transport interface) | `docs/client.md` |
+| SDK MCP servers — tool definitions, JSON schema normalization, resources, prompts, mixed SDK + external server config | `docs/mcp-servers.md` |
+| All 27 hook events and typed input classes; permission callbacks (`PermissionResultAllow` / `PermissionResultDeny`) | `docs/hooks-and-permissions.md` |
+| Structured output (`output_format`), thinking config (adaptive/enabled/disabled + effort levels), cross-user prompt caching, budget control, fallback model, beta features, tools config, sandbox settings, bare mode, file checkpointing & rewind | `docs/configuration.md` |
+| Session listing, reading messages, renaming, tagging, deleting, forking, resume-at-message | `docs/sessions.md` |
+| OpenTelemetry observer setup, Langfuse export, span attributes, custom `Observer` module | `docs/observability.md` |
+| Rails integration — fiber-safety guarantee, ActionCable streaming, session resumption, background jobs, HTTP MCP servers, observability initializer | `docs/rails.md` |
+| Message types (`UserMessage`, `AssistantMessage`, `SystemMessage` subtypes, `ResultMessage`), content blocks, configuration types, constants | `docs/types.md` |
+| `AssistantMessage.error`, exception hierarchy, `CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS` env var | `docs/errors.md` |
 
 ## Minimal skeletons
 
