@@ -7,9 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.8] - 2026-05-15
+
+### Added
+- `ServerToolUseBlock` + `ServerToolResultBlock` content blocks for the CLI's built-in server-side tools (web_search, advisor, code_execution). The message parser now recognises `server_tool_use` / `server_tool_result` content types.
+- `DeferredToolUse` class and `ResultMessage#deferred_tool_use` field — populated when a PreToolUse hook returns `permissionDecision: "defer"` so the session can be resumed later to execute the deferred call.
+- `ResultMessage#api_error_status` — integer HTTP status (429, 500, 529) on the `api_error` subtype, from CLI 2.1.110+.
+- `ToolPermissionContext` gains five pre-formatted display fields (`title`, `display_name`, `description`, `blocked_path`, `decision_reason`) populated by CLI 2.1.110+ so `can_use_tool` callbacks can render the same prompt UI the CLI would.
+- `PostToolUseHookSpecificOutput#updated_tool_output` — unified tool-output replacement that works for any tool, MCP or built-in (the legacy `updated_mcp_tool_output` field remains for backwards compatibility).
+
 ### Changed
 - README restructured: the 1857-line single-file reference was slimmed to ~285 lines covering intro, comparison table, install, Quick Start, and minimal `query()`/`Client`/MCP/Hooks examples. Detailed sections moved into a new `docs/` directory with nine topic subpages (`client.md`, `mcp-servers.md`, `hooks-and-permissions.md`, `configuration.md`, `sessions.md`, `observability.md`, `rails.md`, `types.md`, `errors.md`). The README now links to each subpage from a single "Advanced Topics" table.
 - `claude-agent-sdk.gemspec` now ships `docs/**/*` so `gem install` includes the topic subpages — the Agentic Coding Skill (and humans browsing `<gem_path>` after `bundle show claude-agent-sdk`) can read the full documentation set without a repo clone.
+- `Query#start` now raises `CLIConnectionError` if invoked outside an `Async{}` block. The previous implementation appeared to support synchronous callers but silently hung forever because the outer `Async{}` root task it spawned waited for `read_messages` to finish, which never happens for a live Client. All documented usage (`query()` and the `Client#connect` pattern) already wraps in `Async{}` so this only surfaces a previously hidden failure mode.
+- `CommandBuilder` raises `ArgumentError` synchronously when both `continue_conversation` and `resume` are set, instead of producing an opaque non-zero CLI exit at runtime.
+- `sdk_mcp_server`'s `read_resource`, `get_prompt`, and the dynamic `Resource#read` / `Prompt#get` callbacks now hop through `FiberBoundary.invoke` (`call_tool` already did). User reader/generator blocks that touch `Thread.current`-keyed libraries (ActiveRecord, pg) no longer see the async-gem fiber scheduler.
+
+### Fixed
+- **Transport `@stdin` race**: `write`/`close` are now serialised by a mutex. User callbacks running on `FiberBoundary` threads can no longer race `close()` and hit `NoMethodError` on a nilled `@stdin`. The mutex only guards the reference snapshot — the blocking IO call happens outside the lock so `close` is never blocked by a full pipe buffer.
+- **Transport stdout poisoning**: stdout lines that do not start with `{` are skipped when `json_buffer` is empty. Previously the CLI's occasional debug prefixes (e.g. `[SandboxDebug]`) accumulated in the buffer until the 1 MB cap raised `CLIJSONDecodeError` and killed the session. Matches the Python SDK's guard.
+- **Transport stderr resilience**: each `stderr` callback invocation is wrapped in `rescue StandardError`, so a transiently failing user logger no longer terminates the read loop and silently stops stderr capture for the lifetime of the process. Matches Python SDK v0.2.82 (PR #932).
+- **Transport process reaping**: `@process.value` is now `&.`-safe and rescues `Errno::ECHILD`, so a concurrent `close()` that already reaped the subprocess cannot crash the message loop.
+- **Query read-loop cancellation**: `@task` now holds the actual `read_messages` child task. The previous outer-`Async`-wrapper assignment completed almost immediately after spawning, so `close`'s `@task.stop` never reached the actual read fiber and the loop only ended when the transport raised.
+- **Query control-request leak**: `send_control_request` now cleans `@pending_control_*` entries in an `ensure` block and uses `Async::Task.current.with_timeout` instead of a nested `Async do ... end.wait`. An `Async::Stop` propagating through `.wait`, or a late `control_response` arriving after timeout, can no longer leak pending state.
+- **Session forks dropped metadata**: `parse_fork_transcript` now filters transcript body by `TRANSCRIPT_TYPES` (`user`/`assistant`/`attachment`/`system`/`progress`). `custom-title`, `tag`, `aiTitle`, `permission-mode` and other metadata entries with the old sessionId no longer bleed into the forked transcript.
+- **Session forks lost content-replacement history**: `content-replacement` entries are now accumulated across compaction rounds (concatenated) rather than overwritten, gated on matching `sessionId`. Forks emit `content-replacement` and `custom-title` entries with `uuid`+`timestamp` so a fork-of-a-fork can re-ingest them.
+- **`delete_session` orphans**: also `FileUtils.rm_rf`s the sibling `<session-id>/` subagent transcript directory. Without this the CLI would later pick up stale subagent state if the same session ID happened to be reused.
+- **`detect_worktrees` hang on stale git lock**: enforces a 5-second hard cap with `SIGKILL` fallback. `Timeout.timeout` is unsafe under the Async fiber scheduler (it raises across threads via `Thread#raise`), so the new implementation drains stdout/stderr on side threads and kills the child process if the deadline passes. A pipe-buffer-overrun edge case (enough worktrees to overrun the 64 KB pipe buffer) that previously silently lost every worktree path is also fixed.
 
 ## [0.16.7] - 2026-05-15
 
