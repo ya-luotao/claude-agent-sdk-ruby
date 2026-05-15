@@ -1,4 +1,4 @@
-name: Publish to GitHub Packages
+name: Publish gem
 
 on:
   release:
@@ -6,7 +6,30 @@ on:
   workflow_dispatch:
 
 jobs:
-  publish:
+  rubygems:
+    name: Push to rubygems.org
+    runs-on: ubuntu-latest
+    environment:
+      name: rubygems
+      url: https://rubygems.org/gems/claude-agent-sdk
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Release gem via trusted publisher
+        uses: rubygems/release-gem@v1
+
+  github-packages:
+    name: Push to GitHub Packages
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -25,11 +48,10 @@ jobs:
         run: gem build claude-agent-sdk.gemspec
 
       - name: Push to GitHub Packages
-        run: |
-          mkdir -p ~/.gem
-          echo "---" > ~/.gem/credentials
-          echo ":github: Bearer $GITHUB_TOKEN" >> ~/.gem/credentials
-          chmod 0600 ~/.gem/credentials
-          gem push --key github --host https://rubygems.pkg.github.com/ya-luotao *.gem
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p ~/.gem
+          printf -- '---\n:github: Bearer %s\n' "$GITHUB_TOKEN" > ~/.gem/credentials
+          chmod 0600 ~/.gem/credentials
+          gem push --key github --host https://rubygems.pkg.github.com/ya-luotao *.gem
