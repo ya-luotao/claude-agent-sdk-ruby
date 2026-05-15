@@ -1108,6 +1108,24 @@ result = ClaudeAgentSDK.fork_session(
 
 > **Note:** Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process. `fork_session` uses `O_CREAT | O_EXCL` to prevent race conditions.
 
+### Resuming at a Specific Message
+
+`resume_session_at` truncates the resumed conversation to messages up to **and including** the assistant message with the given UUID — useful for rewriting history from a known point or branching exploration without forking the session file. The flag rides on top of `resume`, so the original session ID is preserved; only the in-memory history loaded for the new turn is shortened.
+
+```ruby
+ClaudeAgentSDK.query(
+  prompt: 'Try a different approach',
+  options: ClaudeAgentSDK::ClaudeAgentOptions.new(
+    resume: '550e8400-e29b-41d4-a716-446655440000',
+    resume_session_at: 'assistant-message-uuid-from-history'
+  )
+) do |message|
+  # ...
+end
+```
+
+`resume_session_at` requires `resume`; the SDK raises `ArgumentError` from `CommandBuilder` when this constraint is violated, matching the underlying CLI's validation but surfacing it synchronously in the caller's stack.
+
 ## Observability (OpenTelemetry / Langfuse)
 
 The SDK includes a built-in **observer interface** and an **OpenTelemetry observer** for tracing agent sessions. Traces are emitted using standard `gen_ai.*` semantic conventions, compatible with Langfuse, Jaeger, Datadog, and any OTel backend.

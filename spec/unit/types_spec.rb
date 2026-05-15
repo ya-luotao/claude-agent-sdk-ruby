@@ -1541,6 +1541,31 @@ RSpec.describe ClaudeAgentSDK do
         options = ClaudeAgentSDK::ClaudeAgentOptions.new
         expect(options.bare).to be_nil
       end
+
+      it 'accepts resume_session_at option' do
+        uuid = '01234567-89ab-cdef-0123-456789abcdef'
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          resume: 'sess-1',
+          resume_session_at: uuid
+        )
+        expect(options.resume_session_at).to eq(uuid)
+      end
+
+      it 'defaults resume_session_at to nil' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new
+        expect(options.resume_session_at).to be_nil
+      end
+
+      it 'preserves resume_session_at across dup_with' do
+        uuid = '01234567-89ab-cdef-0123-456789abcdef'
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          resume: 'sess-1',
+          resume_session_at: uuid
+        )
+        duped = options.dup_with(max_turns: 3)
+        expect(duped.resume_session_at).to eq(uuid)
+        expect(duped.max_turns).to eq(3)
+      end
     end
 
     describe ClaudeAgentSDK::ThinkingConfigAdaptive do
