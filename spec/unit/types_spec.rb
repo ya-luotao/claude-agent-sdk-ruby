@@ -2107,6 +2107,104 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe 'ResultMessage api_error_status and deferred_tool_use' do
+      it 'stores api_error_status from CLI api_error subtype' do
+        msg = ClaudeAgentSDK::ResultMessage.new(
+          subtype: 'api_error', duration_ms: 100, duration_api_ms: 80,
+          is_error: true, num_turns: 1, session_id: 's1', api_error_status: 429
+        )
+        expect(msg.api_error_status).to eq(429)
+      end
+
+      it 'wraps deferred_tool_use Hash into a typed DeferredToolUse' do
+        msg = ClaudeAgentSDK::ResultMessage.new(
+          subtype: 'success', duration_ms: 100, duration_api_ms: 80,
+          is_error: false, num_turns: 1, session_id: 's1',
+          deferred_tool_use: { id: 'tool_1', name: 'Bash', input: { command: 'ls' } }
+        )
+        expect(msg.deferred_tool_use).to be_a(ClaudeAgentSDK::DeferredToolUse)
+        expect(msg.deferred_tool_use.id).to eq('tool_1')
+        expect(msg.deferred_tool_use.name).to eq('Bash')
+      end
+    end
+
+    describe ClaudeAgentSDK::ServerToolUseBlock do
+      it 'stores id, name, input' do
+        block = described_class.new(id: 'srv_1', name: 'web_search', input: { query: 'foo' })
+        expect(block.id).to eq('srv_1')
+        expect(block.name).to eq('web_search')
+        expect(block.input).to eq({ query: 'foo' })
+      end
+    end
+
+    describe 'message_parser handles server tool blocks' do
+      it 'parses server_tool_use block' do
+        data = {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { q: 'x' } }]
+          }
+        }
+        msg = ClaudeAgentSDK::MessageParser.parse(data)
+        expect(msg.content.first).to be_a(ClaudeAgentSDK::ServerToolUseBlock)
+        expect(msg.content.first.name).to eq('web_search')
+      end
+
+      it 'parses server_tool_result block' do
+        data = {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'server_tool_result', tool_use_id: 'srv_1', content: 'ok', is_error: false }]
+          }
+        }
+        msg = ClaudeAgentSDK::MessageParser.parse(data)
+        expect(msg.content.first).to be_a(ClaudeAgentSDK::ServerToolResultBlock)
+        expect(msg.content.first.tool_use_id).to eq('srv_1')
+      end
+    end
+
+    describe 'PostToolUseHookSpecificOutput updated_tool_output' do
+      it 'emits updatedToolOutput in to_h when set' do
+        out = ClaudeAgentSDK::PostToolUseHookSpecificOutput.new(updated_tool_output: 'replaced')
+        expect(out.to_h[:updatedToolOutput]).to eq('replaced')
+      end
+
+      it 'emits both updatedToolOutput and updatedMCPToolOutput when both set' do
+        out = ClaudeAgentSDK::PostToolUseHookSpecificOutput.new(
+          updated_tool_output: 'unified',
+          updated_mcp_tool_output: { content: [] }
+        )
+        result = out.to_h
+        expect(result[:updatedToolOutput]).to eq('unified')
+        expect(result[:updatedMCPToolOutput]).to eq({ content: [] })
+      end
+
+      it 'omits both fields when neither is set' do
+        out = ClaudeAgentSDK::PostToolUseHookSpecificOutput.new
+        result = out.to_h
+        expect(result.key?(:updatedToolOutput)).to be false
+        expect(result.key?(:updatedMCPToolOutput)).to be false
+      end
+    end
+
+    describe 'ToolPermissionContext new fields' do
+      it 'stores blocked_path, decision_reason, title, display_name, description' do
+        ctx = ClaudeAgentSDK::ToolPermissionContext.new(
+          tool_use_id: 'tu_1',
+          title: 'Allow Bash?',
+          display_name: 'Bash',
+          description: 'Run shell command',
+          blocked_path: '/etc/passwd',
+          decision_reason: 'sensitive file'
+        )
+        expect(ctx.title).to eq('Allow Bash?')
+        expect(ctx.display_name).to eq('Bash')
+        expect(ctx.description).to eq('Run shell command')
+        expect(ctx.blocked_path).to eq('/etc/passwd')
+        expect(ctx.decision_reason).to eq('sensitive file')
+      end
+    end
+
     describe ClaudeAgentSDK::SdkMcpTool do
       it 'stores annotations' do
         handler = ->(_args) { { content: [] } }

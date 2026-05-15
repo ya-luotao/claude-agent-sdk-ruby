@@ -30,6 +30,12 @@ module ClaudeAgentSDK
       @stderr_task = nil
       @recent_stderr = []
       @recent_stderr_mutex = Mutex.new
+      # Serializes stdin access across the reactor fiber (transport writes
+      # from inside Async) and user-callback threads spawned via FiberBoundary
+      # (tool handlers / hooks calling Client#query). Without this lock,
+      # close can nil @stdin between write's readiness check and the actual
+      # @stdin.write call, producing NoMethodError on nil.
+      @stdin_mutex = Mutex.new
     end
 
     def find_cli
@@ -148,20 +154,33 @@ module ClaudeAgentSDK
 
         record_bounded_stderr(line_str)
 
-        # Call stderr callback if provided
-        @options.stderr&.call(line_str)
+        # Per-line isolation: a callback that raises (e.g. user's logger
+        # transiently failing) must not poison the rest of the stderr stream.
+        # Without this, the first exception terminates the each_line loop and
+        # the SDK silently stops capturing stderr for the lifetime of the
+        # process. Matches Python SDK v0.2.82 (PR #932).
+        begin
+          @options.stderr&.call(line_str)
+        rescue StandardError
+          # Drop the callback error; the line is already in the recent-stderr
+          # ring buffer, which is what ProcessError surfaces on non-zero exit.
+        end
 
-        # Write to debug_stderr file/IO if provided
-        if @options.debug_stderr
-          if @options.debug_stderr.respond_to?(:puts)
-            @options.debug_stderr.puts(line_str)
-          elsif @options.debug_stderr.is_a?(String)
-            File.open(@options.debug_stderr, 'a') { |f| f.puts(line_str) }
+        # Write to debug_stderr file/IO if provided, also isolated.
+        begin
+          if @options.debug_stderr
+            if @options.debug_stderr.respond_to?(:puts)
+              @options.debug_stderr.puts(line_str)
+            elsif @options.debug_stderr.is_a?(String)
+              File.open(@options.debug_stderr, 'a') { |f| f.puts(line_str) }
+            end
           end
+        rescue StandardError
+          # Drop debug_stderr write errors so they never interrupt the loop.
         end
       end
     rescue StandardError
-      # Ignore errors during stderr reading
+      # Stream-level error (pipe closed mid-read); the loop naturally ends here.
     end
 
     def drain_stderr_with_accumulation
@@ -191,13 +210,18 @@ module ClaudeAgentSDK
         end
       end
 
-      # Close streams
-      begin
-        @stdin&.close
-      rescue IOError
-        # Already closed, ignore
-      rescue StandardError => e
-        cleanup_errors << "stdin: #{e.message}"
+      # Close stdin under the same lock that guards write — otherwise a
+      # concurrent writer (callbacks running on FiberBoundary threads) can
+      # see @stdin nilled mid-write and hit NoMethodError on nil.
+      @stdin_mutex.synchronize do
+        begin
+          @stdin&.close
+        rescue IOError
+          # Already closed, ignore
+        rescue StandardError => e
+          cleanup_errors << "stdin: #{e.message}"
+        end
+        @stdin = nil
       end
 
       begin
@@ -251,7 +275,7 @@ module ClaudeAgentSDK
 
       @process = nil
       @stdout = nil
-      @stdin = nil
+      # @stdin already nilled under the mutex above.
       @stderr = nil
       @stderr_task = nil
       @exit_error = nil
@@ -278,13 +302,19 @@ module ClaudeAgentSDK
       raise CLIConnectionError, "Cannot write to terminated process" if @process && !@process.alive?
       raise CLIConnectionError, "Cannot write to process that exited with error: #{@exit_error}" if @exit_error
 
-      begin
-        @stdin.write(data)
-        @stdin.flush
-      rescue StandardError => e
-        @ready = false
-        @exit_error = CLIConnectionError.new("Failed to write to process stdin: #{e}")
-        raise @exit_error
+      @stdin_mutex.synchronize do
+        # Re-check under the lock — close may have nilled @stdin between the
+        # readiness check above and acquiring the mutex.
+        raise CLIConnectionError, 'ProcessTransport is not ready for writing' unless @ready && @stdin
+
+        begin
+          @stdin.write(data)
+          @stdin.flush
+        rescue StandardError => e
+          @ready = false
+          @exit_error = CLIConnectionError.new("Failed to write to process stdin: #{e}")
+          raise @exit_error
+        end
       end
     end
 
@@ -317,6 +347,14 @@ module ClaudeAgentSDK
             json_line = json_line.strip
             next if json_line.empty?
 
+            # When no partial JSON is buffered, the next line must start with
+            # `{` to be a valid stream-json message. Stray stderr-like text
+            # (e.g., debug warnings the CLI occasionally writes to stdout)
+            # would otherwise be appended into json_buffer, poisoning every
+            # subsequent parse until the buffer overflows. Matches the Python
+            # SDK's `if not json_buffer and not json_line.startswith("{")` guard.
+            next if json_buffer.empty? && !json_line.start_with?('{')
+
             json_buffer += json_line
 
             if json_buffer.bytesize > @max_buffer_size
@@ -344,9 +382,17 @@ module ClaudeAgentSDK
         # Client disconnected
       end
 
-      # Check process completion
-      status = @process.value
-      returncode = status.exitstatus
+      # Check process completion. @process may already be nil (close() ran
+      # concurrently and reset it) or already waited on (Errno::ECHILD on
+      # double-wait). Both are non-fatal — the message loop just exits.
+      returncode = nil
+      begin
+        status = @process&.value
+        returncode = status&.exitstatus
+      rescue Errno::ECHILD
+        # Process was already reaped (e.g., by close()); no exit status to surface.
+        returncode = nil
+      end
 
       if returncode && returncode != 0
         # Wait briefly for stderr thread to finish draining

@@ -153,6 +153,14 @@ module ClaudeAgentSDK
           content: get.call(:content),
           is_error: get.call(:is_error)
         )
+      when 'server_tool_use'
+        ServerToolUseBlock.new(id: get.call(:id), name: get.call(:name), input: get.call(:input))
+      when 'server_tool_result'
+        ServerToolResultBlock.new(
+          tool_use_id: get.call(:tool_use_id),
+          content: get.call(:content),
+          is_error: get.call(:is_error)
+        )
       else
         # Forward-compatible: preserve unrecognized content block types (e.g., "document", "image")
         # so newer CLI versions don't crash older SDK versions.

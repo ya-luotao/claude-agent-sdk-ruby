@@ -2,6 +2,7 @@
 
 require 'json'
 require 'securerandom'
+require 'fileutils'
 require_relative 'sessions'
 
 module ClaudeAgentSDK
@@ -12,6 +13,13 @@ module ClaudeAgentSDK
   # matching the CLI pattern. Safe to call from any SDK host process.
   module SessionMutations # rubocop:disable Metrics/ModuleLength
     module_function
+
+    # Transcript entry types kept in fork output. Mirrors Python's
+    # `_TRANSCRIPT_TYPES`. Other types (custom-title, tag, aiTitle,
+    # permission-mode, etc.) carry session metadata and must not bleed
+    # into the fork's transcript body — they are reconstructed for the
+    # fork's own sessionId after the body is written.
+    TRANSCRIPT_TYPES = %w[user assistant attachment system progress].freeze
 
     # Rename a session by appending a custom-title entry.
     #
@@ -83,6 +91,13 @@ module ClaudeAgentSDK
       rescue Errno::ENOENT
         raise Errno::ENOENT, "Session #{session_id} not found"
       end
+
+      # Subagent transcripts live in a sibling directory named after the
+      # session ID. Without removing it, the CLI would later pick up
+      # orphaned subagent state if the same session ID happened to be
+      # reused. Matches Python's `shutil.rmtree(path.parent / session_id)`.
+      subagent_dir = File.join(File.dirname(path), session_id)
+      FileUtils.rm_rf(subagent_dir) if File.directory?(subagent_dir)
     end
 
     # Fork a session into a new branch with fresh UUIDs.
@@ -111,7 +126,7 @@ module ClaudeAgentSDK
       file_size = File.size(file_path)
       raise ArgumentError, "Session #{session_id} has no messages to fork" if file_size.zero?
 
-      transcript, content_replacements = parse_fork_transcript(file_path)
+      transcript, content_replacements = parse_fork_transcript(file_path, session_id)
       transcript.reject! { |e| e['isSidechain'] }
       raise ArgumentError, "Session #{session_id} has no messages to fork" if transcript.empty?
 
@@ -140,12 +155,18 @@ module ClaudeAgentSDK
                            forked_session_id, session_id, now)
       end
 
-      # Append content-replacement entry if any
+      # Append content-replacement entry if any. The entry needs `uuid` and
+      # `timestamp` so a *second* fork of this forked session can re-ingest
+      # it — `parse_fork_transcript` gates content-replacement on the entry
+      # being a valid hash with a matching `sessionId`, and the CLI's own
+      # tools index entries by uuid. Matches Python's `_emit_fork_to_disk`.
       if content_replacements && !content_replacements.empty?
         lines << JSON.generate({
                                  'type' => 'content-replacement',
                                  'sessionId' => forked_session_id,
-                                 'replacements' => content_replacements
+                                 'replacements' => content_replacements,
+                                 'uuid' => SecureRandom.uuid,
+                                 'timestamp' => now
                                })
       end
 
@@ -156,7 +177,9 @@ module ClaudeAgentSDK
       lines << JSON.generate({
                                'type' => 'custom-title',
                                'sessionId' => forked_session_id,
-                               'customTitle' => fork_title
+                               'customTitle' => fork_title,
+                               'uuid' => SecureRandom.uuid,
+                               'timestamp' => now
                              })
 
       fork_path = File.join(project_dir, "#{forked_session_id}.jsonl")
@@ -229,9 +252,17 @@ module ClaudeAgentSDK
     # Parse a fork transcript by streaming the JSONL file line-by-line.
     # Opens in binary mode and scrubs invalid UTF-8 so stray non-UTF-8
     # bytes in tool results do not raise Encoding::InvalidByteSequenceError.
-    def parse_fork_transcript(file_path)
+    #
+    # Only `TRANSCRIPT_TYPES` entries with a string uuid are kept in the
+    # transcript body — `custom-title`, `tag`, `aiTitle`, `permission-mode`
+    # and other metadata entries are reconstructed for the new sessionId
+    # by the caller. `content-replacement` entries are collected across the
+    # entire file (one per compaction round) — concatenated rather than
+    # overwritten — and only kept if their `sessionId` matches the source.
+    # Matches Python's `_parse_fork_transcript` exactly.
+    def parse_fork_transcript(file_path, source_session_id = nil)
       transcript = []
-      content_replacements = nil
+      content_replacements = []
 
       File.foreach(file_path, mode: 'rb') do |line|
         line = line.force_encoding('UTF-8').scrub
@@ -240,13 +271,16 @@ module ClaudeAgentSDK
         rescue JSON::ParserError
           next
         end
-        next unless entry.is_a?(Hash) && entry['uuid']
+        next unless entry.is_a?(Hash)
 
-        if entry['type'] == 'content-replacement'
-          content_replacements = entry['replacements']
-          next
+        entry_type = entry['type']
+        if TRANSCRIPT_TYPES.include?(entry_type) && entry['uuid'].is_a?(String)
+          transcript << entry
+        elsif entry_type == 'content-replacement' &&
+              (source_session_id.nil? || entry['sessionId'] == source_session_id) &&
+              entry['replacements'].is_a?(Array)
+          content_replacements.concat(entry['replacements'])
         end
-        transcript << entry
       end
 
       [transcript, content_replacements]

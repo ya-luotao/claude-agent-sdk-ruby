@@ -472,16 +472,41 @@ module ClaudeAgentSDK
       by_id.values
     end
 
+    # Probe git for the worktree list with a hard 5-second cap. A stale
+    # git lock or hung network mount must not block the listing path
+    # forever. Stdlib `Timeout.timeout` raises across threads via
+    # `Thread#raise`, which corrupts the Async fiber-scheduler state when
+    # the caller is inside a reactor, so we poll `wait_thr.join(...)` and
+    # SIGKILL the child if it overruns. Matches Python's
+    # `subprocess.run(..., timeout=5)`.
     def detect_worktrees(path)
-      output, _err, status = Open3.capture3('git', '-C', path, 'worktree', 'list', '--porcelain')
-      return [path] unless status.success?
+      stdin, stdout, stderr, wait_thr = Open3.popen3('git', '-C', path, 'worktree', 'list', '--porcelain')
+      stdin.close
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5.0
 
+      until wait_thr.join(0.1)
+        next if Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+
+        begin
+          Process.kill('KILL', wait_thr.pid)
+        rescue Errno::ESRCH
+          # Already exited between the join check and the kill.
+        end
+        wait_thr.join
+        return [path]
+      end
+
+      return [path] unless wait_thr.value.success?
+
+      output = stdout.read.to_s
       paths = output.lines.filter_map do |line|
         line.strip.delete_prefix('worktree ') if line.start_with?('worktree ')
       end
       paths.empty? ? [path] : paths
     rescue StandardError
       [path]
+    ensure
+      [stdout, stderr].each { |io| io&.close rescue nil } # rubocop:disable Style/RescueModifier
     end
 
     def find_session_file(session_id, directory)

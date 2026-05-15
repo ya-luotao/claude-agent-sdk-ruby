@@ -207,6 +207,27 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
           .to raise_error(Errno::ENOENT, /not found/)
       end
     end
+
+    # Regression: the CLI writes subagent transcripts to a sibling directory
+    # named after the session ID. delete_session must remove it; otherwise
+    # the orphan accumulates on disk and a re-used session ID picks up stale state.
+    it 'also removes the sibling subagent directory' do
+      Dir.mktmpdir do |tmpdir|
+        project_dir = File.join(tmpdir, 'projects', ClaudeAgentSDK::Sessions.sanitize_path(File.realpath(tmpdir)))
+        FileUtils.mkdir_p(project_dir)
+        session_file = File.join(project_dir, "#{session_id}.jsonl")
+        subagent_dir = File.join(project_dir, session_id)
+        File.write(session_file, "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"content\":\"hi\"}}\n")
+        FileUtils.mkdir_p(subagent_dir)
+        File.write(File.join(subagent_dir, 'sub.jsonl'), '{}')
+
+        allow(ClaudeAgentSDK::Sessions).to receive(:config_dir).and_return(tmpdir)
+
+        described_class.delete_session(session_id: session_id, directory: tmpdir)
+        expect(File.exist?(session_file)).to be false
+        expect(File.directory?(subagent_dir)).to be false
+      end
+    end
   end
 
   describe '.fork_session' do
@@ -430,6 +451,61 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
 
         # Should preserve the original UUID when mapping misses, not null it
         expect(message_lines[0]['logicalParentUuid']).to eq(outside_uuid)
+      end
+    end
+
+    # Regression: the source session contained an aiTitle / custom-title entry
+    # — those carry metadata for the OLD sessionId and must NOT bleed into
+    # the fork's transcript body. parse_fork_transcript now filters by
+    # TRANSCRIPT_TYPES (user/assistant/attachment/system/progress) only.
+    it 'drops source-session metadata (custom-title, tag, aiTitle) from the fork' do
+      Dir.mktmpdir do |tmpdir|
+        content = build_session_content([
+                                          { 'type' => 'user', 'uuid' => msg1_uuid, 'parentUuid' => nil, 'message' => { 'content' => 'hi' } },
+                                          { 'type' => 'custom-title', 'sessionId' => session_id, 'customTitle' => 'OLD TITLE', 'uuid' => msg2_uuid },
+                                          { 'type' => 'tag', 'sessionId' => session_id, 'tag' => 'old-tag', 'uuid' => msg3_uuid }
+                                        ])
+        project_dir, = setup_session(tmpdir, content)
+
+        result = described_class.fork_session(session_id: session_id, directory: tmpdir, title: 'NEW TITLE')
+        fork_file = File.join(project_dir, "#{result.session_id}.jsonl")
+        lines = File.readlines(fork_file).map { |l| JSON.parse(l.strip) }
+
+        # Should have ONE user entry + ONE custom-title (the new one), nothing else
+        types = lines.map { |l| l['type'] }
+        expect(types).to eq(%w[user custom-title])
+        expect(lines.find { |l| l['type'] == 'custom-title' }['customTitle']).to eq('NEW TITLE')
+      end
+    end
+
+    # Regression: content-replacement entries emitted into a fork must carry
+    # `uuid` and `timestamp` so a *second* fork can re-ingest them.
+    # Also, parse_fork_transcript must filter by sessionId and accumulate
+    # across multiple compaction rounds rather than overwriting.
+    it 'preserves content-replacement entries across forks with required uuid/timestamp' do
+      Dir.mktmpdir do |tmpdir|
+        content = build_session_content([
+                                          { 'type' => 'user', 'uuid' => msg1_uuid, 'parentUuid' => nil, 'message' => { 'content' => 'hi' } },
+                                          { 'type' => 'content-replacement', 'sessionId' => session_id, 'replacements' => [{ 'a' => 1 }] },
+                                          { 'type' => 'content-replacement', 'sessionId' => session_id, 'replacements' => [{ 'b' => 2 }] }
+                                        ])
+        project_dir, = setup_session(tmpdir, content)
+
+        result = described_class.fork_session(session_id: session_id, directory: tmpdir)
+        fork_file = File.join(project_dir, "#{result.session_id}.jsonl")
+        lines = File.readlines(fork_file).map { |l| JSON.parse(l.strip) }
+
+        cr = lines.find { |l| l['type'] == 'content-replacement' }
+        expect(cr).not_to be_nil
+        # Both compaction rounds should be concatenated, not overwritten
+        expect(cr['replacements']).to eq([{ 'a' => 1 }, { 'b' => 2 }])
+        # uuid + timestamp required so the fork can itself be re-forked
+        expect(cr['uuid']).to match(ClaudeAgentSDK::Sessions::UUID_RE)
+        expect(cr['timestamp']).to be_a(String)
+
+        title = lines.find { |l| l['type'] == 'custom-title' }
+        expect(title['uuid']).to match(ClaudeAgentSDK::Sessions::UUID_RE)
+        expect(title['timestamp']).to be_a(String)
       end
     end
   end

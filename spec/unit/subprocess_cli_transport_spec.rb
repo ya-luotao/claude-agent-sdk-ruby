@@ -562,4 +562,49 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(captured_env).not_to have_key('CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING')
     end
   end
+
+  describe '#read_messages — non-JSON line robustness' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+
+    # Regression: the CLI occasionally writes non-JSON debug text to stdout
+    # (e.g. `[SandboxDebug]` prefixes, ANSI escapes). Without the start-with-{
+    # guard those lines would be appended into json_buffer, poisoning every
+    # subsequent parse until the 1 MB cap raised CLIJSONDecodeError and
+    # killed the entire session.
+    it 'skips stdout lines that do not start with { when json_buffer is empty' do
+      stdout = StringIO.new(
+        "[SandboxDebug] starting up\n" \
+        "{\"type\":\"system\",\"subtype\":\"init\"}\n" \
+        "stray warning line\n" \
+        "{\"type\":\"result\",\"subtype\":\"success\"}\n"
+      )
+      fake_process = instance_double(Process::Waiter, value: instance_double(Process::Status, exitstatus: 0))
+      transport.instance_variable_set(:@stdout, stdout)
+      transport.instance_variable_set(:@process, fake_process)
+
+      messages = []
+      transport.read_messages { |m| messages << m }
+
+      expect(messages.map { |m| m[:type] }).to eq(%w[system result])
+    end
+  end
+
+  describe '#read_messages — process double-wait handling' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+
+    # Regression: if close() reaped the process while read_messages was
+    # winding down, @process.value would raise Errno::ECHILD on the second
+    # waitpid and the exception leaked out of read_messages.
+    it 'tolerates Errno::ECHILD from @process.value (process already waited)' do
+      stdout = StringIO.new("{\"type\":\"system\"}\n")
+      waiter = instance_double(Process::Waiter)
+      allow(waiter).to receive(:value).and_raise(Errno::ECHILD)
+      transport.instance_variable_set(:@stdout, stdout)
+      transport.instance_variable_set(:@process, waiter)
+
+      expect { transport.read_messages { |m| m } }.not_to raise_error
+    end
+  end
 end
