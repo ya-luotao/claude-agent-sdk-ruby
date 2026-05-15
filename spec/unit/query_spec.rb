@@ -569,4 +569,18 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(payload.dig(:response, :error)).to eq('Cancelled')
     end
   end
+
+  describe '#start outside an Async reactor' do
+    # Regression for Codex P1: Async::Task.current raises an opaque
+    # "No async task available!" when start is called outside Async{}.
+    # The old version of this method appeared to support synchronous callers
+    # but the outer Async{} root task it spawned waited for read_messages to
+    # finish, which never happens for a live Client — silent hang. The fix
+    # raises a clear CLIConnectionError pointing at the supported pattern.
+    it 'raises a clear CLIConnectionError when called without a reactor' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+      expect { query.start }.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Async\{\} block/)
+    end
+  end
 end

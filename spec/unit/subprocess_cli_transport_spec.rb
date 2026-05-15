@@ -590,6 +590,50 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
   end
 
+  describe '#write — close-while-writing does not deadlock' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+
+    # Regression for Codex P2: write previously held @stdin_mutex across the
+    # blocking IO call. If a full pipe buffer made @stdin.write block, close()
+    # could not acquire the same mutex and disconnect would hang.
+    # Now mutex only guards reference snapshot, so close() can always proceed.
+    it 'lets close() acquire the lock even while a write is blocked on a full pipe' do
+      r, w = IO.pipe
+      fake_process = instance_double(Process::Waiter)
+      allow(fake_process).to receive(:alive?).and_return(true)
+      transport.instance_variable_set(:@stdin, w)
+      transport.instance_variable_set(:@process, fake_process)
+      transport.instance_variable_set(:@ready, true)
+
+      # Block in @stdin.write by filling the pipe and never reading r.
+      writer = Thread.new do
+        transport.write('x' * 200_000)
+      rescue StandardError
+        # write() raises CLIConnectionError once the stream is closed; expected.
+      end
+
+      # Give writer a moment to start blocking inside @stdin.write.
+      sleep 0.05
+
+      # The mutex must NOT be held by the writer at this point — verify by
+      # calling write() from this thread; if the mutex were held, this
+      # would itself block. Instead, we use Mutex#try_lock semantics via
+      # snapshot under timeout: just call close-like teardown.
+      stdin_mutex = transport.instance_variable_get(:@stdin_mutex)
+      acquired = false
+      Thread.new do
+        stdin_mutex.synchronize { acquired = true }
+      end.join(1)
+      expect(acquired).to be true
+
+      # Cleanup
+      w.close
+      r.close
+      writer.join(1)
+    end
+  end
+
   describe '#read_messages — process double-wait handling' do
     let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
     let(:transport) { described_class.new('hi', options) }

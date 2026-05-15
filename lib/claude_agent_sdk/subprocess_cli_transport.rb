@@ -298,23 +298,32 @@ module ClaudeAgentSDK
     end
 
     def write(data)
-      raise CLIConnectionError, 'ProcessTransport is not ready for writing' unless @ready && @stdin
       raise CLIConnectionError, "Cannot write to terminated process" if @process && !@process.alive?
       raise CLIConnectionError, "Cannot write to process that exited with error: #{@exit_error}" if @exit_error
 
-      @stdin_mutex.synchronize do
-        # Re-check under the lock — close may have nilled @stdin between the
-        # readiness check above and acquiring the mutex.
+      # Snapshot @stdin under the lock so close() nilling it concurrently is
+      # safe, but do the actual blocking IO *outside* the lock. Holding the
+      # mutex across @stdin.write would let a full pipe buffer block the
+      # writer indefinitely and block close() (which also needs the lock)
+      # from killing the subprocess — a hang on disconnect.
+      #
+      # If close() runs while we are inside the IO call, it will close the
+      # underlying stream and Ruby raises IOError("stream closed in another
+      # thread") inside @stdin.write — the rescue below converts that into a
+      # standard CLIConnectionError so callers see a clean shutdown error.
+      stdin = @stdin_mutex.synchronize do
         raise CLIConnectionError, 'ProcessTransport is not ready for writing' unless @ready && @stdin
 
-        begin
-          @stdin.write(data)
-          @stdin.flush
-        rescue StandardError => e
-          @ready = false
-          @exit_error = CLIConnectionError.new("Failed to write to process stdin: #{e}")
-          raise @exit_error
-        end
+        @stdin
+      end
+
+      begin
+        stdin.write(data)
+        stdin.flush
+      rescue StandardError => e
+        @ready = false
+        @exit_error = CLIConnectionError.new("Failed to write to process stdin: #{e}")
+        raise @exit_error
       end
     end
 

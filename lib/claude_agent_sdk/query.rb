@@ -132,10 +132,22 @@ module ClaudeAgentSDK
     # immediately after spawning, so `close`'s `@task.stop` never reached
     # the actual `read_messages` fiber and the read loop kept running
     # until the transport raised. Now `@task.stop` stops the read loop.
+    #
+    # Must be called inside an Async{} block (matches `query()` which wraps
+    # its own internals in Async, and the documented `Client#connect`
+    # pattern). If invoked outside a reactor, raise a clear error rather
+    # than letting Async::Task.current raise an opaque "No async task
+    # available!" — earlier versions of this method *appeared* to work
+    # from synchronous callers but actually hung indefinitely because the
+    # outer Async{} root task waited for read_messages to finish, which
+    # never happens for a live Client.
     def start
       return if @task
 
-      @task = Async::Task.current.async { read_messages }
+      parent = Async::Task.current?
+      raise CLIConnectionError, 'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})' unless parent
+
+      @task = parent.async { read_messages }
     end
 
     private
@@ -658,7 +670,10 @@ module ClaudeAgentSDK
       # stay in the caller's fiber (a nested `Async do ... end.wait` spawned a
       # separate task and could leak the pending entries when an Async::Stop
       # propagated through `.wait` before either the success-path or the
-      # timeout-path cleanup ran).
+      # timeout-path cleanup ran). Control requests must run inside an Async
+      # reactor — `Query#start` already enforces this precondition, so the
+      # cleanest place to surface the contract is the start hand-off; here we
+      # assume an active task is present.
       begin
         Async::Task.current.with_timeout(timeout_seconds) do
           condition.wait
