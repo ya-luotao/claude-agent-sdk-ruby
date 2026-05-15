@@ -144,6 +144,44 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       cmd = described_class.new('/usr/bin/claude', options).build
       expect(cmd).to include('--session-id', 'sess-xyz')
     end
+
+    describe '--resume-session-at' do
+      let(:message_uuid) { 'b3a8f2e6-1c4d-4e9a-9c5d-1f2a3b4c5d6e' }
+
+      it 'passes --resume-session-at alongside --resume' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          resume: 'sess-source',
+          resume_session_at: message_uuid
+        )
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).to include('--resume', 'sess-source')
+        expect(cmd).to include('--resume-session-at', message_uuid)
+      end
+
+      it 'omits --resume-session-at when not set' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(resume: 'sess-source')
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).not_to include('--resume-session-at')
+      end
+
+      it 'raises ArgumentError when used without resume' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(resume_session_at: message_uuid)
+        builder = described_class.new('/usr/bin/claude', options)
+        expect { builder.build }.to raise_error(
+          ArgumentError,
+          /resume_session_at requires resume to be set/
+        )
+      end
+
+      it 'stringifies non-string values' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          resume: 'sess-source',
+          resume_session_at: :"#{message_uuid}"
+        )
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).to include('--resume-session-at', message_uuid)
+      end
+    end
   end
 
   describe 'thinking config' do

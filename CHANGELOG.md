@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `ClaudeAgentOptions#resume_session_at` — forwarded as `--resume-session-at <message-uuid>` to the CLI. When resuming a session, the conversation is truncated to include only messages up to and including the assistant message with the given UUID, enabling history rewriting / branched continuations from a specific turn. Raises `ArgumentError` from `CommandBuilder` if set without `resume` (matches the CLI's own validation but surfaces it synchronously in the caller's stack).
+
 ## [0.16.6] - 2026-04-29
 
 ### Added

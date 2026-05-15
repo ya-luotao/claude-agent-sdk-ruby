@@ -1426,7 +1426,7 @@ module ClaudeAgentSDK
   # Claude Agent Options for configuring queries
   class ClaudeAgentOptions < Type
     attr_accessor :allowed_tools, :system_prompt, :mcp_servers, :permission_mode,
-                  :resume, :session_id, :max_turns, :disallowed_tools,
+                  :resume, :resume_session_at, :session_id, :max_turns, :disallowed_tools,
                   :model, :permission_prompt_tool_name, :cwd, :cli_path, :settings,
                   :add_dirs, :env, :extra_args, :max_buffer_size, :stderr,
                   :can_use_tool, :hooks, :user,

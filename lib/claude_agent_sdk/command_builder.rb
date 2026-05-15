@@ -105,7 +105,21 @@ module ClaudeAgentSDK
     def append_session(cmd)
       cmd.push("--continue") if @options.continue_conversation
       cmd.push("--resume", @options.resume) if @options.resume
+      append_resume_session_at(cmd)
       cmd.push("--session-id", @options.session_id) if @options.session_id
+    end
+
+    # `--resume-session-at <message-uuid>` truncates the resumed conversation
+    # to include messages up to and including the given assistant message UUID.
+    # The CLI rejects this flag without `--resume`; we raise early to surface
+    # the misconfiguration in the caller's stack rather than as a remote
+    # process exit.
+    def append_resume_session_at(cmd)
+      return unless @options.resume_session_at
+
+      raise ArgumentError, "resume_session_at requires resume to be set" unless @options.resume
+
+      cmd.push("--resume-session-at", @options.resume_session_at.to_s)
     end
 
     def append_settings(cmd)
