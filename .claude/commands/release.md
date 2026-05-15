@@ -1,6 +1,6 @@
 ---
-description: Cut a new gem release — bump version, sync docs, update CHANGELOG, tag, build, and draft a GitHub release. Stops before `gem push` (manual OTP).
-argument-hint: patch | minor | major | <explicit-version> [--dry-run]
+description: Cut a new gem release — bump version, sync docs, update CHANGELOG, tag, and publish a GitHub Release. The publish.yml workflow then pushes to rubygems.org via trusted publisher (no manual `gem push`).
+argument-hint: patch | minor | major | <explicit-version> [--dry-run] [--draft]
 allowed-tools: Bash, Read, Edit, Write, Grep, Glob
 ---
 
@@ -8,7 +8,7 @@ allowed-tools: Bash, Read, Edit, Write, Grep, Glob
 
 You are cutting a new release of the `claude-agent-sdk` Ruby gem. Argument: `$ARGUMENTS`.
 
-The final `gem push` step is **NOT** automated — the maintainer runs it manually with an OTP. Your job ends at "GitHub release published; here is the command to run."
+**`gem push` is fully automated.** Publishing the GitHub Release fires `.github/workflows/publish.yml`, which uses RubyGems trusted publishing (OIDC) to push to rubygems.org. The maintainer does not run `gem push` and does not need an OTP. Your job ends at "GitHub Release published; workflow run started at <url>."
 
 ## Preconditions — fail loudly if any of these are wrong
 
@@ -73,8 +73,10 @@ Run in this order, abort on failure:
 
 ```
 bundle exec rake            # spec + rubocop
-bundle exec rake build      # produces pkg/claude-agent-sdk-X.Y.Z.gem
+bundle exec rake build      # smoke test — produces pkg/claude-agent-sdk-X.Y.Z.gem
 ```
+
+`rake build` is a **local smoke test only** — it catches gemspec errors before tagging. The workflow rebuilds and signs the gem in CI; the local `.gem` artifact is not used for publishing.
 
 Confirm the built gem filename matches the new version.
 
@@ -146,24 +148,30 @@ gh pr list --repo ya-luotao/claude-agent-sdk-ruby \
   --json number,title,author
 ```
 
-Create the release:
+Create the release. Default: publish immediately (this is what fires `publish.yml`). If the user passed `--draft`, append `--draft` so they can eyeball the notes in GitHub UI and click "Publish release" manually:
 
 ```
 gh release create vX.Y.Z --repo ya-luotao/claude-agent-sdk-ruby \
   --title "vX.Y.Z" --notes-file <tmpfile>
+# add --draft if --draft was passed
 ```
 
 Mark it latest only if it is (for hotfixes to older minor lines, pass `--latest=false`).
 
-## Step 8 — Hand off to the maintainer
+## Step 8 — Verify the publish workflow
 
-Stop here. Print the exact command the user needs to run:
+Publishing the GitHub Release triggers `.github/workflows/publish.yml`. The `rubygems` job uses trusted publishing (OIDC) to push the gem to rubygems.org — **no `gem push` command for the user to run**.
+
+Locate the triggered run and surface its URL:
 
 ```
-gem push pkg/claude-agent-sdk-X.Y.Z.gem
+sleep 5  # give Actions a moment to register the dispatch
+gh run list --workflow publish.yml --limit 1 --json databaseId,url,status --jq '.[0]'
 ```
 
-Remind them they need their RubyGems OTP. **Do not** attempt `gem push` yourself.
+Tell the user where to watch it. Do **not** wait for it to finish (the user can see the status notification when it lands). If the user passed `--draft`, note that the workflow won't fire until they click "Publish release" in the GitHub UI.
+
+If publishing fails (e.g. trusted publisher misconfigured), the workflow stops cleanly with no side effects on rubygems.org — the maintainer can re-run after fixing config, since the version isn't published until `gem push` succeeds.
 
 ## What to report back
 
@@ -171,7 +179,7 @@ A terse summary:
 - New version
 - Files changed (count)
 - Commit SHA + tag name
-- GitHub release URL
-- The `gem push` command to run
+- GitHub Release URL
+- publish.yml workflow run URL (or "release is draft — workflow will fire when you publish it")
 
 That's it — no trailing recap of the workflow.
