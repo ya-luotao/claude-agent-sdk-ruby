@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.7] - 2026-05-15
+
 ### Added
 - `ClaudeAgentOptions#resume_session_at` — forwarded as `--resume-session-at <message-uuid>` to the CLI. When resuming a session, the conversation is truncated to include only messages up to and including the assistant message with the given UUID, enabling history rewriting / branched continuations from a specific turn. Raises `ArgumentError` from `CommandBuilder` if set without `resume` (matches the CLI's own validation but surfaces it synchronously in the caller's stack).
+- `examples/e2b_transport_example.rb` — working ~320-line custom transport that runs the Claude Code CLI inside an E2B Firecracker microVM via the `e2b` gem. Reuses `CommandBuilder` for argv parity with `SubprocessCLITransport` and demonstrates the 6-method `Transport` interface against a remote backend. README's Custom Transport section now includes an interface table, data-flow diagram, code sketch, and production-hardening checklist that link to the example.
 
 ## [0.16.6] - 2026-04-29
 
