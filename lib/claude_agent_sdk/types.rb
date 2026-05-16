@@ -127,7 +127,7 @@ module ClaudeAgentSDK
     end
 
     def normalize_name(name)
-      name = name.dup.to_s
+      name = name.to_s.dup
       name.gsub!(/(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z\d])(?=[A-Z])/, "_")
       name.tr!("-", "_")
       name.downcase!
