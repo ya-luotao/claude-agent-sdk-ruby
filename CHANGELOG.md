@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.9] - 2026-05-25
+
 ### Fixed
-- `Types.normalize_name` no longer mutates the frozen string returned by `Symbol#to_s` under Ruby 3.4+. The previous `name.dup.to_s` order dup'd the Symbol (a no-op) and then took `.to_s`, which Ruby 3.4 stages to return a frozen string in 4.0 — emitting a deprecation warning on every `gsub!`/`tr!`/`downcase!`. Swapped to `name.to_s.dup`.
+- `Types.normalize_name` no longer mutates the frozen string returned by `Symbol#to_s` under Ruby 3.4+. The previous `name.dup.to_s` order dup'd the Symbol (a no-op) and then took `.to_s`, which Ruby 3.4 stages to return a frozen string in 4.0 — emitting a deprecation warning on every `gsub!`/`tr!`/`downcase!`. Swapped to `name.to_s.dup`. (#35, @chagel)
 
 ## [0.16.8] - 2026-05-15
 
