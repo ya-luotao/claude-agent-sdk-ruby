@@ -378,6 +378,24 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       cmd = described_class.new('/usr/bin/claude', options).build
       expect(cmd).to include('--bare')
     end
+
+    it 'passes --include-hook-events' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(include_hook_events: true)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--include-hook-events')
+    end
+
+    it 'passes --strict-mcp-config' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(strict_mcp_config: true)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--strict-mcp-config')
+    end
+
+    it 'omits --include-hook-events and --strict-mcp-config by default' do
+      cmd = described_class.new('/usr/bin/claude', ClaudeAgentSDK::ClaudeAgentOptions.new).build
+      expect(cmd).not_to include('--include-hook-events')
+      expect(cmd).not_to include('--strict-mcp-config')
+    end
   end
 
   describe 'mutually exclusive session flags' do

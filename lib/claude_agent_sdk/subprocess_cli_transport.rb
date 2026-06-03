@@ -2,6 +2,7 @@
 
 require 'json'
 require 'open3'
+require 'set'
 require 'timeout'
 require_relative 'transport'
 require_relative 'errors'
@@ -14,6 +15,49 @@ module ClaudeAgentSDK
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
     RECENT_STDERR_LINES_LIMIT = 20
+
+    # Track live CLI subprocesses so we can terminate them when the parent Ruby
+    # process exits. Mirrors the Python (PR #916, a `set[Process]`) and
+    # TypeScript SDKs' parent-exit cleanup, preventing orphaned `claude`
+    # processes from leaking when callers crash or exit before reaching #close.
+    # A Set keyed by object identity (like Python's set) keeps the hot path
+    # off `#pid` — only #kill_active_processes touches `#pid`/`#alive?`, at exit.
+    # Guarded by a mutex because #close can run on a FiberBoundary worker thread
+    # while #connect runs on the reactor fiber.
+    @active_processes = Set.new
+    @active_processes_mutex = Mutex.new
+
+    class << self
+      attr_reader :active_processes, :active_processes_mutex
+
+      # +wait_thr+ is the Process::Waiter returned by Open3.popen3.
+      def register_active_process(wait_thr)
+        return unless wait_thr
+
+        active_processes_mutex.synchronize { active_processes.add(wait_thr) }
+      end
+
+      def deregister_active_process(wait_thr)
+        return unless wait_thr
+
+        active_processes_mutex.synchronize { active_processes.delete(wait_thr) }
+      end
+
+      # Best-effort SIGTERM to every still-running child. Registered with
+      # at_exit at the bottom of this file. Never reaps (a blocking wait could
+      # hang interpreter shutdown) — the OS reparents and reaps orphans.
+      def kill_active_processes
+        snapshot = active_processes_mutex.synchronize { active_processes.to_a }
+        snapshot.each do |wait_thr|
+          next unless wait_thr.alive?
+
+          Process.kill('TERM', wait_thr.pid)
+        rescue StandardError
+          # Process already gone (Errno::ESRCH), not permitted, or invalid pid.
+        end
+        active_processes_mutex.synchronize { active_processes.clear }
+      end
+    end
 
     def initialize(options_or_prompt = nil, options = nil)
       # Support both new single-arg form and legacy two-arg form
@@ -104,6 +148,7 @@ module ClaudeAgentSDK
         opts = { chdir: @cwd&.to_s }.compact
 
         @stdin, @stdout, @stderr, @process = Open3.popen3(process_env, *cmd, opts)
+        self.class.register_active_process(@process)
 
         # Always drain stderr to prevent pipe buffer deadlock.
         # Without this, --verbose output fills the OS pipe buffer (~64KB),
@@ -273,6 +318,7 @@ module ClaudeAgentSDK
         warn "Claude SDK: Cleanup warnings: #{cleanup_errors.join(', ')}"
       end
 
+      self.class.deregister_active_process(@process)
       @process = nil
       @stdout = nil
       # @stdin already nilled under the mutex above.
@@ -457,3 +503,8 @@ module ClaudeAgentSDK
     end
   end
 end
+
+# Terminate any CLI subprocess still live when the parent Ruby process exits.
+# Registered once at require time (require is idempotent). Best-effort: the
+# handler swallows all errors so it never interferes with interpreter shutdown.
+at_exit { ClaudeAgentSDK::SubprocessCLITransport.kill_active_processes }

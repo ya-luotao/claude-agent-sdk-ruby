@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `ClaudeAgentOptions#strict_mcp_config` — forwarded as `--strict-mcp-config`. When `true`, the CLI uses **only** the MCP servers passed via `mcp_servers`, ignoring project `.mcp.json`, user/global settings, and plugin-provided servers, for a fully deterministic server set. Defaults to `false`. (Parity with [Python SDK #915](https://github.com/anthropics/claude-agent-sdk-python/pull/915))
+- `ClaudeAgentOptions#include_hook_events` — forwarded as `--include-hook-events`. When `true`, the CLI emits hook lifecycle events (PreToolUse, PostToolUse, Stop, etc.) into the message stream. The parser already maps these to `HookStartedMessage` / `HookProgressMessage` / `HookResponseMessage` (the CLI simply never emitted them without this flag). Defaults to `false`. (Parity with [Python SDK #917](https://github.com/anthropics/claude-agent-sdk-python/pull/917))
+- `SandboxNetworkConfig#denied_domains` (`deniedDomains`) and `#allow_mach_lookup` (`allowMachLookup`) — completes the sandbox network allowlist field set. `denied_domains` blocks domains even when matched by `allowed_domains`; `allow_mach_lookup` is a macOS-only list of XPC/Mach service names to allow (supports a trailing wildcard). Completes [Python SDK #893](https://github.com/anthropics/claude-agent-sdk-python/pull/893), of which the Ruby port had previously landed only `allowed_domains` + `allow_managed_domains_only`.
+- **Orphaned-subprocess cleanup**: `SubprocessCLITransport` now tracks live CLI subprocesses in a class-level, mutex-guarded `Set` and registers an `at_exit` handler that sends `SIGTERM` to any still running when the parent Ruby process exits. This prevents leaked `claude` processes when callers crash or exit before reaching `#close`. The handler skips already-exited processes (`Process::Waiter#alive?`) and swallows errors so it never interrupts interpreter shutdown. (Parity with [Python SDK #916](https://github.com/anthropics/claude-agent-sdk-python/pull/916))
+
 ## [0.16.9] - 2026-05-25
 
 ### Fixed
