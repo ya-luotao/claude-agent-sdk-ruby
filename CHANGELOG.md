@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Pluggable `SessionStore` adapter subsystem** — mirror Claude Code session transcripts to external storage (S3/Redis/Postgres/…) and resume from it, at parity with the Python SDK (#837 and follow-ups) and TypeScript SDK. The subprocess still writes to local disk; the adapter receives a secondary copy.
+  - **`SessionStore`** base class (6-method contract: `append`/`load` required; `list_sessions`/`list_session_summaries`/`delete`/`list_subkeys` optional, probed via `SessionStore.implements?` so duck-typed adapters need not subclass) and **`InMemorySessionStore`** reference implementation. All keys/entries cross the boundary as Hashes with **string keys** (JSON-round-trip safe for JSONB/Redis backends).
+  - **`ClaudeAgentSDK::Testing.run_session_store_conformance(make_store)`** — a 14-contract behavioral test suite for adapter authors (shipped in the gem, framework-agnostic; raises `ConformanceError` on violation).
+  - **Live mirroring**: setting `ClaudeAgentOptions#session_store` emits `--session-mirror`; a `TranscriptMirrorBatcher` coalesces the CLI's `transcript_mirror` frames per file and flushes to `SessionStore#append` on each `result` (or 500-entry / 1 MiB overflow). `session_store_flush: "eager"` flushes after every frame. Append ordering is preserved across concurrent flushes (fiber-aware `Async::Semaphore`); the user store call runs on a `FiberBoundary` thread bounded by a 60 s timeout; failures retry (3 attempts, 0.2/0.8 s backoff) then surface as a **`MirrorErrorMessage`** on the message stream. A failing store never disrupts the session (the local transcript is already durable).
+  - **Resume from store**: pairing `session_store` with `resume`/`continue_conversation` materializes the session (and its subagent transcripts) from the store into a temp `CLAUDE_CONFIG_DIR` before spawn, repoints the subprocess at it, and cleans it up on disconnect. Store-supplied subagent subpaths are validated against path traversal; copied `.credentials.json` has its single-use `refreshToken` redacted; macOS Keychain credentials are bridged when needed.
+  - **Store-backed reads** (counterparts to the local readers): `ClaudeAgentSDK.list_sessions_from_store` (summary fast-path + gap-fill + pagination), `.get_session_info_from_store`, `.get_session_messages_from_store`, `.list_subagents_from_store`, `.get_subagent_messages_from_store`.
+  - **`ClaudeAgentSDK.import_session_to_store`** — replay a local on-disk session (and subagents) into a store for migration / mirror-gap backfill.
+  - **`ClaudeAgentSDK.project_key_for_directory`** and **`.fold_session_summary`** helpers; `ClaudeAgentOptions` gains `session_store`, `session_store_flush` (`"batched"`/`"eager"`), and `load_timeout_ms`. `SessionStore` + `enable_file_checkpointing`, or `continue_conversation` without `list_sessions`, are rejected at connect with a clear error.
+
 ## [0.16.9] - 2026-05-25
 
 ### Fixed

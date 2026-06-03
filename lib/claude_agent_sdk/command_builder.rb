@@ -277,6 +277,8 @@ module ClaudeAgentSDK
       cmd.push("--include-partial-messages") if @options.include_partial_messages
       cmd.push("--fork-session") if @options.fork_session
       cmd.push("--bare") if @options.bare
+      # When a session_store is set, ask the CLI to emit transcript_mirror frames.
+      cmd.push("--session-mirror") if @options.session_store
     end
 
     def append_plugins(cmd)

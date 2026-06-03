@@ -120,6 +120,30 @@ module ClaudeAgentSDK
       "#{sanitized[0, MAX_SANITIZED_LENGTH]}-#{simple_hash(name)}"
     end
 
+    # Resolve a directory to its canonical form (realpath + NFC), matching the
+    # CLI's project-directory naming. Falls back to an absolute NFC path when
+    # realpath can't resolve it (e.g. the directory does not exist yet) — Ruby's
+    # File.realpath raises on missing paths whereas Python's os.path.realpath is
+    # lexical for the missing suffix, so expand_path restores that behavior.
+    def canonicalize_path(dir)
+      File.realpath(dir).unicode_normalize(:nfc)
+    rescue SystemCallError
+      File.expand_path(dir).unicode_normalize(:nfc)
+    end
+
+    # Derive the SessionStore +project_key+ for a directory (default: cwd).
+    #
+    # Uses the same realpath + NFC normalization + djb2-hashed sanitization the
+    # CLI uses for project directory names, so keys match between local-disk
+    # transcripts and store-mirrored transcripts even on filesystems that
+    # decompose Unicode (macOS HFS+).
+    #
+    # @param directory [String, Pathname, nil] Directory to key (nil = cwd)
+    # @return [String] The project key
+    def project_key_for_directory(directory = nil)
+      sanitize_path(canonicalize_path(directory.nil? ? '.' : directory.to_s))
+    end
+
     # Get the Claude config directory
     def config_dir
       ENV.fetch('CLAUDE_CONFIG_DIR', File.expand_path('~/.claude'))
@@ -401,7 +425,318 @@ module ClaudeAgentSDK
       messages
     end
 
+    # ---- SessionStore-backed reads (store counterparts to the disk readers) ----
+
+    # List sessions from a SessionStore. Store-backed counterpart to
+    # list_sessions. Uses the store's incremental summaries (one batch call +
+    # gap-fill) when available, else falls back to list_sessions + one load per
+    # session. Sessions are derived through the same fold the disk path uses, so
+    # both paths agree for identical transcript content.
+    #
+    # @param session_store [SessionStore] store implementing list_session_summaries and/or list_sessions
+    # @return [Array<SDKSessionInfo>] sorted by last_modified descending
+    def list_sessions_from_store(session_store:, directory: nil, limit: nil, offset: 0)
+      offset ||= 0
+      project_path = canonicalize_path(directory.nil? ? '.' : directory.to_s)
+      project_key = sanitize_path(project_path)
+
+      if SessionStore.implements?(session_store, :list_session_summaries)
+        via = list_sessions_via_summaries(session_store, project_key, project_path, limit, offset)
+        return via unless via.nil?
+      end
+
+      unless SessionStore.implements?(session_store, :list_sessions)
+        raise ArgumentError,
+              'session_store implements neither list_session_summaries nor list_sessions -- cannot list sessions'
+      end
+
+      listing = Array(session_store.list_sessions(project_key))
+      apply_sort_limit_offset(derive_infos_via_load(session_store, project_key, listing, project_path), limit, offset)
+    end
+
+    # Read metadata for a single session from a SessionStore. Store-backed
+    # counterpart to get_session_info. Returns nil for an invalid UUID, an
+    # unknown session, a sidechain session, or one with no extractable summary.
+    def get_session_info_from_store(session_store:, session_id:, directory: nil)
+      return nil unless session_id.match?(UUID_RE)
+
+      project_path = canonicalize_path(directory.nil? ? '.' : directory.to_s)
+      entries = session_store.load('project_key' => sanitize_path(project_path), 'session_id' => session_id)
+      return nil if entries.nil? || entries.empty?
+
+      derive_info_from_entries(session_id, entries, mtime_from_entries(entries), project_path)
+    end
+
+    # Read a session's conversation messages from a SessionStore. Store-backed
+    # counterpart to get_session_messages.
+    def get_session_messages_from_store(session_store:, session_id:, directory: nil, limit: nil, offset: 0)
+      return [] unless session_id.match?(UUID_RE)
+
+      offset ||= 0
+      entries = session_store.load('project_key' => project_key_for_directory(directory), 'session_id' => session_id)
+      return [] if entries.nil? || entries.empty?
+
+      entries_to_messages(filter_transcript_entries(entries), limit, offset)
+    end
+
+    # List subagent IDs for a session from a SessionStore. Requires the store to
+    # implement list_subkeys.
+    def list_subagents_from_store(session_store:, session_id:, directory: nil)
+      return [] unless session_id.match?(UUID_RE)
+
+      unless SessionStore.implements?(session_store, :list_subkeys)
+        raise ArgumentError,
+              'session_store does not implement list_subkeys -- cannot list subagents'
+      end
+
+      project_key = project_key_for_directory(directory)
+      subkeys = session_store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+      seen = {}
+      subkeys.filter_map do |subpath|
+        next unless subpath.start_with?('subagents/')
+
+        last = subpath.rpartition('/').last
+        next unless last.start_with?('agent-')
+
+        agent_id = last.delete_prefix('agent-')
+        next if seen[agent_id]
+
+        seen[agent_id] = true
+        agent_id
+      end
+    end
+
+    # Read a subagent's conversation messages from a SessionStore. Subagents may
+    # live at subagents/agent-<id> or nested under
+    # subagents/workflows/<runId>/agent-<id>; scans subkeys to resolve the path
+    # when the store implements list_subkeys, else tries the direct path.
+    def get_subagent_messages_from_store(session_store:, session_id:, agent_id:, directory: nil, limit: nil, offset: 0)
+      return [] unless session_id.match?(UUID_RE)
+      return [] if agent_id.nil? || agent_id.empty?
+
+      project_key = project_key_for_directory(directory)
+      subpath = resolve_subagent_subpath(session_store, project_key, session_id, agent_id)
+      return [] if subpath.nil?
+
+      entries = session_store.load('project_key' => project_key, 'session_id' => session_id, 'subpath' => subpath)
+      return [] if entries.nil? || entries.empty?
+
+      # Drop synthetic agent_metadata entries (they describe the .meta.json
+      # sidecar, not transcript lines).
+      transcript = entries.reject { |e| e.is_a?(Hash) && e['type'] == 'agent_metadata' }
+      return [] if transcript.empty?
+
+      entries_to_messages(filter_transcript_entries(transcript), limit, offset)
+    end
+
+    # Replay a local on-disk session transcript into a SessionStore (inverse of
+    # resume materialization). Streams the JSONL line-by-line and appends in
+    # batches. Keys under the on-disk project directory name so the imported
+    # session is indistinguishable from a live-mirrored one and resumable via
+    # session_store + resume from the original cwd. Adapters should treat
+    # entry["uuid"] as an idempotency key so re-import is duplicate-safe.
+    #
+    # @raise [ArgumentError] if session_id is not a valid UUID
+    # @raise [Errno::ENOENT] if the session JSONL cannot be found
+    def import_session_to_store(session_id:, session_store:, directory: nil, include_subagents: true,
+                                batch_size: TranscriptMirrorBatcher::MAX_PENDING_ENTRIES)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(UUID_RE)
+
+      resolved = find_session_file(session_id, directory)
+      raise Errno::ENOENT, "Session #{session_id} not found" if resolved.nil? || !File.exist?(resolved)
+
+      # Key under the on-disk project directory name — matches
+      # file_path_to_session_key / TranscriptMirrorBatcher even when the resolver
+      # found the file via worktree fallback or a global scan.
+      project_key = File.basename(File.dirname(resolved))
+      batch_size = TranscriptMirrorBatcher::MAX_PENDING_ENTRIES unless batch_size.positive?
+
+      append_jsonl_file_in_batches(resolved, { 'project_key' => project_key, 'session_id' => session_id },
+                                   session_store, batch_size)
+      return unless include_subagents
+
+      import_subagent_files(resolved, project_key, session_id, session_store, batch_size)
+    end
+
     # -- Private helpers --
+
+    # Summary fast-path for list_sessions_from_store. Returns the paginated
+    # result, or nil if the store's list_session_summaries raises
+    # NotImplementedError (caller falls back to the slow path). Sessions missing
+    # a sidecar or whose sidecar is stale (summary.mtime < the session's current
+    # mtime) are routed through gap-fill so the fold is recomputed from source.
+    def list_sessions_via_summaries(store, project_key, project_path, limit, offset)
+      begin
+        summaries = store.list_session_summaries(project_key)
+      rescue NotImplementedError
+        return nil
+      end
+
+      has_list_sessions = SessionStore.implements?(store, :list_sessions)
+      listing = has_list_sessions ? Array(store.list_sessions(project_key)) : []
+      known_mtimes = listing.to_h { |e| [e['session_id'], e['mtime']] }
+
+      slots = []
+      fresh = {}
+      summaries.each do |summary|
+        sid = summary['session_id']
+        if has_list_sessions
+          known = known_mtimes[sid]
+          next if known.nil? # no longer listed — drop
+          next if summary['mtime'] < known # stale sidecar — gap-fill re-folds
+        end
+        fresh[sid] = true
+        info = SessionSummary.summary_entry_to_sdk_info(summary, project_path)
+        slots << { mtime: summary['mtime'], info: info } unless info.nil?
+      end
+      listing.each do |e|
+        next if fresh[e['session_id']]
+
+        slots << { mtime: e['mtime'], session_id: e['session_id'], info: nil }
+      end
+
+      # Paginate BEFORE per-session load so the gap-fill load count is bounded
+      # by page size, not the total number of missing sidecars.
+      slots.sort_by! { |slot| -slot[:mtime] }
+      page = offset.positive? ? (slots[offset..] || []) : slots
+      page = page.first(limit) if limit&.positive?
+
+      fill_gap_slots(store, project_key, project_path, page)
+      page.filter_map { |slot| slot[:info] }
+    end
+
+    # Resolve placeholder slots (info nil) by loading + folding their entries.
+    def fill_gap_slots(store, project_key, project_path, page)
+      to_fill = page.select { |slot| slot[:info].nil? && slot[:session_id] }
+      return if to_fill.empty?
+
+      listing = to_fill.map { |slot| { 'session_id' => slot[:session_id], 'mtime' => slot[:mtime] } }
+      by_sid = derive_infos_via_load(store, project_key, listing, project_path).to_h { |info| [info.session_id, info] }
+      to_fill.each { |slot| slot[:info] = by_sid[slot[:session_id]] }
+    end
+
+    # Load each listed session's entries and derive its SDKSessionInfo via the
+    # same fold the disk lite-parse mirrors. Sidechain / no-summary sessions are
+    # dropped. Sequential — store methods are synchronous in the Ruby SDK.
+    def derive_infos_via_load(store, project_key, listing, project_path)
+      listing.filter_map do |entry|
+        sid = entry['session_id']
+        next if sid.nil?
+
+        entries = store.load('project_key' => project_key, 'session_id' => sid)
+        next if entries.nil? || entries.empty?
+
+        derive_info_from_entries(sid, entries, entry['mtime'] || 0, project_path)
+      end
+    end
+
+    # Fold store entries into an SDKSessionInfo, stamping the given mtime.
+    def derive_info_from_entries(session_id, entries, mtime, project_path)
+      summary = SessionSummary.fold_session_summary(nil, { 'session_id' => session_id }, entries)
+      summary['mtime'] = mtime
+      SessionSummary.summary_entry_to_sdk_info(summary, project_path)
+    end
+
+    # Last parseable entry timestamp (epoch ms), scanning from the tail; 0 if none.
+    def mtime_from_entries(entries)
+      entries.reverse_each do |entry|
+        next unless entry.is_a?(Hash) && entry['timestamp']
+
+        ms = parse_iso_timestamp_ms(entry['timestamp'])
+        return ms if ms
+      end
+      0
+    end
+
+    def apply_sort_limit_offset(results, limit, offset)
+      results = results.sort_by { |s| -s.last_modified }
+      results = results[offset..] || [] if offset.positive?
+      results = results.first(limit) if limit&.positive?
+      results
+    end
+
+    def filter_transcript_entries(entries)
+      valid_types = %w[user assistant progress system attachment]
+      entries.select { |e| e.is_a?(Hash) && valid_types.include?(e['type']) && e['uuid'].is_a?(String) }
+    end
+
+    def entries_to_messages(entries, limit, offset)
+      offset ||= 0
+      messages = filter_visible_messages(build_conversation_chain(entries))
+      messages = messages[offset..] || []
+      messages = messages.first(limit) if limit
+      messages
+    end
+
+    # Find the subpath for a subagent, scanning subkeys (subagents may be nested
+    # under subagents/workflows/<runId>/agent-<id>) when list_subkeys is
+    # available, else falling back to the direct subagents/agent-<id> path.
+    def resolve_subagent_subpath(store, project_key, session_id, agent_id)
+      return "subagents/agent-#{agent_id}" unless SessionStore.implements?(store, :list_subkeys)
+
+      target = "agent-#{agent_id}"
+      subkeys = store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+      subkeys.find { |sk| sk.start_with?('subagents/') && sk.rpartition('/').last == target }
+    end
+
+    # Import subagent transcripts (and their .meta.json sidecars) under
+    # <projectDir>/<sessionId>/subagents/**. The on-disk .jsonl lacks
+    # agent_metadata entries (those are sent only to live mirrors); re-inject
+    # the sidecar as an agent_metadata entry so resume can recreate it.
+    def import_subagent_files(resolved, project_key, session_id, store, batch_size)
+      session_dir = resolved.delete_suffix('.jsonl')
+      collect_jsonl_files(File.join(session_dir, 'subagents')).each do |file_path|
+        rel = file_path.delete_prefix("#{session_dir}#{File::SEPARATOR}")
+        subpath = rel.delete_suffix('.jsonl').split(File::SEPARATOR).join('/')
+        sub_key = { 'project_key' => project_key, 'session_id' => session_id, 'subpath' => subpath }
+        append_jsonl_file_in_batches(file_path, sub_key, store, batch_size)
+
+        meta_text = begin
+          File.read("#{file_path.delete_suffix('.jsonl')}.meta.json")
+        rescue Errno::ENOENT
+          nil
+        end
+        next if meta_text.nil?
+
+        meta = JSON.parse(meta_text)
+        store.append(sub_key, [{ 'type' => 'agent_metadata' }.merge(meta)]) if meta.is_a?(Hash)
+      end
+    end
+
+    def append_jsonl_file_in_batches(file_path, key, store, batch_size)
+      batch = []
+      nbytes = 0
+      File.foreach(file_path) do |line|
+        line = line.chomp
+        next if line.empty?
+
+        batch << JSON.parse(line)
+        nbytes += line.bytesize
+        next unless batch.length >= batch_size || nbytes >= TranscriptMirrorBatcher::MAX_PENDING_BYTES
+
+        store.append(key, batch)
+        batch = []
+        nbytes = 0
+      end
+      store.append(key, batch) unless batch.empty?
+    end
+
+    # Recursively collect *.jsonl paths under base_dir, sorted per directory for
+    # deterministic import order. Empty when base_dir is absent.
+    def collect_jsonl_files(base_dir)
+      return [] unless File.directory?(base_dir)
+
+      Dir.children(base_dir).sort.flat_map do |name|
+        path = File.join(base_dir, name)
+        if File.directory?(path)
+          collect_jsonl_files(path)
+        elsif File.file?(path) && name.end_with?('.jsonl')
+          [path]
+        else
+          []
+        end
+      end
+    end
 
     def get_session_info_for_directory(file_name, directory)
       canonical = File.realpath(directory).unicode_normalize(:nfc)
@@ -667,7 +1002,11 @@ module ClaudeAgentSDK
                          :find_session_file, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :filter_visible_messages, :read_head_tail, :build_session_info,
-                         :parse_iso_timestamp_ms
+                         :parse_iso_timestamp_ms,
+                         :list_sessions_via_summaries, :fill_gap_slots, :derive_infos_via_load,
+                         :derive_info_from_entries, :mtime_from_entries, :apply_sort_limit_offset,
+                         :filter_transcript_entries, :entries_to_messages, :resolve_subagent_subpath,
+                         :import_subagent_files, :append_jsonl_file_in_batches, :collect_jsonl_files
 
     # These remain accessible for SessionMutations:
     # config_dir, sanitize_path, find_project_dir, detect_worktrees

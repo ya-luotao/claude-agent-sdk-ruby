@@ -56,6 +56,7 @@ module ClaudeAgentSDK
       @initialized = false
       @closed = false
       @initialization_result = nil
+      @transcript_mirror_batcher = nil
     end
 
     # Initialize control protocol if in streaming mode
@@ -150,6 +151,28 @@ module ClaudeAgentSDK
       @task = parent.async { read_messages }
     end
 
+    # Install the transcript-mirror batcher fed by `transcript_mirror` frames
+    # (Client mode with a session_store). nil disables mirroring.
+    def set_transcript_mirror_batcher(batcher)
+      @transcript_mirror_batcher = batcher
+    end
+
+    # Synthesize a `mirror_error` system message and put it on the SDK message
+    # stream so consumers learn a mirror batch was dropped after exhausting
+    # retries. Non-blocking: the message queue is unbounded, so unlike the
+    # Python SDK there is no buffer-full drop path.
+    def report_mirror_error(key, error)
+      session_id = key && (key['session_id'] || key[:session_id])
+      @message_queue.enqueue(
+        type: 'system',
+        subtype: 'mirror_error',
+        error: error,
+        key: key,
+        uuid: SecureRandom.uuid,
+        session_id: session_id || ''
+      )
+    end
+
     private
 
     def control_request_timeout_seconds
@@ -200,10 +223,20 @@ module ClaudeAgentSDK
           task = request_id ? @inflight_control_request_tasks[request_id] : nil
           task&.stop
           next
+        when 'transcript_mirror'
+          # session_store mirror frame — fed to the batcher, never surfaced to
+          # consumers. camelCase on the wire; transport symbolizes keys.
+          @transcript_mirror_batcher&.enqueue(message[:filePath] || message[:file_path], message[:entries] || [])
+          next
         else
-          if message[:type] == 'result' && !@first_result_received
-            @first_result_received = true
-            @first_result_condition.signal
+          if message[:type] == 'result'
+            # Flush the mirror before signaling/yielding the result so a
+            # consumer observing the result sees an up-to-date store for the turn.
+            flush_transcript_mirror
+            unless @first_result_received
+              @first_result_received = true
+              @first_result_condition.signal
+            end
           end
           # Regular SDK messages go to the queue
           @message_queue.enqueue(message)
@@ -232,12 +265,23 @@ module ClaudeAgentSDK
       # Put error in queue so iterators can handle it
       @message_queue.enqueue({ type: 'error', error: e })
     ensure
+      # Catch entries from a turn that ended without a `result` (early EOF /
+      # transport error) so they aren't dropped.
+      flush_transcript_mirror
       unless @first_result_received
         @first_result_received = true
         @first_result_condition.signal
       end
       # Always signal end of stream
       @message_queue.enqueue({ type: 'end' })
+    end
+
+    # Flush the transcript-mirror batcher, swallowing errors — a mirror failure
+    # must never propagate into the read loop or its teardown.
+    def flush_transcript_mirror
+      @transcript_mirror_batcher&.flush
+    rescue StandardError => e
+      warn "Claude SDK: transcript mirror flush failed: #{e.message}"
     end
 
     def handle_control_response(message)
@@ -976,6 +1020,9 @@ module ClaudeAgentSDK
     # Close the query and transport
     def close
       @closed = true
+      # Final mirror flush BEFORE stopping the read task, so the last turn's
+      # entries reach the store. #close on the batcher never raises.
+      @transcript_mirror_batcher&.close
       @task&.stop
       @transport.close
     end

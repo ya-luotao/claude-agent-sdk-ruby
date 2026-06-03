@@ -226,6 +226,26 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.data).to include(message: 'Test system message')
       end
 
+      it 'parses mirror_error as MirrorErrorMessage' do
+        data = {
+          type: 'system',
+          subtype: 'mirror_error',
+          error: 'append failed',
+          key: { 'project_key' => 'pk', 'session_id' => 'sess_1' },
+          uuid: 'uuid_me',
+          session_id: 'sess_1'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::MirrorErrorMessage)
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.error).to eq('append failed')
+        expect(msg.key).to eq('project_key' => 'pk', 'session_id' => 'sess_1')
+        expect(msg.uuid).to eq('uuid_me')
+        expect(msg.session_id).to eq('sess_1')
+        expect(msg.subtype).to eq('mirror_error')
+      end
+
       it 'parses task_started as TaskStartedMessage' do
         data = {
           type: 'system',

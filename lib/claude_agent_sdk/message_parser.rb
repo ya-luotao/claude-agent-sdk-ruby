@@ -87,6 +87,7 @@ module ClaudeAgentSDK
       'status' => StatusMessage,
       'api_retry' => APIRetryMessage,
       'local_command_output' => LocalCommandOutputMessage,
+      'mirror_error' => MirrorErrorMessage,
       'hook_started' => HookStartedMessage,
       'hook_progress' => HookProgressMessage,
       'hook_response' => HookResponseMessage,
