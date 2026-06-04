@@ -12,6 +12,9 @@ RSpec.describe 'SessionStore-backed reads' do
   let(:project_key) { ClaudeAgentSDK.project_key_for_directory(dir) }
   let(:sid1) { SecureRandom.uuid }
   let(:sid2) { SecureRandom.uuid }
+  let(:sid_valid_old) { SecureRandom.uuid }
+  let(:sid_valid_new) { SecureRandom.uuid }
+  let(:sid_side_prefix) { 'side-' }
 
   after { FileUtils.remove_entry(dir) if File.directory?(dir) }
 
@@ -80,6 +83,36 @@ RSpec.describe 'SessionStore-backed reads' do
       expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: nm, directory: dir) }
         .not_to raise_error
       expect(infos.map(&:session_id)).to eq([sid1])
+    end
+
+    it 'does not crash when list_session_summaries returns nil (non-conformant adapter)' do
+      ns = nil_summaries_store
+      ns.append({ 'project_key' => project_key, 'session_id' => sid1 },
+                [user_entry(sid1, 'Prompt', '2024-01-01T00:00:00.000Z')])
+      infos = nil
+      expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: ns, directory: dir) }
+        .not_to raise_error
+      expect(infos.map(&:session_id)).to eq([sid1]) # degrades to gap-fill via list_sessions
+    end
+
+    it 'returns a full page from the summary fast-path even when gap-fill placeholders drop' do
+      # Regression: paginating placeholder slots BEFORE resolving them let
+      # sidechain/no-summary sessions consume page capacity and then drop,
+      # yielding short/empty pages. The two newest here are sidechain; with
+      # limit:2 the fast path must skip them and still return 2 valid sessions.
+      gf = gap_fill_store
+      gf.append({ 'project_key' => project_key, 'session_id' => sid_valid_old },
+                [user_entry(sid_valid_old, 'old', '2024-01-01T00:00:01.000Z')])
+      gf.append({ 'project_key' => project_key, 'session_id' => sid_valid_new },
+                [user_entry(sid_valid_new, 'new', '2024-01-01T00:00:02.000Z')])
+      2.times do |i|
+        gf.append({ 'project_key' => project_key, 'session_id' => "#{sid_side_prefix}#{i}" },
+                  [{ 'type' => 'user', 'uuid' => SecureRandom.uuid, 'isSidechain' => true,
+                     'timestamp' => "2024-01-01T00:00:0#{3 + i}.000Z", 'message' => { 'content' => "s#{i}" } }])
+      end
+
+      infos = ClaudeAgentSDK.list_sessions_from_store(session_store: gf, directory: dir, limit: 2)
+      expect(infos.map(&:session_id)).to eq([sid_valid_new, sid_valid_old]) # full page, sidechain skipped
     end
   end
 
@@ -211,6 +244,60 @@ RSpec.describe 'SessionStore-backed reads' do
         @data.keys.select { |pk, _| pk == project_key }
              .map { |_, sid| { 'session_id' => sid, 'mtime' => nil, 'data' => {} } }
       end
+    end.new
+  end
+
+  # A non-conformant store whose list_session_summaries returns nil (rather
+  # than []) — e.g. a NULL JSONB read — to exercise the Array() degrade-to-gap-fill.
+  def nil_summaries_store
+    Class.new(ClaudeAgentSDK::SessionStore) do
+      def initialize
+        super
+        @data = {}
+      end
+
+      def append(key, entries)
+        (@data[[key['project_key'], key['session_id']]] ||= []).concat(entries)
+      end
+
+      def load(key) = @data[[key['project_key'], key['session_id']]]&.dup
+
+      def list_sessions(project_key)
+        @data.keys.select { |pk, _| pk == project_key }
+             .map { |_, sid| { 'session_id' => sid, 'mtime' => 1_700_000_000_000 } }
+      end
+
+      def list_session_summaries(_project_key) = nil
+    end.new
+  end
+
+  # A store that implements list_sessions + list_session_summaries but maintains
+  # NO summaries (always returns []), so every session is a gap-fill placeholder.
+  # mtime is a monotonic per-append counter so insertion order == recency order.
+  def gap_fill_store
+    Class.new(ClaudeAgentSDK::SessionStore) do
+      def initialize
+        super
+        @data = {}
+        @mtimes = {}
+        @clock = 0
+      end
+
+      def append(key, entries)
+        k = [key['project_key'], key['session_id']]
+        (@data[k] ||= []).concat(entries)
+        @clock += 1
+        @mtimes[k] = 1_700_000_000_000 + @clock
+      end
+
+      def load(key) = @data[[key['project_key'], key['session_id']]]&.dup
+
+      def list_sessions(project_key)
+        @data.keys.select { |pk, _| pk == project_key }
+             .map { |pk, sid| { 'session_id' => sid, 'mtime' => @mtimes[[pk, sid]] } }
+      end
+
+      def list_session_summaries(_project_key) = []
     end.new
   end
 

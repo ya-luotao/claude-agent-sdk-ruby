@@ -130,6 +130,44 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
     end
   end
 
+  it 'preserves append order with no loss or duplication across concurrent eager drains' do
+    # Latency-injecting store: append sleeps on its (batcher-spawned) worker
+    # thread, so a drain is in flight — holding the semaphore — while later
+    # frames enqueue and schedule their own drains. This exercises the
+    # detach-before-lock + Async::Semaphore(1) ordering guarantee under genuine
+    # concurrency (the sole reason that machinery exists).
+    slow_store = Class.new(ClaudeAgentSDK::SessionStore) do
+      def initialize
+        super
+        @entries = []
+      end
+
+      attr_reader :entries
+
+      def append(_key, entries)
+        sleep(0.002) # plain sleep: runs on the worker thread; thread.join yields the reactor
+        @entries.concat(entries)
+      end
+
+      def load(_key) = @entries.dup
+    end.new
+
+    n = 30
+    Async do
+      b = described_class.new(store: slow_store, projects_dir: projects, on_error: on_error,
+                              max_pending_entries: 0, max_pending_bytes: 0) # eager
+      n.times do |i|
+        b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => "u#{i}" }])
+        Async::Task.current.sleep(0.001) if i.even? # interleave background drains
+      end
+      b.close
+    end
+
+    uuids = slow_store.entries.map { |e| e['uuid'] }
+    expect(uuids).to eq(Array.new(n) { |i| "u#{i}" }) # in enqueue order, no dup, no loss
+    expect(errors).to be_empty
+  end
+
   it 'close performs a final flush and never raises' do
     Async do
       b = batcher

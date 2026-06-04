@@ -413,7 +413,13 @@ module ClaudeAgentSDK
       begin
         connect_inner(configured_options, prompt)
       rescue StandardError
-        disconnect
+        # Tear down the partial connect, but never let a cleanup failure (e.g. a
+        # custom transport whose #close raises) mask the original connect error.
+        begin
+          disconnect
+        rescue StandardError => e
+          warn "Claude SDK: cleanup after failed connect raised: #{e.message}"
+        end
         raise
       end
     end

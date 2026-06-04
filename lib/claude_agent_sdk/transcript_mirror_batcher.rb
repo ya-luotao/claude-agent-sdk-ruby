@@ -23,6 +23,11 @@ module ClaudeAgentSDK
   # session continues unaffected — and are reported via the +on_error+ callback
   # (which surfaces them as a MirrorErrorMessage). Adapters should dedupe by
   # entry["uuid"] when present, since a retried batch may overlap a prior write.
+  #
+  # The semaphore serializes appends, but a #send that exceeds send_timeout is
+  # abandoned (its worker thread keeps running) and the next drain proceeds, so
+  # two #append calls for the SAME key can briefly overlap. SessionStore#append
+  # must be thread-safe per key (see that method's contract).
   class TranscriptMirrorBatcher
     # Eager-flush thresholds (exposed for tests).
     MAX_PENDING_ENTRIES = 500

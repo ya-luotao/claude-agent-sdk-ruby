@@ -46,6 +46,14 @@ module ClaudeAgentSDK
 
     # Mirror a batch of transcript entries. Called AFTER the subprocess's local
     # write succeeds. Required.
+    #
+    # Appends for a given key are normally serialized by the batcher, but if an
+    # #append exceeds the send timeout the batcher abandons that (still-running)
+    # call and proceeds, so a later #append for the SAME key can overlap it.
+    # Implementations must therefore be thread-safe per key (a per-call
+    # connection — Postgres/Redis/etc. — satisfies this) and should dedupe by
+    # entry["uuid"] when present, since a retried/overlapping batch may repeat
+    # a prior write.
     def append(_key, _entries)
       raise NotImplementedError, "#{self.class} must implement #append"
     end

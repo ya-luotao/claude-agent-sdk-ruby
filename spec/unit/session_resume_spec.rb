@@ -127,6 +127,33 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       expect(File.exist?(mat.config_dir)).to be false # cleanup removed it
     end
 
+    it 'removes the credential-bearing temp dir when materialization fails after mkdtemp' do
+      store.append({ 'project_key' => project_key, 'session_id' => sid }, [entry('hi')])
+      # A store that writes the main transcript fine but explodes in list_subkeys,
+      # i.e. AFTER Dir.mktmpdir + transcript/credentials are written. The rescue
+      # Exception path must remove tmp_base so no temp dir (holding a credential
+      # copy) is leaked.
+      exploding = Class.new(ClaudeAgentSDK::SessionStore) do
+        def initialize(inner)
+          super()
+          @inner = inner
+        end
+
+        def append(key, entries) = @inner.append(key, entries)
+        def load(key) = @inner.load(key)
+        def list_subkeys(_key) = raise('boom in list_subkeys')
+      end.new(store)
+
+      before = Dir.glob(File.join(Dir.tmpdir, 'claude-resume-*'))
+      expect do
+        described_class.materialize_resume_session(
+          ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: exploding, resume: sid, cwd: cwd)
+        )
+      end.to raise_error(StandardError)
+      leaked = Dir.glob(File.join(Dir.tmpdir, 'claude-resume-*')) - before
+      expect(leaked).to eq([]) # temp dir (and its .credentials.json copy) was cleaned up
+    end
+
     it 'for continue_conversation picks the newest non-sidechain session' do
       old_sid = SecureRandom.uuid
       new_sid = SecureRandom.uuid

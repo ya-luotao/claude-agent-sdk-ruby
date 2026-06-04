@@ -570,7 +570,10 @@ module ClaudeAgentSDK
     # mtime) are routed through gap-fill so the fold is recomputed from source.
     def list_sessions_via_summaries(store, project_key, project_path, limit, offset)
       begin
-        summaries = store.list_session_summaries(project_key)
+        # Array(): a non-conformant store returning nil (e.g. a NULL JSONB read)
+        # degrades to gap-fill instead of crashing on nil.each, matching the
+        # defensive Array() already applied to list_sessions / list_subkeys.
+        summaries = Array(store.list_session_summaries(project_key))
       rescue NotImplementedError
         return nil
       end
@@ -600,24 +603,45 @@ module ClaudeAgentSDK
         slots << { mtime: e['mtime'] || 0, session_id: e['session_id'], info: nil }
       end
 
-      # Paginate BEFORE per-session load so the gap-fill load count is bounded
-      # by page size, not the total number of missing sidecars.
       slots.sort_by! { |slot| -slot[:mtime] }
-      page = offset.positive? ? (slots[offset..] || []) : slots
-      page = page.first(limit) if limit&.positive?
-
-      fill_gap_slots(store, project_key, project_path, page)
-      page.filter_map { |slot| slot[:info] }
+      paginate_resolving_gaps(store, project_key, project_path, slots, limit, offset)
     end
 
-    # Resolve placeholder slots (info nil) by loading + folding their entries.
-    def fill_gap_slots(store, project_key, project_path, page)
-      to_fill = page.select { |slot| slot[:info].nil? && slot[:session_id] }
-      return if to_fill.empty?
+    # Walk slots newest-first, resolving gap-fill placeholders (info nil) on
+    # demand and skipping any that resolve to sidechain / no-summary, then apply
+    # offset/limit to the RESOLVED results. Paginating over surviving sessions
+    # (not raw slots) matches the disk reader, so a placeholder that drops never
+    # leaves a short page; loads stay bounded to ~offset + limit + (the dropped
+    # placeholders encountered before the page fills), preserving the fast
+    # path's "don't load every session" intent.
+    def paginate_resolving_gaps(store, project_key, project_path, slots, limit, offset)
+      offset = 0 unless offset&.positive?
+      results = []
+      skipped = 0
+      slots.each do |slot|
+        info = slot[:info] || resolve_gap_slot(store, project_key, project_path, slot)
+        next if info.nil?
 
-      listing = to_fill.map { |slot| { 'session_id' => slot[:session_id], 'mtime' => slot[:mtime] } }
-      by_sid = derive_infos_via_load(store, project_key, listing, project_path).to_h { |info| [info.session_id, info] }
-      to_fill.each { |slot| slot[:info] = by_sid[slot[:session_id]] }
+        if skipped < offset
+          skipped += 1
+          next
+        end
+        results << info
+        break if limit&.positive? && results.length >= limit
+      end
+      results
+    end
+
+    # Load + fold one placeholder slot into an SDKSessionInfo, or nil when the
+    # session is absent / sidechain / has no extractable summary.
+    def resolve_gap_slot(store, project_key, project_path, slot)
+      sid = slot[:session_id]
+      return nil if sid.nil?
+
+      entries = store.load('project_key' => project_key, 'session_id' => sid)
+      return nil if entries.nil? || entries.empty?
+
+      derive_info_from_entries(sid, entries, slot[:mtime], project_path)
     end
 
     # Load each listed session's entries and derive its SDKSessionInfo via the
@@ -1010,7 +1034,8 @@ module ClaudeAgentSDK
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :filter_visible_messages, :read_head_tail, :build_session_info,
                          :parse_iso_timestamp_ms,
-                         :list_sessions_via_summaries, :fill_gap_slots, :derive_infos_via_load,
+                         :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
+                         :derive_infos_via_load,
                          :derive_info_from_entries, :mtime_from_entries, :apply_sort_limit_offset,
                          :filter_transcript_entries, :entries_to_messages, :resolve_subagent_subpath,
                          :import_subagent_files, :append_jsonl_file_in_batches, :collect_jsonl_files
