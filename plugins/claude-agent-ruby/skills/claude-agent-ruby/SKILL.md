@@ -57,7 +57,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 ## Sandbox Settings (full CC parity)
 - `SandboxSettings`: enabled, fail_if_unavailable, auto_allow_bash_if_sandboxed, excluded_commands, allow_unsandboxed_commands, network, filesystem, ignore_violations (Hash), enable_weaker_nested_sandbox, enable_weaker_network_isolation, ripgrep
-- `SandboxNetworkConfig`: allowed_domains, allow_managed_domains_only, allow_unix_sockets, allow_all_unix_sockets, allow_local_binding, http_proxy_port, socks_proxy_port
+- `SandboxNetworkConfig`: allowed_domains, denied_domains, allow_managed_domains_only, allow_unix_sockets, allow_all_unix_sockets, allow_local_binding, allow_mach_lookup, http_proxy_port, socks_proxy_port
 - `SandboxFilesystemConfig`: allow_write, deny_write, deny_read, allow_read, allow_managed_read_paths_only
 
 ## SDK MCP Tools

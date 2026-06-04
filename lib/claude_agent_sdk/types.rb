@@ -1351,17 +1351,19 @@ module ClaudeAgentSDK
 
   # Sandbox network configuration
   class SandboxNetworkConfig < Type
-    attr_accessor :allowed_domains, :allow_managed_domains_only,
+    attr_accessor :allowed_domains, :denied_domains, :allow_managed_domains_only,
                   :allow_unix_sockets, :allow_all_unix_sockets, :allow_local_binding,
-                  :http_proxy_port, :socks_proxy_port
+                  :allow_mach_lookup, :http_proxy_port, :socks_proxy_port
 
     def to_h
       result = {}
       result[:allowedDomains] = @allowed_domains if @allowed_domains
+      result[:deniedDomains] = @denied_domains if @denied_domains
       result[:allowManagedDomainsOnly] = @allow_managed_domains_only unless @allow_managed_domains_only.nil?
       result[:allowUnixSockets] = @allow_unix_sockets unless @allow_unix_sockets.nil?
       result[:allowAllUnixSockets] = @allow_all_unix_sockets unless @allow_all_unix_sockets.nil?
       result[:allowLocalBinding] = @allow_local_binding unless @allow_local_binding.nil?
+      result[:allowMachLookup] = @allow_mach_lookup if @allow_mach_lookup
       result[:httpProxyPort] = @http_proxy_port if @http_proxy_port
       result[:socksProxyPort] = @socks_proxy_port if @socks_proxy_port
       result
@@ -1485,13 +1487,16 @@ module ClaudeAgentSDK
                   :thinking, :effort, :observers, :task_budget,
                   :session_store, :session_store_flush, :load_timeout_ms
     attr_reader :bare, :fork_session, :enable_file_checkpointing,
-                :include_partial_messages, :continue_conversation
+                :include_partial_messages, :continue_conversation,
+                :include_hook_events, :strict_mcp_config
 
     def initialize(attributes = {})
       self.fork_session = false
       self.continue_conversation = false
       self.include_partial_messages = false
       self.enable_file_checkpointing = false
+      self.include_hook_events = false
+      self.strict_mcp_config = false
 
       super(merge_with_defaults(attributes || {}))
 
@@ -1552,6 +1557,22 @@ module ClaudeAgentSDK
 
     def continue_conversation=(value)
       @continue_conversation = coerce_boolean(value)
+    end
+
+    def include_hook_events?
+      !!include_hook_events
+    end
+
+    def include_hook_events=(value)
+      @include_hook_events = coerce_boolean(value)
+    end
+
+    def strict_mcp_config?
+      !!strict_mcp_config
+    end
+
+    def strict_mcp_config=(value)
+      @strict_mcp_config = coerce_boolean(value)
     end
 
     private

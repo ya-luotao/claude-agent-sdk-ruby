@@ -4,6 +4,12 @@ require 'spec_helper'
 require 'tempfile'
 
 RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
+  # The active-process registry is class-level mutable state shared across the
+  # whole suite. Several #connect specs register a stubbed Process::Waiter and
+  # never call #close, so clear it between examples to keep the at_exit handler
+  # (and other specs) from observing leaked test doubles.
+  after { described_class.active_processes.clear }
+
   describe '#build_command' do
     it 'passes a string system_prompt via --system-prompt' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
@@ -649,6 +655,100 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       transport.instance_variable_set(:@process, waiter)
 
       expect { transport.read_messages { |m| m } }.not_to raise_error
+    end
+  end
+
+  describe 'active-process registry (at_exit cleanup)' do
+    it 'registers and deregisters a process by identity' do
+      waiter = instance_double(Process::Waiter)
+
+      described_class.register_active_process(waiter)
+      expect(described_class.active_processes).to include(waiter)
+
+      described_class.deregister_active_process(waiter)
+      expect(described_class.active_processes).not_to include(waiter)
+    end
+
+    it 'is a no-op when given nil and dedupes repeated registrations' do
+      waiter = instance_double(Process::Waiter)
+
+      described_class.register_active_process(nil)
+      described_class.register_active_process(waiter)
+      described_class.register_active_process(waiter)
+
+      expect(described_class.active_processes.size).to eq(1)
+    end
+
+    it 'kill_active_processes SIGTERMs only live processes, then clears the registry' do
+      live = instance_double(Process::Waiter, pid: 4242, alive?: true)
+      dead = instance_double(Process::Waiter, pid: 4243, alive?: false)
+      described_class.register_active_process(live)
+      described_class.register_active_process(dead)
+
+      # A single positive expectation also asserts the dead process is skipped:
+      # any kill('TERM', 4243) would surface as an unexpected-arguments failure.
+      expect(Process).to receive(:kill).with('TERM', 4242)
+
+      described_class.kill_active_processes
+      expect(described_class.active_processes).to be_empty
+    end
+
+    it 'swallows errors from a dead pid so interpreter shutdown is never interrupted' do
+      stale = instance_double(Process::Waiter, pid: 9999, alive?: true)
+      described_class.register_active_process(stale)
+      allow(Process).to receive(:kill).with('TERM', 9999).and_raise(Errno::ESRCH)
+
+      expect { described_class.kill_active_processes }.not_to raise_error
+      expect(described_class.active_processes).to be_empty
+    end
+
+    it 'connect registers the spawned process and close deregisters it' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
+      transport = described_class.new('hi', options)
+
+      # Real StringIOs so the stderr-drain thread (#each_line) and #close work
+      # without per-method stubs. alive?: false lets #close skip the wait/kill.
+      waiter = instance_double(Process::Waiter, alive?: false)
+      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(Open3).to receive(:popen3).and_return([StringIO.new, StringIO.new, StringIO.new, waiter])
+
+      transport.connect
+      expect(described_class.active_processes).to include(waiter)
+
+      transport.close
+      expect(described_class.active_processes).not_to include(waiter)
+    end
+
+    it 'deregisters the process when read_messages reaps it, without waiting for #close' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
+      transport = described_class.new('hi', options)
+
+      # read_messages drains stdout to EOF, then reaps via @process.value; the
+      # reaped child must drop out of the registry even though #close is never
+      # called (e.g. a Client abandoned without #disconnect).
+      status = instance_double(Process::Status, exitstatus: 0)
+      waiter = instance_double(Process::Waiter, value: status, alive?: false)
+      stdout = StringIO.new(%({"type":"system","subtype":"init"}\n))
+      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout, StringIO.new, waiter])
+
+      transport.connect
+      expect(described_class.active_processes).to include(waiter)
+
+      transport.read_messages { |m| m }
+      expect(described_class.active_processes).not_to include(waiter)
+    end
+
+    it 'shares one registry across subclasses (constants, not per-class ivars)' do
+      subclass = Class.new(described_class)
+      waiter = instance_double(Process::Waiter)
+
+      # A class-instance-variable registry would be nil on the subclass, so this
+      # would raise NoMethodError on a nil mutex mid-#connect (orphaning the
+      # spawned child). Constants resolve up the ancestor chain, so it is shared.
+      expect { subclass.register_active_process(waiter) }.not_to raise_error
+      expect(subclass.active_processes).to equal(described_class.active_processes)
+      expect(described_class.active_processes).to include(waiter)
     end
   end
 end
