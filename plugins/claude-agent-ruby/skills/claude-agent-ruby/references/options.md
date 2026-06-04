@@ -87,6 +87,8 @@ Structured data may be available in either of these places:
 
 Use `mcp_servers:` to add SDK MCP servers (in-process) or external MCP servers. See `references/mcp-servers.md`.
 
+- `strict_mcp_config`: When `true`, use only the servers in `mcp_servers:`, ignoring project `.mcp.json`, user/global settings, and plugin-provided servers (forwards `--strict-mcp-config`).
+
 ## Sandbox
 
 Use `sandbox:` with `ClaudeAgentSDK::SandboxSettings` to run tool execution in an isolated sandbox when supported.
@@ -110,6 +112,7 @@ client = ClaudeAgentSDK::Client.new(
 ## Advanced flags
 
 - `betas`: Enable CLI beta features (`--betas`).
+- `include_hook_events`: Emit hook lifecycle events (`HookStartedMessage` / `HookProgressMessage` / `HookResponseMessage`) into the message stream (`--include-hook-events`).
 
 ## Session browsing and mutation (top-level SDK functions)
 

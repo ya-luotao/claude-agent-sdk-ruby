@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.10] - 2026-06-04
+
 ### Added
 - `ClaudeAgentOptions#strict_mcp_config` — forwarded as `--strict-mcp-config`. When `true`, the CLI uses **only** the MCP servers passed via `mcp_servers`, ignoring project `.mcp.json`, user/global settings, and plugin-provided servers, for a fully deterministic server set. Defaults to `false`. (Parity with [Python SDK #915](https://github.com/anthropics/claude-agent-sdk-python/pull/915))
 - `ClaudeAgentOptions#include_hook_events` — forwarded as `--include-hook-events`. When `true`, the CLI emits hook lifecycle events (PreToolUse, PostToolUse, Stop, etc.) into the message stream. The parser already maps these to `HookStartedMessage` / `HookProgressMessage` / `HookResponseMessage` (the CLI simply never emitted them without this flag). Defaults to `false`. (Parity with [Python SDK #917](https://github.com/anthropics/claude-agent-sdk-python/pull/917))
