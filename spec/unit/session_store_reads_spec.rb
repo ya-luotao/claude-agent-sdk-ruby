@@ -71,6 +71,16 @@ RSpec.describe 'SessionStore-backed reads' do
       expect { ClaudeAgentSDK.list_sessions_from_store(session_store: minimal, directory: dir) }
         .to raise_error(ArgumentError, /neither/)
     end
+
+    it 'coerces a nil adapter mtime instead of crashing the summary fast-path' do
+      nm = nil_mtime_store
+      nm.append({ 'project_key' => project_key, 'session_id' => sid1 },
+                [user_entry(sid1, 'Prompt', '2024-01-01T00:00:00.000Z')])
+      infos = nil
+      expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: nm, directory: dir) }
+        .not_to raise_error
+      expect(infos.map(&:session_id)).to eq([sid1])
+    end
   end
 
   describe '.get_session_info_from_store' do
@@ -144,6 +154,14 @@ RSpec.describe 'SessionStore-backed reads' do
       expect { ClaudeAgentSDK.list_subagents_from_store(session_store: list_only, session_id: sid2, directory: dir) }
         .to raise_error(ArgumentError, /list_subkeys/)
     end
+
+    it 'does not crash when list_subkeys returns nil (non-conformant adapter)' do
+      ns = nil_subkeys_store
+      expect(ClaudeAgentSDK.list_subagents_from_store(session_store: ns, session_id: sid2, directory: dir)).to eq([])
+      expect(ClaudeAgentSDK.get_subagent_messages_from_store(
+               session_store: ns, session_id: sid2, agent_id: 'abc', directory: dir
+             )).to eq([])
+    end
   end
 
   # A store implementing only append/load/list_sessions (no summaries/subkeys),
@@ -164,6 +182,44 @@ RSpec.describe 'SessionStore-backed reads' do
       def list_sessions(project_key)
         @data.keys.select { |pk, _| pk == project_key }.map { |_, sid| { 'session_id' => sid, 'mtime' => 1 } }
       end
+    end.new
+  end
+
+  # A non-conformant store whose summaries/list_sessions report a nil mtime
+  # (e.g. a NULL JSONB column), to exercise the nil-mtime coercion. summaries
+  # report nil while list_sessions reports a real mtime, so the staleness
+  # comparison runs `nil < Integer` (which crashed before coercion).
+  def nil_mtime_store
+    Class.new(ClaudeAgentSDK::SessionStore) do
+      def initialize
+        super
+        @data = {}
+      end
+
+      def append(key, entries)
+        (@data[[key['project_key'], key['session_id']]] ||= []).concat(entries)
+      end
+
+      def load(key) = @data[[key['project_key'], key['session_id']]]&.dup
+
+      def list_sessions(project_key)
+        @data.keys.select { |pk, _| pk == project_key }
+             .map { |_, sid| { 'session_id' => sid, 'mtime' => 1_700_000_000_000 } }
+      end
+
+      def list_session_summaries(project_key)
+        @data.keys.select { |pk, _| pk == project_key }
+             .map { |_, sid| { 'session_id' => sid, 'mtime' => nil, 'data' => {} } }
+      end
+    end.new
+  end
+
+  # A non-conformant store whose list_subkeys returns nil (rather than []).
+  def nil_subkeys_store
+    Class.new(ClaudeAgentSDK::SessionStore) do
+      def append(_key, _entries); end
+      def load(_key); end
+      def list_subkeys(_key); end
     end.new
   end
 end

@@ -57,25 +57,6 @@ module ClaudeAgentSDK
       )
     end
 
-    # Construct the TranscriptMirrorBatcher for a session. Resolves projects_dir
-    # to the materialized temp dir when present (so file_path -> key resolution
-    # matches what the subprocess writes), else the standard projects dir.
-    def build_mirror_batcher(store:, materialized:, env:, on_error:, flush_mode: 'batched')
-      projects_dir = if materialized
-                       File.join(materialized.config_dir.to_s, 'projects')
-                     else
-                       SessionStores.projects_dir(env)
-                     end
-      eager = flush_mode.to_s == 'eager'
-      TranscriptMirrorBatcher.new(
-        store: store,
-        projects_dir: projects_dir,
-        on_error: on_error,
-        max_pending_entries: eager ? 0 : TranscriptMirrorBatcher::MAX_PENDING_ENTRIES,
-        max_pending_bytes: eager ? 0 : TranscriptMirrorBatcher::MAX_PENDING_BYTES
-      )
-    end
-
     # Load a session from options.session_store and write it to a temp dir.
     # Returns a MaterializedResume, or nil when no materialization is needed
     # (no store, no resume/continue, store has no entries, or the resolved
@@ -280,9 +261,16 @@ module ClaudeAgentSDK
       out_buf = +''
       out_reader = Thread.new { out_buf << stdout.read.to_s }
       err_reader = Thread.new { stderr.read }
+      # Closing the pipes in `ensure` while a reader is mid-read raises IOError
+      # in that thread; silence it (this is a best-effort credential bridge).
+      out_reader.report_on_exception = false
+      err_reader.report_on_exception = false
 
       if wait_thr.join(timeout_s)
-        out_reader.join(1)
+        # The child has exited, so stdout has hit EOF: join with no short timeout
+        # to fully drain out_buf before returning it, avoiding a truncated /
+        # concurrently-mutated buffer (which would yield unparseable credentials).
+        out_reader.join
         [out_buf, wait_thr.value]
       else
         begin
@@ -393,8 +381,17 @@ module ClaudeAgentSDK
       nil
     end
 
+    # Copy src to dst (locked to 0600) when src exists; no-op otherwise. The
+    # only caller copies .claude.json, which can hold MCP-header secrets and
+    # customApiKeyResponses, so it gets the same owner-only mode as the other
+    # materialized files rather than inheriting the source's (often 0644) mode.
     def copy_if_present(src, dst)
       FileUtils.copy_file(src, dst)
+      begin
+        File.chmod(0o600, dst)
+      rescue SystemCallError
+        nil
+      end
     rescue SystemCallError
       nil
     end

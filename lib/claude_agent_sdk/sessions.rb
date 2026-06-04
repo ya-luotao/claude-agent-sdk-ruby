@@ -3,6 +3,9 @@
 require 'json'
 require 'open3'
 require 'pathname'
+require_relative 'session_store'
+require_relative 'session_summary'
+require_relative 'transcript_mirror_batcher'
 
 module ClaudeAgentSDK
   # Session info returned by list_sessions
@@ -490,7 +493,7 @@ module ClaudeAgentSDK
       end
 
       project_key = project_key_for_directory(directory)
-      subkeys = session_store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+      subkeys = Array(session_store.list_subkeys('project_key' => project_key, 'session_id' => session_id))
       seen = {}
       subkeys.filter_map do |subpath|
         next unless subpath.start_with?('subagents/')
@@ -580,19 +583,21 @@ module ClaudeAgentSDK
       fresh = {}
       summaries.each do |summary|
         sid = summary['session_id']
+        # || 0: a non-conformant adapter's missing mtime degrades to gap-fill, not a crash.
+        s_mtime = summary['mtime'] || 0
         if has_list_sessions
           known = known_mtimes[sid]
-          next if known.nil? # no longer listed — drop
-          next if summary['mtime'] < known # stale sidecar — gap-fill re-folds
+          # known.nil?: no longer listed (drop). s_mtime < known: stale sidecar (re-fold).
+          next if known.nil? || s_mtime < known
         end
         fresh[sid] = true
         info = SessionSummary.summary_entry_to_sdk_info(summary, project_path)
-        slots << { mtime: summary['mtime'], info: info } unless info.nil?
+        slots << { mtime: s_mtime, info: info } unless info.nil?
       end
       listing.each do |e|
         next if fresh[e['session_id']]
 
-        slots << { mtime: e['mtime'], session_id: e['session_id'], info: nil }
+        slots << { mtime: e['mtime'] || 0, session_id: e['session_id'], info: nil }
       end
 
       # Paginate BEFORE per-session load so the gap-fill load count is bounded
@@ -675,7 +680,7 @@ module ClaudeAgentSDK
       return "subagents/agent-#{agent_id}" unless SessionStore.implements?(store, :list_subkeys)
 
       target = "agent-#{agent_id}"
-      subkeys = store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+      subkeys = Array(store.list_subkeys('project_key' => project_key, 'session_id' => session_id))
       subkeys.find { |sk| sk.start_with?('subagents/') && sk.rpartition('/').last == target }
     end
 
@@ -699,7 +704,9 @@ module ClaudeAgentSDK
         next if meta_text.nil?
 
         meta = JSON.parse(meta_text)
-        store.append(sub_key, [{ 'type' => 'agent_metadata' }.merge(meta)]) if meta.is_a?(Hash)
+        # Synthetic 'agent_metadata' marker must always win so a future meta key
+        # named 'type' can't reclassify the sidecar as a transcript line on resume.
+        store.append(sub_key, [meta.merge('type' => 'agent_metadata')]) if meta.is_a?(Hash)
       end
     end
 
