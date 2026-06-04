@@ -2,6 +2,7 @@
 
 require 'json'
 require 'open3'
+require 'set'
 require 'timeout'
 require_relative 'transport'
 require_relative 'errors'
@@ -14,6 +15,75 @@ module ClaudeAgentSDK
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
     RECENT_STDERR_LINES_LIMIT = 20
+
+    # Track live CLI subprocesses so we can terminate them when the parent Ruby
+    # process exits. Mirrors the Python (PR #916, a `set[Process]`) and
+    # TypeScript SDKs' parent-exit cleanup, preventing orphaned `claude`
+    # processes from leaking when callers crash or exit before reaching #close.
+    # A Set keyed by object identity (like Python's set) keeps the hot path
+    # off `#pid` — only #kill_active_processes touches `#pid`/`#alive?`, at exit.
+    # Guarded by a mutex because #close can run on a FiberBoundary worker thread
+    # while #connect runs on the reactor fiber.
+    # Stored in CONSTANTS (not class instance variables) so the registry is a
+    # single shared instance across this class and any subclass: constants
+    # resolve through the ancestor chain, whereas class ivars are NOT inherited
+    # — a `SubprocessCLITransport` subclass instance calling
+    # `self.class.register_active_process` would otherwise reach a nil mutex and
+    # raise mid-#connect, orphaning the just-spawned child. The base-class
+    # at_exit handler must be able to see every subprocess, a subclass's too.
+    ACTIVE_PROCESSES = Set.new
+    ACTIVE_PROCESSES_MUTEX = Mutex.new
+
+    class << self
+      # Public readers (the test suite uses `described_class.active_processes`);
+      # they return the shared constants so subclasses observe the same objects.
+      def active_processes
+        ACTIVE_PROCESSES
+      end
+
+      def active_processes_mutex
+        ACTIVE_PROCESSES_MUTEX
+      end
+
+      # +wait_thr+ is the Process::Waiter returned by Open3.popen3.
+      def register_active_process(wait_thr)
+        return unless wait_thr
+
+        active_processes_mutex.synchronize { active_processes.add(wait_thr) }
+      end
+
+      def deregister_active_process(wait_thr)
+        return unless wait_thr
+
+        active_processes_mutex.synchronize { active_processes.delete(wait_thr) }
+      end
+
+      # Best-effort SIGTERM to every still-running child. Registered with
+      # at_exit at the bottom of this file. Never reaps (a blocking wait could
+      # hang interpreter shutdown) — the OS reparents and reaps orphans.
+      #
+      # Deliberately does NOT take active_processes_mutex: at interpreter
+      # shutdown Ruby runs at_exit handlers *before* terminating other threads,
+      # and Mutex is unfair, so blocking here while a still-live worker churns
+      # register/deregister can starve this handler and hang the process. A
+      # lock-free read is safe — a torn snapshot at worst misses or repeats a
+      # SIGTERM, both harmless. The outer rescue guarantees the handler never
+      # raises (e.g. ThreadError if reached from a trap context, or a
+      # concurrent-modification error from the unlocked read), honoring the
+      # "never interrupt interpreter shutdown" contract.
+      def kill_active_processes
+        active_processes.to_a.each do |wait_thr|
+          next unless wait_thr.alive?
+
+          Process.kill('TERM', wait_thr.pid)
+        rescue StandardError
+          # Process already gone (Errno::ESRCH), not permitted, or invalid pid.
+        end
+        active_processes.clear
+      rescue StandardError
+        # Never let cleanup interfere with interpreter shutdown.
+      end
+    end
 
     def initialize(options_or_prompt = nil, options = nil)
       # Support both new single-arg form and legacy two-arg form
@@ -104,6 +174,7 @@ module ClaudeAgentSDK
         opts = { chdir: @cwd&.to_s }.compact
 
         @stdin, @stdout, @stderr, @process = Open3.popen3(process_env, *cmd, opts)
+        self.class.register_active_process(@process)
 
         # Always drain stderr to prevent pipe buffer deadlock.
         # Without this, --verbose output fills the OS pipe buffer (~64KB),
@@ -273,6 +344,7 @@ module ClaudeAgentSDK
         warn "Claude SDK: Cleanup warnings: #{cleanup_errors.join(', ')}"
       end
 
+      self.class.deregister_active_process(@process)
       @process = nil
       @stdout = nil
       # @stdin already nilled under the mutex above.
@@ -403,6 +475,13 @@ module ClaudeAgentSDK
         returncode = nil
       end
 
+      # The child has exited and been reaped; drop it from the parent-exit
+      # registry now rather than waiting for #close, which a caller may never
+      # reach (e.g. a Client abandoned without #disconnect, or direct transport
+      # use). Idempotent — #close's own deregister becomes a harmless no-op, and
+      # #close still sees @process (left set here) for its termination logic.
+      self.class.deregister_active_process(@process)
+
       if returncode && returncode != 0
         # Wait briefly for stderr thread to finish draining
         @stderr_task&.join(1)
@@ -457,3 +536,8 @@ module ClaudeAgentSDK
     end
   end
 end
+
+# Terminate any CLI subprocess still live when the parent Ruby process exits.
+# Registered once at require time (require is idempotent). Best-effort: the
+# handler swallows all errors so it never interferes with interpreter shutdown.
+at_exit { ClaudeAgentSDK::SubprocessCLITransport.kill_active_processes }

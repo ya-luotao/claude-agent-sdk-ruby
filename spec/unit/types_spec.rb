@@ -660,6 +660,15 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.fallback_model).to be_nil
         expect(options.plugins).to be_nil
         expect(options.debug_stderr).to be_nil
+        expect(options.include_hook_events).to eq(false)
+        expect(options.strict_mcp_config).to eq(false)
+      end
+
+      it 'accepts and coerces include_hook_events / strict_mcp_config' do
+        options = described_class.new(include_hook_events: true, strict_mcp_config: 'yes')
+
+        expect(options.include_hook_events?).to eq(true)
+        expect(options.strict_mcp_config?).to eq(true)
       end
 
       it 'accepts configuration' do
@@ -1299,6 +1308,26 @@ RSpec.describe ClaudeAgentSDK do
         expect(hash.key?(:allowLocalBinding)).to eq(true)
         expect(hash.key?(:allowUnixSockets)).to eq(false)
         expect(hash.key?(:allowedDomains)).to eq(false)
+      end
+
+      it 'serializes denied_domains and allow_mach_lookup to camelCase keys' do
+        config = described_class.new(
+          allowed_domains: ['api.example.com'],
+          denied_domains: ['ads.example.com'],
+          allow_mach_lookup: ['com.apple.system.*']
+        )
+
+        hash = config.to_h
+        expect(hash[:allowedDomains]).to eq(['api.example.com'])
+        expect(hash[:deniedDomains]).to eq(['ads.example.com'])
+        expect(hash[:allowMachLookup]).to eq(['com.apple.system.*'])
+      end
+
+      it 'omits deniedDomains and allowMachLookup when unset' do
+        hash = described_class.new(allowed_domains: ['api.example.com']).to_h
+
+        expect(hash.key?(:deniedDomains)).to eq(false)
+        expect(hash.key?(:allowMachLookup)).to eq(false)
       end
     end
 

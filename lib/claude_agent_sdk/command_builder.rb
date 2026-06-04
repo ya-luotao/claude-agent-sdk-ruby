@@ -277,6 +277,8 @@ module ClaudeAgentSDK
       cmd.push("--include-partial-messages") if @options.include_partial_messages
       cmd.push("--fork-session") if @options.fork_session
       cmd.push("--bare") if @options.bare
+      cmd.push("--include-hook-events") if @options.include_hook_events
+      cmd.push("--strict-mcp-config") if @options.strict_mcp_config
     end
 
     def append_plugins(cmd)
