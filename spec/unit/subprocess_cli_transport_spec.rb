@@ -718,5 +718,37 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       transport.close
       expect(described_class.active_processes).not_to include(waiter)
     end
+
+    it 'deregisters the process when read_messages reaps it, without waiting for #close' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
+      transport = described_class.new('hi', options)
+
+      # read_messages drains stdout to EOF, then reaps via @process.value; the
+      # reaped child must drop out of the registry even though #close is never
+      # called (e.g. a Client abandoned without #disconnect).
+      status = instance_double(Process::Status, exitstatus: 0)
+      waiter = instance_double(Process::Waiter, value: status, alive?: false)
+      stdout = StringIO.new(%({"type":"system","subtype":"init"}\n))
+      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout, StringIO.new, waiter])
+
+      transport.connect
+      expect(described_class.active_processes).to include(waiter)
+
+      transport.read_messages { |m| m }
+      expect(described_class.active_processes).not_to include(waiter)
+    end
+
+    it 'shares one registry across subclasses (constants, not per-class ivars)' do
+      subclass = Class.new(described_class)
+      waiter = instance_double(Process::Waiter)
+
+      # A class-instance-variable registry would be nil on the subclass, so this
+      # would raise NoMethodError on a nil mutex mid-#connect (orphaning the
+      # spawned child). Constants resolve up the ancestor chain, so it is shared.
+      expect { subclass.register_active_process(waiter) }.not_to raise_error
+      expect(subclass.active_processes).to equal(described_class.active_processes)
+      expect(described_class.active_processes).to include(waiter)
+    end
   end
 end

@@ -24,11 +24,26 @@ module ClaudeAgentSDK
     # off `#pid` — only #kill_active_processes touches `#pid`/`#alive?`, at exit.
     # Guarded by a mutex because #close can run on a FiberBoundary worker thread
     # while #connect runs on the reactor fiber.
-    @active_processes = Set.new
-    @active_processes_mutex = Mutex.new
+    # Stored in CONSTANTS (not class instance variables) so the registry is a
+    # single shared instance across this class and any subclass: constants
+    # resolve through the ancestor chain, whereas class ivars are NOT inherited
+    # — a `SubprocessCLITransport` subclass instance calling
+    # `self.class.register_active_process` would otherwise reach a nil mutex and
+    # raise mid-#connect, orphaning the just-spawned child. The base-class
+    # at_exit handler must be able to see every subprocess, a subclass's too.
+    ACTIVE_PROCESSES = Set.new
+    ACTIVE_PROCESSES_MUTEX = Mutex.new
 
     class << self
-      attr_reader :active_processes, :active_processes_mutex
+      # Public readers (the test suite uses `described_class.active_processes`);
+      # they return the shared constants so subclasses observe the same objects.
+      def active_processes
+        ACTIVE_PROCESSES
+      end
+
+      def active_processes_mutex
+        ACTIVE_PROCESSES_MUTEX
+      end
 
       # +wait_thr+ is the Process::Waiter returned by Open3.popen3.
       def register_active_process(wait_thr)
@@ -46,16 +61,27 @@ module ClaudeAgentSDK
       # Best-effort SIGTERM to every still-running child. Registered with
       # at_exit at the bottom of this file. Never reaps (a blocking wait could
       # hang interpreter shutdown) — the OS reparents and reaps orphans.
+      #
+      # Deliberately does NOT take active_processes_mutex: at interpreter
+      # shutdown Ruby runs at_exit handlers *before* terminating other threads,
+      # and Mutex is unfair, so blocking here while a still-live worker churns
+      # register/deregister can starve this handler and hang the process. A
+      # lock-free read is safe — a torn snapshot at worst misses or repeats a
+      # SIGTERM, both harmless. The outer rescue guarantees the handler never
+      # raises (e.g. ThreadError if reached from a trap context, or a
+      # concurrent-modification error from the unlocked read), honoring the
+      # "never interrupt interpreter shutdown" contract.
       def kill_active_processes
-        snapshot = active_processes_mutex.synchronize { active_processes.to_a }
-        snapshot.each do |wait_thr|
+        active_processes.to_a.each do |wait_thr|
           next unless wait_thr.alive?
 
           Process.kill('TERM', wait_thr.pid)
         rescue StandardError
           # Process already gone (Errno::ESRCH), not permitted, or invalid pid.
         end
-        active_processes_mutex.synchronize { active_processes.clear }
+        active_processes.clear
+      rescue StandardError
+        # Never let cleanup interfere with interpreter shutdown.
       end
     end
 
@@ -448,6 +474,13 @@ module ClaudeAgentSDK
         # Process was already reaped (e.g., by close()); no exit status to surface.
         returncode = nil
       end
+
+      # The child has exited and been reaped; drop it from the parent-exit
+      # registry now rather than waiting for #close, which a caller may never
+      # reach (e.g. a Client abandoned without #disconnect, or direct transport
+      # use). Idempotent — #close's own deregister becomes a harmless no-op, and
+      # #close still sees @process (left set here) for its termination logic.
+      self.class.deregister_active_process(@process)
 
       if returncode && returncode != 0
         # Wait briefly for stderr thread to finish draining
