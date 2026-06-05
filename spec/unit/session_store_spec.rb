@@ -116,6 +116,17 @@ RSpec.describe ClaudeAgentSDK::SessionStores do
     it 'returns nil for an unrecognized 3-component shape' do
       expect(described_class.file_path_to_session_key("#{base}/pk/sess/foo.jsonl", base)).to be_nil
     end
+
+    it 'maps a project_key whose name begins with ".." (segment check, not string prefix)' do
+      # Regression: a leading-".." *string* check would drop this valid frame.
+      # The guard compares the first path *segment* against "..", so "..foo" maps.
+      key = described_class.file_path_to_session_key("#{base}/..foo/abc-123.jsonl", base)
+      expect(key).to eq('project_key' => '..foo', 'session_id' => 'abc-123')
+    end
+
+    it 'still rejects a genuine ".." traversal segment' do
+      expect(described_class.file_path_to_session_key('/home/u/.claude/other/x.jsonl', base)).to be_nil
+    end
   end
 
   describe '.validate_session_store_options' do

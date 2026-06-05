@@ -638,7 +638,15 @@ module ClaudeAgentSDK
       sid = slot[:session_id]
       return nil if sid.nil?
 
-      entries = store.load('project_key' => project_key, 'session_id' => sid)
+      begin
+        entries = store.load('project_key' => project_key, 'session_id' => sid)
+      rescue StandardError => e
+        # One failing gap-fill load degrades to an empty-summary row (kept, with
+        # its mtime) rather than aborting the whole listing — matches the disk
+        # path's per-file rescue and the store path's degrade-the-row contract.
+        warn "Claude SDK: [SessionStore] gap-fill load failed for session #{sid}: #{e.message}"
+        return SDKSessionInfo.new(session_id: sid, summary: '', last_modified: slot[:mtime])
+      end
       return nil if entries.nil? || entries.empty?
 
       derive_info_from_entries(sid, entries, slot[:mtime], project_path)
@@ -652,10 +660,20 @@ module ClaudeAgentSDK
         sid = entry['session_id']
         next if sid.nil?
 
-        entries = store.load('project_key' => project_key, 'session_id' => sid)
+        mtime = entry['mtime'] || 0
+        begin
+          entries = store.load('project_key' => project_key, 'session_id' => sid)
+        rescue StandardError => e
+          # A single failing row degrades to an empty-summary placeholder rather
+          # than aborting the entire listing (matching the disk path, which
+          # rescues per-file parse errors, and Python's gather(return_exceptions)
+          # P2-5 fix). The row keeps its mtime so sort/pagination stay stable.
+          warn "Claude SDK: [SessionStore] load failed for session #{sid}: #{e.message}"
+          next SDKSessionInfo.new(session_id: sid, summary: '', last_modified: mtime)
+        end
         next if entries.nil? || entries.empty?
 
-        derive_info_from_entries(sid, entries, entry['mtime'] || 0, project_path)
+        derive_info_from_entries(sid, entries, mtime, project_path)
       end
     end
 

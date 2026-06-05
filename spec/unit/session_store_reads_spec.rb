@@ -114,6 +114,51 @@ RSpec.describe 'SessionStore-backed reads' do
       infos = ClaudeAgentSDK.list_sessions_from_store(session_store: gf, directory: dir, limit: 2)
       expect(infos.map(&:session_id)).to eq([sid_valid_new, sid_valid_old]) # full page, sidechain skipped
     end
+
+    it 'degrades one failing row to an empty summary instead of aborting the whole listing' do
+      # A single session whose load raises must NOT fail list_sessions_from_store
+      # (parity with the disk path's per-file rescue and Python's
+      # gather(return_exceptions=True) P2-5 fix).
+      bad = sid1
+      good = sid2
+      raising = Class.new(ClaudeAgentSDK::SessionStore) do
+        def initialize(bad_sid)
+          super()
+          @bad = bad_sid
+          @store = {}
+          @clock = 1_700_000_000_000
+        end
+
+        def append(key, entries)
+          @store[key['session_id']] ||= { mtime: 0, entries: [] }
+          @store[key['session_id']][:entries].concat(entries)
+          @store[key['session_id']][:mtime] = (@clock += 1)
+        end
+
+        def load(key)
+          raise 'backend boom' if key['session_id'] == @bad
+
+          @store.dig(key['session_id'], :entries)
+        end
+
+        def list_sessions(_project_key)
+          @store.map { |sid, v| { 'session_id' => sid, 'mtime' => v[:mtime] } }
+        end
+      end.new(bad)
+
+      raising.append({ 'project_key' => project_key, 'session_id' => good },
+                     [user_entry(good, 'survivor', '2024-01-01T00:00:00.000Z')])
+      raising.append({ 'project_key' => project_key, 'session_id' => bad },
+                     [user_entry(bad, 'will fail', '2024-01-02T00:00:00.000Z')])
+
+      infos = nil
+      expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: raising, directory: dir) }
+        .not_to raise_error
+      by_id = infos.to_h { |i| [i.session_id, i] }
+      expect(by_id.keys).to contain_exactly(good, bad)
+      expect(by_id[good].summary).to eq('survivor')
+      expect(by_id[bad].summary).to eq('') # degraded row kept, empty summary
+    end
   end
 
   describe '.get_session_info_from_store' do
@@ -237,12 +282,12 @@ RSpec.describe 'SessionStore-backed reads' do
 
       def list_sessions(project_key)
         @data.keys.select { |pk, _| pk == project_key }
-             .map { |_, sid| { 'session_id' => sid, 'mtime' => 1_700_000_000_000 } }
+                  .map { |_, sid| { 'session_id' => sid, 'mtime' => 1_700_000_000_000 } }
       end
 
       def list_session_summaries(project_key)
         @data.keys.select { |pk, _| pk == project_key }
-             .map { |_, sid| { 'session_id' => sid, 'mtime' => nil, 'data' => {} } }
+                  .map { |_, sid| { 'session_id' => sid, 'mtime' => nil, 'data' => {} } }
       end
     end.new
   end
@@ -264,7 +309,7 @@ RSpec.describe 'SessionStore-backed reads' do
 
       def list_sessions(project_key)
         @data.keys.select { |pk, _| pk == project_key }
-             .map { |_, sid| { 'session_id' => sid, 'mtime' => 1_700_000_000_000 } }
+                  .map { |_, sid| { 'session_id' => sid, 'mtime' => 1_700_000_000_000 } }
       end
 
       def list_session_summaries(_project_key) = nil
@@ -294,7 +339,7 @@ RSpec.describe 'SessionStore-backed reads' do
 
       def list_sessions(project_key)
         @data.keys.select { |pk, _| pk == project_key }
-             .map { |pk, sid| { 'session_id' => sid, 'mtime' => @mtimes[[pk, sid]] } }
+                  .map { |pk, sid| { 'session_id' => sid, 'mtime' => @mtimes[[pk, sid]] } }
       end
 
       def list_session_summaries(_project_key) = []

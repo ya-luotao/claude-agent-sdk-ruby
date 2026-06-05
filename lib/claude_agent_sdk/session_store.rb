@@ -226,9 +226,12 @@ module ClaudeAgentSDK
         return nil
       end
 
-      return nil if rel == '.' || rel.start_with?('..') || Pathname.new(rel).absolute?
-
       parts = rel.split('/')
+      # Reject paths that escape projects_dir: a leading ".." *segment* (exact
+      # match, so a legitimate dir like "..foo" still maps), the "." self-ref,
+      # or an absolute path. Comparing parts[0] rather than rel.start_with?("..")
+      # avoids the "..foo" false positive that would silently drop valid frames.
+      return nil if parts.empty? || parts[0] == '..' || rel == '.' || Pathname.new(rel).absolute?
       return nil if parts.length < 2
 
       project_key = parts[0]
