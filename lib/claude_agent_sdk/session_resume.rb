@@ -41,8 +41,13 @@ module ClaudeAgentSDK
     KEYCHAIN_TIMEOUT_SECONDS = 5
 
     # SystemCallError classes that indicate a transiently-held handle (Windows
-    # AV/indexer scanning a freshly-written file) rather than a permanent failure.
-    RETRYABLE_RMTREE_ERRORS = [Errno::EBUSY, Errno::ENOTEMPTY, Errno::EPERM, Errno::EACCES].freeze
+    # AV/indexer scanning a freshly-written file) or a recoverable resource
+    # shortage (file-table exhaustion) rather than a permanent failure. EMFILE/
+    # ENFILE are treated as transient so the backoff loop can succeed once
+    # descriptors free up, matching the Python SDK's retryable errno set.
+    RETRYABLE_RMTREE_ERRORS = [
+      Errno::EBUSY, Errno::ENOTEMPTY, Errno::EPERM, Errno::EACCES, Errno::EMFILE, Errno::ENFILE
+    ].freeze
 
     module_function
 
@@ -54,6 +59,23 @@ module ClaudeAgentSDK
         env: options.env.merge('CLAUDE_CONFIG_DIR' => materialized.config_dir.to_s),
         resume: materialized.resume_session_id,
         continue_conversation: false
+      )
+    end
+
+    # Build a TranscriptMirrorBatcher for a configured session_store. Shared by
+    # both entry points (Client#install_transcript_mirror and the one-shot
+    # query()) so projects_dir resolution and the eager/batched threshold choice
+    # live in one place. +env+ supplies the CLAUDE_CONFIG_DIR override used to
+    # locate the projects dir (already repointed at the temp dir when resuming
+    # from a store). Eager flush mode zeroes the buffer thresholds so every
+    # transcript_mirror frame triggers a background flush.
+    def build_mirror_batcher(store:, env:, on_error:, eager: false)
+      TranscriptMirrorBatcher.new(
+        store: store,
+        projects_dir: SessionStores.projects_dir(env),
+        on_error: on_error,
+        max_pending_entries: eager ? 0 : TranscriptMirrorBatcher::MAX_PENDING_ENTRIES,
+        max_pending_bytes: eager ? 0 : TranscriptMirrorBatcher::MAX_PENDING_BYTES
       )
     end
 
@@ -144,11 +166,13 @@ module ClaudeAgentSDK
     end
 
     # Run a store call (user code) on a plain thread bounded by timeout_s,
-    # re-raising failures/timeouts as RuntimeError with context. The FiberBoundary
-    # thread hop keeps the async scheduler out of the user's store code.
+    # re-raising failures/timeouts as RuntimeError with context. The thread hop
+    # both keeps the async scheduler out of the user's store code AND enforces
+    # load_timeout_ms unconditionally — including when materialization runs
+    # outside an Async reactor (no Fiber.scheduler), where a direct call would
+    # let a hung adapter block connect forever. A timed-out worker is left
+    # running (not killed) since its in-flight call may still complete.
     def with_timeout(timeout_s, what, &block)
-      return block.call unless Fiber.scheduler
-
       thread = Thread.new(&block)
       thread.report_on_exception = false
       ms = (timeout_s * 1000).to_i

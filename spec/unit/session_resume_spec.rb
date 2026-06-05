@@ -174,6 +174,24 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
         mat&.cleanup
       end
     end
+
+    it 'enforces load_timeout_ms even without an Async reactor (hung adapter raises)' do
+      slow = Class.new(ClaudeAgentSDK::SessionStore) do
+        def append(_key, _entries); end
+
+        def load(_key)
+          sleep 2
+          [{ 'type' => 'user', 'uuid' => 'x' }]
+        end
+      end.new
+
+      expect(Fiber.scheduler).to be_nil # this example runs outside any reactor
+      expect do
+        described_class.materialize_resume_session(
+          ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: slow, resume: sid, cwd: cwd, load_timeout_ms: 50)
+        )
+      end.to raise_error(RuntimeError, /timed out after 50ms/)
+    end
   end
 
   describe 'Client resume gating' do
@@ -201,6 +219,23 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       client = ClaudeAgentSDK::Client.new(options: options, transport_class: custom)
       result = client.send(:materialize_resume, options)
       expect(result).to be(options) # unchanged
+      expect(client.instance_variable_get(:@materialized)).to be_nil
+    end
+
+    it 'cleans up the materialized temp dir when connect fails with a non-StandardError' do
+      # Async::Stop (reactor cancellation) is an Exception, NOT a StandardError.
+      # `rescue StandardError` would let it skip disconnect and leak the temp dir
+      # (with its .credentials.json copy); `rescue Exception` cleans it up.
+      client = ClaudeAgentSDK::Client.new(options: options)
+      # Intentionally NOT a StandardError: this is what reactor cancellation
+      # (Async::Stop) looks like, the exact case `rescue StandardError` misses.
+      cancellation = Class.new(Exception) # rubocop:disable Lint/InheritException
+      allow(client).to receive(:connect_inner).and_raise(cancellation)
+
+      before = Dir.glob(File.join(Dir.tmpdir, 'claude-resume-*'))
+      expect { client.connect }.to raise_error(cancellation)
+      leaked = Dir.glob(File.join(Dir.tmpdir, 'claude-resume-*')) - before
+      expect(leaked).to eq([]) # materialized temp dir removed despite the non-StandardError
       expect(client.instance_variable_get(:@materialized)).to be_nil
     end
   end

@@ -263,15 +263,29 @@ module ClaudeAgentSDK
       configured_options = options.dup_with(permission_prompt_tool_name: 'stdio')
     end
 
+    # Fail fast on invalid session_store combinations before spawning the CLI.
+    SessionStores.validate_session_store_options(configured_options)
+
     # Resolve callable observers into fresh instances (thread-safe for global defaults)
     resolved_observers = ClaudeAgentSDK.resolve_observers(configured_options.observers)
 
     Async do
-      # Always use streaming mode with control protocol (matches Python SDK).
-      # This sends agents via initialize request instead of CLI args,
-      # avoiding OS ARG_MAX limits.
-      transport = SubprocessCLITransport.new(configured_options)
+      materialized = nil
+      transport = nil
+      query_handler = nil
       begin
+        # Resume-from-store: when a session_store is set and resume/continue is
+        # requested, load the session into a temp CLAUDE_CONFIG_DIR and repoint
+        # options at it (env + --resume) BEFORE spawning. Returns options
+        # unchanged when no materialization applies. query() always uses the
+        # default subprocess transport, so no custom-transport gate is needed.
+        materialized = SessionResume.materialize_resume_session(configured_options)
+        configured_options = SessionResume.apply_materialized_options(configured_options, materialized) if materialized
+
+        # Always use streaming mode with control protocol (matches Python SDK).
+        # This sends agents via initialize request instead of CLI args,
+        # avoiding OS ARG_MAX limits.
+        transport = SubprocessCLITransport.new(configured_options)
         transport.connect
 
         # Extract SDK MCP servers
@@ -312,6 +326,19 @@ module ClaudeAgentSDK
           sdk_mcp_servers: sdk_mcp_servers
         )
 
+        # Mirror transcripts to the session_store, if configured. Installed
+        # before #start so the read loop captures transcript_mirror frames.
+        if configured_options.session_store
+          query_handler.set_transcript_mirror_batcher(
+            SessionResume.build_mirror_batcher(
+              store: configured_options.session_store,
+              env: configured_options.env,
+              on_error: ->(key, message) { query_handler.report_mirror_error(key, message) },
+              eager: configured_options.session_store_flush.to_s == 'eager'
+            )
+          )
+        end
+
         # Start reading messages in background
         query_handler.start
 
@@ -347,12 +374,17 @@ module ClaudeAgentSDK
         end
       ensure
         ClaudeAgentSDK.notify_observers(resolved_observers, :on_close)
-        # query_handler.close stops the background read task and closes the transport
+        # query_handler.close stops the background read task and closes the
+        # transport (flushing the mirror batcher first). Fall back to a bare
+        # transport close when the handler was never built.
         if query_handler
           query_handler.close
-        else
+        elsif transport
           transport.close
         end
+        # Remove the materialized resume temp dir (which holds a redacted
+        # .credentials.json copy) AFTER the subprocess has exited.
+        materialized&.cleanup
       end
     end.wait
   end
@@ -448,9 +480,13 @@ module ClaudeAgentSDK
       # holding a credential copy.
       begin
         connect_inner(configured_options, prompt)
-      rescue StandardError
+      rescue Exception # rubocop:disable Lint/RescueException
         # Tear down the partial connect, but never let a cleanup failure (e.g. a
         # custom transport whose #close raises) mask the original connect error.
+        # Rescue Exception (not StandardError) so reactor cancellation
+        # (Async::Stop < Exception) after materialize_resume set @materialized
+        # still runs disconnect -> @materialized.cleanup, never leaking the temp
+        # CLAUDE_CONFIG_DIR that holds the redacted .credentials.json copy.
         begin
           disconnect
         rescue StandardError => e
@@ -684,18 +720,16 @@ module ClaudeAgentSDK
     end
 
     # Build and install the transcript-mirror batcher on the query handler when
-    # a session_store is configured. Eager flush mode zeroes the buffer
-    # thresholds so every frame triggers a background flush.
+    # a session_store is configured, via the shared SessionResume helper (also
+    # used by the one-shot query() path).
     def install_transcript_mirror(options)
       return unless options.session_store
 
-      eager = options.session_store_flush.to_s == 'eager'
-      batcher = TranscriptMirrorBatcher.new(
+      batcher = SessionResume.build_mirror_batcher(
         store: options.session_store,
-        projects_dir: SessionStores.projects_dir(options.env),
+        env: options.env,
         on_error: ->(key, message) { @query_handler.report_mirror_error(key, message) },
-        max_pending_entries: eager ? 0 : TranscriptMirrorBatcher::MAX_PENDING_ENTRIES,
-        max_pending_bytes: eager ? 0 : TranscriptMirrorBatcher::MAX_PENDING_BYTES
+        eager: options.session_store_flush.to_s == 'eager'
       )
       @query_handler.set_transcript_mirror_batcher(batcher)
     end
