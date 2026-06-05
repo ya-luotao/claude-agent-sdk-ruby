@@ -16,7 +16,7 @@ module ClaudeAgentSDK
   # (string keys from JSON), and the summary's opaque +data+ dict is persisted
   # verbatim by adapters — string keys survive a JSON round-trip (Postgres
   # JSONB, Redis) losslessly, whereas symbol keys would not.
-  module SessionSummary # rubocop:disable Metrics/ModuleLength
+  module SessionSummary
     # JSONL entry keys -> summary data keys for last-wins string fields. Each
     # appended entry overwrites the previous value when present.
     LAST_WINS_FIELDS = {
@@ -60,7 +60,7 @@ module ClaudeAgentSDK
       entries.each do |entry|
         next unless entry.is_a?(Hash)
 
-        ms = iso_to_epoch_ms(entry['timestamp'])
+        ms = Sessions.parse_iso_timestamp_ms(entry['timestamp'])
 
         data['is_sidechain'] = (entry['isSidechain'] == true) unless data.key?('is_sidechain')
         data['created_at'] = ms if !data.key?('created_at') && ms
@@ -131,15 +131,6 @@ module ClaudeAgentSDK
       val
     end
 
-    # Parse an ISO-8601 timestamp string to Unix epoch milliseconds, or nil.
-    def iso_to_epoch_ms(timestamp)
-      return nil unless timestamp.is_a?(String)
-
-      (Time.iso8601(timestamp).to_f * 1000).to_i
-    rescue ArgumentError
-      nil
-    end
-
     # Replicate Sessions#extract_first_prompt_from_head for a single parsed
     # entry. Mutates +data+ in place: sets first_prompt + first_prompt_locked on
     # a real match, or stashes a command_fallback for slash-command messages.
@@ -189,6 +180,6 @@ module ClaudeAgentSDK
       end
     end
 
-    private_class_method :presence, :iso_to_epoch_ms, :fold_first_prompt, :entry_text_blocks
+    private_class_method :presence, :fold_first_prompt, :entry_text_blocks
   end
 end

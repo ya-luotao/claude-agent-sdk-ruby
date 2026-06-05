@@ -194,11 +194,7 @@ module ClaudeAgentSDK
           f.write("\n")
         end
       end
-      begin
-        File.chmod(0o600, path)
-      rescue SystemCallError
-        nil
-      end
+      chmod_owner_only(path)
     end
 
     # Copy .credentials.json (refreshToken redacted) and .claude.json from the
@@ -245,11 +241,7 @@ module ClaudeAgentSDK
         # Unparseable — write through; the subprocess will fail to parse it too.
       end
       File.write(dst, out)
-      begin
-        File.chmod(0o600, dst)
-      rescue SystemCallError
-        nil
-      end
+      chmod_owner_only(dst)
     end
 
     # Read OAuth credentials JSON from the macOS Keychain (default service name).
@@ -352,11 +344,7 @@ module ClaudeAgentSDK
       meta_file = "#{sub_file.delete_suffix('.jsonl')}.meta.json"
       FileUtils.mkdir_p(File.dirname(meta_file))
       File.write(meta_file, JSON.generate(meta_content))
-      begin
-        File.chmod(0o600, meta_file)
-      rescue SystemCallError
-        nil
-      end
+      chmod_owner_only(meta_file)
     end
 
     # Reject subpaths that are empty, absolute, drive/UNC-prefixed, contain "."
@@ -405,17 +393,23 @@ module ClaudeAgentSDK
       nil
     end
 
+    # Best-effort lock of a freshly-written materialized file to owner-only
+    # (0600); silently ignores filesystems that reject chmod. These files can
+    # hold a redacted .credentials.json / MCP-header secrets, so default to
+    # owner-only rather than inheriting the umask.
+    def chmod_owner_only(path)
+      File.chmod(0o600, path)
+    rescue SystemCallError
+      nil
+    end
+
     # Copy src to dst (locked to 0600) when src exists; no-op otherwise. The
     # only caller copies .claude.json, which can hold MCP-header secrets and
     # customApiKeyResponses, so it gets the same owner-only mode as the other
     # materialized files rather than inheriting the source's (often 0644) mode.
     def copy_if_present(src, dst)
       FileUtils.copy_file(src, dst)
-      begin
-        File.chmod(0o600, dst)
-      rescue SystemCallError
-        nil
-      end
+      chmod_owner_only(dst)
     rescue SystemCallError
       nil
     end
@@ -428,6 +422,6 @@ module ClaudeAgentSDK
     private_class_method :load_candidate, :resolve_continue_candidate, :with_timeout, :write_jsonl,
                          :copy_auth_files, :write_redacted_credentials, :read_keychain_credentials,
                          :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
-                         :resolve_dir, :read_file_if_present, :copy_if_present, :env_value
+                         :resolve_dir, :read_file_if_present, :chmod_owner_only, :copy_if_present, :env_value
   end
 end

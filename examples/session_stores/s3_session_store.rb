@@ -142,8 +142,11 @@ class S3SessionStore < ClaudeAgentSDK::SessionStore
   def delete(key)
     prefix = key_prefix(key)
     # Match InMemorySessionStore: whole-session delete cascades into subpaths;
-    # delete({subpath: 'a'}) is exact-key only (must NOT touch 'a/b').
-    direct_only = !key['subpath'].nil?
+    # delete({subpath: 'a'}) is exact-key only (must NOT touch 'a/b'). An
+    # empty-string subpath is treated as "no subpath" (main), matching
+    # key_prefix / append, so it cascades like nil.
+    subpath = key['subpath']
+    direct_only = !(subpath.nil? || subpath.empty?)
 
     to_delete = []
     each_listed(prefix: prefix, delimiter: (direct_only ? '/' : nil)) do |k|

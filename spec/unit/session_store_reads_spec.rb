@@ -48,6 +48,17 @@ RSpec.describe 'SessionStore-backed reads' do
         .to eq([sid1])
     end
 
+    it 'treats limit: 0 as an empty page (parity with the disk and message readers)' do
+      seed_two_sessions
+      # Fast path (InMemory implements summaries).
+      expect(ClaudeAgentSDK.list_sessions_from_store(session_store: store, directory: dir, limit: 0)).to eq([])
+      # Slow path (list_sessions + load, no summaries).
+      list_only = list_only_store
+      list_only.append({ 'project_key' => project_key, 'session_id' => sid1 },
+                       [user_entry(sid1, 'Only prompt', '2024-01-01T00:00:00.000Z')])
+      expect(ClaudeAgentSDK.list_sessions_from_store(session_store: list_only, directory: dir, limit: 0)).to eq([])
+    end
+
     it 'excludes sidechain sessions' do
       store.append({ 'project_key' => project_key, 'session_id' => sid1 },
                    [user_entry(sid1, 'visible', '2024-01-01T00:00:00.000Z')])
@@ -175,6 +186,17 @@ RSpec.describe 'SessionStore-backed reads' do
       expect(ClaudeAgentSDK.get_session_info_from_store(session_store: store, session_id: sid1, directory: dir))
         .to be_nil
     end
+
+    it 'does not crash on a non-String timestamp (e.g. an epoch integer) in an entry' do
+      store.append({ 'project_key' => project_key, 'session_id' => sid1 },
+                   [{ 'type' => 'user', 'uuid' => SecureRandom.uuid, 'timestamp' => 1_700_000_000_000,
+                      'sessionId' => sid1, 'message' => { 'content' => 'Hi' } }])
+      info = nil
+      expect do
+        info = ClaudeAgentSDK.get_session_info_from_store(session_store: store, session_id: sid1, directory: dir)
+      end.not_to raise_error
+      expect(info.summary).to eq('Hi')
+    end
   end
 
   describe '.get_session_messages_from_store' do
@@ -214,6 +236,21 @@ RSpec.describe 'SessionStore-backed reads' do
       )
       expect(msgs.length).to eq(1)
       expect(msgs.first.text).to eq('Subagent hi')
+    end
+
+    it 'prefers the canonical top-level path when a nested path shares the agent-<id>' do
+      # Append the nested path FIRST so list_subkeys yields it before the
+      # top-level one; a first-match resolver would return the nested transcript.
+      store.append(
+        { 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/workflows/run1/agent-dup' },
+        [user_entry(sid2, 'Nested dup', '2024-01-02T00:00:03.000Z')]
+      )
+      store.append({ 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/agent-dup' },
+                   [user_entry(sid2, 'Top-level dup', '2024-01-02T00:00:04.000Z')])
+      msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
+        session_store: store, session_id: sid2, agent_id: 'dup', directory: dir
+      )
+      expect(msgs.first.text).to eq('Top-level dup')
     end
 
     it 'resolves a nested subagents/workflows/<run>/agent-<id> path' do

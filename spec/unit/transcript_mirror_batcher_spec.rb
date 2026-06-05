@@ -37,6 +37,18 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
     end
   end
 
+  it 'fully ignores an empty frame in eager mode (no phantom bytes or buffered item)' do
+    Async do
+      # Eager mode (zero thresholds): an empty frame must not accrue phantom
+      # bytes/items that would schedule a no-op background drain every frame.
+      b = batcher(max_pending_entries: 0, max_pending_bytes: 0)
+      b.enqueue(file_path, [])
+      expect(b.instance_variable_get(:@pending)).to be_empty
+      expect(b.instance_variable_get(:@pending_bytes)).to eq(0)
+      expect(b.instance_variable_get(:@pending_entries)).to eq(0)
+    end
+  end
+
   it 'drops (with a warning) frames whose file path is not under projects_dir, without appending or erroring' do
     Async do
       b = batcher

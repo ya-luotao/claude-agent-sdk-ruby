@@ -101,7 +101,10 @@ class RedisSessionStore < ClaudeAgentSDK::SessionStore
 
   def delete(key)
     subpath = key['subpath']
-    if subpath
+    # An empty-string subpath is treated as "no subpath" (main), matching
+    # entry_key / append, so it cascades like nil rather than taking the
+    # targeted branch and orphaning subkeys + leaking the session index.
+    if subpath && !subpath.empty?
       # Targeted: remove just this subpath list and its index entry.
       @client.multi do |pipe|
         pipe.del(entry_key(key))

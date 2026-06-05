@@ -69,6 +69,11 @@ module ClaudeAgentSDK
     # fold_session_summary, which reads string keys.
     def enqueue(file_path, entries)
       entries = deep_stringify(Array(entries))
+      # An empty frame mirrors nothing (do_flush skips empty keys anyway), so
+      # drop it here: otherwise its 2-byte "[]" inflates @pending_bytes and, in
+      # eager mode (thresholds 0), schedules a no-op background drain per frame.
+      return if entries.empty?
+
       # Approximate wire size — one stringify per frame (not per entry).
       size = JSON.generate(entries).bytesize
       @pending << { file_path: file_path, entries: entries }

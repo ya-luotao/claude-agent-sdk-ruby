@@ -336,6 +336,12 @@ module ClaudeAgentSDK
 
     # Parse an ISO 8601 timestamp string into epoch milliseconds
     def parse_iso_timestamp_ms(timestamp_str)
+      # Entries are opaque external blobs: a non-String timestamp (e.g. an epoch
+      # integer) makes Time.iso8601 raise TypeError, which the ArgumentError
+      # rescue would NOT catch and which would escape callers like
+      # mtime_from_entries / get_session_info_from_store. Guard the type first.
+      return nil unless timestamp_str.is_a?(String)
+
       require 'time'
       (Time.iso8601(timestamp_str).to_f * 1000).to_i
     rescue ArgumentError
@@ -619,6 +625,12 @@ module ClaudeAgentSDK
       results = []
       skipped = 0
       slots.each do |slot|
+        # Stop once we have `limit` results. Checking before resolving avoids an
+        # extra gap-fill load, and treats limit <= 0 as "at most none" so limit:0
+        # yields [] — consistent with apply_sort_limit_offset and the disk
+        # readers, instead of the old limit&.positive? which ignored a 0 limit.
+        break if limit && results.length >= [limit, 0].max
+
         info = slot[:info] || resolve_gap_slot(store, project_key, project_path, slot)
         next if info.nil?
 
@@ -627,7 +639,6 @@ module ClaudeAgentSDK
           next
         end
         results << info
-        break if limit&.positive? && results.length >= limit
       end
       results
     end
@@ -698,7 +709,10 @@ module ClaudeAgentSDK
     def apply_sort_limit_offset(results, limit, offset)
       results = results.sort_by { |s| -s.last_modified }
       results = results[offset..] || [] if offset.positive?
-      results = results.first(limit) if limit&.positive?
+      # A non-nil limit caps the result. limit <= 0 yields [] (matching the disk
+      # readers' `first(limit) if limit` and entries_to_messages), and the
+      # `.max` keeps a negative limit from raising in Array#first.
+      results = results.first([limit, 0].max) if limit
       results
     end
 
@@ -722,8 +736,15 @@ module ClaudeAgentSDK
       return "subagents/agent-#{agent_id}" unless SessionStore.implements?(store, :list_subkeys)
 
       target = "agent-#{agent_id}"
-      subkeys = Array(store.list_subkeys('project_key' => project_key, 'session_id' => session_id))
-      subkeys.find { |sk| sk.start_with?('subagents/') && sk.rpartition('/').last == target }
+      matches = Array(store.list_subkeys('project_key' => project_key, 'session_id' => session_id))
+                .select { |sk| sk.start_with?('subagents/') && sk.rpartition('/').last == target }
+      # Several subpaths can share a trailing agent-<id> (a top-level agent and a
+      # nested subagents/workflows/<run>/agent-<id>). Prefer the canonical
+      # top-level path, else pick deterministically (shortest, then lexical) so
+      # the result never depends on the store's list_subkeys ordering.
+      return "subagents/#{target}" if matches.include?("subagents/#{target}")
+
+      matches.min_by { |sk| [sk.length, sk] }
     end
 
     # Import subagent transcripts (and their .meta.json sidecars) under
@@ -1051,7 +1072,6 @@ module ClaudeAgentSDK
                          :find_session_file, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :filter_visible_messages, :read_head_tail, :build_session_info,
-                         :parse_iso_timestamp_ms,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
                          :derive_infos_via_load,
                          :derive_info_from_entries, :mtime_from_entries, :apply_sort_limit_offset,

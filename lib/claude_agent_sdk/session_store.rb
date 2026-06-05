@@ -99,95 +99,130 @@ module ClaudeAgentSDK
       @mtimes = {}
       @summaries = {}
       @last_mtime = 0
+      # The SessionStore#append contract requires per-key thread-safety, and two
+      # concurrent sessions can share one store (each with its own batcher and
+      # semaphore, so nothing serializes appends across them). Guard all access.
+      @mutex = Mutex.new
     end
 
     def append(key, entries)
-      k = key_to_string(key)
-      (@store[k] ||= []).concat(entries)
-      now_ms = next_mtime
-      # Maintain the per-session summary sidecar incrementally so
-      # #list_session_summaries never re-reads. Subagent subpaths don't
-      # contribute to the main session's summary.
-      if key['subpath'].nil?
-        sk = [key['project_key'], key['session_id']]
-        folded = SessionSummary.fold_session_summary(@summaries[sk], key, entries)
-        # Stamp with this adapter's storage write time — the SAME clock
-        # #list_sessions exposes, so the fast-path staleness check works.
-        folded['mtime'] = now_ms
-        @summaries[sk] = folded
+      @mutex.synchronize do
+        k = key_to_string(key)
+        (@store[k] ||= []).concat(entries)
+        now_ms = next_mtime
+        # Maintain the per-session summary sidecar incrementally so
+        # #list_session_summaries never re-reads. Subagent subpaths don't
+        # contribute to the main session's summary.
+        if main_transcript_key?(key)
+          sk = [key['project_key'], key['session_id']]
+          folded = SessionSummary.fold_session_summary(@summaries[sk], key, entries)
+          # Stamp with this adapter's storage write time — the SAME clock
+          # #list_sessions exposes, so the fast-path staleness check works.
+          folded['mtime'] = now_ms
+          @summaries[sk] = folded
+        end
+        @mtimes[k] = now_ms
       end
-      @mtimes[k] = now_ms
       nil
     end
 
     def load(key)
-      entries = @store[key_to_string(key)]
-      entries&.dup
+      @mutex.synchronize do
+        entries = @store[key_to_string(key)]
+        entries&.dup
+      end
     end
 
     def list_sessions(project_key)
       prefix = "#{project_key}/"
       results = []
-      @store.each_key do |k|
-        next unless k.start_with?(prefix)
+      @mutex.synchronize do
+        @store.each_key do |k|
+          next unless k.start_with?(prefix)
 
-        rest = k[prefix.length..]
-        # Only main transcripts (no subpath, so no second '/').
-        results << { 'session_id' => rest, 'mtime' => @mtimes[k] || 0 } unless rest.include?('/')
+          rest = k[prefix.length..]
+          # Only main transcripts (no subpath, so no second '/').
+          results << { 'session_id' => rest, 'mtime' => @mtimes[k] || 0 } unless rest.include?('/')
+        end
       end
       results
     end
 
     def list_session_summaries(project_key)
-      @summaries.filter_map { |(pk, _sid), summary| summary if pk == project_key }
+      @mutex.synchronize do
+        # Return COPIES, not the internal summary objects: #load dups, so this
+        # must too, or a caller mutating a returned summary's data would corrupt
+        # the sidecar that the next fold builds on.
+        @summaries.filter_map do |(pk, _sid), summary|
+          next unless pk == project_key
+
+          { 'session_id' => summary['session_id'], 'mtime' => summary['mtime'], 'data' => summary['data'].dup }
+        end
+      end
     end
 
     def delete(key)
-      k = key_to_string(key)
-      @store.delete(k)
-      @mtimes.delete(k)
-      # Deleting the main transcript cascades to its subkeys so they aren't
-      # orphaned. A targeted delete with an explicit subpath removes only that
-      # one entry.
-      return nil unless key['subpath'].nil?
+      @mutex.synchronize do
+        k = key_to_string(key)
+        @store.delete(k)
+        @mtimes.delete(k)
+        # Deleting the main transcript cascades to its subkeys so they aren't
+        # orphaned. A targeted delete with an explicit subpath removes only that
+        # one entry. An empty-string subpath is treated as "no subpath" (main),
+        # consistent with key_to_string / append, so it cascades like nil.
+        next unless main_transcript_key?(key)
 
-      @summaries.delete([key['project_key'], key['session_id']])
-      prefix = "#{key['project_key']}/#{key['session_id']}/"
-      @store.keys.select { |sk| sk.start_with?(prefix) }.each do |sk|
-        @store.delete(sk)
-        @mtimes.delete(sk)
+        @summaries.delete([key['project_key'], key['session_id']])
+        prefix = "#{key['project_key']}/#{key['session_id']}/"
+        @store.keys.select { |sk| sk.start_with?(prefix) }.each do |sk|
+          @store.delete(sk)
+          @mtimes.delete(sk)
+        end
       end
       nil
     end
 
     def list_subkeys(key)
       prefix = "#{key['project_key']}/#{key['session_id']}/"
-      @store.keys.select { |k| k.start_with?(prefix) }.map { |k| k[prefix.length..] }
+      @mutex.synchronize do
+        @store.keys.select { |k| k.start_with?(prefix) }.map { |k| k[prefix.length..] }
+      end
     end
 
     # -- Test helpers --
 
     # All entries for a key (empty array if absent).
     def get_entries(key)
-      (@store[key_to_string(key)] || []).dup
+      @mutex.synchronize { (@store[key_to_string(key)] || []).dup }
     end
 
     # Number of stored sessions (main transcripts only).
     def size
-      @store.keys.count do |k|
-        first_slash = k.index('/')
-        first_slash && !k[(first_slash + 1)..].include?('/')
+      @mutex.synchronize do
+        @store.keys.count do |k|
+          first_slash = k.index('/')
+          first_slash && !k[(first_slash + 1)..].include?('/')
+        end
       end
     end
 
     def clear
-      @store.clear
-      @mtimes.clear
-      @summaries.clear
-      @last_mtime = 0
+      @mutex.synchronize do
+        @store.clear
+        @mtimes.clear
+        @summaries.clear
+        @last_mtime = 0
+      end
     end
 
     private
+
+    # True for a main-transcript key: no subpath, or an empty-string subpath
+    # (which key_to_string already folds into the main key).
+    def main_transcript_key?(key)
+      sub = key['subpath']
+      sub.nil? || sub.empty?
+    end
 
     def key_to_string(key)
       parts = [key['project_key'], key['session_id']]
@@ -219,6 +254,12 @@ module ClaudeAgentSDK
     # Returns nil if +file_path+ is not under +projects_dir+ or has an
     # unrecognized shape.
     def file_path_to_session_key(file_path, projects_dir)
+      # A frame with a missing/non-String filePath would make Pathname.new raise
+      # TypeError (not the ArgumentError handled below), which propagates out of
+      # do_flush and drops the entire coalesced drain batch. Treat it as
+      # "not under projects_dir" so only the bad frame is skipped.
+      return nil unless file_path.is_a?(String) && !file_path.empty?
+
       begin
         rel = Pathname.new(file_path).relative_path_from(Pathname.new(projects_dir)).to_s
       rescue ArgumentError

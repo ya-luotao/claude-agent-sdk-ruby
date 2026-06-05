@@ -636,16 +636,28 @@ module ClaudeAgentSDK
       # were already created. #close on the query handler also closes the
       # transport (flushing the mirror batcher first); the extra @transport
       # close covers a failure before the query handler was built (idempotent).
-      @query_handler&.close
-      @query_handler = nil
-      @transport&.close
-      @transport = nil
-      @connected = false
-      # Remove the materialized resume temp dir AFTER the subprocess has exited.
-      return unless @materialized
-
-      @materialized.cleanup
-      @materialized = nil
+      #
+      # The nested ensures guarantee that even a raising close (e.g. a custom
+      # transport whose #close raises) still runs the transport close, resets
+      # state, and removes the materialized temp dir (which holds a redacted
+      # .credentials.json copy) — so disconnect can never leave the client
+      # half-open or leak the temp dir. The original error still propagates.
+      begin
+        @query_handler&.close
+      ensure
+        @query_handler = nil
+        begin
+          @transport&.close
+        ensure
+          @transport = nil
+          @connected = false
+          # Remove the materialized resume temp dir AFTER the subprocess exited.
+          if @materialized
+            @materialized.cleanup
+            @materialized = nil
+          end
+        end
+      end
     end
 
     private

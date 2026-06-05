@@ -13,7 +13,7 @@ module ClaudeAgentSDK
 
     module_function
 
-    # Assert the 14 SessionStore behavioral contracts against an adapter.
+    # Assert the 15 SessionStore behavioral contracts against an adapter.
     #
     # Framework-agnostic: raises ConformanceError on the first violated
     # contract, otherwise returns nil. Call it from any test framework, e.g.
@@ -168,7 +168,7 @@ module ClaudeAgentSDK
 
     # -- Optional: delete --------------------------------------------------
 
-    def check_delete(fresh, has_list_subkeys, has_list_sessions)
+    def check_delete(fresh, has_list_subkeys, has_list_sessions) # rubocop:disable Metrics/MethodLength
       # 9. delete main then load returns nil (delete of never-written is a no-op).
       store = fresh.call
       store.delete('project_key' => 'proj', 'session_id' => 'never-written')
@@ -195,6 +195,19 @@ module ClaudeAgentSDK
       if has_list_sessions
         listed = store.list_sessions(key['project_key']).map { |s| s['session_id'] }
         assert(!listed.include?(key['session_id']), 'deleted session must not be listed')
+      end
+
+      # 15. delete with an empty-string subpath behaves as a main-transcript
+      # delete (empty subpath == "no subpath"), so it cascades to subkeys rather
+      # than orphaning them. Runs before test 11's has_list_subkeys early return.
+      store = fresh.call
+      [key, sub1, sub2].each { |k| store.append(k, [entry('n' => 1)]) }
+      store.delete(key.merge('subpath' => ''))
+      assert(store.load(key).nil?, 'delete with empty subpath must remove the main transcript')
+      assert(store.load(sub1).nil?, 'delete with empty subpath must cascade to subkeys')
+      if has_list_sessions
+        listed = store.list_sessions(key['project_key']).map { |s| s['session_id'] }
+        assert(!listed.include?(key['session_id']), 'session deleted via empty subpath must not be listed')
       end
 
       # 11. delete with subpath removes only that subkey.

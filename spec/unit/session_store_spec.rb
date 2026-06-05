@@ -43,6 +43,15 @@ RSpec.describe ClaudeAgentSDK::InMemorySessionStore do
       mtimes = store.list_sessions('p').map { |s| s['mtime'] }
       expect(mtimes.uniq.length).to eq(2)
     end
+
+    it 'list_session_summaries returns copies; mutating one does not corrupt the store' do
+      store.append(key, [{ 'type' => 'user', 'uuid' => 'a', 'timestamp' => '2024-01-01T00:00:00.000Z',
+                           'customTitle' => 'Original' }])
+      summary = store.list_session_summaries('proj').first
+      expect(summary['data']['custom_title']).to eq('Original')
+      summary['data']['custom_title'] = 'Mutated'
+      expect(store.list_session_summaries('proj').first['data']['custom_title']).to eq('Original')
+    end
   end
 end
 
@@ -107,6 +116,13 @@ RSpec.describe ClaudeAgentSDK::SessionStores do
 
     it 'returns nil for a path not under projects_dir' do
       expect(described_class.file_path_to_session_key('/elsewhere/x.jsonl', base)).to be_nil
+    end
+
+    it 'returns nil for a nil or empty file_path instead of raising' do
+      # A malformed transcript_mirror frame (missing filePath) must not raise
+      # TypeError out of do_flush and drop the whole coalesced drain batch.
+      expect(described_class.file_path_to_session_key(nil, base)).to be_nil
+      expect(described_class.file_path_to_session_key('', base)).to be_nil
     end
 
     it 'returns nil for a file directly under projects_dir (no project_key dir)' do
