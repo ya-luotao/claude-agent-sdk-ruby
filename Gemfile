@@ -25,3 +25,15 @@ group :instrumentation, optional: true do
   gem 'opentelemetry-exporter-otlp', '~> 0.26'
   gem 'opentelemetry-sdk', '~> 1.4'
 end
+
+# Optional group: backend client gems for the SessionStore reference adapters
+# under examples/session_stores/. Kept out of the default groups so a plain
+# `bundle exec rspec` never requires them — the Redis/Postgres example specs
+# skip unless these load and a backend is reachable (SESSION_STORE_*_URL). The
+# S3 example spec uses an in-process fake and needs none of these. Enable with
+# `bundle config set --local with examples && bundle install`.
+group :examples, optional: true do
+  gem 'aws-sdk-s3', '~> 1.0'
+  gem 'pg', '~> 1.0'
+  gem 'redis', '~> 5.0'
+end
