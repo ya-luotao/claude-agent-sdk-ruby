@@ -200,7 +200,7 @@ module ClaudeAgentSDK
     # Copy .credentials.json (refreshToken redacted) and .claude.json from the
     # caller's effective config locations so the resumed subprocess can auth.
     def copy_auth_files(tmp_base, opt_env)
-      caller_config_dir = opt_env['CLAUDE_CONFIG_DIR'] || opt_env[:CLAUDE_CONFIG_DIR] || ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+      caller_config_dir = env_value(opt_env, 'CLAUDE_CONFIG_DIR')
       source_config_dir = caller_config_dir || File.join(Dir.home, '.claude')
 
       creds_json = read_file_if_present(File.join(source_config_dir, '.credentials.json'))
@@ -415,8 +415,9 @@ module ClaudeAgentSDK
     end
 
     def env_value(opt_env, name)
-      value = opt_env[name] || opt_env[name.to_sym] || ENV.fetch(name, nil)
-      value && !value.empty? ? value : nil
+      [opt_env[name], opt_env[name.to_sym], ENV.fetch(name, nil)].find do |value|
+        value && (!value.respond_to?(:empty?) || !value.empty?)
+      end
     end
 
     private_class_method :load_candidate, :resolve_continue_candidate, :with_timeout, :write_jsonl,

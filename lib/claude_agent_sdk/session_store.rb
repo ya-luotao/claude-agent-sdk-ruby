@@ -324,6 +324,7 @@ module ClaudeAgentSDK
     # Mirrors Sessions#config_dir but consults an explicit env override first.
     def projects_dir(env_override = nil)
       override = env_override && (env_override['CLAUDE_CONFIG_DIR'] || env_override[:CLAUDE_CONFIG_DIR])
+      override = nil if override.respond_to?(:empty?) && override.empty?
       base = override || Sessions.config_dir
       File.join(base, 'projects')
     end

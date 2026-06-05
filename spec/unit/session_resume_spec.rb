@@ -67,6 +67,35 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
     end
   end
 
+  describe '.copy_auth_files' do
+    around do |example|
+      previous_config = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+      example.run
+    ensure
+      previous_config.nil? ? ENV.delete('CLAUDE_CONFIG_DIR') : (ENV['CLAUDE_CONFIG_DIR'] = previous_config)
+    end
+
+    it 'treats an empty options.env CLAUDE_CONFIG_DIR override as absent' do
+      source = Dir.mktmpdir
+      target = Dir.mktmpdir
+      File.write(File.join(source, '.credentials.json'),
+                 JSON.generate('claudeAiOauth' => { 'accessToken' => 'keep', 'refreshToken' => 'drop' }))
+      File.write(File.join(source, '.claude.json'), JSON.generate('settings' => true))
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      allow(described_class).to receive(:read_keychain_credentials).and_return(nil)
+      described_class.send(:copy_auth_files, target, 'CLAUDE_CONFIG_DIR' => '')
+
+      creds = JSON.parse(File.read(File.join(target, '.credentials.json')))
+      expect(creds['claudeAiOauth']['accessToken']).to eq('keep')
+      expect(creds['claudeAiOauth']).not_to have_key('refreshToken')
+      expect(File.exist?(File.join(target, '.claude.json'))).to be true
+    ensure
+      FileUtils.remove_entry(source) if source && File.directory?(source)
+      FileUtils.remove_entry(target) if target && File.directory?(target)
+    end
+  end
+
   describe '.rmtree_with_retry' do
     it 'removes an existing directory and is a no-op for a missing path' do
       dir = Dir.mktmpdir

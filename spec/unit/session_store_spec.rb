@@ -194,6 +194,25 @@ RSpec.describe ClaudeAgentSDK::SessionStores do
       end.to raise_error(ArgumentError, /enable_file_checkpointing/)
     end
   end
+
+  describe '.projects_dir' do
+    around do |example|
+      previous = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+      example.run
+    ensure
+      previous.nil? ? ENV.delete('CLAUDE_CONFIG_DIR') : (ENV['CLAUDE_CONFIG_DIR'] = previous)
+    end
+
+    it 'honors a non-empty options.env CLAUDE_CONFIG_DIR override' do
+      ENV['CLAUDE_CONFIG_DIR'] = '/ambient'
+      expect(described_class.projects_dir('CLAUDE_CONFIG_DIR' => '/custom')).to eq('/custom/projects')
+    end
+
+    it 'treats an empty options.env CLAUDE_CONFIG_DIR override as absent' do
+      ENV['CLAUDE_CONFIG_DIR'] = '/ambient'
+      expect(described_class.projects_dir('CLAUDE_CONFIG_DIR' => '')).to eq('/ambient/projects')
+    end
+  end
 end
 
 RSpec.describe 'ClaudeAgentSDK.project_key_for_directory' do

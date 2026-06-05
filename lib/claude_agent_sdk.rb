@@ -377,14 +377,18 @@ module ClaudeAgentSDK
         # query_handler.close stops the background read task and closes the
         # transport (flushing the mirror batcher first). Fall back to a bare
         # transport close when the handler was never built.
-        if query_handler
-          query_handler.close
-        elsif transport
-          transport.close
+        begin
+          if query_handler
+            query_handler.close
+          elsif transport
+            transport.close
+          end
+        ensure
+          # Remove the materialized resume temp dir (which holds a redacted
+          # .credentials.json copy) AFTER the subprocess has exited, even when
+          # close itself raises.
+          materialized&.cleanup
         end
-        # Remove the materialized resume temp dir (which holds a redacted
-        # .credentials.json copy) AFTER the subprocess has exited.
-        materialized&.cleanup
       end
     end.wait
   end

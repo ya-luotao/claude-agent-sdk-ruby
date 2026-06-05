@@ -69,5 +69,17 @@ RSpec.describe 'ClaudeAgentSDK.query with session_store' do
       expect(ClaudeAgentSDK::SessionResume).to have_received(:materialize_resume_session)
       expect(materialized).to have_received(:cleanup) # temp dir removed in the ensure block
     end
+
+    it 'cleans up a materialized resume even when query handler close raises' do
+      allow(query_handler).to receive(:set_transcript_mirror_batcher)
+      allow(query_handler).to receive(:close).and_raise('close boom')
+      materialized = instance_double(ClaudeAgentSDK::MaterializedResume, cleanup: nil)
+      allow(ClaudeAgentSDK::SessionResume).to receive(:materialize_resume_session).and_return(materialized)
+      allow(ClaudeAgentSDK::SessionResume).to receive(:apply_materialized_options) { |opts, _m| opts }
+
+      opts = ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: SecureRandom.uuid)
+      expect { ClaudeAgentSDK.query(prompt: 'hi', options: opts) { nil } }.to raise_error(RuntimeError, /close boom/)
+      expect(materialized).to have_received(:cleanup)
+    end
   end
 end
