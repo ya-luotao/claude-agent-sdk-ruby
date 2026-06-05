@@ -199,6 +199,42 @@ module ClaudeAgentSDK
                                               agent_id: agent_id, directory: directory, limit: limit, offset: offset)
   end
 
+  # Rename a session in a SessionStore (store-backed counterpart to
+  # rename_session). Appends a custom-title entry carrying a fresh uuid +
+  # timestamp via SessionStore#append.
+  # @raise [ArgumentError] if session_id is invalid or title is empty
+  def self.rename_session_via_store(session_store:, session_id:, title:, directory: nil)
+    SessionMutations.rename_session_via_store(session_store: session_store, session_id: session_id,
+                                              title: title, directory: directory)
+  end
+
+  # Tag a session in a SessionStore (store-backed counterpart to tag_session).
+  # Pass nil to clear the tag.
+  # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
+  def self.tag_session_via_store(session_store:, session_id:, tag:, directory: nil)
+    SessionMutations.tag_session_via_store(session_store: session_store, session_id: session_id,
+                                           tag: tag, directory: directory)
+  end
+
+  # Delete a session from a SessionStore (store-backed counterpart to
+  # delete_session). No-op when the store does not implement #delete
+  # (WORM/append-only backends).
+  # @raise [ArgumentError] if session_id is invalid
+  def self.delete_session_via_store(session_store:, session_id:, directory: nil)
+    SessionMutations.delete_session_via_store(session_store: session_store, session_id: session_id,
+                                              directory: directory)
+  end
+
+  # Fork a session in a SessionStore into a new branch with fresh UUIDs
+  # (store-backed counterpart to fork_session).
+  # @return [ForkSessionResult] result containing the new session ID
+  # @raise [ArgumentError] if session_id/up_to_message_id is invalid or there are no messages
+  # @raise [Errno::ENOENT] if the source session is not found in the store
+  def self.fork_session_via_store(session_store:, session_id:, directory: nil, up_to_message_id: nil, title: nil)
+    SessionMutations.fork_session_via_store(session_store: session_store, session_id: session_id,
+                                            directory: directory, up_to_message_id: up_to_message_id, title: title)
+  end
+
   # Replay a local on-disk session transcript into a SessionStore (migration /
   # gap-backfill). Keys under the on-disk project dir so the imported session is
   # resumable via session_store + resume from the original cwd.
