@@ -5,6 +5,7 @@ require 'fileutils'
 require 'tmpdir'
 require 'open3'
 require 'rbconfig'
+require_relative 'fiber_boundary'
 require_relative 'sessions'
 require_relative 'session_store'
 require_relative 'transcript_mirror_batcher'
@@ -89,7 +90,7 @@ module ClaudeAgentSDK
       return nil if store.nil?
       return nil if options.resume.nil? && !options.continue_conversation
 
-      timeout_s = (options.load_timeout_ms || 60_000) / 1000.0
+      timeout_s = options.load_timeout_ms / 1000.0
       project_key = Sessions.project_key_for_directory(options.cwd)
 
       resolved =
@@ -167,18 +168,15 @@ module ClaudeAgentSDK
 
     # Run a store call (user code) on a plain thread bounded by timeout_s,
     # re-raising failures/timeouts as RuntimeError with context. The thread hop
-    # both keeps the async scheduler out of the user's store code AND enforces
-    # load_timeout_ms unconditionally — including when materialization runs
-    # outside an Async reactor (no Fiber.scheduler), where a direct call would
-    # let a hung adapter block connect forever. A timed-out worker is left
-    # running (not killed) since its in-flight call may still complete.
+    # (FiberBoundary with a timeout always hops) both keeps the async scheduler
+    # out of the user's store code AND enforces load_timeout_ms unconditionally
+    # — including when materialization runs outside an Async reactor, where a
+    # direct call would let a hung adapter block connect forever. A timed-out
+    # worker is left running (not killed) since it may still complete.
     def with_timeout(timeout_s, what, &block)
-      thread = Thread.new(&block)
-      thread.report_on_exception = false
-      ms = (timeout_s * 1000).to_i
-      raise "#{what} timed out after #{ms}ms during resume materialization" unless thread.join(timeout_s)
-
-      thread.value
+      FiberBoundary.invoke(timeout: timeout_s, &block)
+    rescue FiberBoundary::JoinTimeout
+      raise "#{what} timed out after #{(timeout_s * 1000).to_i}ms during resume materialization"
     rescue RuntimeError
       raise
     rescue StandardError => e
@@ -357,8 +355,15 @@ module ClaudeAgentSDK
       return false if subpath.include?("\u0000")
 
       base = resolve_dir(session_dir)
-      target = File.expand_path("#{subpath}.jsonl", base)
+      # Join BEFORE expanding: expand_path on a relative first argument performs
+      # tilde expansion, so a store-supplied "~nosuchuser/x" would raise
+      # ArgumentError (and "~root/x" would resolve outside base even though the
+      # literal path the writer uses is contained). The joined path is absolute,
+      # so expand_path only normalizes it.
+      target = File.expand_path(File.join(base, "#{subpath}.jsonl"))
       target == base || target.start_with?("#{base}#{File::SEPARATOR}")
+    rescue ArgumentError
+      false
     end
 
     def resolve_dir(dir)
@@ -414,10 +419,21 @@ module ClaudeAgentSDK
       nil
     end
 
+    # Resolve the value the CHILD process will see for env var +name+. Presence
+    # in options.env is detected by KEY: an explicit nil (or empty) value means
+    # the transport unsets the var for the child, so resolve to nil rather than
+    # falling back to the parent's environment (which the child won't inherit
+    # for that key). Only an absent key consults the parent ENV.
     def env_value(opt_env, name)
-      [opt_env[name], opt_env[name.to_sym], ENV.fetch(name, nil)].find do |value|
-        value && (!value.respond_to?(:empty?) || !value.empty?)
+      if opt_env.respond_to?(:key?) && (opt_env.key?(name) || opt_env.key?(name.to_sym))
+        value = opt_env[name] || opt_env[name.to_sym]
+        return nil if value.nil? || (value.respond_to?(:empty?) && value.empty?)
+
+        return value
       end
+
+      value = ENV.fetch(name, nil)
+      value && (!value.respond_to?(:empty?) || !value.empty?) ? value : nil
     end
 
     private_class_method :load_candidate, :resolve_continue_candidate, :with_timeout, :write_jsonl,

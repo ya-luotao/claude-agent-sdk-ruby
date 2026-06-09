@@ -266,14 +266,21 @@ module ClaudeAgentSDK
       @message_queue.enqueue({ type: 'error', error: e })
     ensure
       # Catch entries from a turn that ended without a `result` (early EOF /
-      # transport error) so they aren't dropped.
-      flush_transcript_mirror
-      unless @first_result_received
-        @first_result_received = true
-        @first_result_condition.signal
+      # transport error) so they aren't dropped. The flush can suspend (lock
+      # acquire / thread join), so Async::Stop delivered mid-flush would skip
+      # the rest of this block — the nested ensure guarantees the signal and
+      # the end sentinel (which have no suspension points) are still delivered,
+      # mirroring the Python port's shielded flush + send_nowait sentinel.
+      begin
+        flush_transcript_mirror
+      ensure
+        unless @first_result_received
+          @first_result_received = true
+          @first_result_condition.signal
+        end
+        # Always signal end of stream
+        @message_queue.enqueue({ type: 'end' })
       end
-      # Always signal end of stream
-      @message_queue.enqueue({ type: 'end' })
     end
 
     # Flush the transcript-mirror batcher, swallowing errors — a mirror failure

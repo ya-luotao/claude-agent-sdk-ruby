@@ -133,6 +133,21 @@ RSpec.describe 'SessionStore-backed mutations' do
       expect(ct['customTitle']).to eq('AI Derived (fork)')
     end
 
+    it "falls back to 'Forked session (fork)' when no title or prompt is extractable" do
+      # Regression: extract_first_prompt_from_head returns '' (truthy) for a
+      # session with no qualifying prompt; without empty->nil normalization the
+      # fork was titled literally " (fork)".
+      store.append(key, [
+                     { 'type' => 'assistant', 'uuid' => 'a1', 'sessionId' => session_id,
+                       'timestamp' => '2026-01-01T00:00:01.000Z',
+                       'message' => { 'role' => 'assistant', 'content' => 'hi' } }
+                   ])
+      result = ClaudeAgentSDK.fork_session_via_store(session_store: store, session_id: session_id)
+      forked = store.load('project_key' => project_key, 'session_id' => result.session_id)
+      ct = forked.reverse.find { |e| e['type'] == 'custom-title' }
+      expect(ct['customTitle']).to eq('Forked session (fork)')
+    end
+
     it 'honors an explicit title without the (fork) suffix' do
       seed_transcript
       result = ClaudeAgentSDK.fork_session_via_store(session_store: store, session_id: session_id, title: 'Explicit')

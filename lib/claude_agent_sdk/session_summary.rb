@@ -60,10 +60,13 @@ module ClaudeAgentSDK
       entries.each do |entry|
         next unless entry.is_a?(Hash)
 
-        ms = Sessions.parse_iso_timestamp_ms(entry['timestamp'])
-
         data['is_sidechain'] = (entry['isSidechain'] == true) unless data.key?('is_sidechain')
-        data['created_at'] = ms if !data.key?('created_at') && ms
+
+        # created_at is set-once, so skip the (regex + Time.iso8601) parse for
+        # every entry after the first timestamped one — folds run over whole
+        # transcripts on the store read paths.
+        ms = data.key?('created_at') ? nil : Sessions.parse_iso_timestamp_ms(entry['timestamp'])
+        data['created_at'] = ms if ms
 
         unless data.key?('cwd')
           cwd = entry['cwd']

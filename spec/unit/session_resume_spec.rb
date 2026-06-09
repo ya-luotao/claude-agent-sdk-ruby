@@ -31,6 +31,12 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       '../escape' => false,
       'a/../../b' => false,
       'ok/./still' => false,
+      # Tilde must not be expanded: '~nosuchuser/x' used to raise ArgumentError
+      # out of File.expand_path (aborting the whole resume), and '~root/x' used
+      # to be wrongly rejected even though the writer joins it literally under
+      # session_dir.
+      '~nosuchuser-zz/agent-1' => true,
+      '~root/agent-1' => true,
       "embeds\u0000nul" => false
     }.each do |subpath, expected|
       it "returns #{expected} for #{subpath.inspect}" do
@@ -75,7 +81,7 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       previous_config.nil? ? ENV.delete('CLAUDE_CONFIG_DIR') : (ENV['CLAUDE_CONFIG_DIR'] = previous_config)
     end
 
-    it 'treats an empty options.env CLAUDE_CONFIG_DIR override as absent' do
+    it 'reads from the parent ENV config dir when options.env has no override key' do
       source = Dir.mktmpdir
       target = Dir.mktmpdir
       File.write(File.join(source, '.credentials.json'),
@@ -84,12 +90,36 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       ENV['CLAUDE_CONFIG_DIR'] = source
 
       allow(described_class).to receive(:read_keychain_credentials).and_return(nil)
-      described_class.send(:copy_auth_files, target, 'CLAUDE_CONFIG_DIR' => '')
+      described_class.send(:copy_auth_files, target, {})
 
       creds = JSON.parse(File.read(File.join(target, '.credentials.json')))
       expect(creds['claudeAiOauth']['accessToken']).to eq('keep')
       expect(creds['claudeAiOauth']).not_to have_key('refreshToken')
       expect(File.exist?(File.join(target, '.claude.json'))).to be true
+    ensure
+      FileUtils.remove_entry(source) if source && File.directory?(source)
+      FileUtils.remove_entry(target) if target && File.directory?(target)
+    end
+
+    it 'ignores the parent ENV config dir when options.env explicitly unsets CLAUDE_CONFIG_DIR' do
+      # An explicit nil/empty override means the transport unsets the var for
+      # the child, which then reads ~/.claude — NOT the parent's config dir.
+      # Credentials must be sourced from where the child will actually look.
+      source = Dir.mktmpdir
+      target = Dir.mktmpdir
+      File.write(File.join(source, '.credentials.json'), JSON.generate('claudeAiOauth' => { 'accessToken' => 'k' }))
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      allow(described_class).to receive(:read_keychain_credentials).and_return(nil)
+      allow(described_class).to receive(:read_file_if_present).and_return(nil)
+      allow(described_class).to receive(:copy_if_present).and_return(nil)
+      described_class.send(:copy_auth_files, target, 'CLAUDE_CONFIG_DIR' => '')
+
+      default_dir = File.join(Dir.home, '.claude')
+      expect(described_class).to have_received(:read_file_if_present)
+        .with(File.join(default_dir, '.credentials.json'))
+      expect(described_class).not_to have_received(:read_file_if_present)
+        .with(File.join(source, '.credentials.json'))
     ensure
       FileUtils.remove_entry(source) if source && File.directory?(source)
       FileUtils.remove_entry(target) if target && File.directory?(target)

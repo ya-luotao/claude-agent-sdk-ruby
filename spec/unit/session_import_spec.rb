@@ -67,6 +67,15 @@ RSpec.describe 'ClaudeAgentSDK.import_session_to_store' do
     expect(calls).to eq([1, 1]) # two entries, batch_size 1 -> two appends
   end
 
+  it 'imports with the default batch size when batch_size is explicitly nil' do
+    # Regression: the normalization guard used bare batch_size.positive?, so
+    # the one invalid value optional params commonly produce (nil) crashed with
+    # NoMethodError instead of defaulting.
+    write_main_transcript
+    ClaudeAgentSDK.import_session_to_store(session_id: sid, session_store: store, directory: cwd, batch_size: nil)
+    expect(store.load('project_key' => project_key, 'session_id' => sid).length).to eq(2)
+  end
+
   it 'imports subagent transcripts and reconstructs agent_metadata from the .meta.json sidecar' do
     write_main_transcript
     sub_dir = File.join(project_dir, sid, 'subagents')

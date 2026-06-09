@@ -137,8 +137,8 @@ module ClaudeAgentSDK
       store.append({ 'project_key' => 'other', 'session_id' => 'elsewhere' },
                    [entry('timestamp' => '2024-01-01T00:00:00.000Z')])
 
-      by_id = store.list_session_summaries('proj').to_h { |s| [s['session_id'], s] }
-      assert_eq(by_id.keys, ['summ-sess'], 'list_session_summaries must scope to the project')
+      by_id = summaries_by_id(store, 'proj', ['summ-sess'],
+                              'list_session_summaries must return exactly one row per session, scoped to the project')
       summ = by_id['summ-sess']
       assert(epoch_ms?(summ['mtime']), 'summary mtime must be epoch-ms (> 1e12)')
 
@@ -156,7 +156,8 @@ module ClaudeAgentSDK
       # Subagent appends must NOT affect the main session's summary.
       store.append(summ_key.merge('subpath' => 'subagents/agent-1'),
                    [entry('timestamp' => '2024-01-01T00:00:09.000Z', 'customTitle' => 'subagent')])
-      after_sub = store.list_session_summaries('proj').to_h { |s| [s['session_id'], s] }
+      after_sub = summaries_by_id(store, 'proj', ['summ-sess'],
+                                  'list_session_summaries must still return one row per session after a subagent append')
       assert_eq(after_sub['summ-sess']['data'], summ['data'], 'subagent appends must not change the main summary')
       assert_eq(store.list_session_summaries('never-appended-project'), [], 'unknown project must list no summaries')
 
@@ -260,6 +261,16 @@ module ClaudeAgentSDK
       value.is_a?(Numeric) && value.finite? && value > 1e12
     end
 
+    # Fetch summaries, asserting on the RAW rows before collapsing into a hash:
+    # a store returning one row per append (every historical fold version)
+    # would otherwise pass — and then surface duplicate sessions from
+    # list_sessions_from_store.
+    def summaries_by_id(store, project, expected_ids, message)
+      rows = Array(store.list_session_summaries(project))
+      assert_eq(rows.map { |s| s['session_id'] }.sort, expected_ids.sort, message)
+      rows.to_h { |s| [s['session_id'], s] }
+    end
+
     def optional?(store, method, skip_optional)
       return false if skip_optional.include?(method)
 
@@ -279,6 +290,6 @@ module ClaudeAgentSDK
 
     private_class_method :check_append_and_load, :check_list_sessions, :check_list_session_summaries,
                          :check_delete, :check_list_subkeys, :key, :entry, :epoch_ms?, :optional?,
-                         :assert, :assert_eq
+                         :summaries_by_id, :assert, :assert_eq
   end
 end

@@ -76,9 +76,13 @@ through the relevant items below.
   send timeout) and `#load` runs inside resume/listing. Make each method
   thread-safe per key — a per-call connection (Postgres/Redis) or a thread-safe
   client (`aws-sdk-s3`) satisfies this.
-- `#append` may be retried by the batcher after a timeout, so a later append for
-  the same key can overlap an abandoned one. **Dedupe by `entry["uuid"]`** when
-  present (the SDK stamps a uuid on every mirrored entry).
+- `#append` is retried by the batcher on adapter *errors* (up to 3 attempts);
+  *timeouts* are not retried, but the timed-out call is abandoned still running,
+  so a later append for the same key can overlap it. **Dedupe by
+  `entry["uuid"]`** when present — some entry types (e.g.
+  `file-history-snapshot`, `permission-mode`) carry no uuid; mirrored entries
+  are opaque CLI pass-through, and only the SDK's `*_via_store` mutation
+  helpers stamp fresh uuids. Don't make a uuid column `NOT NULL`/`UNIQUE`.
 - `#append` failures are logged and surface a `MirrorErrorMessage` on the
   message stream; they never block the conversation. Monitor for these so
   silent mirror gaps don't go unnoticed.
@@ -90,8 +94,9 @@ through the relevant items below.
 - Part-file ordering uses the **client-side wall clock**. Multiple writer
   instances with clock skew >1s may produce out-of-order `#load` results. Use
   NTP or a single writer per session.
-- `#load` fetches parts serially. For sessions with many parts, parallelize
-  GetObject (e.g. with a thread pool) or compact periodically.
+- `#load` fetches parts with a bounded 16-way thread pool, but every `#append`
+  still creates a new part — compact periodically if sessions accumulate
+  thousands of parts (eager flush mode writes one part per frame).
 - Configure an S3 lifecycle policy for retention — the SDK never auto-deletes.
 
 ### Redis

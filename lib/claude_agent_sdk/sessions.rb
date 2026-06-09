@@ -80,6 +80,12 @@ module ClaudeAgentSDK
 
     UUID_RE = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
+    # Transcript entry types that participate in conversation reads. One shared
+    # constant for the disk (parse_jsonl_entries) and store
+    # (filter_transcript_entries) paths so the two read paths can't drift when
+    # the CLI adds a new entry type (mirrors Python's _TRANSCRIPT_ENTRY_TYPES).
+    TRANSCRIPT_ENTRY_TYPES = %w[user assistant progress system attachment].freeze
+
     SKIP_FIRST_PROMPT_PATTERN = %r{\A(?:<local-command-stdout>|<session-start-hook>|<tick>|<goal>|
       \[Request\ interrupted\ by\ user[^\]]*\]|
       \s*<ide_opened_file>[\s\S]*</ide_opened_file>\s*\z|
@@ -377,10 +383,13 @@ module ClaudeAgentSDK
                    list_all_sessions
                  end
 
-      # Sort by last_modified descending, then apply offset and limit
+      # Sort by last_modified descending, then apply offset and limit.
+      # [limit, 0].max: limit <= 0 yields [] across the whole read-API family
+      # (a bare first(-1) would raise ArgumentError here but silently clamp on
+      # the store paths).
       sessions.sort_by! { |s| -s.last_modified }
       sessions = sessions[offset..] || [] if offset.positive?
-      sessions = sessions.first(limit) if limit
+      sessions = sessions.first([limit, 0].max) if limit
       sessions
     end
 
@@ -428,9 +437,9 @@ module ClaudeAgentSDK
       chain = build_conversation_chain(entries)
       messages = filter_visible_messages(chain)
 
-      # Apply offset and limit
+      # Apply offset and limit (limit <= 0 yields [], like every other reader)
       messages = messages[offset..] || []
-      messages = messages.first(limit) if limit
+      messages = messages.first([limit, 0].max) if limit
       messages
     end
 
@@ -460,7 +469,19 @@ module ClaudeAgentSDK
       end
 
       listing = Array(session_store.list_sessions(project_key))
-      apply_sort_limit_offset(derive_infos_via_load(session_store, project_key, listing, project_path), limit, offset)
+      # Build all-placeholder slots (the shape the summaries fast path uses) and
+      # reuse its bounded pagination: sessions are loaded newest-first only
+      # until the page fills (~offset + limit + dropped), instead of one full
+      # transcript load per listed session before pagination — the sort key
+      # (the listing mtime) is known before any load.
+      slots = listing.filter_map do |entry|
+        sid = entry['session_id']
+        next if sid.nil?
+
+        { mtime: entry['mtime'] || 0, session_id: sid, info: nil }
+      end
+      slots.sort_by! { |slot| -slot[:mtime] }
+      paginate_resolving_gaps(session_store, project_key, project_path, slots, limit, offset)
     end
 
     # Read metadata for a single session from a SessionStore. Store-backed
@@ -535,7 +556,7 @@ module ClaudeAgentSDK
       transcript = entries.reject { |e| e.is_a?(Hash) && e['type'] == 'agent_metadata' }
       return [] if transcript.empty?
 
-      entries_to_messages(filter_transcript_entries(transcript), limit, offset)
+      entries_to_subagent_messages(filter_transcript_entries(transcript), limit, offset)
     end
 
     # Replay a local on-disk session transcript into a SessionStore (inverse of
@@ -558,7 +579,10 @@ module ClaudeAgentSDK
       # file_path_to_session_key / TranscriptMirrorBatcher even when the resolver
       # found the file via worktree fallback or a global scan.
       project_key = File.basename(File.dirname(resolved))
-      batch_size = TranscriptMirrorBatcher::MAX_PENDING_ENTRIES unless batch_size.positive?
+      # &.: an explicit batch_size: nil gets the default too, instead of
+      # crashing on nil.positive? (matches the nil-tolerant limit:/offset:
+      # convention across this API family).
+      batch_size = TranscriptMirrorBatcher::MAX_PENDING_ENTRIES unless batch_size&.positive?
 
       append_jsonl_file_in_batches(resolved, { 'project_key' => project_key, 'session_id' => session_id },
                                    session_store, batch_size)
@@ -663,31 +687,6 @@ module ClaudeAgentSDK
       derive_info_from_entries(sid, entries, slot[:mtime], project_path)
     end
 
-    # Load each listed session's entries and derive its SDKSessionInfo via the
-    # same fold the disk lite-parse mirrors. Sidechain / no-summary sessions are
-    # dropped. Sequential — store methods are synchronous in the Ruby SDK.
-    def derive_infos_via_load(store, project_key, listing, project_path)
-      listing.filter_map do |entry|
-        sid = entry['session_id']
-        next if sid.nil?
-
-        mtime = entry['mtime'] || 0
-        begin
-          entries = store.load('project_key' => project_key, 'session_id' => sid)
-        rescue StandardError => e
-          # A single failing row degrades to an empty-summary placeholder rather
-          # than aborting the entire listing (matching the disk path, which
-          # rescues per-file parse errors, and Python's gather(return_exceptions)
-          # P2-5 fix). The row keeps its mtime so sort/pagination stay stable.
-          warn "Claude SDK: [SessionStore] load failed for session #{sid}: #{e.message}"
-          next SDKSessionInfo.new(session_id: sid, summary: '', last_modified: mtime)
-        end
-        next if entries.nil? || entries.empty?
-
-        derive_info_from_entries(sid, entries, mtime, project_path)
-      end
-    end
-
     # Fold store entries into an SDKSessionInfo, stamping the given mtime.
     def derive_info_from_entries(session_id, entries, mtime, project_path)
       summary = SessionSummary.fold_session_summary(nil, { 'session_id' => session_id }, entries)
@@ -717,16 +716,50 @@ module ClaudeAgentSDK
     end
 
     def filter_transcript_entries(entries)
-      valid_types = %w[user assistant progress system attachment]
-      entries.select { |e| e.is_a?(Hash) && valid_types.include?(e['type']) && e['uuid'].is_a?(String) }
+      entries.select { |e| e.is_a?(Hash) && TRANSCRIPT_ENTRY_TYPES.include?(e['type']) && e['uuid'].is_a?(String) }
     end
 
     def entries_to_messages(entries, limit, offset)
       offset ||= 0
       messages = filter_visible_messages(build_conversation_chain(entries))
       messages = messages[offset..] || []
-      messages = messages.first(limit) if limit
+      messages = messages.first([limit, 0].max) if limit
       messages
+    end
+
+    # Subagent counterpart to entries_to_messages. Subagent transcripts are
+    # simpler than main sessions — no compaction and no sidechains to exclude;
+    # every CLI-written subagent entry CARRIES isSidechain: true, so the main
+    # pipeline (build_conversation_chain rejects sidechain leaves and
+    # filter_visible_messages drops sidechain entries) would return [] for
+    # every real subagent transcript. Mirrors Python's
+    # _entries_to_subagent_messages: type-only filter, no flag rejection.
+    def entries_to_subagent_messages(entries, limit, offset)
+      offset ||= 0
+      messages = build_subagent_chain(entries).filter_map do |entry|
+        next unless %w[user assistant].include?(entry['type'])
+
+        SessionMessage.new(
+          type: entry['type'],
+          uuid: entry['uuid'],
+          session_id: entry['sessionId'] || entry['session_id'] || '',
+          message: entry['message']
+        )
+      end
+      messages = messages[offset..] || []
+      messages = messages.first([limit, 0].max) if limit
+      messages
+    end
+
+    # Find the last user/assistant entry and walk parentUuid links back to the
+    # root (subagent transcripts are linear). Mirrors Python's
+    # _build_subagent_chain.
+    def build_subagent_chain(entries)
+      return [] if entries.empty?
+
+      by_uuid = entries.to_h { |e| [e['uuid'], e] }
+      leaf = entries.reverse_each.find { |e| %w[user assistant].include?(e['type']) }
+      leaf ? walk_to_root(by_uuid, leaf) : []
     end
 
     # Find the subpath for a subagent, scanning subkeys (subagents may be nested
@@ -760,7 +793,7 @@ module ClaudeAgentSDK
         append_jsonl_file_in_batches(file_path, sub_key, store, batch_size)
 
         meta_text = begin
-          File.read("#{file_path.delete_suffix('.jsonl')}.meta.json")
+          File.read("#{file_path.delete_suffix('.jsonl')}.meta.json", encoding: 'UTF-8')
         rescue Errno::ENOENT
           nil
         end
@@ -776,7 +809,10 @@ module ClaudeAgentSDK
     def append_jsonl_file_in_batches(file_path, key, store, batch_size)
       batch = []
       nbytes = 0
-      File.foreach(file_path) do |line|
+      # encoding: transcripts are UTF-8 regardless of locale; without it a
+      # LANG=C process raises Encoding::InvalidByteSequenceError on the first
+      # multibyte line, aborting the import mid-way (Python pins utf-8 here).
+      File.foreach(file_path, encoding: 'UTF-8') do |line|
         line = line.chomp
         next if line.empty?
 
@@ -792,11 +828,20 @@ module ClaudeAgentSDK
     end
 
     # Recursively collect *.jsonl paths under base_dir, sorted per directory for
-    # deterministic import order. Empty when base_dir is absent.
+    # deterministic import order. Empty when base_dir is absent or unreadable —
+    # SystemCallError (Ruby's Errno umbrella, the analog of Python's OSError
+    # guard here) must not abort the import after the main transcript was
+    # already appended.
     def collect_jsonl_files(base_dir)
       return [] unless File.directory?(base_dir)
 
-      Dir.children(base_dir).sort.flat_map do |name|
+      begin
+        children = Dir.children(base_dir).sort
+      rescue SystemCallError
+        return []
+      end
+
+      children.flat_map do |name|
         path = File.join(base_dir, name)
         if File.directory?(path)
           collect_jsonl_files(path)
@@ -965,12 +1010,11 @@ module ClaudeAgentSDK
 
     def parse_jsonl_entries(file_path)
       entries = []
-      valid_types = %w[user assistant progress system attachment].freeze
 
       File.foreach(file_path) do |line|
         entry = JSON.parse(line.strip, symbolize_names: false)
         next unless entry.is_a?(Hash)
-        next unless valid_types.include?(entry['type'])
+        next unless TRANSCRIPT_ENTRY_TYPES.include?(entry['type'])
         next unless entry['uuid'].is_a?(String)
 
         entries << entry
@@ -1073,9 +1117,9 @@ module ClaudeAgentSDK
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :filter_visible_messages, :read_head_tail, :build_session_info,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
-                         :derive_infos_via_load,
                          :derive_info_from_entries, :mtime_from_entries, :apply_sort_limit_offset,
-                         :filter_transcript_entries, :entries_to_messages, :resolve_subagent_subpath,
+                         :filter_transcript_entries, :entries_to_messages,
+                         :entries_to_subagent_messages, :build_subagent_chain, :resolve_subagent_subpath,
                          :import_subagent_files, :append_jsonl_file_in_batches, :collect_jsonl_files
 
     # These remain accessible for SessionMutations:

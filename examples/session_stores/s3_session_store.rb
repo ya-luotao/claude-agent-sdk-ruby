@@ -92,8 +92,7 @@ class S3SessionStore < ClaudeAgentSDK::SessionStore
     keys.sort!
 
     all_entries = []
-    keys.each do |object_key|
-      body = @client.get_object(bucket: @bucket, key: object_key).body.read
+    fetch_bodies(keys).each do |body|
       body = body.force_encoding('UTF-8') if body.respond_to?(:force_encoding)
       body.split("\n").each do |line|
         trimmed = line.strip
@@ -191,7 +190,35 @@ class S3SessionStore < ClaudeAgentSDK::SessionStore
     subkeys.reject { |sp| sp.split('/').any? { |seg| ['..', '.', ''].include?(seg) } }
   end
 
+  # Bounded GetObject concurrency for #load (matches the Python reference's
+  # 16-way limiter). Each #append writes a new part, so a long eager-mirrored
+  # session accumulates hundreds of parts — fetching them serially puts
+  # part_count x RTT on the resume path, enough to blow the default 60s load
+  # timeout near ~1,000 parts.
+  LOAD_CONCURRENCY = 16
+
   private
+
+  # Fetch part bodies with a small worker pool, preserving +keys+ order. A
+  # worker's failure propagates from Thread#join, matching the serial loop's
+  # raise-on-failure semantics.
+  def fetch_bodies(keys)
+    bodies = Array.new(keys.length)
+    next_index = -1
+    index_mutex = Mutex.new
+    workers = [LOAD_CONCURRENCY, keys.length].min.times.map do
+      Thread.new do
+        loop do
+          i = index_mutex.synchronize { next_index += 1 }
+          break if i >= keys.length
+
+          bodies[i] = @client.get_object(bucket: @bucket, key: keys[i]).body.read
+        end
+      end
+    end
+    workers.each(&:join)
+    bodies
+  end
 
   # Directory prefix for a session (or subpath). Always ends in '/'.
   def key_prefix(key)

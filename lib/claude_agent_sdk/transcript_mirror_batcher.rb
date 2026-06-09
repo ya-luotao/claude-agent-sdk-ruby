@@ -3,6 +3,7 @@
 require 'json'
 require 'async'
 require 'async/semaphore'
+require_relative 'fiber_boundary'
 require_relative 'session_store'
 
 module ClaudeAgentSDK
@@ -109,10 +110,16 @@ module ClaudeAgentSDK
       @pending = []
       @pending_entries = 0
       @pending_bytes = 0
-      return if items.empty?
 
       errors = []
       @lock.acquire do
+        # Emptiness is checked INSIDE the lock (matching the Python batcher):
+        # an empty #flush/#close still serializes behind any in-flight or
+        # queued drain, so they are true barriers — at result-yield and at
+        # teardown the store really is up to date, and Query#close can't stop
+        # the read task while a detached batch is still being appended.
+        next if items.empty?
+
         do_flush(items, errors)
       rescue StandardError => e
         # do_flush already guards each append; this guards any remaining path
@@ -177,25 +184,20 @@ module ClaudeAgentSDK
       warn "Claude SDK: TranscriptMirrorBatcher flush failed for #{file_path}: #{last_err}" unless succeeded
     end
 
-    # Run SessionStore#append (user code) on a plain thread via the FiberBoundary
-    # pattern, bounded by send_timeout. Returns [:ok, nil] / [:timeout, err] /
-    # [:error, err]. On timeout the worker thread is left running (cancellation
-    # is best-effort; the in-flight call may still land) and not retried.
+    # Run SessionStore#append (user code) on a plain thread via FiberBoundary,
+    # bounded by send_timeout (enforced with or without an active reactor).
+    # Returns [:ok, nil] / [:timeout, err] / [:error, err]. On timeout the
+    # worker thread is left running (cancellation is best-effort; the in-flight
+    # call may still land) and not retried.
     def invoke_append(key, entries)
-      unless Fiber.scheduler
-        @store.append(key, entries)
-        return [:ok, nil]
-      end
-
-      thread = Thread.new { @store.append(key, entries) }
-      thread.report_on_exception = false
-      if thread.join(@send_timeout)
-        thread.value # re-raises any adapter error -> rescued below
-        [:ok, nil]
-      else
-        [:timeout, "append timed out after #{@send_timeout}s"]
-      end
-    rescue StandardError => e
+      FiberBoundary.invoke(timeout: @send_timeout) { @store.append(key, entries) }
+      [:ok, nil]
+    rescue FiberBoundary::JoinTimeout
+      [:timeout, "append timed out after #{@send_timeout}s"]
+    rescue StandardError, NotImplementedError => e
+      # NotImplementedError is a ScriptError, not a StandardError: the base
+      # SessionStore stubs raise it, and letting it escape here would kill the
+      # whole reactor instead of surfacing a MirrorErrorMessage.
       [:error, e]
     end
 

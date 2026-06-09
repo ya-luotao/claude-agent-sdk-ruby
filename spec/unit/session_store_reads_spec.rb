@@ -217,12 +217,19 @@ RSpec.describe 'SessionStore-backed reads' do
   end
 
   describe '.list_subagents_from_store / .get_subagent_messages_from_store' do
+    # CLI-written subagent entries ALL carry isSidechain: true — fixtures must
+    # too, or these specs pass against a pipeline that drops sidechain entries
+    # (and therefore returns [] for every real subagent transcript).
+    def subagent_entry(session_id, text, timestamp, **extra)
+      user_entry(session_id, text, timestamp).merge('isSidechain' => true, **extra)
+    end
+
     before do
       store.append({ 'project_key' => project_key, 'session_id' => sid2 },
                    [user_entry(sid2, 'main', '2024-01-02T00:00:00.000Z')])
       store.append({ 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/agent-abc' },
                    [{ 'type' => 'agent_metadata', 'agentId' => 'abc' },
-                    user_entry(sid2, 'Subagent hi', '2024-01-02T00:00:01.000Z')])
+                    subagent_entry(sid2, 'Subagent hi', '2024-01-02T00:00:01.000Z')])
     end
 
     it 'lists subagent IDs' do
@@ -238,15 +245,31 @@ RSpec.describe 'SessionStore-backed reads' do
       expect(msgs.first.text).to eq('Subagent hi')
     end
 
+    it 'returns the full parentUuid chain for a realistic sidechain transcript' do
+      # Regression: the subagent reader must not reuse the main-session pipeline
+      # (which rejects isSidechain leaves/entries) — that returned [] for every
+      # real subagent transcript.
+      root = subagent_entry(sid2, 'chain root', '2024-01-02T00:00:05.000Z')
+      reply = { 'type' => 'assistant', 'uuid' => SecureRandom.uuid, 'parentUuid' => root['uuid'],
+                'timestamp' => '2024-01-02T00:00:06.000Z', 'sessionId' => sid2, 'isSidechain' => true,
+                'message' => { 'content' => 'chain reply' } }
+      store.append({ 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/agent-chain' },
+                   [root, reply])
+      msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
+        session_store: store, session_id: sid2, agent_id: 'chain', directory: dir
+      )
+      expect(msgs.map(&:type)).to eq(%w[user assistant])
+    end
+
     it 'prefers the canonical top-level path when a nested path shares the agent-<id>' do
       # Append the nested path FIRST so list_subkeys yields it before the
       # top-level one; a first-match resolver would return the nested transcript.
       store.append(
         { 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/workflows/run1/agent-dup' },
-        [user_entry(sid2, 'Nested dup', '2024-01-02T00:00:03.000Z')]
+        [subagent_entry(sid2, 'Nested dup', '2024-01-02T00:00:03.000Z')]
       )
       store.append({ 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/agent-dup' },
-                   [user_entry(sid2, 'Top-level dup', '2024-01-02T00:00:04.000Z')])
+                   [subagent_entry(sid2, 'Top-level dup', '2024-01-02T00:00:04.000Z')])
       msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
         session_store: store, session_id: sid2, agent_id: 'dup', directory: dir
       )
@@ -256,7 +279,7 @@ RSpec.describe 'SessionStore-backed reads' do
     it 'resolves a nested subagents/workflows/<run>/agent-<id> path' do
       store.append(
         { 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/workflows/run1/agent-nested' },
-        [user_entry(sid2, 'Nested agent', '2024-01-02T00:00:02.000Z')]
+        [subagent_entry(sid2, 'Nested agent', '2024-01-02T00:00:02.000Z')]
       )
       msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
         session_store: store, session_id: sid2, agent_id: 'nested', directory: dir

@@ -166,6 +166,25 @@ RSpec.describe ClaudeAgentSDK::SessionStores do
       end.to raise_error(ArgumentError, /invalid session_store_flush/)
     end
 
+    it 'raises when the store does not implement the required #append/#load' do
+      # Regression: a subclass inheriting the base stubs only failed at first
+      # use, with NotImplementedError — a ScriptError that escapes every
+      # rescue StandardError layer and kills the reactor.
+      load_only = Class.new(ClaudeAgentSDK::SessionStore) do
+        def load(_key); end
+      end.new
+      expect do
+        described_class.validate_session_store_options(options(session_store: load_only))
+      end.to raise_error(ArgumentError, /must implement #append/)
+
+      append_only = Class.new(ClaudeAgentSDK::SessionStore) do
+        def append(_key, _entries); end
+      end.new
+      expect do
+        described_class.validate_session_store_options(options(session_store: append_only))
+      end.to raise_error(ArgumentError, /must implement #load/)
+    end
+
     it 'raises when continue_conversation is set without resume and the store lacks list_sessions' do
       minimal = Class.new(ClaudeAgentSDK::SessionStore) do
         def append(_key, _entries); end
@@ -208,9 +227,25 @@ RSpec.describe ClaudeAgentSDK::SessionStores do
       expect(described_class.projects_dir('CLAUDE_CONFIG_DIR' => '/custom')).to eq('/custom/projects')
     end
 
-    it 'treats an empty options.env CLAUDE_CONFIG_DIR override as absent' do
+    it 'maps an explicit nil override to the default config dir, not the parent ENV' do
+      # The transport unsets the var for the child on an explicit nil, so the
+      # CLI writes under ~/.claude — the parent's CLAUDE_CONFIG_DIR would point
+      # the batcher at a dir the subprocess never writes to.
       ENV['CLAUDE_CONFIG_DIR'] = '/ambient'
-      expect(described_class.projects_dir('CLAUDE_CONFIG_DIR' => '')).to eq('/ambient/projects')
+      expect(described_class.projects_dir('CLAUDE_CONFIG_DIR' => nil))
+        .to eq(File.join(File.expand_path('~/.claude'), 'projects'))
+    end
+
+    it 'maps an explicit empty-string override to the default config dir too' do
+      ENV['CLAUDE_CONFIG_DIR'] = '/ambient'
+      expect(described_class.projects_dir('CLAUDE_CONFIG_DIR' => ''))
+        .to eq(File.join(File.expand_path('~/.claude'), 'projects'))
+    end
+
+    it 'falls back to the parent ENV when options.env has no CLAUDE_CONFIG_DIR key' do
+      ENV['CLAUDE_CONFIG_DIR'] = '/ambient'
+      expect(described_class.projects_dir('OTHER' => 'x')).to eq('/ambient/projects')
+      expect(described_class.projects_dir(nil)).to eq('/ambient/projects')
     end
   end
 end

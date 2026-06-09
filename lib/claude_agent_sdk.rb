@@ -666,13 +666,17 @@ module ClaudeAgentSDK
 
     private
 
-    # Resume-from-store: when a session_store is set (and the default subprocess
-    # transport is in use), materialize the session into a temp CLAUDE_CONFIG_DIR
-    # and return options repointed at it (env + --resume). Returns the options
-    # unchanged when no materialization applies. Skipped for custom transports —
-    # the materialized env/--resume only affect the CLI subprocess.
+    # Resume-from-store: when a session_store is set (and a subprocess transport
+    # is in use), materialize the session into a temp CLAUDE_CONFIG_DIR and
+    # return options repointed at it (env + --resume). Returns the options
+    # unchanged when no materialization applies. Skipped for non-subprocess
+    # transports — the materialized env/--resume only affect the CLI subprocess.
+    # Ancestry (<=), not identity: a SubprocessCLITransport subclass spawns the
+    # CLI with the same env/--resume semantics, and the transport is constructed
+    # AFTER materialization, so the repointed options do reach it.
     def materialize_resume(options)
-      return options unless options.session_store && @transport_class == SubprocessCLITransport
+      subprocess_transport = @transport_class.is_a?(Class) && @transport_class <= SubprocessCLITransport
+      return options unless options.session_store && subprocess_transport
 
       @materialized = SessionResume.materialize_resume_session(options)
       @materialized ? SessionResume.apply_materialized_options(options, @materialized) : options

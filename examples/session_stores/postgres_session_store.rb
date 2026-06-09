@@ -105,18 +105,22 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
 
     subpath = key['subpath'] || ''
     mtime = (Time.now.to_f * 1000).to_i
-    # Single round-trip multi-row INSERT. Rows are assigned the bigserial `seq`
-    # in VALUES order, so #load's ORDER BY seq replays entries in append order.
-    rows = []
-    params = []
-    entries.each_with_index do |e, i|
-      base = i * 5
-      rows << "($#{base + 1}, $#{base + 2}, $#{base + 3}, $#{base + 4}::jsonb, $#{base + 5})"
-      params.push(key['project_key'], key['session_id'], subpath, JSON.generate(e), mtime)
-    end
+    # Single round-trip INSERT with a FIXED five bind params regardless of batch
+    # size (matching the Python reference's unnest): a multi-row VALUES list at
+    # 5 params per entry would hit Postgres's 65,535 bind-parameter protocol
+    # limit at >13,107 entries — e.g. fork_session_via_store appends the whole
+    # forked transcript in one call. unnest + WITH ORDINALITY preserves array
+    # order, so the bigserial `seq` is assigned in append order and #load's
+    # ORDER BY seq replays entries faithfully.
     @conn.exec_params(
-      "INSERT INTO #{@table} (project_key, session_id, subpath, entry, mtime) VALUES #{rows.join(', ')}",
-      params
+      <<~SQL,
+        INSERT INTO #{@table} (project_key, session_id, subpath, entry, mtime)
+        SELECT $1, $2, $3, e::jsonb, $5
+        FROM unnest($4::text[]) WITH ORDINALITY AS t(e, ord)
+        ORDER BY ord
+      SQL
+      [key['project_key'], key['session_id'], subpath,
+       encode_text_array(entries.map { |e| JSON.generate(e) }), mtime]
     )
     nil
   end
@@ -170,5 +174,19 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
       [key['project_key'], key['session_id']]
     )
     result.map { |row| row['subpath'] }
+  end
+
+  private
+
+  # Encode strings as a Postgres array literal for a text[] bind param. Encoded
+  # locally (per the array-literal grammar: elements double-quoted, backslash
+  # and quote backslash-escaped) so the adapter works with any conn/pool wrapper
+  # without reaching for pg's type-map encoders.
+  def encode_text_array(strings)
+    elements = strings.map do |s|
+      escaped = s.gsub('\\') { '\\\\' }.gsub('"') { '\\"' }
+      "\"#{escaped}\""
+    end
+    "{#{elements.join(',')}}"
   end
 end

@@ -130,6 +130,16 @@ Relevant options: `session_store`, `session_store_flush` (`"batched"` default, o
 `"eager"` to flush after every frame), and `load_timeout_ms` (per store call
 during resume materialization, default `60_000`).
 
+> **Store-backed resume runs against a bare temp `CLAUDE_CONFIG_DIR`.** Only the
+> transcript plus `.credentials.json` (redacted) and `.claude.json` are
+> materialized into it — user-scope `settings.json` (hooks, `permissions`),
+> user `CLAUDE.md`, `agents/`, `skills/`, and `plugins/` from your real config
+> dir are **not** visible to the subprocess, so a store-backed resume can
+> behave differently from a plain `resume:` of the same session. Project-level
+> `.claude/*` still applies (it resolves from `cwd`), and hooks/options passed
+> programmatically via `ClaudeAgentOptions` are unaffected. This matches the
+> Python and TypeScript SDKs.
+
 ### Implementing an adapter
 
 Subclass `ClaudeAgentSDK::SessionStore` (or duck-type it). Only `#append` and
@@ -153,7 +163,11 @@ The browsing/mutation helpers above have store-backed counterparts that take a
 
 - Reads: `list_sessions_from_store`, `get_session_info_from_store`,
   `get_session_messages_from_store`, `list_subagents_from_store`,
-  `get_subagent_messages_from_store`.
+  `get_subagent_messages_from_store`. Unlike the disk readers (where a nil
+  `directory:` searches every project directory), the store helpers key every
+  read by `project_key` and a nil `directory:` defaults to the **current
+  working directory** — the `SessionStore` interface has no way to enumerate
+  project keys (parity with the Python SDK).
 - Mutations: `rename_session_via_store`, `tag_session_via_store`,
   `delete_session_via_store` (a no-op on append-only stores without `#delete`),
   `fork_session_via_store`.

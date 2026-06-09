@@ -458,8 +458,12 @@ module ClaudeAgentSDK
 
       # First-prompt fallback: re-serialize to a JSONL string and reuse the head
       # extractor so skip-patterns/truncation match the disk path exactly.
+      # extract_first_prompt_from_head returns '' (truthy in Ruby!) when no
+      # prompt qualifies — normalize to nil so the caller's 'Forked session'
+      # default actually fires (Python appends `or None` here for this reason).
       jsonl = "#{raw.map { |e| JSON.generate(e) }.join("\n")}\n"
-      Sessions.extract_first_prompt_from_head(jsonl)
+      title = Sessions.extract_first_prompt_from_head(jsonl)
+      title.nil? || title.empty? ? nil : title
     end
 
     # Derive a fork title from the source file's head/tail chunks without
@@ -476,11 +480,15 @@ module ClaudeAgentSDK
                else
                  head
                end
-        Sessions.extract_json_string_field(tail, 'customTitle', last: true) ||
-          Sessions.extract_json_string_field(head, 'customTitle', last: true) ||
-          Sessions.extract_json_string_field(tail, 'aiTitle', last: true) ||
-          Sessions.extract_json_string_field(head, 'aiTitle', last: true) ||
-          Sessions.extract_first_prompt_from_head(head)
+        title = Sessions.extract_json_string_field(tail, 'customTitle', last: true) ||
+                Sessions.extract_json_string_field(head, 'customTitle', last: true) ||
+                Sessions.extract_json_string_field(tail, 'aiTitle', last: true) ||
+                Sessions.extract_json_string_field(head, 'aiTitle', last: true) ||
+                Sessions.extract_first_prompt_from_head(head)
+        # extract_first_prompt_from_head returns '' (truthy in Ruby!) when no
+        # prompt qualifies — normalize to nil so the 'Forked session' default
+        # fires (Python appends `or None` here for the same reason).
+        title.nil? || title.empty? ? nil : title
       end
     end
 

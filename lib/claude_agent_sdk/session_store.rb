@@ -106,6 +106,11 @@ module ClaudeAgentSDK
     end
 
     def append(key, entries)
+      # Same guard as the reference adapters: append(key, []) must not create a
+      # phantom key (load would return [] instead of nil and the session would
+      # appear in listings).
+      return if entries.nil? || entries.empty?
+
       @mutex.synchronize do
         k = key_to_string(key)
         (@store[k] ||= []).concat(entries)
@@ -298,6 +303,13 @@ module ClaudeAgentSDK
       store = options.session_store
       return if store.nil?
 
+      # #append/#load are required, but a subclass inheriting the base stubs
+      # would only fail at first use — with NotImplementedError, a ScriptError
+      # that rescue StandardError layers don't catch. Fail fast here instead.
+      %i[append load].each do |method|
+        raise ArgumentError, "session_store must implement ##{method}" unless SessionStore.implements?(store, method)
+      end
+
       flush = options.session_store_flush.to_s
       unless SESSION_STORE_FLUSH_MODES.include?(flush)
         raise ArgumentError,
@@ -322,11 +334,20 @@ module ClaudeAgentSDK
     # Path to the rel-from base where session transcripts live, honoring a
     # CLAUDE_CONFIG_DIR override passed to the subprocess via options.env.
     # Mirrors Sessions#config_dir but consults an explicit env override first.
+    #
+    # Presence is detected by KEY, not value: the transport treats an explicit
+    # nil value as "unset the var for the child", so the CLI then writes under
+    # the default ~/.claude — not under the parent's CLAUDE_CONFIG_DIR. Empty
+    # strings get the same treatment (the Node CLI treats "" as unset).
     def projects_dir(env_override = nil)
-      override = env_override && (env_override['CLAUDE_CONFIG_DIR'] || env_override[:CLAUDE_CONFIG_DIR])
-      override = nil if override.respond_to?(:empty?) && override.empty?
-      base = override || Sessions.config_dir
-      File.join(base, 'projects')
+      if env_override.respond_to?(:key?) &&
+         (env_override.key?('CLAUDE_CONFIG_DIR') || env_override.key?(:CLAUDE_CONFIG_DIR))
+        override = env_override['CLAUDE_CONFIG_DIR'] || env_override[:CLAUDE_CONFIG_DIR]
+        override = nil if override.respond_to?(:empty?) && override.empty?
+        return File.join(override || File.expand_path('~/.claude'), 'projects')
+      end
+
+      File.join(Sessions.config_dir, 'projects')
     end
   end
 end
