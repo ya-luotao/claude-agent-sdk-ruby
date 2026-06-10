@@ -148,3 +148,43 @@ Return types:
 - `list_sessions` → `Array<SDKSessionInfo>` (fields: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`)
 - `get_session_messages` → `Array<SessionMessage>` (fields: `type`, `uuid`, `session_id`, `message`, `parent_tool_use_id`)
 - `fork_session` → `ForkSessionResult` (field: `session_id`)
+
+## SessionStore: mirror transcripts to external storage
+
+Set `session_store:` (works on both `query` and `Client`) to mirror the CLI's
+transcript to external storage and resume from it on another machine. The
+subprocess still writes locally; the store gets a secondary copy.
+
+```ruby
+store = ClaudeAgentSDK::InMemorySessionStore.new # or a custom adapter
+
+# Mirror while streaming
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  session_store: store,
+  session_store_flush: 'batched', # default; 'eager' flushes every frame
+  load_timeout_ms: 60_000         # bounds each store call during resume materialization
+)
+
+# Resume from the store (no local JSONL needed)
+ClaudeAgentSDK.query(
+  prompt: 'Continue',
+  options: ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: 'session-uuid')
+) { |msg| }
+```
+
+- Adapters: subclass `ClaudeAgentSDK::SessionStore` or duck-type — only
+  `#append`/`#load` required; `#list_sessions`/`#list_session_summaries`/
+  `#delete`/`#list_subkeys` optional. Copy-in S3/Redis/Postgres references live
+  in `examples/session_stores/`. Validate with
+  `ClaudeAgentSDK::Testing.run_session_store_conformance(-> { MyStore.new })`.
+- A failed `#append` (after 3 retries) surfaces as a `MirrorErrorMessage` on
+  the stream and never disrupts the session.
+- Store-backed helpers mirror the disk family: `list_sessions_from_store`,
+  `get_session_info_from_store`, `get_session_messages_from_store`,
+  `list_subagents_from_store`, `get_subagent_messages_from_store`,
+  `rename_session_via_store`, `tag_session_via_store`,
+  `delete_session_via_store`, `fork_session_via_store`, and
+  `import_session_to_store` (migrate a local session into a store). Store
+  reads default `directory:` to the current working directory.
+- Cannot combine `session_store` with `enable_file_checkpointing`;
+  `continue_conversation` requires the store to implement `#list_sessions`.

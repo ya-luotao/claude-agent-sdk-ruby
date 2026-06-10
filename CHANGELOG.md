@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-06-10
+
 ### Added
 - **Pluggable `SessionStore` adapter subsystem** — mirror Claude Code session transcripts to external storage (S3/Redis/Postgres/…) and resume from it, at parity with the Python SDK (#837 and follow-ups) and TypeScript SDK. The subprocess still writes to local disk; the adapter receives a secondary copy.
   - **`SessionStore`** base class (6-method contract: `append`/`load` required; `list_sessions`/`list_session_summaries`/`delete`/`list_subkeys` optional, probed via `SessionStore.implements?` so duck-typed adapters need not subclass) and **`InMemorySessionStore`** reference implementation. All keys/entries cross the boundary as Hashes with **string keys** (JSON-round-trip safe for JSONB/Redis backends).
@@ -18,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Reference adapters** under `examples/session_stores/` (S3, Redis, Postgres) — copy-in implementations, each validated against `run_session_store_conformance`. Backend client gems live in the optional `:examples` Bundler group so a default install stays dependency-free.
   - **`ClaudeAgentSDK.import_session_to_store`** — replay a local on-disk session (and subagents) into a store for migration / mirror-gap backfill.
   - **`ClaudeAgentSDK.project_key_for_directory`** and **`.fold_session_summary`** helpers; `ClaudeAgentOptions` gains `session_store`, `session_store_flush` (`"batched"`/`"eager"`), and `load_timeout_ms`. `SessionStore` + `enable_file_checkpointing`, or `continue_conversation` without `list_sessions`, are rejected at connect with a clear error.
+
+### Changed
+- `Client#connect` now fully tears the client down (subprocess reaped, temp resume dir removed) when any part of connect fails — previously a failure while sending the initial prompt could leave a half-connected client behind. Matches the Python/TypeScript SDKs.
+- A negative `limit:` now returns `[]` consistently across every session reader (`list_sessions`, `get_session_messages`, and all store-backed counterparts) instead of raising `ArgumentError` from an internal `Array#first` on some paths.
+
+### Fixed
+- `fork_session` / `fork_session_via_store` now fall back to the documented `"Forked session (fork)"` title for sessions with no title and no extractable first prompt (previously wrote a literal `" (fork)"`).
 
 ## [0.16.10] - 2026-06-04
 

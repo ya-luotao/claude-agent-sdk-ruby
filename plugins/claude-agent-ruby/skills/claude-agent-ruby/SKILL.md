@@ -1,6 +1,6 @@
 ---
 name: claude-agent-ruby
-description: Implement or modify Ruby code using the claude-agent-sdk gem. Covers query() one-shot calls, Client-based interactive sessions, streaming input, all 27 hook events, permission callbacks, SDK MCP servers, structured output, bare mode, full sandbox settings (network + filesystem), all 24 message types (including tool_progress, auth_status, prompt_suggestion, hook lifecycle, compact_boundary, session_state_changed), session browsing/mutations, subagents, file checkpointing, Rails integration, and custom transports. Use this skill whenever the user mentions claude-agent-sdk, Claude Agent Ruby, building AI agents in Ruby, or integrating Claude Code into a Ruby/Rails application.
+description: Implement or modify Ruby code using the claude-agent-sdk gem. Covers query() one-shot calls, Client-based interactive sessions, streaming input, all 27 hook events, permission callbacks, SDK MCP servers, structured output, bare mode, full sandbox settings (network + filesystem), all 25 message types (including tool_progress, auth_status, prompt_suggestion, hook lifecycle, compact_boundary, session_state_changed, mirror_error), session browsing/mutations, SessionStore transcript mirroring to external storage (S3/Redis/Postgres) with store-backed resume, subagents, file checkpointing, Rails integration, and custom transports. Use this skill whenever the user mentions claude-agent-sdk, Claude Agent Ruby, building AI agents in Ruby, or integrating Claude Code into a Ruby/Rails application.
 ---
 
 # Claude Agent Ruby SDK
@@ -17,7 +17,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
 ## Implementation Checklist
 - Confirm prerequisites (Ruby 3.2+, Node.js, Claude Code CLI).
 - Build `ClaudeAgentSDK::ClaudeAgentOptions` and pass it to `query` or `Client.new`.
-- Handle messages by type — the SDK has **24 typed message classes**:
+- Handle messages by type — the SDK has **25 typed message classes**:
   - Core: `AssistantMessage`, `UserMessage`, `ResultMessage`, `StreamEvent`, `RateLimitEvent`
   - System init: `InitMessage` (session start / /clear — carries uuid, session_id, tools, model, cwd, agents, betas, claude_code_version, permission_mode, slash_commands, output_style, skills, plugins, fast_mode_state)
   - Compaction: `CompactBoundaryMessage` (uuid, session_id, compact_metadata with pre_tokens, trigger, preserved_segment)
@@ -29,6 +29,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
   - Auth: `AuthStatusMessage` (isAuthenticating, output, error)
   - Files: `FilesPersistedMessage` (files, failed, processed_at)
   - API: `APIRetryMessage` (attempt, max_retries, retry_delay_ms, error_status)
+  - Session store: `MirrorErrorMessage` (a SessionStore append failed after retries — session continues; local transcript stays durable)
   - Other: `LocalCommandOutputMessage`, `ElicitationCompleteMessage`, `PromptSuggestionMessage`
   - Unknown message types return `nil` (forward-compatible)
 - Handle content blocks: `TextBlock`, `ThinkingBlock`, `ToolUseBlock`, `ToolResultBlock`, `UnknownBlock`
@@ -72,6 +73,9 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 - `ClaudeAgentSDK.delete_session(session_id:, directory:)` — hard-deletes a session
 - `ClaudeAgentSDK.fork_session(session_id:, directory:, up_to_message_id:, title:)` → `ForkSessionResult` — filesystem fork with UUID remapping
 - `ClaudeAgentSDK.list_sessions(directory:, limit:, offset:, include_worktrees:)` — supports `offset` for pagination
+- **SessionStore mirroring**: `ClaudeAgentOptions.new(session_store: store)` mirrors transcripts to external storage (subclass `ClaudeAgentSDK::SessionStore` — only `#append`/`#load` required; `InMemorySessionStore` for tests; S3/Redis/Postgres reference adapters in `examples/session_stores/`). `session_store_flush: 'eager'` flushes per frame; `load_timeout_ms` bounds resume store calls.
+- **Resume from store**: pair `session_store` with `resume:`/`continue_conversation` — no local JSONL needed. Note: runs the CLI against a bare temp `CLAUDE_CONFIG_DIR` (user-scope settings.json/agents/skills invisible; project `.claude/*` still applies).
+- **Store-backed helpers**: `list_sessions_from_store`, `get_session_info_from_store`, `get_session_messages_from_store`, `list_subagents_from_store`, `get_subagent_messages_from_store`, `rename_session_via_store`, `tag_session_via_store`, `delete_session_via_store`, `fork_session_via_store`, `import_session_to_store` (migrate disk → store). Store reads default `directory:` to cwd. Validate adapters with `ClaudeAgentSDK::Testing.run_session_store_conformance`.
 - `Client#get_context_usage` — context window breakdown (tokens by category, model, MCP tools, etc.)
 - `Client#reconnect_mcp_server(name)`, `Client#toggle_mcp_server(name, enabled)`, `Client#stop_task(task_id)` for live control
 - `Client#rewind_files(uuid)` with `enable_file_checkpointing: true`
@@ -80,7 +84,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 ## Where To Look For Exact Details
 - Locate the gem: `bundle show claude-agent-sdk`
 - Read `<gem_path>/README.md` for the overview, install, and minimal API examples
-- Read `<gem_path>/docs/*.md` for topic subpages — `client.md` (bidirectional + custom transports), `mcp-servers.md` (SDK MCP tools/resources/prompts), `hooks-and-permissions.md` (27 hook events + permission callbacks), `configuration.md` (structured output, thinking, budget, sandbox, bare mode, file checkpointing), `sessions.md` (list/read/rename/tag/fork/resume), `observability.md` (OTel + Langfuse), `rails.md` (ActionCable, jobs, initializers), `types.md` (message/content-block/configuration types), `errors.md` (error hierarchy + timeout)
+- Read `<gem_path>/docs/*.md` for topic subpages — `client.md` (bidirectional + custom transports), `mcp-servers.md` (SDK MCP tools/resources/prompts), `hooks-and-permissions.md` (27 hook events + permission callbacks), `configuration.md` (structured output, thinking, budget, sandbox, bare mode, file checkpointing), `sessions.md` (list/read/rename/tag/fork/resume + SessionStore mirroring/store-backed helpers), `observability.md` (OTel + Langfuse), `rails.md` (ActionCable, jobs, initializers), `types.md` (message/content-block/configuration types), `errors.md` (error hierarchy + timeout)
 - Inspect `<gem_path>/lib/claude_agent_sdk/types.rb` for all types
 - Inspect `<gem_path>/lib/claude_agent_sdk/message_parser.rb` for message parsing
 - Inspect `<gem_path>/lib/claude_agent_sdk/sessions.rb` for session browsing
