@@ -660,8 +660,19 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.fallback_model).to be_nil
         expect(options.plugins).to be_nil
         expect(options.debug_stderr).to be_nil
+        expect(options.session_store).to be_nil
+        expect(options.session_store_flush).to eq('batched')
+        expect(options.load_timeout_ms).to eq(60_000)
         expect(options.include_hook_events).to eq(false)
         expect(options.strict_mcp_config).to eq(false)
+      end
+
+      it 'accepts session store options and preserves an explicit zero load_timeout_ms' do
+        store = ClaudeAgentSDK::InMemorySessionStore.new
+        options = described_class.new(session_store: store, session_store_flush: 'eager', load_timeout_ms: 0)
+        expect(options.session_store).to be(store)
+        expect(options.session_store_flush).to eq('eager')
+        expect(options.load_timeout_ms).to eq(0)
       end
 
       it 'accepts and coerces include_hook_events / strict_mcp_config' do

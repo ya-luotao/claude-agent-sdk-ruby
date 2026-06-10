@@ -99,3 +99,82 @@ ClaudeAgentSDK.query(
 ```
 
 `resume_session_at` requires `resume`; the SDK raises `ArgumentError` from `CommandBuilder` when this constraint is violated, matching the underlying CLI's validation but surfacing it synchronously in the caller's stack.
+
+## Mirroring to a `SessionStore`
+
+By default Claude Code writes session transcripts to local disk under
+`CLAUDE_CONFIG_DIR`. A **`SessionStore`** adapter mirrors that transcript to
+external storage (S3, Redis, Postgres, …) so sessions survive beyond the local
+machine and can be resumed elsewhere. The subprocess still writes locally; the
+adapter receives a secondary copy and resume can rehydrate from it.
+
+Set `session_store:` on the options — it works on **both** `ClaudeAgentSDK.query`
+and `ClaudeAgentSDK::Client`:
+
+```ruby
+store = ClaudeAgentSDK::InMemorySessionStore.new # or your own adapter
+
+ClaudeAgentSDK.query(
+  prompt: 'Hello!',
+  options: ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store)
+) { |message| } # transcript_mirror frames are appended to the store as they stream
+
+# Resume later from the store (no local JSONL needed):
+ClaudeAgentSDK.query(
+  prompt: 'Continue',
+  options: ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: 'previous-session-id')
+) { |message| }
+```
+
+Relevant options: `session_store`, `session_store_flush` (`"batched"` default, or
+`"eager"` to flush after every frame), and `load_timeout_ms` (per store call
+during resume materialization, default `60_000`).
+
+> **Store-backed resume runs against a bare temp `CLAUDE_CONFIG_DIR`.** Only the
+> transcript plus `.credentials.json` (redacted) and `.claude.json` are
+> materialized into it — user-scope `settings.json` (hooks, `permissions`),
+> user `CLAUDE.md`, `agents/`, `skills/`, and `plugins/` from your real config
+> dir are **not** visible to the subprocess, so a store-backed resume can
+> behave differently from a plain `resume:` of the same session. Project-level
+> `.claude/*` still applies (it resolves from `cwd`), and hooks/options passed
+> programmatically via `ClaudeAgentOptions` are unaffected. This matches the
+> Python and TypeScript SDKs.
+
+### Implementing an adapter
+
+Subclass `ClaudeAgentSDK::SessionStore` (or duck-type it). Only `#append` and
+`#load` are required; `#list_sessions`, `#delete`, `#list_subkeys`, and
+`#list_session_summaries` are optional and probed via `SessionStore.implements?`.
+Validate your adapter with the shipped, framework-agnostic conformance harness:
+
+```ruby
+require 'claude_agent_sdk/testing/session_store_conformance'
+ClaudeAgentSDK::Testing.run_session_store_conformance(-> { MyStore.new(...) })
+```
+
+Copy-in reference adapters for **S3, Redis, and Postgres** live in
+[`examples/session_stores/`](../examples/session_stores/README.md), each with a
+production checklist.
+
+### Store-backed helpers
+
+The browsing/mutation helpers above have store-backed counterparts that take a
+`session_store:` and operate on the store instead of local disk:
+
+- Reads: `list_sessions_from_store`, `get_session_info_from_store`,
+  `get_session_messages_from_store`, `list_subagents_from_store`,
+  `get_subagent_messages_from_store`. Unlike the disk readers (where a nil
+  `directory:` searches every project directory), the store helpers key every
+  read by `project_key` and a nil `directory:` defaults to the **current
+  working directory** — the `SessionStore` interface has no way to enumerate
+  project keys (parity with the Python SDK).
+- Mutations: `rename_session_via_store`, `tag_session_via_store`,
+  `delete_session_via_store` (a no-op on append-only stores without `#delete`),
+  `fork_session_via_store`.
+- Migration: `import_session_to_store` replays a local on-disk session (and its
+  subagents) into a store.
+
+```ruby
+ClaudeAgentSDK.rename_session_via_store(session_store: store, session_id: '550e8400-...', title: 'Renamed')
+forked = ClaudeAgentSDK.fork_session_via_store(session_store: store, session_id: '550e8400-...')
+```

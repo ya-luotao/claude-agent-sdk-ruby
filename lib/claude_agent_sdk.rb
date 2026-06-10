@@ -12,6 +12,10 @@ require_relative 'claude_agent_sdk/query'
 require_relative 'claude_agent_sdk/sdk_mcp_server'
 require_relative 'claude_agent_sdk/streaming'
 require_relative 'claude_agent_sdk/sessions'
+require_relative 'claude_agent_sdk/session_summary'
+require_relative 'claude_agent_sdk/session_store'
+require_relative 'claude_agent_sdk/transcript_mirror_batcher'
+require_relative 'claude_agent_sdk/session_resume'
 require_relative 'claude_agent_sdk/session_mutations'
 require_relative 'claude_agent_sdk/fiber_boundary'
 require 'async'
@@ -141,6 +145,107 @@ module ClaudeAgentSDK
                                   up_to_message_id: up_to_message_id, title: title)
   end
 
+  # Derive the SessionStore +project_key+ for a directory (default: cwd).
+  # Matches the CLI's project-directory naming so keys align between local-disk
+  # and store-mirrored transcripts.
+  # @param directory [String, Pathname, nil] Directory to key (nil = cwd)
+  # @return [String] The project key
+  def self.project_key_for_directory(directory = nil)
+    Sessions.project_key_for_directory(directory)
+  end
+
+  # Fold a batch of appended transcript entries into a running session summary.
+  # SessionStore adapters call this inside #append to maintain a summary sidecar
+  # incrementally (see SessionStore#list_session_summaries).
+  # @param prev [Hash, nil] previous summary entry for this key
+  # @param key [Hash] the SessionKey (string keys)
+  # @param entries [Array<Hash>] newly appended transcript entries
+  # @return [Hash] the updated summary entry
+  def self.fold_session_summary(prev, key, entries)
+    SessionSummary.fold_session_summary(prev, key, entries)
+  end
+
+  # List sessions from a SessionStore (store-backed counterpart to list_sessions).
+  # @param session_store [SessionStore] the store to read from
+  # @return [Array<SDKSessionInfo>] sorted by last_modified descending
+  def self.list_sessions_from_store(session_store:, directory: nil, limit: nil, offset: 0)
+    Sessions.list_sessions_from_store(session_store: session_store, directory: directory, limit: limit, offset: offset)
+  end
+
+  # Read metadata for a single session from a SessionStore.
+  # @return [SDKSessionInfo, nil]
+  def self.get_session_info_from_store(session_store:, session_id:, directory: nil)
+    Sessions.get_session_info_from_store(session_store: session_store, session_id: session_id, directory: directory)
+  end
+
+  # Read a session's conversation messages from a SessionStore.
+  # @return [Array<SessionMessage>]
+  def self.get_session_messages_from_store(session_store:, session_id:, directory: nil, limit: nil, offset: 0)
+    Sessions.get_session_messages_from_store(session_store: session_store, session_id: session_id,
+                                             directory: directory, limit: limit, offset: offset)
+  end
+
+  # List subagent IDs for a session from a SessionStore (requires list_subkeys).
+  # @return [Array<String>]
+  def self.list_subagents_from_store(session_store:, session_id:, directory: nil)
+    Sessions.list_subagents_from_store(session_store: session_store, session_id: session_id, directory: directory)
+  end
+
+  # Read a subagent's conversation messages from a SessionStore.
+  # @return [Array<SessionMessage>]
+  def self.get_subagent_messages_from_store(session_store:, session_id:, agent_id:, directory: nil, limit: nil,
+                                            offset: 0)
+    Sessions.get_subagent_messages_from_store(session_store: session_store, session_id: session_id,
+                                              agent_id: agent_id, directory: directory, limit: limit, offset: offset)
+  end
+
+  # Rename a session in a SessionStore (store-backed counterpart to
+  # rename_session). Appends a custom-title entry carrying a fresh uuid +
+  # timestamp via SessionStore#append.
+  # @raise [ArgumentError] if session_id is invalid or title is empty
+  def self.rename_session_via_store(session_store:, session_id:, title:, directory: nil)
+    SessionMutations.rename_session_via_store(session_store: session_store, session_id: session_id,
+                                              title: title, directory: directory)
+  end
+
+  # Tag a session in a SessionStore (store-backed counterpart to tag_session).
+  # Pass nil to clear the tag.
+  # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
+  def self.tag_session_via_store(session_store:, session_id:, tag:, directory: nil)
+    SessionMutations.tag_session_via_store(session_store: session_store, session_id: session_id,
+                                           tag: tag, directory: directory)
+  end
+
+  # Delete a session from a SessionStore (store-backed counterpart to
+  # delete_session). No-op when the store does not implement #delete
+  # (WORM/append-only backends).
+  # @raise [ArgumentError] if session_id is invalid
+  def self.delete_session_via_store(session_store:, session_id:, directory: nil)
+    SessionMutations.delete_session_via_store(session_store: session_store, session_id: session_id,
+                                              directory: directory)
+  end
+
+  # Fork a session in a SessionStore into a new branch with fresh UUIDs
+  # (store-backed counterpart to fork_session).
+  # @return [ForkSessionResult] result containing the new session ID
+  # @raise [ArgumentError] if session_id/up_to_message_id is invalid or there are no messages
+  # @raise [Errno::ENOENT] if the source session is not found in the store
+  def self.fork_session_via_store(session_store:, session_id:, directory: nil, up_to_message_id: nil, title: nil)
+    SessionMutations.fork_session_via_store(session_store: session_store, session_id: session_id,
+                                            directory: directory, up_to_message_id: up_to_message_id, title: title)
+  end
+
+  # Replay a local on-disk session transcript into a SessionStore (migration /
+  # gap-backfill). Keys under the on-disk project dir so the imported session is
+  # resumable via session_store + resume from the original cwd.
+  # @raise [ArgumentError] if session_id is not a valid UUID
+  # @raise [Errno::ENOENT] if the session JSONL cannot be found
+  def self.import_session_to_store(session_id:, session_store:, directory: nil, include_subagents: true,
+                                   batch_size: TranscriptMirrorBatcher::MAX_PENDING_ENTRIES)
+    Sessions.import_session_to_store(session_id: session_id, session_store: session_store, directory: directory,
+                                     include_subagents: include_subagents, batch_size: batch_size)
+  end
+
   def self.query(prompt:, options: nil, &block)
     return enum_for(:query, prompt: prompt, options: options) unless block
 
@@ -158,15 +263,29 @@ module ClaudeAgentSDK
       configured_options = options.dup_with(permission_prompt_tool_name: 'stdio')
     end
 
+    # Fail fast on invalid session_store combinations before spawning the CLI.
+    SessionStores.validate_session_store_options(configured_options)
+
     # Resolve callable observers into fresh instances (thread-safe for global defaults)
     resolved_observers = ClaudeAgentSDK.resolve_observers(configured_options.observers)
 
     Async do
-      # Always use streaming mode with control protocol (matches Python SDK).
-      # This sends agents via initialize request instead of CLI args,
-      # avoiding OS ARG_MAX limits.
-      transport = SubprocessCLITransport.new(configured_options)
+      materialized = nil
+      transport = nil
+      query_handler = nil
       begin
+        # Resume-from-store: when a session_store is set and resume/continue is
+        # requested, load the session into a temp CLAUDE_CONFIG_DIR and repoint
+        # options at it (env + --resume) BEFORE spawning. Returns options
+        # unchanged when no materialization applies. query() always uses the
+        # default subprocess transport, so no custom-transport gate is needed.
+        materialized = SessionResume.materialize_resume_session(configured_options)
+        configured_options = SessionResume.apply_materialized_options(configured_options, materialized) if materialized
+
+        # Always use streaming mode with control protocol (matches Python SDK).
+        # This sends agents via initialize request instead of CLI args,
+        # avoiding OS ARG_MAX limits.
+        transport = SubprocessCLITransport.new(configured_options)
         transport.connect
 
         # Extract SDK MCP servers
@@ -207,6 +326,19 @@ module ClaudeAgentSDK
           sdk_mcp_servers: sdk_mcp_servers
         )
 
+        # Mirror transcripts to the session_store, if configured. Installed
+        # before #start so the read loop captures transcript_mirror frames.
+        if configured_options.session_store
+          query_handler.set_transcript_mirror_batcher(
+            SessionResume.build_mirror_batcher(
+              store: configured_options.session_store,
+              env: configured_options.env,
+              on_error: ->(key, message) { query_handler.report_mirror_error(key, message) },
+              eager: configured_options.session_store_flush.to_s == 'eager'
+            )
+          )
+        end
+
         # Start reading messages in background
         query_handler.start
 
@@ -242,11 +374,20 @@ module ClaudeAgentSDK
         end
       ensure
         ClaudeAgentSDK.notify_observers(resolved_observers, :on_close)
-        # query_handler.close stops the background read task and closes the transport
-        if query_handler
-          query_handler.close
-        else
-          transport.close
+        # query_handler.close stops the background read task and closes the
+        # transport (flushing the mirror batcher first). Fall back to a bare
+        # transport close when the handler was never built.
+        begin
+          if query_handler
+            query_handler.close
+          elsif transport
+            transport.close
+          end
+        ensure
+          # Remove the materialized resume temp dir (which holds a redacted
+          # .credentials.json copy) AFTER the subprocess has exited, even when
+          # close itself raises.
+          materialized&.cleanup
         end
       end
     end.wait
@@ -302,6 +443,7 @@ module ClaudeAgentSDK
       @transport = nil
       @query_handler = nil
       @connected = false
+      @materialized = nil
     end
 
     # Connect to Claude with optional initial prompt.
@@ -327,55 +469,34 @@ module ClaudeAgentSDK
         configured_options = @options.dup_with(permission_prompt_tool_name: 'stdio')
       end
 
-      # Client always uses streaming mode; keep stdin open for bidirectional communication.
-      @transport = @transport_class.new(configured_options, **@transport_args)
-      @transport.connect
+      # Fail fast on invalid session_store combinations before spawning the CLI.
+      SessionStores.validate_session_store_options(configured_options)
 
-      # Extract SDK MCP servers
-      sdk_mcp_servers = {}
-      if configured_options.mcp_servers.is_a?(Hash)
-        configured_options.mcp_servers.each do |name, config|
-          sdk_mcp_servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
+      # Resume-from-store: materialize the session from the store into a temp
+      # CLAUDE_CONFIG_DIR BEFORE spawn, then repoint options at it. Skipped for
+      # custom transports (the materialized env/--resume only apply to the CLI
+      # subprocess). On any later connect failure, disconnect cleans up the dir.
+      configured_options = materialize_resume(configured_options)
+
+      # If anything after materialization fails, tear down (closes the
+      # subprocess and removes the materialized temp config dir) before
+      # surfacing the error, so a partial connect never leaks a temp dir
+      # holding a credential copy.
+      begin
+        connect_inner(configured_options, prompt)
+      rescue Exception # rubocop:disable Lint/RescueException
+        # Tear down the partial connect, but never let a cleanup failure (e.g. a
+        # custom transport whose #close raises) mask the original connect error.
+        # Rescue Exception (not StandardError) so reactor cancellation
+        # (Async::Stop < Exception) after materialize_resume set @materialized
+        # still runs disconnect -> @materialized.cleanup, never leaking the temp
+        # CLAUDE_CONFIG_DIR that holds the redacted .credentials.json copy.
+        begin
+          disconnect
+        rescue StandardError => e
+          warn "Claude SDK: cleanup after failed connect raised: #{e.message}"
         end
-      end
-
-      # Convert hooks to internal format
-      hooks = convert_hooks_to_internal_format(configured_options.hooks) if configured_options.hooks
-
-      # Extract exclude_dynamic_sections from preset system prompt for the
-      # initialize request (older CLIs ignore unknown initialize fields)
-      exclude_dynamic_sections = extract_exclude_dynamic_sections(configured_options.system_prompt)
-
-      # Create Query handler
-      @query_handler = Query.new(
-        transport: @transport,
-        is_streaming_mode: true,
-        can_use_tool: configured_options.can_use_tool,
-        hooks: hooks,
-        sdk_mcp_servers: sdk_mcp_servers,
-        agents: configured_options.agents,
-        exclude_dynamic_sections: exclude_dynamic_sections
-      )
-
-      # Start query handler and initialize
-      @query_handler.start
-      @query_handler.initialize_protocol
-
-      # Resolve callable observers into fresh instances (thread-safe for global defaults)
-      @resolved_observers = ClaudeAgentSDK.resolve_observers(@options.observers)
-
-      @connected = true
-
-      # Optionally send initial prompt/messages after connection is ready.
-      case prompt
-      when nil
-        nil
-      when String
-        query(prompt)
-      else
-        prompt.each do |message_json|
-          writeln(message_json.to_s)
-        end
+        raise
       end
     end
 
@@ -513,16 +634,125 @@ module ClaudeAgentSDK
 
     # Disconnect from Claude
     def disconnect
-      return unless @connected
-
-      ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close)
-      @query_handler&.close
-      @query_handler = nil
-      @transport = nil
-      @connected = false
+      ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close) if @connected
+      # Tear down whatever exists — robust to a partial/failed connect, where
+      # @connected is still false but a transport and/or materialized temp dir
+      # were already created. #close on the query handler also closes the
+      # transport (flushing the mirror batcher first); the extra @transport
+      # close covers a failure before the query handler was built (idempotent).
+      #
+      # The nested ensures guarantee that even a raising close (e.g. a custom
+      # transport whose #close raises) still runs the transport close, resets
+      # state, and removes the materialized temp dir (which holds a redacted
+      # .credentials.json copy) — so disconnect can never leave the client
+      # half-open or leak the temp dir. The original error still propagates.
+      begin
+        @query_handler&.close
+      ensure
+        @query_handler = nil
+        begin
+          @transport&.close
+        ensure
+          @transport = nil
+          @connected = false
+          # Remove the materialized resume temp dir AFTER the subprocess exited.
+          if @materialized
+            @materialized.cleanup
+            @materialized = nil
+          end
+        end
+      end
     end
 
     private
+
+    # Resume-from-store: when a session_store is set (and a subprocess transport
+    # is in use), materialize the session into a temp CLAUDE_CONFIG_DIR and
+    # return options repointed at it (env + --resume). Returns the options
+    # unchanged when no materialization applies. Skipped for non-subprocess
+    # transports — the materialized env/--resume only affect the CLI subprocess.
+    # Ancestry (<=), not identity: a SubprocessCLITransport subclass spawns the
+    # CLI with the same env/--resume semantics, and the transport is constructed
+    # AFTER materialization, so the repointed options do reach it.
+    def materialize_resume(options)
+      subprocess_transport = @transport_class.is_a?(Class) && @transport_class <= SubprocessCLITransport
+      return options unless options.session_store && subprocess_transport
+
+      @materialized = SessionResume.materialize_resume_session(options)
+      @materialized ? SessionResume.apply_materialized_options(options, @materialized) : options
+    end
+
+    # The connect body, wrapped by #connect so a failure triggers cleanup.
+    def connect_inner(configured_options, prompt)
+      # Client always uses streaming mode; keep stdin open for bidirectional communication.
+      @transport = @transport_class.new(configured_options, **@transport_args)
+      @transport.connect
+
+      # Extract SDK MCP servers
+      sdk_mcp_servers = {}
+      if configured_options.mcp_servers.is_a?(Hash)
+        configured_options.mcp_servers.each do |name, config|
+          sdk_mcp_servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
+        end
+      end
+
+      # Convert hooks to internal format
+      hooks = convert_hooks_to_internal_format(configured_options.hooks) if configured_options.hooks
+
+      # Extract exclude_dynamic_sections from preset system prompt for the
+      # initialize request (older CLIs ignore unknown initialize fields)
+      exclude_dynamic_sections = extract_exclude_dynamic_sections(configured_options.system_prompt)
+
+      # Create Query handler
+      @query_handler = Query.new(
+        transport: @transport,
+        is_streaming_mode: true,
+        can_use_tool: configured_options.can_use_tool,
+        hooks: hooks,
+        sdk_mcp_servers: sdk_mcp_servers,
+        agents: configured_options.agents,
+        exclude_dynamic_sections: exclude_dynamic_sections
+      )
+
+      # Mirror transcripts to the session_store, if configured.
+      install_transcript_mirror(configured_options)
+
+      # Start query handler and initialize
+      @query_handler.start
+      @query_handler.initialize_protocol
+
+      # Resolve callable observers into fresh instances (thread-safe for global defaults)
+      @resolved_observers = ClaudeAgentSDK.resolve_observers(@options.observers)
+
+      @connected = true
+
+      # Optionally send initial prompt/messages after connection is ready.
+      case prompt
+      when nil
+        nil
+      when String
+        query(prompt)
+      else
+        prompt.each do |message_json|
+          writeln(message_json.to_s)
+        end
+      end
+    end
+
+    # Build and install the transcript-mirror batcher on the query handler when
+    # a session_store is configured, via the shared SessionResume helper (also
+    # used by the one-shot query() path).
+    def install_transcript_mirror(options)
+      return unless options.session_store
+
+      batcher = SessionResume.build_mirror_batcher(
+        store: options.session_store,
+        env: options.env,
+        on_error: ->(key, message) { @query_handler.report_mirror_error(key, message) },
+        eager: options.session_store_flush.to_s == 'eager'
+      )
+      @query_handler.set_transcript_mirror_batcher(batcher)
+    end
 
     def convert_hooks_to_internal_format(hooks)
       return nil unless hooks

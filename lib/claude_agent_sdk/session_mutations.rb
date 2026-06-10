@@ -4,6 +4,7 @@ require 'json'
 require 'securerandom'
 require 'fileutils'
 require_relative 'sessions'
+require_relative 'session_store'
 
 module ClaudeAgentSDK
   # Session mutation functions: rename, tag, delete, and fork sessions.
@@ -114,7 +115,7 @@ module ClaudeAgentSDK
     # @return [ForkSessionResult] Result containing the new session ID
     # @raise [ArgumentError] if session_id or up_to_message_id is invalid
     # @raise [Errno::ENOENT] if the session file cannot be found
-    def fork_session(session_id:, directory: nil, up_to_message_id: nil, title: nil) # rubocop:disable Metrics/MethodLength
+    def fork_session(session_id:, directory: nil, up_to_message_id: nil, title: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
 
       raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}" if up_to_message_id && !up_to_message_id.match?(Sessions::UUID_RE)
@@ -127,60 +128,13 @@ module ClaudeAgentSDK
       raise ArgumentError, "Session #{session_id} has no messages to fork" if file_size.zero?
 
       transcript, content_replacements = parse_fork_transcript(file_path, session_id)
-      transcript.reject! { |e| e['isSidechain'] }
-      raise ArgumentError, "Session #{session_id} has no messages to fork" if transcript.empty?
-
-      if up_to_message_id
-        cutoff = transcript.index { |e| e['uuid'] == up_to_message_id }
-        raise ArgumentError, "Message #{up_to_message_id} not found in session #{session_id}" unless cutoff
-
-        transcript = transcript[0..cutoff]
-      end
-
-      # Build UUID mapping (including progress entries for parentUuid chain walk)
-      uuid_mapping = {}
-      transcript.each { |e| uuid_mapping[e['uuid']] = SecureRandom.uuid }
-
-      by_uuid = transcript.to_h { |e| [e['uuid'], e] }
-
-      # Filter out progress messages from written output
-      writable = transcript.reject { |e| e['type'] == 'progress' }
-      raise ArgumentError, "Session #{session_id} has no messages to fork" if writable.empty?
-
-      forked_session_id = SecureRandom.uuid
-      now = Time.now.utc.strftime('%Y-%m-%dT%H:%M:%S.%3NZ')
-
-      lines = writable.each_with_index.map do |original, i|
-        build_forked_entry(original, i, writable.size, uuid_mapping, by_uuid,
-                           forked_session_id, session_id, now)
-      end
-
-      # Append content-replacement entry if any. The entry needs `uuid` and
-      # `timestamp` so a *second* fork of this forked session can re-ingest
-      # it — `parse_fork_transcript` gates content-replacement on the entry
-      # being a valid hash with a matching `sessionId`, and the CLI's own
-      # tools index entries by uuid. Matches Python's `_emit_fork_to_disk`.
-      if content_replacements && !content_replacements.empty?
-        lines << JSON.generate({
-                                 'type' => 'content-replacement',
-                                 'sessionId' => forked_session_id,
-                                 'replacements' => content_replacements,
-                                 'uuid' => SecureRandom.uuid,
-                                 'timestamp' => now
-                               })
-      end
-
-      # Derive title — only read head/tail chunks when we need to generate one
-      fork_title = title&.strip
-      fork_title = "#{derive_fork_title(file_path, file_size)} (fork)" if fork_title.nil? || fork_title.empty?
-
-      lines << JSON.generate({
-                               'type' => 'custom-title',
-                               'sessionId' => forked_session_id,
-                               'customTitle' => fork_title,
-                               'uuid' => SecureRandom.uuid,
-                               'timestamp' => now
-                             })
+      # The fork transform is shared with fork_session_via_store; the disk path
+      # derives the fallback title from the file's head/tail bytes (only when no
+      # explicit title is given).
+      forked_session_id, lines = build_fork_lines(
+        transcript, content_replacements, session_id, up_to_message_id, title,
+        -> { derive_fork_title(file_path, file_size) }
+      )
 
       fork_path = File.join(project_dir, "#{forked_session_id}.jsonl")
       io = nil
@@ -196,6 +150,104 @@ module ClaudeAgentSDK
         end
       end
 
+      ForkSessionResult.new(session_id: forked_session_id)
+    end
+
+    # ---- SessionStore-backed mutations (store counterparts to the disk ops) ----
+
+    # Rename a session by appending a custom-title entry to a SessionStore.
+    # Store-backed counterpart to rename_session. Unlike the disk variant, the
+    # appended entry carries a fresh uuid + ISO timestamp so adapters that dedupe
+    # by entry["uuid"] (per the SessionStore#append contract) treat it correctly.
+    #
+    # @raise [ArgumentError] if session_id is invalid or title is empty
+    def rename_session_via_store(session_store:, session_id:, title:, directory: nil)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+
+      stripped = title.strip
+      raise ArgumentError, 'title must be non-empty' if stripped.empty?
+
+      key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
+      session_store.append(key, [{
+                             'type' => 'custom-title',
+                             'customTitle' => stripped,
+                             'sessionId' => session_id,
+                             'uuid' => SecureRandom.uuid,
+                             'timestamp' => iso_now
+                           }])
+      nil
+    end
+
+    # Tag a session by appending a tag entry to a SessionStore. Store-backed
+    # counterpart to tag_session. Pass nil to clear the tag. Tags are
+    # Unicode-sanitized before storing.
+    #
+    # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
+    def tag_session_via_store(session_store:, session_id:, tag:, directory: nil)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+
+      if tag
+        sanitized = sanitize_unicode(tag).strip
+        raise ArgumentError, 'tag must be non-empty (use nil to clear)' if sanitized.empty?
+
+        tag = sanitized
+      end
+
+      key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
+      session_store.append(key, [{
+                             'type' => 'tag',
+                             'tag' => tag || '',
+                             'sessionId' => session_id,
+                             'uuid' => SecureRandom.uuid,
+                             'timestamp' => iso_now
+                           }])
+      nil
+    end
+
+    # Delete a session from a SessionStore. Store-backed counterpart to
+    # delete_session. If the store does not implement #delete, deletion is a
+    # no-op (appropriate for WORM/append-only backends, per the SessionStore
+    # contract). Whether subagent subkeys are also removed depends on the
+    # store's delete({session_id}) cascade semantics (InMemorySessionStore
+    # cascades; custom stores may not).
+    #
+    # @raise [ArgumentError] if session_id is invalid
+    def delete_session_via_store(session_store:, session_id:, directory: nil)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+      return unless SessionStore.implements?(session_store, :delete)
+
+      key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
+      session_store.delete(key)
+      nil
+    end
+
+    # Fork a session into a new branch with fresh UUIDs via a SessionStore.
+    # Store-backed counterpart to fork_session. Runs the fork transform directly
+    # over the objects returned by store.load — no JSONL round-trip on disk. A
+    # storage-layer copy is NOT sufficient: the transform remaps every UUID,
+    # rewrites sessionId, and stamps forkedFrom, so the data must pass through
+    # this process once.
+    #
+    # @raise [ArgumentError] if session_id/up_to_message_id is invalid or the session has no messages
+    # @raise [Errno::ENOENT] if the source session is not found in the store
+    def fork_session_via_store(session_store:, session_id:, directory: nil, up_to_message_id: nil, title: nil)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+      raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}" if up_to_message_id && !up_to_message_id.match?(Sessions::UUID_RE)
+
+      project_key = Sessions.project_key_for_directory(directory)
+      raw = session_store.load('project_key' => project_key, 'session_id' => session_id)
+      raise Errno::ENOENT, "Session #{session_id} not found" if raw.nil? || raw.empty?
+
+      transcript, content_replacements = partition_fork_entries(raw, session_id)
+      forked_session_id, lines = build_fork_lines(
+        transcript, content_replacements, session_id, up_to_message_id, title,
+        -> { derive_title_from_entries(raw) }
+      )
+
+      dst_key = { 'project_key' => project_key, 'session_id' => forked_session_id }
+      # build_fork_lines emits compact JSON strings; re-parse to objects so the
+      # store receives the same shape it would from the mirror path.
+      session_store.append(dst_key, lines.map { |line| JSON.parse(line) })
       ForkSessionResult.new(session_id: forked_session_id)
     end
 
@@ -286,9 +338,138 @@ module ClaudeAgentSDK
       [transcript, content_replacements]
     end
 
+    # Current UTC time as a millisecond-precision ISO-8601 'Z' string, matching
+    # the timestamp shape the CLI writes into transcripts.
+    def iso_now
+      Time.now.utc.strftime('%Y-%m-%dT%H:%M:%S.%3NZ')
+    end
+
+    # Core fork transform shared by the disk and SessionStore paths. Filters
+    # sidechains, applies the optional up_to_message_id slice (inclusive),
+    # remaps every UUID (keeping progress entries in the chain walk but out of
+    # the written output), rewrites sessionId/forkedFrom, and appends the
+    # content-replacement and custom-title trailers (each with a fresh uuid +
+    # timestamp). Returns [forked_session_id, lines] where each line is a
+    # compact JSON string with no trailing newline.
+    #
+    # +derive_title+ is a callable invoked ONLY when no explicit +title+ is
+    # given, so the disk path's head/tail byte scan and the store path's
+    # entry-object scan each run only when needed.
+    def build_fork_lines(transcript, content_replacements, session_id, up_to_message_id, title, derive_title) # rubocop:disable Metrics/MethodLength
+      transcript = transcript.reject { |e| e['isSidechain'] }
+      raise ArgumentError, "Session #{session_id} has no messages to fork" if transcript.empty?
+
+      if up_to_message_id
+        cutoff = transcript.index { |e| e['uuid'] == up_to_message_id }
+        raise ArgumentError, "Message #{up_to_message_id} not found in session #{session_id}" unless cutoff
+
+        transcript = transcript[0..cutoff]
+      end
+
+      # Build UUID mapping (including progress entries for the parentUuid chain walk).
+      uuid_mapping = {}
+      transcript.each { |e| uuid_mapping[e['uuid']] = SecureRandom.uuid }
+      by_uuid = transcript.to_h { |e| [e['uuid'], e] }
+
+      # Filter progress messages out of the written output (UI-only chain links).
+      writable = transcript.reject { |e| e['type'] == 'progress' }
+      raise ArgumentError, "Session #{session_id} has no messages to fork" if writable.empty?
+
+      forked_session_id = SecureRandom.uuid
+      now = iso_now
+
+      lines = writable.each_with_index.map do |original, i|
+        build_forked_entry(original, i, writable.size, uuid_mapping, by_uuid,
+                           forked_session_id, session_id, now)
+      end
+
+      # Append content-replacement entry if any. The entry needs `uuid` and
+      # `timestamp` so a *second* fork of this forked session can re-ingest it,
+      # and so adapters that dedupe by uuid handle it correctly.
+      if content_replacements && !content_replacements.empty?
+        lines << JSON.generate({
+                                 'type' => 'content-replacement',
+                                 'sessionId' => forked_session_id,
+                                 'replacements' => content_replacements,
+                                 'uuid' => SecureRandom.uuid,
+                                 'timestamp' => now
+                               })
+      end
+
+      # Derive title: explicit > original customTitle > original aiTitle > first
+      # prompt, suffixed with " (fork)" when derived. listSessions reads the LAST
+      # custom-title from the tail, so this trailer is what surfaces.
+      fork_title = title&.strip
+      fork_title = "#{derive_title.call || 'Forked session'} (fork)" if fork_title.nil? || fork_title.empty?
+
+      lines << JSON.generate({
+                               'type' => 'custom-title',
+                               'sessionId' => forked_session_id,
+                               'customTitle' => fork_title,
+                               'uuid' => SecureRandom.uuid,
+                               'timestamp' => now
+                             })
+
+      [forked_session_id, lines]
+    end
+
+    # Partition already-parsed store entries into [transcript, content_replacements],
+    # mirroring parse_fork_transcript for the store path (which has no JSONL file
+    # to stream). Only TRANSCRIPT_TYPES entries with a string uuid form the body;
+    # content-replacement records whose sessionId matches the source are collected
+    # (concatenated across compaction rounds).
+    def partition_fork_entries(raw, source_session_id)
+      transcript = []
+      content_replacements = []
+      raw.each do |entry|
+        next unless entry.is_a?(Hash)
+
+        entry_type = entry['type']
+        if TRANSCRIPT_TYPES.include?(entry_type) && entry['uuid'].is_a?(String)
+          transcript << entry
+        elsif entry_type == 'content-replacement' && entry['sessionId'] == source_session_id &&
+              entry['replacements'].is_a?(Array)
+          content_replacements.concat(entry['replacements'])
+        end
+      end
+      [transcript, content_replacements]
+    end
+
+    # Derive a fork title by scanning already-parsed store entries — the store
+    # path's analogue of derive_fork_title's head/tail byte scan. Last occurrence
+    # wins for both customTitle and aiTitle; customTitle beats aiTitle; the first
+    # user prompt is the final fallback. Returns nil when nothing is found (the
+    # caller supplies the "Forked session" default). This scans the RAW entries,
+    # not the partitioned transcript (which drops customTitle/aiTitle metadata) —
+    # the store half of #837's P0-1 fix.
+    def derive_title_from_entries(raw)
+      custom = nil
+      ai = nil
+      raw.each do |e|
+        next unless e.is_a?(Hash)
+
+        ct = e['customTitle']
+        custom = ct if ct.is_a?(String) && !ct.empty?
+        at = e['aiTitle']
+        ai = at if at.is_a?(String) && !at.empty?
+      end
+      return custom if custom
+      return ai if ai
+
+      # First-prompt fallback: re-serialize to a JSONL string and reuse the head
+      # extractor so skip-patterns/truncation match the disk path exactly.
+      # extract_first_prompt_from_head returns '' (truthy in Ruby!) when no
+      # prompt qualifies — normalize to nil so the caller's 'Forked session'
+      # default actually fires (Python appends `or None` here for this reason).
+      jsonl = "#{raw.map { |e| JSON.generate(e) }.join("\n")}\n"
+      title = Sessions.extract_first_prompt_from_head(jsonl)
+      title.nil? || title.empty? ? nil : title
+    end
+
     # Derive a fork title from the source file's head/tail chunks without
     # slurping the entire file. Matches the lookup order used for
-    # SDKSessionInfo.custom_title / ai_title / first_prompt.
+    # SDKSessionInfo.custom_title / ai_title / first_prompt. Returns nil when
+    # nothing is found (build_fork_lines supplies the "Forked session" default).
     def derive_fork_title(file_path, file_size)
       buf_size = [Sessions::LITE_READ_BUF_SIZE, file_size].min
       File.open(file_path, 'rb') do |f|
@@ -299,12 +480,15 @@ module ClaudeAgentSDK
                else
                  head
                end
-        Sessions.extract_json_string_field(tail, 'customTitle', last: true) ||
-          Sessions.extract_json_string_field(head, 'customTitle', last: true) ||
-          Sessions.extract_json_string_field(tail, 'aiTitle', last: true) ||
-          Sessions.extract_json_string_field(head, 'aiTitle', last: true) ||
-          Sessions.extract_first_prompt_from_head(head) ||
-          'Forked session'
+        title = Sessions.extract_json_string_field(tail, 'customTitle', last: true) ||
+                Sessions.extract_json_string_field(head, 'customTitle', last: true) ||
+                Sessions.extract_json_string_field(tail, 'aiTitle', last: true) ||
+                Sessions.extract_json_string_field(head, 'aiTitle', last: true) ||
+                Sessions.extract_first_prompt_from_head(head)
+        # extract_first_prompt_from_head returns '' (truthy in Ruby!) when no
+        # prompt qualifies — normalize to nil so the 'Forked session' default
+        # fires (Python appends `or None` here for the same reason).
+        title.nil? || title.empty? ? nil : title
       end
     end
 
@@ -449,6 +633,7 @@ module ClaudeAgentSDK
                          :find_in_directory, :try_project_dir, :find_in_all_projects,
                          :parse_fork_transcript, :derive_fork_title, :build_forked_entry, :resolve_parent_uuid,
                          :append_to_session, :append_to_session_in_directory,
-                         :append_to_session_global, :try_append, :sanitize_unicode, :unicode_category
+                         :append_to_session_global, :try_append, :sanitize_unicode, :unicode_category,
+                         :iso_now, :build_fork_lines, :partition_fork_entries, :derive_title_from_entries
   end
 end

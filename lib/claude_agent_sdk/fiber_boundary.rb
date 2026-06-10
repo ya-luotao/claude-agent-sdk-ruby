@@ -28,15 +28,27 @@ module ClaudeAgentSDK
   # so SDK loops yielding user callbacks must keep loop control outside the
   # invoked block (see `Client#receive_response`).
   module FiberBoundary
+    # Raised by .invoke when a timeout-bounded call exceeds its allotted time.
+    # The worker thread is abandoned (cancellation is best-effort; the
+    # in-flight call may still complete).
+    class JoinTimeout < StandardError; end
+
     module_function
 
     # Run the given block on a plain thread when a Fiber scheduler is active.
     # Returns the block's value. Exceptions propagate to the caller.
-    def invoke(&block)
-      return block.call unless Fiber.scheduler
+    #
+    # With +timeout+ (seconds) the thread hop happens unconditionally — even
+    # without a scheduler — so the bound is enforced in plain synchronous code
+    # too; JoinTimeout is raised when it expires.
+    def invoke(timeout: nil, &block)
+      return block.call if timeout.nil? && !Fiber.scheduler
 
       thread = Thread.new(&block)
       thread.report_on_exception = false
+      return thread.value if timeout.nil?
+      raise JoinTimeout, "timed out after #{timeout}s" unless thread.join(timeout)
+
       thread.value
     end
   end

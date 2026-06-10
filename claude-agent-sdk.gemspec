@@ -32,5 +32,7 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency 'bundler', '~> 2.0'
   spec.add_development_dependency 'rake', '~> 13.0'
   spec.add_development_dependency 'rspec', '~> 3.0'
-  spec.add_development_dependency 'rubocop', '~> 1.0'
+  # Pinned to a single minor so local and CI resolve the same RuboCop (Gemfile.lock
+  # is gitignored, per gem convention) — cop behavior changes land on minor bumps.
+  spec.add_development_dependency 'rubocop', '~> 1.87.0'
 end

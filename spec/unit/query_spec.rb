@@ -583,4 +583,55 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect { query.start }.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Async\{\} block/)
     end
   end
+
+  describe 'transcript mirror wiring' do
+    # Minimal transport that replays a fixed list of frames through read_messages.
+    def fake_transport(messages)
+      Class.new do
+        def initialize(messages) = (@messages = messages)
+        def read_messages(&block) = @messages.each(&block)
+        def write(_str) = nil
+        def close = nil
+      end.new(messages)
+    end
+
+    it 'report_mirror_error enqueues a parseable mirror_error system message' do
+      query = described_class.new(transport: instance_double(ClaudeAgentSDK::Transport, write: nil),
+                                  is_streaming_mode: true)
+      key = { 'project_key' => 'pk', 'session_id' => 'sid' }
+
+      Async do
+        query.report_mirror_error(key, 'append failed')
+        raw = query.instance_variable_get(:@message_queue).dequeue
+        msg = ClaudeAgentSDK::MessageParser.parse(raw)
+        expect(msg).to be_a(ClaudeAgentSDK::MirrorErrorMessage)
+        expect(msg.error).to eq('append failed')
+        expect(msg.key).to eq(key)
+        expect(msg.session_id).to eq('sid')
+      end
+    end
+
+    it 'routes transcript_mirror frames to the batcher (not the message stream) and flushes on result' do
+      messages = [
+        { type: 'transcript_mirror', filePath: '/p/pk/sid.jsonl', entries: [{ type: 'user' }] },
+        { type: 'result', subtype: 'success' }
+      ]
+      query = described_class.new(transport: fake_transport(messages), is_streaming_mode: true)
+      batcher = instance_double(ClaudeAgentSDK::TranscriptMirrorBatcher, enqueue: nil, flush: nil, close: nil)
+      query.set_transcript_mirror_batcher(batcher)
+
+      Async { query.send(:read_messages) }
+
+      expect(batcher).to have_received(:enqueue).with('/p/pk/sid.jsonl', [{ type: 'user' }]).once
+      expect(batcher).to have_received(:flush).at_least(:once) # on result + in ensure
+
+      # The mirror frame must not surface to consumers; the result must.
+      drained = []
+      q = query.instance_variable_get(:@message_queue)
+      drained << q.dequeue until q.empty?
+      types = drained.map { |m| m[:type] }
+      expect(types).to include('result')
+      expect(types).not_to include('transcript_mirror')
+    end
+  end
 end

@@ -290,6 +290,13 @@ module ClaudeAgentSDK
     attr_accessor :uuid, :session_id, :content
   end
 
+  # Emitted when a session_store mirror batch exhausts its retries and is
+  # dropped. The local-disk transcript is still durable; this is the consumer's
+  # only signal that the external store missed a batch (at-most-once delivery).
+  class MirrorErrorMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :error, :key
+  end
+
   # Hook started system message
   class HookStartedMessage < SystemMessage
     attr_accessor :uuid, :session_id, :hook_id, :hook_name, :hook_event
@@ -1477,7 +1484,8 @@ module ClaudeAgentSDK
                   :output_format, :max_budget_usd, :max_thinking_tokens,
                   :fallback_model, :plugins, :debug_stderr,
                   :betas, :tools, :sandbox, :append_allowed_tools,
-                  :thinking, :effort, :observers, :task_budget
+                  :thinking, :effort, :observers, :task_budget,
+                  :session_store, :session_store_flush, :load_timeout_ms
     attr_reader :bare, :fork_session, :enable_file_checkpointing,
                 :include_partial_messages, :continue_conversation,
                 :include_hook_events, :strict_mcp_config
@@ -1493,13 +1501,16 @@ module ClaudeAgentSDK
       super(merge_with_defaults(attributes || {}))
 
       # Non-nil defaults for options that need them.
-      self.env              ||= {}
-      self.extra_args       ||= {}
-      self.mcp_servers      ||= {}
-      self.add_dirs         ||= []
-      self.observers        ||= []
-      self.allowed_tools    ||= []
-      self.disallowed_tools ||= []
+      self.env                 ||= {}
+      self.extra_args          ||= {}
+      self.mcp_servers         ||= {}
+      self.add_dirs            ||= []
+      self.observers           ||= []
+      self.allowed_tools       ||= []
+      self.disallowed_tools    ||= []
+      self.session_store_flush ||= 'batched'
+      # 0 is a valid (immediate) timeout, so only fill in the default for nil.
+      self.load_timeout_ms = 60_000 if load_timeout_ms.nil?
     end
 
     def dup_with(**changes)

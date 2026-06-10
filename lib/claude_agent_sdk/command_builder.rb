@@ -279,6 +279,8 @@ module ClaudeAgentSDK
       cmd.push("--bare") if @options.bare
       cmd.push("--include-hook-events") if @options.include_hook_events
       cmd.push("--strict-mcp-config") if @options.strict_mcp_config
+      # When a session_store is set, ask the CLI to emit transcript_mirror frames.
+      cmd.push("--session-mirror") if @options.session_store
     end
 
     def append_plugins(cmd)

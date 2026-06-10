@@ -478,6 +478,40 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
       end
     end
 
+    # P0-1 regression: when no explicit title is given, the derived fork title
+    # must come from the source's customTitle/aiTitle (scanned from the raw file
+    # bytes), NOT from the partitioned transcript (which strips those metadata
+    # entries). A regression that derived from the transcript would lose them.
+    it 'derives the fork title from the source customTitle (no explicit title)' do
+      Dir.mktmpdir do |tmpdir|
+        content = build_session_content([
+                                          { 'type' => 'user', 'uuid' => msg1_uuid, 'parentUuid' => nil, 'message' => { 'content' => 'hi' } },
+                                          { 'type' => 'custom-title', 'sessionId' => session_id, 'customTitle' => 'Source Title', 'uuid' => msg2_uuid }
+                                        ])
+        project_dir, = setup_session(tmpdir, content)
+
+        result = described_class.fork_session(session_id: session_id, directory: tmpdir)
+        fork_file = File.join(project_dir, "#{result.session_id}.jsonl")
+        lines = File.readlines(fork_file).map { |l| JSON.parse(l.strip) }
+        expect(lines.find { |l| l['type'] == 'custom-title' }['customTitle']).to eq('Source Title (fork)')
+      end
+    end
+
+    it 'falls back to the source aiTitle for the derived fork title' do
+      Dir.mktmpdir do |tmpdir|
+        content = build_session_content([
+                                          { 'type' => 'user', 'uuid' => msg1_uuid, 'parentUuid' => nil, 'message' => { 'content' => 'hi' } },
+                                          { 'type' => 'aiTitle', 'sessionId' => session_id, 'aiTitle' => 'AI Title', 'uuid' => msg2_uuid }
+                                        ])
+        project_dir, = setup_session(tmpdir, content)
+
+        result = described_class.fork_session(session_id: session_id, directory: tmpdir)
+        fork_file = File.join(project_dir, "#{result.session_id}.jsonl")
+        lines = File.readlines(fork_file).map { |l| JSON.parse(l.strip) }
+        expect(lines.find { |l| l['type'] == 'custom-title' }['customTitle']).to eq('AI Title (fork)')
+      end
+    end
+
     # Regression: content-replacement entries emitted into a fork must carry
     # `uuid` and `timestamp` so a *second* fork can re-ingest them.
     # Also, parse_fork_transcript must filter by sessionId and accumulate

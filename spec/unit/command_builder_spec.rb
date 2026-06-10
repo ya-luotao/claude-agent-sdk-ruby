@@ -396,6 +396,17 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       expect(cmd).not_to include('--include-hook-events')
       expect(cmd).not_to include('--strict-mcp-config')
     end
+
+    it 'passes --session-mirror when a session_store is set' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: ClaudeAgentSDK::InMemorySessionStore.new)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--session-mirror')
+    end
+
+    it 'omits --session-mirror by default' do
+      cmd = described_class.new('/usr/bin/claude', ClaudeAgentSDK::ClaudeAgentOptions.new).build
+      expect(cmd).not_to include('--session-mirror')
+    end
   end
 
   describe 'mutually exclusive session flags' do
