@@ -106,8 +106,8 @@ The OTel observer sets attributes using both `gen_ai.*` (OTel GenAI) and OpenInf
 
 | Span | Type | Key Attributes |
 |------|------|----------------|
-| `claude_agent.session` | `agent` | `gen_ai.system`, `gen_ai.request.model`, `session.id`, `input.value`, `output.value`, `gen_ai.usage.cost`, `llm.cost.total` |
-| `claude_agent.generation` | `generation` | `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `output.value` |
+| `claude_agent.session` | `agent` | `gen_ai.system`, `gen_ai.request.model`, `session.id`, `input.value`, `output.value`, `gen_ai.usage.cost`, `llm.cost.total`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens`, `llm.token_count.prompt_details.cache_read`, `llm.token_count.prompt_details.cache_write` |
+| `claude_agent.generation` | `generation` | `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens`, `output.value` |
 | `claude_agent.tool.*` | `tool` | `tool.name`, `input.value`, `output.value` |
 
 Events (`api_retry`, `rate_limit`, `tool_progress`) are recorded on the root span.

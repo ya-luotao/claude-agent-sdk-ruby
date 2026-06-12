@@ -661,6 +661,83 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
     end
   end
 
+  describe 'cache token usage attributes' do
+    let(:init_message) do
+      ClaudeAgentSDK::InitMessage.new(
+        subtype: 'init', data: {}, uuid: nil, session_id: 'sess-1',
+        model: 'claude-sonnet-4', cwd: nil, claude_code_version: nil,
+        permission_mode: nil, tools: nil, mcp_servers: nil, agents: nil,
+        api_key_source: nil, betas: nil, slash_commands: nil, output_style: nil,
+        skills: nil, plugins: nil, fast_mode_state: nil
+      )
+    end
+
+    def assistant_with_usage(usage)
+      ClaudeAgentSDK::AssistantMessage.new(
+        content: [ClaudeAgentSDK::TextBlock.new(text: 'hi')],
+        model: 'claude-sonnet-4',
+        usage: usage
+      )
+    end
+
+    def result_with_usage(usage)
+      ClaudeAgentSDK::ResultMessage.new(
+        subtype: 'success', duration_ms: 1, duration_api_ms: 1, is_error: false,
+        num_turns: 1, session_id: 'sess-1', total_cost_usd: 0.01, usage: usage
+      )
+    end
+
+    it 'emits cache token attributes on generation spans' do
+      observer.on_message(init_message)
+      observer.on_message(assistant_with_usage(
+                            input_tokens: 2, output_tokens: 4,
+                            cache_creation_input_tokens: 11_648, cache_read_input_tokens: 26_069
+                          ))
+
+      span = created_spans.find { |s| s.name == 'claude_agent.generation' }
+      expect(span.attributes['gen_ai.usage.input_tokens']).to eq(2)
+      expect(span.attributes['gen_ai.usage.cache_creation_input_tokens']).to eq(11_648)
+      expect(span.attributes['gen_ai.usage.cache_read_input_tokens']).to eq(26_069)
+    end
+
+    it 'emits cache tokens and OpenInference prompt details on the root span' do
+      observer.on_message(init_message)
+      observer.on_message(result_with_usage(
+                            input_tokens: 2, output_tokens: 4,
+                            cache_creation_input_tokens: 11_648, cache_read_input_tokens: 26_069
+                          ))
+
+      span = created_spans.find { |s| s.name == 'claude_agent.session' }
+      expect(span.attributes['gen_ai.usage.cache_creation_input_tokens']).to eq(11_648)
+      expect(span.attributes['gen_ai.usage.cache_read_input_tokens']).to eq(26_069)
+      expect(span.attributes['llm.token_count.prompt_details.cache_read']).to eq(26_069)
+      expect(span.attributes['llm.token_count.prompt_details.cache_write']).to eq(11_648)
+      # additive: existing keys untouched
+      expect(span.attributes['gen_ai.usage.input_tokens']).to eq(2)
+      expect(span.attributes['llm.token_count.total']).to eq(6)
+    end
+
+    it 'reads string-keyed usage from session transcripts' do
+      observer.on_message(init_message)
+      observer.on_message(result_with_usage(
+                            'input_tokens' => 1, 'output_tokens' => 1, 'cache_read_input_tokens' => 500
+                          ))
+
+      span = created_spans.find { |s| s.name == 'claude_agent.session' }
+      expect(span.attributes['gen_ai.usage.cache_read_input_tokens']).to eq(500)
+      expect(span.attributes['gen_ai.usage.input_tokens']).to eq(1)
+    end
+
+    it 'omits cache attributes when usage has none' do
+      observer.on_message(init_message)
+      observer.on_message(result_with_usage(input_tokens: 1, output_tokens: 1))
+
+      span = created_spans.find { |s| s.name == 'claude_agent.session' }
+      expect(span.attributes).not_to have_key('gen_ai.usage.cache_read_input_tokens')
+      expect(span.attributes).not_to have_key('llm.token_count.prompt_details.cache_read')
+    end
+  end
+
   describe 'tool output serialization' do
     let(:init_message) do
       ClaudeAgentSDK::InitMessage.new(

@@ -155,20 +155,15 @@ module ClaudeAgentSDK
         @last_assistant_text = combined_text unless combined_text.empty?
 
         # Create generation span
-        usage = message.usage || {}
-        input_tokens = usage[:input_tokens] || usage['input_tokens']
-        output_tokens = usage[:output_tokens] || usage['output_tokens']
         attrs = {
           'openinference.span.kind' => 'LLM',
           'langfuse.observation.type' => 'generation',
           'gen_ai.response.model' => message.model,
           'llm.model_name' => message.model,
-          'gen_ai.usage.input_tokens' => input_tokens,
-          'gen_ai.usage.output_tokens' => output_tokens,
           'gen_ai.completion' => truncate(combined_text),
           # OpenInference: Langfuse maps output.value to the Preview Output field
           'output.value' => truncate(combined_text)
-        }
+        }.merge(usage_token_attrs(message.usage || {}))
 
         OpenTelemetry::Context.with_current(@root_context) do
           span = @tracer.start_span('claude_agent.generation', attributes: compact_attrs(attrs))
@@ -197,8 +192,10 @@ module ClaudeAgentSDK
         return unless @root_span
 
         usage = message.usage || {}
-        input_tokens = usage[:input_tokens] || usage['input_tokens']
-        output_tokens = usage[:output_tokens] || usage['output_tokens']
+        input_tokens = usage_value(usage, :input_tokens)
+        output_tokens = usage_value(usage, :output_tokens)
+        cache_creation_tokens = usage_value(usage, :cache_creation_input_tokens)
+        cache_read_tokens = usage_value(usage, :cache_read_input_tokens)
         total_tokens = (input_tokens || 0) + (output_tokens || 0) if input_tokens || output_tokens
 
         # Set trace output (last assistant response — shown in Langfuse UI)
@@ -208,12 +205,13 @@ module ClaudeAgentSDK
         attrs = {
           # gen_ai conventions
           'gen_ai.usage.cost' => message.total_cost_usd,
-          'gen_ai.usage.input_tokens' => input_tokens,
-          'gen_ai.usage.output_tokens' => output_tokens,
           # OpenInference conventions (Langfuse maps these to usage/cost)
           'llm.token_count.prompt' => input_tokens,
           'llm.token_count.completion' => output_tokens,
           'llm.token_count.total' => total_tokens,
+          # OpenInference prompt-cache breakdown (cache_read/cache_write details)
+          'llm.token_count.prompt_details.cache_read' => cache_read_tokens,
+          'llm.token_count.prompt_details.cache_write' => cache_creation_tokens,
           'llm.cost.total' => message.total_cost_usd,
           # Trace output (Langfuse shows this in the trace detail view)
           'output.value' => truncate(trace_output),
@@ -222,7 +220,7 @@ module ClaudeAgentSDK
           'claude_agent.duration_api_ms' => message.duration_api_ms,
           'claude_agent.num_turns' => message.num_turns,
           'claude_agent.stop_reason' => message.stop_reason
-        }
+        }.merge(usage_token_attrs(usage))
 
         @root_span.status = OpenTelemetry::Trace::Status.error(message.stop_reason || 'error') if message.is_error
 
@@ -319,6 +317,26 @@ module ClaudeAgentSDK
           'tool_use_id' => message.tool_use_id,
           'elapsed_time_seconds' => message.elapsed_time_seconds
         ))
+      end
+
+      # gen_ai.usage.* attributes from a CLI usage hash. Cache tokens are
+      # emitted alongside input/output because Anthropic's input_tokens
+      # EXCLUDES cached tokens; Langfuse maps every gen_ai.usage.* key into
+      # usage details and natively prices cache_read_input_tokens /
+      # cache_creation_input_tokens.
+      def usage_token_attrs(usage)
+        {
+          'gen_ai.usage.input_tokens' => usage_value(usage, :input_tokens),
+          'gen_ai.usage.output_tokens' => usage_value(usage, :output_tokens),
+          'gen_ai.usage.cache_creation_input_tokens' => usage_value(usage, :cache_creation_input_tokens),
+          'gen_ai.usage.cache_read_input_tokens' => usage_value(usage, :cache_read_input_tokens)
+        }
+      end
+
+      # Usage hashes arrive symbol-keyed from the live CLI (symbolize_names:
+      # true) and string-keyed from session transcripts.
+      def usage_value(usage, key)
+        usage[key] || usage[key.to_s]
       end
 
       # Remove nil values from attributes hash (OTel rejects nil attribute values)
