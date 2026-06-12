@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Unofficial, community-maintained Ruby SDK for Claude Agent (gem: `claude-agent-sdk`). Wraps the Claude Code CLI as a subprocess, communicating via stream-JSON over stdin/stdout. Requires Ruby 3.2+ and Claude Code CLI 2.0.0+.
 
-Runtime dependencies: `async` (~2.0) for concurrency, `mcp` (>= 0.5, < 1) for MCP protocol compliance.
+Runtime dependencies: `async` (~2.0) for concurrency, `mcp` (>= 0.6, < 1) for MCP protocol compliance.
 
 ## Common Commands
 
@@ -41,7 +41,7 @@ User code
         ▼
       SubprocessCLITransport (lib/claude_agent_sdk/subprocess_cli_transport.rb)
         - Spawns `claude` CLI via Open3.popen3
-        - Builds CLI command from ClaudeAgentOptions
+        - CLI command built from ClaudeAgentOptions by CommandBuilder (lib/claude_agent_sdk/command_builder.rb)
         - Reads stdout as newline-delimited JSON, writes stdin for streaming mode
         - Stderr handling in a separate Thread
         │
@@ -84,6 +84,28 @@ Optional observability layer for tracing agent sessions (e.g., Langfuse via Open
 - `resolve_observers` materializes callables into fresh instances per query/session; `notify_observers` calls methods with `rescue StandardError` so observers never crash the pipeline
 - `on_user_prompt` is called before the prompt is sent to stdin (before CLI responds with InitMessage), so the OTel observer buffers it and applies to the root span in `start_trace`
 
+### SessionStore / Transcript Mirroring
+
+Optional adapter for mirroring session transcripts to external storage (the subprocess still writes the local-disk transcript; the store gets a secondary copy).
+
+- **`SessionStore`** (`lib/claude_agent_sdk/session_store.rb`) — only `#append` and `#load` are required; the SDK probes optional methods via `SessionStore.implements?` (duck typing — adapters need not subclass)
+- Keys/entries cross the adapter boundary as Hashes with **string keys** (e.g., `{ 'project_key' => ..., 'session_id' => ... }`)
+- **`TranscriptMirrorBatcher`** buffers `transcript_mirror` stdout frames and flushes to `#append` per-turn (`batched`, default) or near-realtime (`eager`); failures retry with backoff but never raise — they surface as `MirrorErrorMessage`
+- Retried batches may overlap prior writes, so adapters should dedupe by `entry["uuid"]`
+- `lib/claude_agent_sdk/testing/session_store_conformance.rb` provides a shared conformance suite for custom adapters
+
+### Session Management
+
+`sessions.rb` / `session_resume.rb` / `session_mutations.rb` implement session listing (`SDKSessionInfo`), resume (can materialize the transcript from a SessionStore when the local file is absent), forking, and mutations.
+
+### FiberBoundary (fiber safety)
+
+`async` installs a Fiber scheduler, but most Ruby libraries (pg, mysql2, ActiveRecord pools) key state on `Thread.current` and are thread-safe, not fiber-safe. `FiberBoundary.invoke` (`lib/claude_agent_sdk/fiber_boundary.rb`) hops every user-supplied callback (tool handlers, hooks, permission callbacks, message blocks, observers) to a plain thread before invoking it. Consequence: the thread hop severs `break`/`return`/`next` from the surrounding method — SDK loops yielding user callbacks must keep loop control outside the invoked block (see `Client#receive_response`; user `break` is bridged via `.invoke_iteration`).
+
+### Global Configuration
+
+`ClaudeAgentSDK.configure { |c| c.default_options = { ... } }` (`lib/claude_agent_sdk/configuration.rb`) sets defaults merged into every request — the Rails-initializer pattern. Per-call `ClaudeAgentOptions` override the defaults.
+
 ## Key Conventions
 
 - All source in `lib/claude_agent_sdk/`, entry point is `lib/claude_agent_sdk.rb`
@@ -91,6 +113,6 @@ Optional observability layer for tracing agent sessions (e.g., Langfuse via Open
 - Hook inputs are typed classes inheriting from `BaseHookInput`; hook outputs use `to_h` for serialization with camelCase keys for CLI compatibility
 - `ClaudeAgentOptions` is the central config object (~30 fields); uses `dup_with` for immutable-style updates
 - `to_h` methods on config types convert Ruby snake_case to CLI camelCase (e.g., `auto_allow_bash_if_sandboxed` → `autoAllowBashIfSandboxed`)
-- RuboCop config: max line length 120, max method length 30, Style/Documentation disabled
+- RuboCop config: max line length 181 (set in `.rubocop_todo.yml`), max method length 30 (large core files like `query.rb`/`types.rb` excluded), Style/Documentation disabled
 - Tests use `expect` syntax only (no `should`), `disable_monkey_patching!` enabled
 - Test helpers in `spec/support/test_helpers.rb` provide `sample_*` message fixtures and `mock_transport`

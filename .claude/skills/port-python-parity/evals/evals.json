@@ -1,0 +1,41 @@
+{
+  "skill_name": "port-python-parity",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "We're at Ruby claude-agent-sdk v0.18.0. Run a parity gap analysis against the official Python claude-agent-sdk for versions v0.2.80 through v0.2.88 (the Python repo is checked out at /Users/luotao/space/claude-agent-sdk/claude-agent-sdk-python). Produce a markdown report listing each Python change in that range, categorized as port / adapt / skip (Ruby-N/A), with the Python PR numbers. Don't create branches or write any code — analysis only.",
+      "expected_output": "A markdown gap-analysis report covering the v0.2.80-0.2.88 range with per-change port/adapt/skip categorization and Python PR numbers; identifies the #990 trio fix as Ruby-N/A; concludes little/nothing needs porting.",
+      "files": [],
+      "assertions": [
+        "Report covers the full v0.2.80-v0.2.88 range (both endpoints addressed)",
+        "Each substantive change is categorized as port / adapt / skip",
+        "Python PR numbers are cited (at least #990 and #1018)",
+        "PR #990 (trio/anyio session-store fix) is classified as skip / Ruby-N/A",
+        "No branches created and no code written (analysis only)"
+      ]
+    },
+    {
+      "id": 1,
+      "prompt": "Port the changes from Python SDK v0.2.88 (repo at /Users/luotao/space/claude-agent-sdk/claude-agent-sdk-python) into this Ruby SDK. Do the work on a branch, but do NOT push or open a PR. Write a summary of what you did (and didn't) port.",
+      "expected_output": "Recognizes v0.2.88 contains only a trio/anyio fix (Ruby-N/A) and CI/CLI-bump internals; creates a correctly named feature/sync-python-sdk-0.2.88 branch (or explains none is needed); does NOT invent unnecessary code changes; if any change is made, rake passes.",
+      "files": [],
+      "assertions": [
+        "If a branch was created, it follows feature/sync-python-sdk-<version> naming",
+        "The #990 trio fix is identified as Ruby-N/A; no anyio-translation code was written",
+        "No fabricated lib/ code changes (changes.diff is empty or every change is justified by a real Python change)",
+        "Summary explains skip reasoning and references Python PR numbers"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Please port Python SDK PR #990 (the trio compatibility fix for session stores) to our Ruby SDK. The Python repo is at /Users/luotao/space/claude-agent-sdk/claude-agent-sdk-python. Don't push or open a PR.",
+      "expected_output": "Explains that #990 fixes an anyio/trio-specific crash with no Ruby equivalent (Ruby uses the async gem, not asyncio/trio), declines to translate the code blindly, and records the skip decision rather than fabricating a port.",
+      "files": [],
+      "assertions": [
+        "Concludes PR #990 is not applicable to Ruby (async gem, not asyncio/trio)",
+        "Does not blindly translate anyio code into lib/ (changes.diff empty or documentation-only)",
+        "result.md documents the skip decision with clear reasoning"
+      ]
+    }
+  ]
+}
