@@ -443,6 +443,94 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
   end
 
+  describe 'OTel trace context propagation' do
+    around do |example|
+      saved = %w[TRACEPARENT TRACESTATE BAGGAGE].to_h { |k| [k, ENV.fetch(k, nil)] }
+      saved.each_key { |k| ENV.delete(k) }
+      example.run
+    ensure
+      saved.each { |k, v| v ? ENV[k] = v : ENV.delete(k) }
+    end
+
+    def connect_and_capture_env(options)
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      captured_env = nil
+      stdin = instance_double(IO)
+      allow(stdin).to receive(:close)
+      allow(Open3).to receive(:popen3) do |env, *_args|
+        captured_env = env
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
+      end
+      transport.connect
+      captured_env
+    end
+
+    def stub_otel_propagation(carrier_content)
+      propagation = double('propagation')
+      allow(propagation).to receive(:inject) { |carrier| carrier.merge!(carrier_content) }
+      stub_const('OpenTelemetry', double('OpenTelemetry', propagation: propagation))
+    end
+
+    it 'injects TRACEPARENT (uppercased) when a span is active' do
+      stub_otel_propagation('traceparent' => '00-aaaa-bbbb-01', 'tracestate' => 'vendor=1')
+      env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      expect(env['TRACEPARENT']).to eq('00-aaaa-bbbb-01')
+      expect(env['TRACESTATE']).to eq('vendor=1')
+    end
+
+    it 'scrubs stale inherited TRACESTATE when the fresh carrier has none' do
+      ENV['TRACEPARENT'] = '00-stale-stale-00'
+      ENV['TRACESTATE'] = 'stale=1'
+      stub_otel_propagation('traceparent' => '00-aaaa-bbbb-01')
+      env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      expect(env['TRACEPARENT']).to eq('00-aaaa-bbbb-01')
+      # nil actively unsets through the spawn overlay
+      expect(env).to have_key('TRACESTATE')
+      expect(env['TRACESTATE']).to be_nil
+    end
+
+    it 'never overrides explicit options.env keys' do
+      stub_otel_propagation('traceparent' => '00-aaaa-bbbb-01', 'tracestate' => 'vendor=1')
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude', env: { 'TRACEPARENT' => '00-user-user-01' }
+      )
+      env = connect_and_capture_env(options)
+
+      expect(env['TRACEPARENT']).to eq('00-user-user-01')
+      expect(env['TRACESTATE']).to eq('vendor=1')
+    end
+
+    it 'preserves inherited W3C env for a baggage-only carrier' do
+      ENV['TRACEPARENT'] = '00-inherited-inherited-01'
+      stub_otel_propagation('baggage' => 'k=v')
+      env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      expect(env['TRACEPARENT']).to eq('00-inherited-inherited-01')
+      expect(env).not_to have_key('BAGGAGE')
+    end
+
+    it 'is a no-op without OpenTelemetry loaded' do
+      hide_const('OpenTelemetry')
+      env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      expect(env).not_to have_key('TRACEPARENT')
+    end
+
+    it 'never breaks connect when the propagator raises' do
+      propagation = double('propagation')
+      allow(propagation).to receive(:inject).and_raise(NotImplementedError, 'abstract propagator')
+      stub_const('OpenTelemetry', double('OpenTelemetry', propagation: propagation))
+
+      expect do
+        connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+      end.not_to raise_error
+    end
+  end
+
   describe '#check_claude_version' do
     around do |example|
       previous = ENV.fetch('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK', nil)

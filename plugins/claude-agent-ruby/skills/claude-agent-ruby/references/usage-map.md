@@ -20,7 +20,7 @@ For everything else, open the matching `docs/` subpage:
 | All 27 hook events and typed input classes; permission callbacks (`PermissionResultAllow` / `PermissionResultDeny`) | `docs/hooks-and-permissions.md` |
 | Structured output (`output_format`), thinking config (adaptive/enabled/disabled + effort levels), cross-user prompt caching, budget control, fallback model, beta features, tools config, skills, sandbox settings, bare mode, file checkpointing & rewind | `docs/configuration.md` |
 | Session listing, reading messages, renaming, tagging, deleting, forking, resume-at-message | `docs/sessions.md` |
-| OpenTelemetry observer setup, Langfuse export, span attributes, custom `Observer` module | `docs/observability.md` |
+| OpenTelemetry observer setup, Langfuse export, span attributes, W3C trace-context propagation to the CLI, custom `Observer` module | `docs/observability.md` |
 | Rails integration — fiber-safety guarantee, ActionCable streaming, session resumption, background jobs, HTTP MCP servers, observability initializer | `docs/rails.md` |
 | Message types (`UserMessage`, `AssistantMessage`, `SystemMessage` subtypes, `ResultMessage`), content blocks, configuration types, constants | `docs/types.md` |
 | `AssistantMessage.error`, exception hierarchy, `CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS` env var | `docs/errors.md` |

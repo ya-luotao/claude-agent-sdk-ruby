@@ -145,6 +145,37 @@ module ClaudeAgentSDK
       )
     end
 
+    # Inject W3C trace context (TRACEPARENT/TRACESTATE, plus BAGGAGE) into the
+    # subprocess env when an OTel span is active. Guard via defined? +
+    # respond_to?, not require: an active span implies the constant is loaded,
+    # and requiring here would break against the test mock / optional gem
+    # group. Gate on the carrier's traceparent key (the W3C propagator writes
+    # it only for a valid span context) so a baggage-only carrier or a noop
+    # propagator preserves inherited env.
+    def inject_otel_trace_context(process_env, custom_env)
+      return unless defined?(OpenTelemetry) && OpenTelemetry.respond_to?(:propagation)
+
+      carrier = {}
+      OpenTelemetry.propagation.inject(carrier)
+      return unless carrier.key?('traceparent')
+
+      # Active span: scrub stale inherited W3C context (CI/k8s ambient env)
+      # before writing fresh values, so an inherited TRACESTATE is never
+      # paired with a new TRACEPARENT. nil actively unsets (spawn overlay
+      # semantics — see the CLAUDECODE note in #connect; Python pops from a
+      # complete env dict instead). Explicit options.env keys always win.
+      %w[TRACEPARENT TRACESTATE].each do |key|
+        process_env[key] = nil unless custom_env.key?(key)
+      end
+      carrier.each do |key, value|
+        env_key = key.upcase
+        process_env[env_key] = value unless custom_env.key?(env_key)
+      end
+    rescue StandardError, ScriptError
+      # Best-effort tracing must never break connect() (Python: except
+      # Exception). ScriptError too: NotImplementedError < ScriptError.
+    end
+
     def build_command
       CommandBuilder.new(@cli_path, @options).build
     end
@@ -165,6 +196,10 @@ module ClaudeAgentSDK
       # the env hash on top of the parent environment; a nil value actively unsets.
       process_env = ENV.to_h.merge('CLAUDECODE' => nil, 'CLAUDE_AGENT_SDK_VERSION' => VERSION).merge(custom_env)
       process_env['CLAUDE_CODE_ENTRYPOINT'] ||= 'sdk-rb'
+      # Propagate the active OTel trace context to the CLI so its spans parent
+      # under the caller's distributed trace (Python SDK #821 parity). No-op
+      # when opentelemetry is not loaded or there is no active span.
+      inject_otel_trace_context(process_env, custom_env)
       process_env['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING'] = 'true' if @options.enable_file_checkpointing
       process_env['PWD'] = @cwd.to_s if @cwd
 
