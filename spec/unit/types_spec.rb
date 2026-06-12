@@ -1549,6 +1549,12 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.enable_file_checkpointing).to eq(false)
       end
 
+      it 'accepts skills as all, an Array, or nil' do
+        expect(ClaudeAgentSDK::ClaudeAgentOptions.new(skills: 'all').skills).to eq('all')
+        expect(ClaudeAgentSDK::ClaudeAgentOptions.new(skills: %w[pdf docx]).skills).to eq(%w[pdf docx])
+        expect(ClaudeAgentSDK::ClaudeAgentOptions.new.skills).to be_nil
+      end
+
       it 'raises for the removed append_allowed_tools option' do
         expect do
           ClaudeAgentSDK::ClaudeAgentOptions.new(append_allowed_tools: %w[Write Bash])

@@ -391,7 +391,8 @@ module ClaudeAgentSDK
           can_use_tool: configured_options.can_use_tool,
           hooks: hooks,
           agents: configured_options.agents,
-          sdk_mcp_servers: sdk_mcp_servers
+          sdk_mcp_servers: sdk_mcp_servers,
+          skills: configured_options.skills
         )
 
         # Mirror transcripts to the session_store, if configured. Installed
@@ -827,7 +828,8 @@ module ClaudeAgentSDK
         hooks: hooks,
         sdk_mcp_servers: sdk_mcp_servers,
         agents: configured_options.agents,
-        exclude_dynamic_sections: exclude_dynamic_sections
+        exclude_dynamic_sections: exclude_dynamic_sections,
+        skills: configured_options.skills
       )
 
       # Mirror transcripts to the session_store, if configured.

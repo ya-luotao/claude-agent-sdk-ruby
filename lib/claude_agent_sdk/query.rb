@@ -24,7 +24,7 @@ module ClaudeAgentSDK
     DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
-                   exclude_dynamic_sections: nil)
+                   exclude_dynamic_sections: nil, skills: nil)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
@@ -32,6 +32,7 @@ module ClaudeAgentSDK
       @sdk_mcp_servers = sdk_mcp_servers || {}
       @agents = agents
       @exclude_dynamic_sections = exclude_dynamic_sections
+      @skills = skills
 
       # Control protocol state
       @pending_control_responses = {}
@@ -113,6 +114,9 @@ module ClaudeAgentSDK
         agents: agents_dict
       }
       request[:excludeDynamicSections] = @exclude_dynamic_sections unless @exclude_dynamic_sections.nil?
+      # 'all' and omitted are equivalent at the wire level (no filter), so
+      # only send the field when it's an explicit list (mirrors Python).
+      request[:skills] = @skills if @skills.is_a?(Array)
 
       response = send_control_request(request)
       @initialized = true

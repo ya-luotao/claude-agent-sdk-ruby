@@ -563,6 +563,30 @@ RSpec.describe ClaudeAgentSDK::Query do
       query.initialize_protocol
     end
 
+    it 'sends top-level skills in initialize only for explicit lists' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      # Array (including []) is sent; 'all' and nil are wire-equivalent to
+      # "no filter" and omitted (mirrors Python).
+      { %w[pdf docx] => %w[pdf docx], [] => [] }.each do |skills, expected|
+        query = described_class.new(transport: transport, is_streaming_mode: true, skills: skills)
+        allow(query).to receive(:send_control_request) do |request|
+          expect(request[:skills]).to eq(expected)
+          {}
+        end
+        query.initialize_protocol
+      end
+
+      ['all', nil].each do |skills|
+        query = described_class.new(transport: transport, is_streaming_mode: true, skills: skills)
+        allow(query).to receive(:send_control_request) do |request|
+          expect(request).not_to have_key(:skills)
+          {}
+        end
+        query.initialize_protocol
+      end
+    end
+
     it 'includes skills, memory, mcpServers in agents dict' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
 

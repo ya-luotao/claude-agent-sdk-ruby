@@ -1489,7 +1489,7 @@ module ClaudeAgentSDK
                   :model, :permission_prompt_tool_name, :cwd, :cli_path, :settings,
                   :add_dirs, :env, :extra_args, :max_buffer_size, :stderr,
                   :can_use_tool, :hooks, :user,
-                  :agents, :setting_sources,
+                  :agents, :setting_sources, :skills,
                   :output_format, :max_budget_usd, :max_thinking_tokens,
                   :fallback_model, :plugins, :debug_stderr,
                   :betas, :tools, :sandbox,

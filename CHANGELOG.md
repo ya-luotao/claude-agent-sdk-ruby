@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `ClaudeAgentOptions#skills` (Python parity): enable skills for the main session with `'all'` or an Array of names. Injects `Skill`/`Skill(name)` into `--allowedTools`, defaults `setting_sources` to `['user', 'project']` when unset, and sends explicit lists via the `initialize` control request so the CLI filters which skills load. `[]` hides all skills; this is a context filter, not a sandbox.
 - OTel spans now report prompt-cache usage: `gen_ai.usage.cache_creation_input_tokens` / `gen_ai.usage.cache_read_input_tokens` on generation and session spans, plus OpenInference `llm.token_count.prompt_details.cache_read`/`.cache_write` on the session span. Anthropic's `input_tokens` excludes cached tokens, so heavily cached sessions previously under-reported prompt volume by orders of magnitude. Strictly additive — existing keys unchanged.
 - `on_user_prompt` observers now fire for Enumerator/streaming-input prompts (once per `type: 'user'` message with extractable text). OTel traces for streaming sessions now get an `input.value` for the first trace; later turns' capture depends on prompt timing relative to each init (`OTelObserver` keeps one prompt per trace).
 

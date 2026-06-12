@@ -102,6 +102,55 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
     end
   end
 
+  describe 'skills defaults' do
+    def build(options)
+      described_class.new('/usr/bin/claude', options).build
+    end
+
+    def flag_value(cmd, flag)
+      idx = cmd.index(flag)
+      idx && cmd[idx + 1]
+    end
+
+    it "skills: 'all' allows the bare Skill tool and defaults setting sources" do
+      cmd = build(ClaudeAgentSDK::ClaudeAgentOptions.new(skills: 'all'))
+
+      expect(flag_value(cmd, '--allowedTools')).to eq('Skill')
+      expect(flag_value(cmd, '--setting-sources')).to eq('user,project')
+    end
+
+    it 'skills list allows Skill(name) per entry without duplicating existing entries' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        skills: %w[pdf docx], allowed_tools: ['Read', 'Skill(pdf)']
+      )
+      cmd = build(options)
+
+      expect(flag_value(cmd, '--allowedTools')).to eq('Read,Skill(pdf),Skill(docx)')
+      # non-mutating: the options object is untouched
+      expect(options.allowed_tools).to eq(['Read', 'Skill(pdf)'])
+    end
+
+    it 'never overrides explicit setting_sources, including []' do
+      cmd = build(ClaudeAgentSDK::ClaudeAgentOptions.new(skills: 'all', setting_sources: []))
+
+      expect(flag_value(cmd, '--setting-sources')).to eq('')
+    end
+
+    it 'skills: [] adds no Skill entries but still defaults setting sources' do
+      cmd = build(ClaudeAgentSDK::ClaudeAgentOptions.new(skills: []))
+
+      expect(cmd).not_to include('--allowedTools')
+      expect(flag_value(cmd, '--setting-sources')).to eq('user,project')
+    end
+
+    it 'skills: nil leaves both flags untouched' do
+      cmd = build(ClaudeAgentSDK::ClaudeAgentOptions.new(allowed_tools: %w[Read]))
+
+      expect(flag_value(cmd, '--allowedTools')).to eq('Read')
+      expect(cmd).not_to include('--setting-sources')
+    end
+  end
+
   describe 'allow/disallow lists' do
     it 'joins allowed_tools with commas' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(allowed_tools: %w[Read Write])

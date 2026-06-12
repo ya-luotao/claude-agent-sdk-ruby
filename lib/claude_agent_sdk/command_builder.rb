@@ -17,9 +17,14 @@ module ClaudeAgentSDK
     def build
       cmd = [@cli_path, "--output-format", "stream-json", "--verbose"]
 
+      # skills auto-wires the Skill tool into --allowedTools and defaults
+      # --setting-sources; compute both once so the two flags cannot diverge
+      # (mirrors Python _apply_skills_defaults).
+      effective_allowed_tools, effective_setting_sources = skills_defaults
+
       append_system_prompt(cmd)
       append_tools(cmd)
-      append_allowed_tools(cmd)
+      append_allowed_tools(cmd, effective_allowed_tools)
       append_disallowed_tools(cmd)
       append_max_turns(cmd)
       append_model(cmd)
@@ -35,7 +40,7 @@ module ClaudeAgentSDK
       append_mcp_servers(cmd)
       append_boolean_flags(cmd)
       append_plugins(cmd)
-      append_setting_sources(cmd)
+      append_setting_sources(cmd, effective_setting_sources)
       append_extra_args(cmd)
 
       # Always use streaming mode for bidirectional control protocol.
@@ -79,8 +84,33 @@ module ClaudeAgentSDK
       end
     end
 
-    def append_allowed_tools(cmd)
-      cmd.push("--allowedTools", @options.allowed_tools.join(",")) unless @options.allowed_tools.empty?
+    def append_allowed_tools(cmd, allowed_tools)
+      cmd.push("--allowedTools", allowed_tools.join(",")) unless allowed_tools.empty?
+    end
+
+    # Mirror of Python's _apply_skills_defaults: when skills are requested,
+    # auto-allow the Skill tool ('all' -> bare Skill, list -> Skill(name) per
+    # entry, no duplicates) and default setting_sources to user+project so
+    # skill files are actually discovered. Explicit setting_sources (including
+    # []) is never overridden. Non-mutating; returns the effective pair.
+    # Justified divergence: a non-'all' String raises (NoMethodError on #each)
+    # instead of Python's quirk of iterating its characters.
+    def skills_defaults
+      allowed_tools = @options.allowed_tools.dup
+      setting_sources = @options.setting_sources&.dup
+      skills = @options.skills
+      return [allowed_tools, setting_sources] if skills.nil?
+
+      if skills == "all"
+        allowed_tools << "Skill" unless allowed_tools.include?("Skill")
+      else
+        skills.each do |name|
+          pattern = "Skill(#{name})"
+          allowed_tools << pattern unless allowed_tools.include?(pattern)
+        end
+      end
+      setting_sources = %w[user project] if setting_sources.nil?
+      [allowed_tools, setting_sources]
     end
 
     def append_disallowed_tools(cmd)
@@ -291,10 +321,10 @@ module ClaudeAgentSDK
       end
     end
 
-    def append_setting_sources(cmd)
-      return unless @options.setting_sources
+    def append_setting_sources(cmd, setting_sources)
+      return if setting_sources.nil?
 
-      cmd.push("--setting-sources", @options.setting_sources.join(","))
+      cmd.push("--setting-sources", setting_sources.join(","))
     end
 
     def append_extra_args(cmd)

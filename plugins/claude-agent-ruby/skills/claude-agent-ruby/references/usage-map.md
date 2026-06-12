@@ -18,7 +18,7 @@ For everything else, open the matching `docs/` subpage:
 | Bidirectional `Client` advanced features (`interrupt`, mid-session model/permission switching, MCP status); custom transports (E2B example, transport interface) | `docs/client.md` |
 | SDK MCP servers — tool definitions, JSON schema normalization, resources, prompts, mixed SDK + external server config | `docs/mcp-servers.md` |
 | All 27 hook events and typed input classes; permission callbacks (`PermissionResultAllow` / `PermissionResultDeny`) | `docs/hooks-and-permissions.md` |
-| Structured output (`output_format`), thinking config (adaptive/enabled/disabled + effort levels), cross-user prompt caching, budget control, fallback model, beta features, tools config, sandbox settings, bare mode, file checkpointing & rewind | `docs/configuration.md` |
+| Structured output (`output_format`), thinking config (adaptive/enabled/disabled + effort levels), cross-user prompt caching, budget control, fallback model, beta features, tools config, skills, sandbox settings, bare mode, file checkpointing & rewind | `docs/configuration.md` |
 | Session listing, reading messages, renaming, tagging, deleting, forking, resume-at-message | `docs/sessions.md` |
 | OpenTelemetry observer setup, Langfuse export, span attributes, custom `Observer` module | `docs/observability.md` |
 | Rails integration — fiber-safety guarantee, ActionCable streaming, session resumption, background jobs, HTTP MCP servers, observability initializer | `docs/rails.md` |
