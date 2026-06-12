@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-06-12
+
 ### Added
 - `query(transport:)` — inject a pre-constructed custom transport instance (Python parity): CLI discovery, version check, and resume materialization are skipped; the SDK calls `#connect`/`#close` on the instance (including after a failed connect — a documented safety deviation from Python).
 - `Client#query` now accepts an Enumerable of message Hashes / JSONL Strings in addition to a String (Python parity): items stream inline on the caller, `session_id` is stamped onto Hashes that lack one (explicit values, even nil, preserved), and non-Hash/String items raise instead of being silently serialized. Note: JSONL String items pass through verbatim and carry their own `session_id` — generate them with the matching `session_id:` argument (`Streaming.user_message` defaults to `'default'`).
