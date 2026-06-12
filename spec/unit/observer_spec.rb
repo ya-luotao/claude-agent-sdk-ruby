@@ -5,24 +5,28 @@ RSpec.describe ClaudeAgentSDK::Observer do
     Class.new do
       include ClaudeAgentSDK::Observer
 
-      attr_reader :messages, :errors, :closed
+      attr_reader :messages, :errors, :closed, :events
 
       def initialize
         @messages = []
         @errors = []
         @closed = false
+        @events = []
       end
 
       def on_message(message)
         @messages << message
+        @events << :message
       end
 
       def on_error(error)
         @errors << error
+        @events << :error
       end
 
       def on_close
         @closed = true
+        @events << :close
       end
     end
   end
@@ -53,6 +57,105 @@ RSpec.describe ClaudeAgentSDK::Observer do
       factory = -> { observer_class.new }
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [factory])
       expect(options.observers).to eq([factory])
+    end
+  end
+
+  describe '.extract_user_prompt_text' do
+    it 'extracts string content from a user message hash' do
+      msg = { type: 'user', message: { role: 'user', content: 'hello' } }
+      expect(ClaudeAgentSDK.extract_user_prompt_text(msg)).to eq('hello')
+    end
+
+    it 'extracts and joins non-empty text blocks' do
+      msg = { type: 'user', message: { content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] } }
+      expect(ClaudeAgentSDK.extract_user_prompt_text(msg)).to eq("a\nb")
+    end
+
+    it 'parses JSON-string stream items (with trailing newline)' do
+      json = "#{JSON.generate(type: 'user', message: { content: 'from json' })}\n"
+      expect(ClaudeAgentSDK.extract_user_prompt_text(json)).to eq('from json')
+    end
+
+    it 'returns nil for non-user messages, invalid JSON, and arbitrary objects' do
+      expect(ClaudeAgentSDK.extract_user_prompt_text({ type: 'control_request' })).to be_nil
+      expect(ClaudeAgentSDK.extract_user_prompt_text('not json')).to be_nil
+      expect(ClaudeAgentSDK.extract_user_prompt_text(42)).to be_nil
+    end
+
+    it 'never returns an empty string (would poison the OTel first-prompt latch)' do
+      empty_shapes = [
+        { type: 'user', message: { content: '' } },
+        { type: 'user', message: { content: [{ type: 'text', text: '' }] } },
+        { type: 'user', message: { content: [{ type: 'text' }] } },
+        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] } }
+      ]
+      empty_shapes.each do |msg|
+        expect(ClaudeAgentSDK.extract_user_prompt_text(msg)).to be_nil
+      end
+    end
+
+    it 'skips empty blocks but keeps real ones' do
+      msg = { type: 'user', message: { content: [{ type: 'text', text: '' }, { type: 'text', text: 'real' }] } }
+      expect(ClaudeAgentSDK.extract_user_prompt_text(msg)).to eq('real')
+    end
+  end
+
+  describe '.observing_prompt_stream' do
+    let(:observer) { observer_class.new }
+
+    def prompts_seen(observer)
+      seen = []
+      allow(observer).to receive(:on_user_prompt) { |p| seen << p }
+      seen
+    end
+
+    it 'yields every original item unchanged, including ones with no extractable text' do
+      items = [
+        { type: 'user', message: { content: 'question' } },
+        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] } },
+        'not even json'
+      ]
+
+      wrapped = ClaudeAgentSDK.observing_prompt_stream(items.each, [observer])
+
+      expect(wrapped.to_a).to eq(items)
+    end
+
+    it 'is lazy: does not consume the source ahead of the consumer' do
+      consumed = 0
+      source = Enumerator.new do |y|
+        loop do
+          consumed += 1
+          y << { type: 'user', message: { content: "msg #{consumed}" } }
+        end
+      end
+
+      wrapped = ClaudeAgentSDK.observing_prompt_stream(source, [observer])
+      first = wrapped.first(1)
+
+      expect(first.length).to eq(1)
+      expect(consumed).to be <= 2 # one yielded + at most one buffered by Enumerator
+    end
+
+    it 'returns the original object when no observers are configured' do
+      source = [].each
+      expect(ClaudeAgentSDK.observing_prompt_stream(source, [])).to equal(source)
+    end
+  end
+
+  describe '.notify_observers error containment' do
+    it 'swallows NotImplementedError (ScriptError) from an observer' do
+      stubbed = Class.new do
+        include ClaudeAgentSDK::Observer
+
+        def on_error(_error)
+          raise NotImplementedError, 'observer stub'
+        end
+      end.new
+
+      expect do
+        ClaudeAgentSDK.notify_observers([stubbed], :on_error, StandardError.new('original'))
+      end.not_to raise_error
     end
   end
 
@@ -114,6 +217,7 @@ RSpec.describe ClaudeAgentSDK::Observer do
         allow(qh).to receive(:receive_messages) do |&block|
           msgs.each { |m| block.call(m) }
         end
+        allow(qh).to receive(:spawn_task) { |&blk| blk.call }
       end
     end
 
@@ -169,6 +273,93 @@ RSpec.describe ClaudeAgentSDK::Observer do
       end.wait
 
       expect(call_count).to eq(1)
+    end
+
+    it 'fires on_user_prompt for each user message in a streaming-input prompt' do
+      allow(query_handler).to receive(:stream_input) { |stream| stream.each { |_m| nil } }
+      prompts = []
+      prompt_observer = Class.new do
+        include ClaudeAgentSDK::Observer
+
+        def initialize(sink)
+          @sink = sink
+        end
+
+        def on_user_prompt(prompt)
+          @sink << prompt
+        end
+      end.new(prompts)
+
+      stream = [
+        { type: 'user', message: { role: 'user', content: 'first question' }, session_id: '' },
+        { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'second' }] }, session_id: '' },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1' }] },
+          session_id: '' }
+      ].each
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [prompt_observer])
+
+      Async do
+        ClaudeAgentSDK.query(prompt: stream, options: options) { |_msg| nil }
+      end.wait
+
+      expect(prompts).to eq(['first question', 'second'])
+    end
+
+    it 'calls on_error before on_close and re-raises when the message stream dies' do
+      msg = sample_assistant_message
+      allow(query_handler).to receive(:receive_messages) do |&block|
+        block.call(msg)
+        raise ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1)
+      end
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer])
+
+      expect do
+        Async { ClaudeAgentSDK.query(prompt: 'test', options: options) { |_m| nil } }.wait
+      end.to raise_error(ClaudeAgentSDK::ProcessError)
+
+      expect(observer.errors.length).to eq(1)
+      expect(observer.errors.first).to be_a(ClaudeAgentSDK::ProcessError)
+      expect(observer.events).to eq(%i[message error close])
+    end
+
+    it 'calls on_error when the user block raises' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer])
+
+      expect do
+        Async do
+          ClaudeAgentSDK.query(prompt: 'test', options: options) { |_m| raise 'user boom' }
+        end.wait
+      end.to raise_error(RuntimeError, 'user boom')
+
+      expect(observer.errors.length).to eq(1)
+      expect(observer.errors.first.message).to eq('user boom')
+    end
+
+    it 'does not call on_error on clean completion' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer])
+
+      Async do
+        ClaudeAgentSDK.query(prompt: 'test', options: options) { |_msg| nil }
+      end.wait
+
+      expect(observer.errors).to be_empty
+    end
+
+    it 'a raising on_error observer does not mask the original error' do
+      bad_observer = Class.new do
+        include ClaudeAgentSDK::Observer
+
+        def on_error(_error)
+          raise 'observer on_error crash'
+        end
+      end.new
+      allow(query_handler).to receive(:receive_messages)
+        .and_raise(ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1))
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [bad_observer])
+
+      expect do
+        Async { ClaudeAgentSDK.query(prompt: 'test', options: options) { |_m| nil } }.wait
+      end.to raise_error(ClaudeAgentSDK::ProcessError, /Command failed/)
     end
 
     it 'does not propagate observer errors to user block' do

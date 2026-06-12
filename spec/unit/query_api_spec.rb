@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'securerandom'
 
 RSpec.describe ClaudeAgentSDK, '.query' do
   it 'passes entrypoint via transport env without mutating global ENV' do
@@ -20,6 +21,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       close: nil
     )
     allow(query_handler).to receive(:receive_messages) # yields nothing
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
 
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |opts|
       captured_options = opts
@@ -73,6 +75,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       close: nil
     )
     allow(query_handler).to receive(:receive_messages)
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
 
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
     allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
@@ -114,6 +117,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       close: nil
     )
     allow(query_handler).to receive(:receive_messages)
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
 
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
     allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
@@ -147,6 +151,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       close: nil
     )
     allow(query_handler).to receive(:receive_messages)
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
 
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |opts|
       captured_options = opts
@@ -164,6 +169,158 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     expect(captured_options.permission_prompt_tool_name).to eq('stdio')
     expect(captured_query_args[:can_use_tool]).to eq(callback)
     expect(query_handler).to have_received(:stream_input).with(prompt)
+  end
+
+  it 'propagates a read-loop failure instead of hanging when streaming input is still blocked' do
+    # Transport that completes the initialize handshake, then crashes the read
+    # loop while the user's input enumerator is still parked. Before the fix,
+    # the untracked stream_input task kept the root reactor alive forever and
+    # query() never returned (the error decayed to an async console warning).
+    fake_transport = Class.new do
+      def initialize
+        @incoming = Async::Queue.new
+      end
+
+      def connect; end
+      def end_input; end
+      def close; end
+
+      def write(data)
+        msg = JSON.parse(data, symbolize_names: true)
+        return unless msg[:type] == 'control_request' && msg.dig(:request, :subtype) == 'initialize'
+
+        @incoming.enqueue(
+          type: 'control_response',
+          response: { subtype: 'success', request_id: msg[:request_id], response: {} }
+        )
+        @incoming.enqueue(:crash)
+      end
+
+      def read_messages
+        loop do
+          msg = @incoming.dequeue
+          raise ClaudeAgentSDK::CLIConnectionError, 'CLI crashed mid-stream' if msg == :crash
+
+          yield msg
+        end
+      end
+    end.new
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(fake_transport)
+
+    blocked_prompt = Enumerator.new do |y|
+      y << { type: 'user', message: { role: 'user', content: 'hi' }, session_id: '' }
+      sleep # blocked indefinitely, like a Queue#pop awaiting more input
+    end
+
+    error = nil
+    thread = Thread.new do
+      described_class.query(prompt: blocked_prompt) { |_message| nil }
+    rescue StandardError => e
+      error = e
+    end
+
+    expect(thread.join(5)).not_to be_nil, 'query() hung: stream_input child task was not stopped on close'
+    expect(error).to be_a(ClaudeAgentSDK::CLIConnectionError)
+  ensure
+    thread&.kill
+  end
+
+  it 'delivers messages while the stdin-close wait is still pending for string prompts' do
+    # Guards the background spawn of wait_for_result_and_end_input: a
+    # synchronous call would defer all message delivery until the first
+    # result (unbounded since the 60s timeout was removed).
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+    allow(transport).to receive(:write)
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+
+    order = []
+    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: nil, close: nil)
+    allow(query_handler).to receive(:wait_for_result_and_end_input) do
+      order << :wait_started
+      Async::Task.current.sleep(0.05)
+      order << :wait_finished
+    end
+    allow(query_handler).to receive(:spawn_task) { |&blk| Async::Task.current.async { blk.call } }
+    allow(query_handler).to receive(:receive_messages) { order << :messages_delivered }
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    described_class.query(prompt: 'hello') { |_message| nil }
+
+    expect(order.index(:messages_delivered)).to be < order.index(:wait_finished),
+                                                "messages were deferred until stdin close completed: #{order.inspect}"
+  end
+
+  context 'with a custom transport' do
+    def fake_streaming_transport(writes)
+      Class.new do
+        define_method(:initialize) do
+          @incoming = Async::Queue.new
+          @writes = writes
+        end
+        def connect; end
+        def end_input; end
+
+        def close
+          @closed = true
+        end
+
+        def closed?
+          !!@closed
+        end
+
+        def write(data)
+          @writes << data
+          msg = JSON.parse(data, symbolize_names: true)
+          return unless msg[:type] == 'control_request' && msg.dig(:request, :subtype) == 'initialize'
+
+          @incoming.enqueue(
+            type: 'control_response',
+            response: { subtype: 'success', request_id: msg[:request_id], response: {} }
+          )
+          @incoming.enqueue(type: 'result', subtype: 'success', is_error: false, duration_ms: 1,
+                            duration_api_ms: 1, num_turns: 1, session_id: 's', total_cost_usd: 0)
+          @incoming.enqueue(:end)
+        end
+
+        def read_messages
+          loop do
+            msg = @incoming.dequeue
+            break if msg == :end
+
+            yield msg
+          end
+        end
+      end.new
+    end
+
+    it 'uses the injected transport and never constructs SubprocessCLITransport' do
+      writes = []
+      fake = fake_streaming_transport(writes)
+      expect(ClaudeAgentSDK::SubprocessCLITransport).not_to receive(:new)
+
+      described_class.query(prompt: 'hello', transport: fake) { |_m| nil }
+
+      expect(fake.closed?).to be(true)
+      user_frame = writes.map { |w| JSON.parse(w, symbolize_names: true) }.find { |m| m[:type] == 'user' }
+      expect(user_frame.dig(:message, :content)).to eq('hello')
+    end
+
+    it 'skips resume materialization when a transport is injected' do
+      writes = []
+      fake = fake_streaming_transport(writes)
+      expect(ClaudeAgentSDK::SessionResume).not_to receive(:materialize_resume_session)
+
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        session_store: ClaudeAgentSDK::InMemorySessionStore.new, resume: SecureRandom.uuid
+      )
+      described_class.query(prompt: 'hello', options: options, transport: fake) { |_m| nil }
+    end
+
+    it 'rejects transports that do not respond to #connect' do
+      expect do
+        described_class.query(prompt: 'hello', transport: Object.new) { |_m| nil }
+      end.to raise_error(ArgumentError, /must respond to #connect/)
+    end
   end
 
   it 'rejects string prompts when can_use_tool is configured' do

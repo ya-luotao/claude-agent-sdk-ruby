@@ -248,13 +248,27 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       end
     end
 
-    it 'returns nil created_at when no timestamp in first entry' do
+    it 'returns nil created_at when no head entry has a timestamp field' do
       Dir.mktmpdir do |dir|
         file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
         File.write(file_path, { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json)
 
         result = described_class.read_session_lite(file_path, '/test')
         expect(result.created_at).to be_nil
+      end
+    end
+
+    it 'finds created_at when the first record is metadata-only (Python #907)' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'permission-mode', permissionMode: 'acceptEdits' }.to_json,
+          { type: 'user', uuid: 'u1', timestamp: '2026-01-15T10:30:00.000Z',
+            message: { content: 'Hello' } }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.created_at).to eq((Time.utc(2026, 1, 15, 10, 30, 0).to_f * 1000).to_i)
       end
     end
 
@@ -817,5 +831,200 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
       .and_return([])
 
     ClaudeAgentSDK.get_session_messages(session_id: 'abc')
+  end
+
+  describe 'local-disk subagent readers' do
+    let(:described_class) { ClaudeAgentSDK::Sessions }
+    let(:uuid) { '12345678-1234-1234-1234-123456789abc' }
+
+    # Real CLI subagent transcript entries ALL carry isSidechain: true — the
+    # fixtures must mirror real CLI shape or the readers' sidechain-aware
+    # pipeline is not actually exercised (the v0.17.0 lesson).
+    def sidechain_entry(entry_uuid, parent: nil, text: 'work')
+      { type: 'assistant', uuid: entry_uuid, parentUuid: parent, isSidechain: true,
+        sessionId: uuid, message: { role: 'assistant', content: [{ type: 'text', text: text }] } }
+    end
+
+    def with_session_on_disk
+      Dir.mktmpdir do |config_dir|
+        allow(described_class).to receive(:config_dir).and_return(config_dir)
+        Dir.mktmpdir do |repo|
+          canonical = File.realpath(repo).unicode_normalize(:nfc)
+          allow(described_class).to receive(:detect_worktrees).and_return([canonical])
+          project_dir = File.join(config_dir, 'projects', described_class.sanitize_path(canonical))
+          FileUtils.mkdir_p(project_dir)
+          # Parent session transcript must be NON-EMPTY (size > 0 resolution rule).
+          File.write(File.join(project_dir, "#{uuid}.jsonl"),
+                     { type: 'user', uuid: 'u1', sessionId: uuid,
+                       message: { role: 'user', content: 'Hello' } }.to_json)
+          subagents_dir = File.join(project_dir, uuid, 'subagents')
+          FileUtils.mkdir_p(subagents_dir)
+          yield subagents_dir, canonical
+        end
+      end
+    end
+
+    it 'lists agent ids from top-level and nested workflow paths in sorted walk order' do
+      with_session_on_disk do |subagents_dir, canonical|
+        File.write(File.join(subagents_dir, 'agent-beta.jsonl'), sidechain_entry('b1').to_json)
+        nested = File.join(subagents_dir, 'workflows', 'run-1')
+        FileUtils.mkdir_p(nested)
+        File.write(File.join(nested, 'agent-alpha.jsonl'), sidechain_entry('a1').to_json)
+
+        # sorted interleave: 'agent-beta.jsonl' < 'workflows' at the top level
+        expect(ClaudeAgentSDK.list_subagents(session_id: uuid, directory: canonical))
+          .to eq(%w[beta alpha])
+      end
+    end
+
+    it 'reads sidechain subagent messages (real CLI transcript shape)' do
+      with_session_on_disk do |subagents_dir, canonical|
+        File.write(File.join(subagents_dir, 'agent-worker.jsonl'), [
+          sidechain_entry('s1', text: 'step one').to_json,
+          sidechain_entry('s2', parent: 's1', text: 'step two').to_json
+        ].join("\n"))
+
+        messages = ClaudeAgentSDK.get_subagent_messages(
+          session_id: uuid, agent_id: 'worker', directory: canonical
+        )
+        expect(messages.length).to eq(2)
+        expect(messages.first).to be_a(ClaudeAgentSDK::SessionMessage)
+        expect(messages.map(&:uuid)).to eq(%w[s1 s2])
+      end
+    end
+
+    it 'applies limit/offset with the Ruby family convention (limit: 0 yields [])' do
+      with_session_on_disk do |subagents_dir, canonical|
+        File.write(File.join(subagents_dir, 'agent-worker.jsonl'), [
+          sidechain_entry('s1').to_json,
+          sidechain_entry('s2', parent: 's1').to_json,
+          sidechain_entry('s3', parent: 's2').to_json
+        ].join("\n"))
+
+        args = { session_id: uuid, agent_id: 'worker', directory: canonical }
+        expect(ClaudeAgentSDK.get_subagent_messages(**args, limit: 1, offset: 1).map(&:uuid)).to eq(%w[s2])
+        # Deliberate divergence from Python (limit=0 means "no limit" there):
+        # the Ruby read-API family standardized limit <= 0 -> [].
+        expect(ClaudeAgentSDK.get_subagent_messages(**args, limit: 0)).to eq([])
+      end
+    end
+
+    it 'returns [] for unknown sessions, blank agent ids, and missing agents' do
+      with_session_on_disk do |_subagents_dir, canonical|
+        other_uuid = '99999999-9999-4999-8999-999999999999'
+        expect(ClaudeAgentSDK.list_subagents(session_id: other_uuid, directory: canonical)).to eq([])
+        expect(ClaudeAgentSDK.list_subagents(session_id: 'not-a-uuid')).to eq([])
+        expect(ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: '', directory: canonical)).to eq([])
+        expect(ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: 'ghost', directory: canonical))
+          .to eq([])
+      end
+    end
+  end
+
+  describe 'sessions read-path hygiene (M12/M11/L8/L9)' do
+    let(:described_class) { ClaudeAgentSDK::Sessions }
+    let(:uuid) { '12345678-1234-1234-1234-123456789abc' }
+
+    def with_config_dir
+      Dir.mktmpdir do |config_dir|
+        allow(described_class).to receive(:config_dir).and_return(config_dir)
+        FileUtils.mkdir_p(File.join(config_dir, 'projects'))
+        yield config_dir
+      end
+    end
+
+    def project_dir_for(config_dir, path)
+      dir = File.join(config_dir, 'projects', described_class.sanitize_path(path))
+      FileUtils.mkdir_p(dir)
+      dir
+    end
+
+    describe 'with a nonexistent directory argument' do
+      it 'list_sessions returns [] instead of raising' do
+        with_config_dir do
+          expect(described_class.list_sessions(directory: '/definitely/not/a/dir')).to eq([])
+        end
+      end
+
+      it 'get_session_info returns nil instead of raising' do
+        with_config_dir do
+          expect(described_class.get_session_info(session_id: uuid, directory: '/definitely/not/a/dir')).to be_nil
+        end
+      end
+
+      it 'get_session_messages returns [] instead of raising' do
+        with_config_dir do
+          expect(described_class.get_session_messages(session_id: uuid, directory: '/definitely/not/a/dir')).to eq([])
+        end
+      end
+    end
+
+    describe '0-byte transcript stubs' do
+      it 'skips a stub in the canonical project dir and finds the worktree transcript' do
+        with_config_dir do |config_dir|
+          Dir.mktmpdir do |repo|
+            canonical = File.realpath(repo).unicode_normalize(:nfc)
+            worktree = File.join(canonical, 'wt')
+            FileUtils.mkdir_p(worktree)
+            allow(described_class).to receive(:detect_worktrees).and_return([canonical, worktree])
+
+            stub_dir = project_dir_for(config_dir, canonical)
+            File.write(File.join(stub_dir, "#{uuid}.jsonl"), '')
+
+            wt_dir = project_dir_for(config_dir, worktree)
+            File.write(File.join(wt_dir, "#{uuid}.jsonl"),
+                       { type: 'user', uuid: 'u1', sessionId: uuid,
+                         message: { role: 'user', content: 'Hello' } }.to_json)
+
+            messages = described_class.get_session_messages(session_id: uuid, directory: canonical)
+            expect(messages.length).to eq(1)
+          end
+        end
+      end
+    end
+
+    describe 'explicit directory scoping' do
+      it 'does not fall back to scanning unrelated project dirs' do
+        with_config_dir do |config_dir|
+          Dir.mktmpdir do |repo|
+            canonical = File.realpath(repo).unicode_normalize(:nfc)
+            allow(described_class).to receive(:detect_worktrees).and_return([canonical])
+
+            other_dir = File.join(config_dir, 'projects', 'unrelated-project')
+            FileUtils.mkdir_p(other_dir)
+            File.write(File.join(other_dir, "#{uuid}.jsonl"),
+                       { type: 'user', uuid: 'u1', sessionId: uuid,
+                         message: { role: 'user', content: 'Hello' } }.to_json)
+
+            expect(described_class.get_session_messages(session_id: uuid, directory: canonical)).to eq([])
+            # nil directory still searches all projects
+            expect(described_class.get_session_messages(session_id: uuid).length).to eq(1)
+          end
+        end
+      end
+    end
+
+    describe 'CLAUDE_CONFIG_DIR handling' do
+      around do |example|
+        previous = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+        example.run
+      ensure
+        if previous
+          ENV['CLAUDE_CONFIG_DIR'] = previous
+        else
+          ENV.delete('CLAUDE_CONFIG_DIR')
+        end
+      end
+
+      it 'treats an empty CLAUDE_CONFIG_DIR as unset' do
+        ENV['CLAUDE_CONFIG_DIR'] = ''
+        expect(described_class.config_dir).to eq(File.expand_path('~/.claude'))
+      end
+
+      it 'NFC-normalizes a set CLAUDE_CONFIG_DIR' do
+        ENV['CLAUDE_CONFIG_DIR'] = "/tmp/café" # decomposed é
+        expect(described_class.config_dir).to eq("/tmp/café")
+      end
+    end
   end
 end

@@ -41,12 +41,12 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(payload.dig(:message, :content)).to eq('hello')
   end
 
-  it 'streams an initial Enumerator prompt without closing stdin' do
-    writes = []
-    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true)
-    allow(transport).to receive(:write) { |data| writes << data }
-
+  it 'streams an initial Enumerator prompt in the background via Query#stream_input' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
     query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+    streamed = nil
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+    allow(query_handler).to receive(:stream_input) { |stream| streamed = stream.to_a }
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
     allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
 
@@ -55,7 +55,25 @@ RSpec.describe ClaudeAgentSDK::Client do
     client = described_class.new
     client.connect(stream)
 
-    expect(writes).to eq(["{\"type\":\"user\"}\n", "{\"type\":\"user\"}\n"])
+    # Items reach stream_input unchanged (it owns serialization — Hashes are
+    # JSON-generated there, fixing the old to_s/inspect bug).
+    expect(streamed).to eq(['{"type":"user"}', '{"type":"user"}'])
+  end
+
+  it 'serializes Hash stream messages as JSON via stream_input (not Ruby inspect)' do
+    writes = []
+    transport = mock_transport
+    allow(transport).to receive(:write) { |data| writes << data }
+    query = ClaudeAgentSDK::Query.new(transport: transport, is_streaming_mode: true)
+
+    Async do |task|
+      task.with_timeout(2.0) do
+        query.stream_input([{ type: 'user', message: { role: 'user', content: 'hi' } }])
+      end
+    end.wait
+
+    payload = JSON.parse(writes.first, symbolize_names: true)
+    expect(payload[:type]).to eq('user')
   end
 
   it 'auto-configures permission prompt tool when using can_use_tool' do
@@ -398,6 +416,251 @@ RSpec.describe ClaudeAgentSDK::Client do
 
       expect(received_options.model).to eq('sonnet')
       expect(received_options.permission_mode).to eq('bypassPermissions')
+    end
+  end
+  describe 'Client#query with an iterable (F7)' do
+    def connected_client_capturing(writes)
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil)
+      allow(transport).to receive(:write) { |data| writes << data }
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+      client = described_class.new
+      client.connect
+      client
+    end
+
+    it 'streams Hashes inline, stamping session_id only when absent' do
+      writes = []
+      client = connected_client_capturing(writes)
+
+      client.query([
+                     { type: 'user', message: { role: 'user', content: 'one' } },
+                     { type: 'user', message: { role: 'user', content: 'two' }, session_id: 'explicit' }
+                   ], session_id: 'sess-9')
+
+      frames = writes.map { |w| JSON.parse(w, symbolize_names: true) }
+      expect(frames[0][:session_id]).to eq('sess-9')
+      expect(frames[1][:session_id]).to eq('explicit')
+    end
+
+    it 'passes JSONL strings through verbatim and rejects other item types' do
+      writes = []
+      client = connected_client_capturing(writes)
+
+      jsonl = ClaudeAgentSDK::Streaming.user_message('pre-serialized')
+      client.query([jsonl])
+      expect(JSON.parse(writes.first, symbolize_names: true).dig(:message, :content)).to eq('pre-serialized')
+
+      expect { client.query([42]) }.to raise_error(ArgumentError, /stream items must be Hashes or JSONL Strings/)
+    end
+
+    it 'rejects a bare Hash prompt (would iterate key-value pairs)' do
+      client = connected_client_capturing([])
+      expect { client.query({ type: 'user' }) }.to raise_error(ArgumentError, /got Hash/)
+    end
+  end
+
+  describe 'Client.open (F10)' do
+    it 'connects, yields the client, disconnects, and returns the block value' do
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil, close: nil)
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      yielded = nil
+      result = described_class.open(options: ClaudeAgentSDK::ClaudeAgentOptions.new) do |client|
+        yielded = client
+        :block_value
+      end
+
+      expect(result).to eq(:block_value)
+      expect(yielded).to be_a(described_class)
+      expect(query_handler).to have_received(:close) # disconnect ran
+    end
+
+    it 'disconnects even when the block raises, and propagates the exception' do
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil, close: nil)
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      expect do
+        described_class.open { |_client| raise 'block boom' }
+      end.to raise_error(RuntimeError, 'block boom')
+      expect(query_handler).to have_received(:close)
+    end
+
+    it 'requires a block' do
+      expect { described_class.open }.to raise_error(ArgumentError, /requires a block/)
+    end
+  end
+
+  describe 'observer on_error wiring' do
+    let(:recording_observer) do
+      Class.new do
+        include ClaudeAgentSDK::Observer
+
+        attr_reader :errors, :closed
+
+        def initialize
+          @errors = []
+          @closed = false
+        end
+
+        def on_error(error)
+          @errors << error
+        end
+
+        def on_close
+          @closed = true
+        end
+      end.new
+    end
+
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [recording_observer]) }
+
+    def stub_connectable(query_handler_overrides = {})
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil, close: nil)
+      query_handler = instance_double(
+        ClaudeAgentSDK::Query,
+        { start: true, initialize_protocol: true, close: nil }.merge(query_handler_overrides)
+      )
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+      [transport, query_handler]
+    end
+
+    it 'receive_messages notifies on_error, re-raises, and on_close only fires at disconnect' do
+      _, query_handler = stub_connectable
+      msg = sample_assistant_message
+      allow(query_handler).to receive(:receive_messages) do |&block|
+        block.call(msg)
+        raise ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1)
+      end
+
+      client = described_class.new(options: options)
+      client.connect
+
+      expect { client.receive_messages { |_m| nil } }.to raise_error(ClaudeAgentSDK::ProcessError)
+      expect(recording_observer.errors.length).to eq(1)
+      expect(recording_observer.closed).to be false
+
+      client.disconnect
+      expect(recording_observer.closed).to be true
+    end
+
+    it 'receive_response notifies on_error and re-raises' do
+      _, query_handler = stub_connectable
+      allow(query_handler).to receive(:receive_messages)
+        .and_raise(ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1))
+
+      client = described_class.new(options: options)
+      client.connect
+
+      expect { client.receive_response { |_m| nil } }.to raise_error(ClaudeAgentSDK::ProcessError)
+      expect(recording_observer.errors.length).to eq(1)
+    end
+
+    it 'does not notify on_error for the Not-connected usage guard' do
+      client = described_class.new(options: options)
+
+      expect { client.receive_messages { |_m| nil } }
+        .to raise_error(ClaudeAgentSDK::CLIConnectionError, /Not connected/)
+      expect(recording_observer.errors).to be_empty
+    end
+
+    it 'Client#query notifies on_error when the stdin write fails' do
+      transport, = stub_connectable
+      client = described_class.new(options: options)
+      client.connect
+      allow(transport).to receive(:write)
+        .and_raise(ClaudeAgentSDK::CLIConnectionError, 'not ready')
+
+      expect { client.query('hi') }.to raise_error(ClaudeAgentSDK::CLIConnectionError, 'not ready')
+      expect(recording_observer.errors.length).to eq(1)
+    end
+
+    it 'connect failure notifies on_error without on_close' do
+      stub_connectable
+      # Override: initialize_protocol raises -> pre-handshake failure
+      allow(ClaudeAgentSDK::Query).to receive(:new) do
+        instance_double(ClaudeAgentSDK::Query, start: true, close: nil).tap do |qh|
+          allow(qh).to receive(:initialize_protocol)
+            .and_raise(ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1))
+        end
+      end
+
+      client = described_class.new(options: options)
+
+      expect { client.connect }.to raise_error(ClaudeAgentSDK::ProcessError)
+      expect(recording_observer.errors.length).to eq(1)
+      expect(recording_observer.closed).to be false
+    end
+
+    it 'resume materialization failure during connect notifies on_error' do
+      stub_connectable
+      allow(ClaudeAgentSDK::SessionStores).to receive(:validate_session_store_options)
+      store_options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        observers: [recording_observer],
+        session_store: ClaudeAgentSDK::InMemorySessionStore.new,
+        resume: 'sess-1'
+      )
+      allow(ClaudeAgentSDK::SessionResume).to receive(:materialize_resume_session)
+        .and_raise(ClaudeAgentSDK::ClaudeSDKError, 'store backend down')
+
+      client = described_class.new(options: store_options)
+
+      expect { client.connect }.to raise_error(ClaudeAgentSDK::ClaudeSDKError, 'store backend down')
+      expect(recording_observer.errors.length).to eq(1)
+    end
+
+    it 'String-prompt send failure during connect notifies on_error exactly once' do
+      transport, = stub_connectable
+      allow(transport).to receive(:write)
+        .and_raise(ClaudeAgentSDK::CLIConnectionError, 'write failed')
+
+      client = described_class.new(options: options)
+
+      expect { client.connect('hello') }.to raise_error(ClaudeAgentSDK::CLIConnectionError, 'write failed')
+      expect(recording_observer.errors.length).to eq(1)
+    end
+  end
+
+  describe 'observer on_user_prompt for streaming connect' do
+    it 'fires on_user_prompt for user messages with extractable text only' do
+      prompt_observer = Class.new do
+        include ClaudeAgentSDK::Observer
+
+        attr_reader :prompts
+
+        def initialize
+          @prompts = []
+        end
+
+        def on_user_prompt(prompt)
+          @prompts << prompt
+        end
+      end.new
+
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil, close: nil)
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+      allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+      allow(query_handler).to receive(:stream_input, &:to_a)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      stream = [
+        JSON.generate(type: 'user', message: { role: 'user', content: 'streamed question' }),
+        JSON.generate(type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't' }] })
+      ].to_enum
+
+      client = described_class.new(
+        options: ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [prompt_observer])
+      )
+      client.connect(stream)
+
+      expect(prompt_observer.prompts).to eq(['streamed question'])
     end
   end
 end

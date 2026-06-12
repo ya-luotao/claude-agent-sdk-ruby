@@ -65,6 +65,8 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
+Tool arguments are JSON-Schema-validated (draft4) before the handler runs — the simple `{ name: :string }` idiom marks every param required; validation failures, unknown tools, and handler exceptions return to the model in-band (`isError: true`). Global opt-out: `MCP.configure { |c| c.validate_tool_call_arguments = false }`. Draft4-incompatible schemas (numeric `exclusiveMinimum`, `$ref`) fall back to validation-disabled with a warning.
+
 ## Resources and prompts (SDK MCP)
 
 SDK MCP servers can also expose resources and prompts via `ClaudeAgentSDK.create_resource` and `ClaudeAgentSDK.create_prompt`.

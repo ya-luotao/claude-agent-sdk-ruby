@@ -81,6 +81,11 @@ module ClaudeAgentSDK
         end
       end
 
+      # Recording-only by design: a Client session can survive an error (the
+      # user may rescue one bad message and keep receiving), so finishing here
+      # would orphan later spans and break the next turn. Finish ownership
+      # stays with end_trace/on_close; start_trace also finishes any dangling
+      # span from a previous trace as the never-disconnected backstop.
       def on_error(error)
         return unless @root_span
 
@@ -89,16 +94,25 @@ module ClaudeAgentSDK
       end
 
       def on_close
-        @tool_spans.each_value(&:finish)
-        @tool_spans.clear
-        @root_span&.finish
-        @root_span = nil
-        @root_context = nil
+        finish_open_spans
+        reset_session_buffers
       end
 
       private
 
       def start_trace(message)
+        # A new init without an intervening ResultMessage (e.g. /clear or an
+        # interrupted turn) supersedes the current trace; finish it so it is
+        # exported instead of leaking as a never-ended span, and reset the
+        # buffers so the superseded turn's prompt/output cannot mislabel the
+        # new trace. The reset is conditional on an actual supersede — in the
+        # normal flow the buffered pre-init prompt belongs to THIS trace.
+        # finish_open_spans itself stays unconditional: end_trace nils
+        # @root_span but can leave @tool_spans populated.
+        superseding = !@root_span.nil?
+        finish_open_spans
+        reset_session_buffers if superseding
+
         attrs = {
           # gen_ai semantic conventions (recognized by Langfuse, Datadog, etc.)
           'gen_ai.system' => 'anthropic',
@@ -146,20 +160,15 @@ module ClaudeAgentSDK
         @last_assistant_text = combined_text unless combined_text.empty?
 
         # Create generation span
-        usage = message.usage || {}
-        input_tokens = usage[:input_tokens] || usage['input_tokens']
-        output_tokens = usage[:output_tokens] || usage['output_tokens']
         attrs = {
           'openinference.span.kind' => 'LLM',
           'langfuse.observation.type' => 'generation',
           'gen_ai.response.model' => message.model,
           'llm.model_name' => message.model,
-          'gen_ai.usage.input_tokens' => input_tokens,
-          'gen_ai.usage.output_tokens' => output_tokens,
           'gen_ai.completion' => truncate(combined_text),
           # OpenInference: Langfuse maps output.value to the Preview Output field
           'output.value' => truncate(combined_text)
-        }
+        }.merge(usage_token_attrs(message.usage || {}))
 
         OpenTelemetry::Context.with_current(@root_context) do
           span = @tracer.start_span('claude_agent.generation', attributes: compact_attrs(attrs))
@@ -188,9 +197,17 @@ module ClaudeAgentSDK
         return unless @root_span
 
         usage = message.usage || {}
-        input_tokens = usage[:input_tokens] || usage['input_tokens']
-        output_tokens = usage[:output_tokens] || usage['output_tokens']
-        total_tokens = (input_tokens || 0) + (output_tokens || 0) if input_tokens || output_tokens
+        input_tokens = usage_value(usage, :input_tokens)
+        output_tokens = usage_value(usage, :output_tokens)
+        cache_creation_tokens = usage_value(usage, :cache_creation_input_tokens)
+        cache_read_tokens = usage_value(usage, :cache_read_input_tokens)
+        # OpenInference subset semantics: prompt_details.* break down
+        # llm.token_count.prompt, so the prompt count must INCLUDE cache
+        # tokens (Anthropic's input_tokens excludes them; OpenInference's own
+        # Anthropic instrumentation sums them in). gen_ai.usage.* keys keep
+        # the raw exclusive values — Langfuse prices those additively.
+        prompt_tokens = (input_tokens || 0) + (cache_creation_tokens || 0) + (cache_read_tokens || 0) if input_tokens || cache_creation_tokens || cache_read_tokens
+        total_tokens = (prompt_tokens || 0) + (output_tokens || 0) if prompt_tokens || output_tokens
 
         # Set trace output (last assistant response — shown in Langfuse UI)
         # ResultMessage.result has the final text; fall back to last tracked assistant text
@@ -199,12 +216,14 @@ module ClaudeAgentSDK
         attrs = {
           # gen_ai conventions
           'gen_ai.usage.cost' => message.total_cost_usd,
-          'gen_ai.usage.input_tokens' => input_tokens,
-          'gen_ai.usage.output_tokens' => output_tokens,
-          # OpenInference conventions (Langfuse maps these to usage/cost)
-          'llm.token_count.prompt' => input_tokens,
+          # OpenInference conventions (Langfuse maps these to usage/cost);
+          # prompt includes cache tokens so prompt_details.* are true subsets
+          'llm.token_count.prompt' => prompt_tokens,
           'llm.token_count.completion' => output_tokens,
           'llm.token_count.total' => total_tokens,
+          # OpenInference prompt-cache breakdown (cache_read/cache_write details)
+          'llm.token_count.prompt_details.cache_read' => cache_read_tokens,
+          'llm.token_count.prompt_details.cache_write' => cache_creation_tokens,
           'llm.cost.total' => message.total_cost_usd,
           # Trace output (Langfuse shows this in the trace detail view)
           'output.value' => truncate(trace_output),
@@ -213,14 +232,17 @@ module ClaudeAgentSDK
           'claude_agent.duration_api_ms' => message.duration_api_ms,
           'claude_agent.num_turns' => message.num_turns,
           'claude_agent.stop_reason' => message.stop_reason
-        }
+        }.merge(usage_token_attrs(usage))
 
         @root_span.status = OpenTelemetry::Trace::Status.error(message.stop_reason || 'error') if message.is_error
 
         @root_span.add_attributes(compact_attrs(attrs))
-        @root_span.finish
-        @root_span = nil
-        @root_context = nil
+        # A tool span still open at the ResultMessage means the tool never
+        # completed (interrupt/error/denial) — finish it with the trace so a
+        # later same-id tool_result cannot mutate a dead-trace span. Buffer
+        # reset must come AFTER trace_output consumed @last_assistant_text.
+        finish_open_spans
+        reset_session_buffers
       end
 
       def start_tool_span(block)
@@ -247,9 +269,32 @@ module ClaudeAgentSDK
         return unless span
 
         # OpenInference: Langfuse maps output.value to the Preview Output field
-        span.set_attribute('output.value', truncate(block.content.to_s))
+        value, mime = serialize_tool_output(block.content)
+        if value
+          span.set_attribute('output.value', truncate(value))
+          span.set_attribute('output.mime_type', mime)
+        end
         span.status = OpenTelemetry::Trace::Status.error('tool error') if block.is_error
         span.finish
+      end
+
+      # Finish any spans still open (unfinished spans are never exported by
+      # OTel batch processors) and drop references to them. Tool spans are
+      # finished before the root span (children before parent). Idempotent.
+      def finish_open_spans
+        @tool_spans.each_value(&:finish)
+        @tool_spans.clear
+        @root_span&.finish
+        @root_span = nil
+        @root_context = nil
+      end
+
+      # Clear per-trace buffers so a reused observer instance (sequential
+      # query() calls or multi-turn Client sessions) does not stamp stale
+      # input/output onto later traces.
+      def reset_session_buffers
+        @first_user_input = nil
+        @last_assistant_text = nil
       end
 
       def record_retry_event(message)
@@ -286,6 +331,26 @@ module ClaudeAgentSDK
         ))
       end
 
+      # gen_ai.usage.* attributes from a CLI usage hash. Cache tokens are
+      # emitted alongside input/output because Anthropic's input_tokens
+      # EXCLUDES cached tokens; Langfuse maps every gen_ai.usage.* key into
+      # usage details and natively prices cache_read_input_tokens /
+      # cache_creation_input_tokens.
+      def usage_token_attrs(usage)
+        {
+          'gen_ai.usage.input_tokens' => usage_value(usage, :input_tokens),
+          'gen_ai.usage.output_tokens' => usage_value(usage, :output_tokens),
+          'gen_ai.usage.cache_creation_input_tokens' => usage_value(usage, :cache_creation_input_tokens),
+          'gen_ai.usage.cache_read_input_tokens' => usage_value(usage, :cache_read_input_tokens)
+        }
+      end
+
+      # Usage hashes arrive symbol-keyed from the live CLI (symbolize_names:
+      # true) and string-keyed from session transcripts.
+      def usage_value(usage, key)
+        usage[key] || usage[key.to_s]
+      end
+
       # Remove nil values from attributes hash (OTel rejects nil attribute values)
       def compact_attrs(attrs)
         attrs.compact
@@ -301,6 +366,15 @@ module ClaudeAgentSDK
         JSON.generate(obj)
       rescue StandardError
         obj.to_s
+      end
+
+      # Tool result content is a String or an Array of content-block hashes;
+      # serialize structured content as JSON, consistent with input.value.
+      def serialize_tool_output(content)
+        return nil if content.nil?
+        return [content, 'text/plain'] if content.is_a?(String)
+
+        [safe_json(content), 'application/json']
       end
     end
   end

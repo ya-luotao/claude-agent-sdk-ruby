@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Unofficial, community-maintained Ruby SDK for Claude Agent (gem: `claude-agent-sdk`). Wraps the Claude Code CLI as a subprocess, communicating via stream-JSON over stdin/stdout. Requires Ruby 3.2+ and Claude Code CLI 2.0.0+.
 
-Runtime dependencies: `async` (~2.0) for concurrency, `mcp` (~0.4) for MCP protocol compliance.
+Runtime dependencies: `async` (~2.0) for concurrency, `mcp` (>= 0.5, < 1) for MCP protocol compliance.
 
 ## Common Commands
 

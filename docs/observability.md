@@ -2,9 +2,17 @@
 
 The SDK includes a built-in **observer interface** and an **OpenTelemetry observer** for tracing agent sessions. Traces are emitted using standard `gen_ai.*` semantic conventions, compatible with Langfuse, Jaeger, Datadog, and any OTel backend.
 
+## Distributed Trace Context (W3C)
+
+When `connect` spawns the CLI and there is an active OTel span, the SDK injects `TRACEPARENT`/`TRACESTATE` (and any other propagator carrier keys, e.g. `BAGGAGE` — which may carry user-defined key/values — uppercased) into the subprocess environment so CLI-side telemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`) joins the caller's distributed trace. This requires the `opentelemetry` gem to be loaded with a configured propagator — there is no hard dependency, and it is a no-op otherwise. Explicit `ClaudeAgentOptions#env` keys always win; stale inherited `TRACEPARENT`/`TRACESTATE` is replaced (or unset) only when an active span supersedes it. This works independently of `OTelObserver`: the CLI parents under the caller's surrounding span, not under `claude_agent.session` (which starts at InitMessage, after spawn).
+
 ## How It Works
 
-Register observers via `ClaudeAgentOptions`. The SDK calls `on_message` for every parsed message in both `query()` and `Client`, and `on_close` when the session ends. Observer errors are silently rescued so they never crash your application.
+Register observers via `ClaudeAgentOptions`. The SDK calls `on_user_prompt` when a prompt is sent — the verbatim string for String prompts (`query()` / `Client#query`), and once per `type: 'user'` message with extractable text for Enumerator/streaming input (`query()` stream path and `Client#connect` with an initial enumerable). It calls `on_message` for every parsed message, `on_error` once per error that surfaces to your code (before `on_close` where both fire), and `on_close` when the session ends. Observer errors are silently rescued so they never crash your application.
+
+For multi-turn streaming input note that `OTelObserver` captures one prompt per trace (the first one buffered before each init); prompts queued up-front for later turns may not appear as those traces' `input.value`.
+
+In `Client` mode, call `disconnect` (ideally in an `ensure` block) so `on_close` runs and OTel spans are flushed and exported.
 
 ```
 claude_agent.session            (root span — one per query/session)
@@ -86,14 +94,26 @@ end
 # OpenTelemetry.tracer_provider.shutdown
 ```
 
+### Reuse and concurrency
+
+A single `OTelObserver` instance is safe to reuse for **sequential** queries — per-trace state (buffered prompt/output, open spans) is reset at each trace boundary. It holds unsynchronized span state, however, so for **concurrent** sessions (Puma, Sidekiq, threads) pass a callable factory so each query/session gets a fresh instance:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  observers: [-> { ClaudeAgentSDK::Instrumentation::OTelObserver.new }]
+)
+```
+
+See [docs/rails.md](rails.md) for the Rails-specific pattern.
+
 ## Span Attributes
 
 The OTel observer sets attributes using both `gen_ai.*` (OTel GenAI) and OpenInference conventions for maximum backend compatibility:
 
 | Span | Type | Key Attributes |
 |------|------|----------------|
-| `claude_agent.session` | `agent` | `gen_ai.system`, `gen_ai.request.model`, `session.id`, `input.value`, `output.value`, `gen_ai.usage.cost`, `llm.cost.total` |
-| `claude_agent.generation` | `generation` | `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `output.value` |
+| `claude_agent.session` | `agent` | `gen_ai.system`, `gen_ai.request.model`, `session.id`, `input.value`, `output.value`, `gen_ai.usage.cost`, `llm.cost.total`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens`, `llm.token_count.prompt_details.cache_read`, `llm.token_count.prompt_details.cache_write` |
+| `claude_agent.generation` | `generation` | `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens`, `output.value` |
 | `claude_agent.tool.*` | `tool` | `tool.name`, `input.value`, `output.value` |
 
 Events (`api_retry`, `rate_limit`, `tool_progress`) are recorded on the root span.
@@ -102,7 +122,7 @@ The `langfuse.observation.type` attribute is set on each span (`agent`/`generati
 
 ## Custom Observers
 
-Implement the `Observer` module to build your own instrumentation:
+Implement the `Observer` module to build your own instrumentation. Overridable callbacks: `on_user_prompt(prompt)`, `on_message(message)`, `on_error(error)`, `on_close`.
 
 ```ruby
 class MyObserver
@@ -113,6 +133,10 @@ class MyObserver
     when ClaudeAgentSDK::ResultMessage
       puts "Cost: $#{message.total_cost_usd}, Tokens: #{message.usage}"
     end
+  end
+
+  def on_error(error)
+    puts "Session error: #{error.message}"
   end
 
   def on_close

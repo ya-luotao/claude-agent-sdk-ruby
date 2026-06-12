@@ -22,15 +22,31 @@ module ClaudeAgentSDK
 
     CONTROL_REQUEST_TIMEOUT_ENV_VAR = 'CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS'
     DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
-    # NOTE: CLAUDE_CODE_STREAM_CLOSE_TIMEOUT is defined by the CLI in
-    # MILLISECONDS (Python SDK uses `int(os.environ[...])/1000`); the SDK
-    # divides by 1000 to obtain seconds. The default below is *seconds*
-    # for direct use without env conversion (60 s = the CLI's 60000 ms).
-    STREAM_CLOSE_TIMEOUT_ENV_VAR = 'CLAUDE_CODE_STREAM_CLOSE_TIMEOUT'
-    DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS = 60.0
+
+    # Waiter for control responses awaited OFF the reactor — i.e. a control
+    # method called from inside a hook/can_use_tool/SDK-MCP callback, which
+    # runs on a FiberBoundary worker thread (Python supports this reentrancy
+    # natively: callbacks are event-loop tasks and anyio.Event is
+    # level-triggered). Duck-types Async::Condition#signal for the read
+    # loop's signal sites; the unconditional token push makes it
+    # level-triggered, closing the check-then-wait gap that an
+    # edge-triggered Condition would lose across threads.
+    class ThreadWaiter
+      def initialize
+        @queue = ::Queue.new
+      end
+
+      def signal(_value = nil)
+        @queue << true
+      end
+
+      def wait(timeout)
+        @queue.pop(timeout: timeout)
+      end
+    end
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
-                   exclude_dynamic_sections: nil)
+                   exclude_dynamic_sections: nil, skills: nil)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
@@ -38,6 +54,7 @@ module ClaudeAgentSDK
       @sdk_mcp_servers = sdk_mcp_servers || {}
       @agents = agents
       @exclude_dynamic_sections = exclude_dynamic_sections
+      @skills = skills
 
       # Control protocol state
       @pending_control_responses = {}
@@ -46,13 +63,16 @@ module ClaudeAgentSDK
       @hook_callback_timeouts = {}
       @next_callback_id = 0
       @request_counter = 0
+      @request_counter_mutex = Mutex.new
       @inflight_control_request_tasks = {}
 
       # Message stream
       @message_queue = Async::Queue.new
       @first_result_received = false
+      @last_error_result_text = nil
       @first_result_condition = Async::Condition.new
       @task = nil
+      @child_tasks = []
       @initialized = false
       @closed = false
       @initialization_result = nil
@@ -80,10 +100,17 @@ module ClaudeAgentSDK
               @hook_callback_timeouts[callback_id] = matcher[:timeout] if matcher[:timeout]
               callback_ids << callback_id
             end
-            hooks_config[event] << {
+            matcher_config = {
               matcher: matcher[:matcher],
               hookCallbackIds: callback_ids
             }
+            # Wire field is literal "timeout" in SECONDS, per matcher,
+            # omitted when absent (Python _internal/query.py parity — no
+            # camelCase, no ms conversion). Local enforcement via
+            # @hook_callback_timeouts stays as defense-in-depth for CLIs
+            # that ignore the field.
+            matcher_config[:timeout] = matcher[:timeout] if matcher[:timeout]
+            hooks_config[event] << matcher_config
           end
         end
       end
@@ -117,6 +144,9 @@ module ClaudeAgentSDK
         agents: agents_dict
       }
       request[:excludeDynamicSections] = @exclude_dynamic_sections unless @exclude_dynamic_sections.nil?
+      # 'all' and omitted are equivalent at the wire level (no filter), so
+      # only send the field when it's an explicit list (mirrors Python).
+      request[:skills] = @skills if @skills.is_a?(Array)
 
       response = send_control_request(request)
       @initialized = true
@@ -151,6 +181,25 @@ module ClaudeAgentSDK
       @task = parent.async { read_messages }
     end
 
+    # Spawn a child task that is stopped by #close (mirrors the Python SDK's
+    # Query#spawn_task / _child_tasks). Used for background input streaming so
+    # a dying read loop or #close can never strand the stream task and hang
+    # the enclosing Async reactor.
+    #
+    # NOTE: intentionally a partial mirror — Python prunes completed tasks via
+    # add_done_callback(_child_tasks.discard); here entries live until #close.
+    # Fine for the current one-shot call sites (max two tasks per Query); do
+    # not route per-request work (control handlers, per-turn streams) through
+    # this without adding completion-based removal.
+    def spawn_task(&block)
+      parent = Async::Task.current?
+      raise CLIConnectionError, 'Query#spawn_task must be called inside an Async{} block' unless parent
+
+      task = parent.async(&block)
+      @child_tasks << task
+      task
+    end
+
     # Install the transcript-mirror batcher fed by `transcript_mirror` frames
     # (Client mode with a session_store). nil disables mirroring.
     def set_transcript_mirror_batcher(batcher)
@@ -183,16 +232,6 @@ module ClaudeAgentSDK
       value.positive? ? value : DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS
     rescue ArgumentError
       DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS
-    end
-
-    def stream_close_timeout_seconds
-      raw_value = ENV.fetch(STREAM_CLOSE_TIMEOUT_ENV_VAR, nil)
-      return DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS if raw_value.nil? || raw_value.strip.empty?
-
-      value = Float(raw_value) / 1000.0
-      value.positive? ? value : DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS
-    rescue ArgumentError
-      DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS
     end
 
     def read_messages
@@ -237,33 +276,48 @@ module ClaudeAgentSDK
               @first_result_received = true
               @first_result_condition.signal
             end
+            if message[:is_error]
+              errors = (message[:errors] || []).join('; ')
+              @last_error_result_text = errors.empty? ? (message[:subtype] || 'unknown error').to_s : errors
+            else
+              @last_error_result_text = nil
+            end
+          elsif !(msg_type == 'system' && message[:subtype] == 'session_state_changed')
+            # Anything other than the post-turn session_state_changed marker
+            # means the conversation moved on; a ProcessError now is a fresh
+            # crash, not the expected exit from a prior error result. Mirrors
+            # the Python/TypeScript SDK reset logic.
+            @last_error_result_text = nil
           end
           # Regular SDK messages go to the queue
           @message_queue.enqueue(message)
         end
       end
-    rescue ProcessError => e
-      # The CLI can exit non-zero after delivering a valid result (e.g.,
-      # StructuredOutput tool_use triggers exit code 1). When we already
-      # received a result message, treat the process error as non-fatal.
-      if @first_result_received
-        warn "Claude SDK: Process exited with code #{e.exit_code} after result — ignoring"
-      else
-        @pending_control_responses.dup.each do |request_id, condition|
-          @pending_control_results[request_id] ||= e
-          condition.signal
-        end
-        @message_queue.enqueue({ type: 'error', error: e })
-      end
     rescue StandardError => e
-      # Unblock pending control requests (e.g., initialize) so callers don't hang until timeout.
+      # Unblock pending control requests (e.g., initialize) so callers don't
+      # hang until timeout. INVARIANT: store the result before signaling —
+      # senders check the slot before waiting (level-trigger).
       @pending_control_responses.dup.each do |request_id, condition|
         @pending_control_results[request_id] ||= e
         condition.signal
       end
 
+      # When the CLI emits a result with is_error=true (e.g. error_max_turns,
+      # error_during_execution, a StructuredOutput error) it then exits
+      # non-zero on purpose, for shell-script consumers. The trailing
+      # ProcessError carries no information beyond "exit code 1" — replace it
+      # with the structured error the CLI already reported so the exception is
+      # actionable. Mirrors the Python SDK (_read_messages) and the TypeScript
+      # SDK (Query.ts readMessages).
+      error = if e.is_a?(ProcessError) && @last_error_result_text
+                ProcessError.new("Claude Code returned an error result: #{@last_error_result_text}",
+                                 exit_code: e.exit_code, stderr: e.stderr)
+              else
+                e
+              end
+
       # Put error in queue so iterators can handle it
-      @message_queue.enqueue({ type: 'error', error: e })
+      @message_queue.enqueue({ type: 'error', error: error })
     ensure
       # Catch entries from a turn that ended without a `result` (early EOF /
       # transport error) so they aren't dropped. The flush can suspend (lock
@@ -294,7 +348,14 @@ module ClaudeAgentSDK
     def handle_control_response(message)
       response = message[:response] || {}
       request_id = response[:request_id] || response[:requestId] || message[:request_id] || message[:requestId]
-      return unless @pending_control_responses.key?(request_id)
+      # Capture the waiter ONCE: a worker-thread caller can satisfy its
+      # level-trigger check and evict the entries between our key? check and
+      # a re-lookup, so `@pending_control_responses[request_id].signal` could
+      # call signal on nil — a NoMethodError the read loop would treat as a
+      # fatal transport error, tearing down the whole session. Signaling an
+      # already-evicted waiter is harmless (orphan token push / no-op).
+      waiter = @pending_control_responses[request_id]
+      return unless waiter
 
       if response[:subtype] == 'error'
         @pending_control_results[request_id] = StandardError.new(response[:error] || 'Unknown error')
@@ -302,8 +363,10 @@ module ClaudeAgentSDK
         @pending_control_results[request_id] = response
       end
 
-      # Signal that response is ready
-      @pending_control_responses[request_id].signal
+      # Signal that response is ready. INVARIANT: the result slot above
+      # MUST be written before this signal — senders check the slot before
+      # waiting (level-trigger).
+      waiter.signal
     end
 
     def handle_control_request(request)
@@ -366,11 +429,20 @@ module ClaudeAgentSDK
 
       original_input = request_data[:input]
 
+      # Field order mirrors Python _internal/query.py's can_use_tool branch.
+      # Suggestions are hydrated into PermissionUpdate (Python #920); a
+      # malformed entry raises here, on the reactor, and becomes an error
+      # control_response — same observable behavior as Python.
       context = ToolPermissionContext.new(
         signal: nil,
-        suggestions: request_data[:permission_suggestions] || [],
+        suggestions: (request_data[:permission_suggestions] || []).map { |s| PermissionUpdate.new(s) },
         tool_use_id: request_data[:tool_use_id],
-        agent_id: request_data[:agent_id]
+        agent_id: request_data[:agent_id],
+        blocked_path: request_data[:blocked_path],
+        decision_reason: request_data[:decision_reason],
+        title: request_data[:title],
+        display_name: request_data[:display_name],
+        description: request_data[:description]
       )
 
       # User-supplied permission callback runs on a plain thread, not the
@@ -645,8 +717,10 @@ module ClaudeAgentSDK
           **base_args
         )
       else
-        # Return base input for unknown event types
-        BaseHookInput.new(**base_args)
+        # Unknown event: preserve the wire event name and full raw payload
+        # rather than dropping event-specific fields (Python passes the raw
+        # dict through, so nothing is lost there).
+        UnknownHookInput.new(hook_event_name: event_name, raw_input: input_data, **base_args)
       end
     end
 
@@ -699,15 +773,25 @@ module ClaudeAgentSDK
 
       timeout_seconds = control_request_timeout_seconds
 
-      # Generate unique request ID
-      @request_counter += 1
-      request_id = "req_#{@request_counter}_#{SecureRandom.hex(4)}"
+      # Detect the execution mode BEFORE any write: a control method called
+      # from inside a hook/permission/SDK-MCP callback runs on a
+      # FiberBoundary worker thread with no reactor. Detecting after the
+      # write left a half-executed request (written to the CLI, then
+      # RuntimeError; the eventual response dropped by the key? guard).
+      task = Async::Task.current?
 
-      # Create condition for response
-      condition = Async::Condition.new
-      @pending_control_responses[request_id] = condition
+      # Generate unique request ID (callbacks may issue requests from
+      # worker threads concurrently with the reactor)
+      request_id = @request_counter_mutex.synchronize do
+        @request_counter += 1
+        "req_#{@request_counter}_#{SecureRandom.hex(4)}"
+      end
 
-      # Build and send request
+      # Reactor callers wait on an Async::Condition; worker-thread callers
+      # on a ThreadWaiter. Registration must precede the write.
+      waiter = task ? Async::Condition.new : ThreadWaiter.new
+      @pending_control_responses[request_id] = waiter
+
       control_request = {
         type: 'control_request',
         request_id: request_id,
@@ -717,29 +801,48 @@ module ClaudeAgentSDK
 
       writeln(JSON.generate(control_request))
 
-      # Wait for response with timeout. Use the current task's timeout so we
-      # stay in the caller's fiber (a nested `Async do ... end.wait` spawned a
-      # separate task and could leak the pending entries when an Async::Stop
-      # propagated through `.wait` before either the success-path or the
-      # timeout-path cleanup ran). Control requests must run inside an Async
-      # reactor — `Query#start` already enforces this precondition, so the
-      # cleanest place to surface the contract is the start hand-off; here we
-      # assume an active task is present.
       begin
-        Async::Task.current.with_timeout(timeout_seconds) do
-          condition.wait
-        end
+        await_control_response(request_id, waiter, task, timeout_seconds, request[:subtype])
         result = @pending_control_results[request_id]
         raise result if result.is_a?(Exception)
 
         result&.[](:response) || {}
-      rescue Async::TimeoutError
-        raise ControlRequestTimeoutError, "Control request timeout: #{request[:subtype]}"
       ensure
         # Always evict the entries so a late control_response (after timeout)
         # or an Async::Stop propagating through wait does not leak state.
         @pending_control_responses.delete(request_id)
         @pending_control_results.delete(request_id)
+      end
+    end
+
+    # Level-triggered wait: every signal site stores the result BEFORE
+    # signaling, so checking the result slot before (and between) waits
+    # cannot lose a wakeup — Async::Condition is edge-triggered and a signal
+    # arriving before the sender reaches wait would otherwise be dropped
+    # (reachable when a custom transport's #write suspends after delivery,
+    # or when the read loop's rescue broadcast fires mid-write). Mirrors
+    # anyio.Event's level-trigger semantics in Python.
+    #
+    # Do NOT reimplement the reactor wait as a nested `Async do ... end.wait`
+    # — that spawned a separate task and leaked the pending entries when an
+    # Async::Stop propagated through `.wait` before cleanup ran.
+    def await_control_response(request_id, waiter, task, timeout_seconds, subtype)
+      if task
+        begin
+          task.with_timeout(timeout_seconds) do
+            waiter.wait until @pending_control_results.key?(request_id)
+          end
+        rescue Async::TimeoutError
+          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}"
+        end
+      else
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
+        until @pending_control_results.key?(request_id)
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}" if remaining <= 0
+
+          waiter.wait(remaining)
+        end
       end
     end
 
@@ -824,27 +927,15 @@ module ClaudeAgentSDK
       }
     end
 
-    def handle_mcp_tools_call(server, message, params)
-      # Execute tool on the SDK MCP server
-      tool_name = params[:name]
-      arguments = params[:arguments] || {}
-
-      # Call the tool
-      result = server.call_tool(tool_name, arguments)
-      content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content') || []
-      response_data = { content: content }
-
-      is_error = ClaudeAgentSDK.flexible_fetch(result, 'isError', 'is_error')
-      response_data[:isError] = !!is_error unless is_error.nil?
-
-      structured_content = ClaudeAgentSDK.flexible_fetch(result, 'structuredContent', 'structured_content')
-      response_data[:structuredContent] = structured_content unless structured_content.nil?
-
-      {
-        jsonrpc: '2.0',
-        id: message[:id],
-        result: response_data
-      }
+    def handle_mcp_tools_call(server, message, _params)
+      # Route through the official MCP::Server (Python parity: its lowlevel
+      # server validates arguments against the tool's inputSchema BEFORE the
+      # handler runs and reports validation failures, unknown tools, and
+      # handler exceptions as in-band isError results). tools/list,
+      # initialize, resources/* and prompts/* stay on the SDK paths — the
+      # gem drops annotations/_meta from tools/list and negotiates newer
+      # protocol versions.
+      server.handle_message(message)
     end
 
     def handle_mcp_resources_list(server, message)
@@ -976,31 +1067,60 @@ module ClaudeAgentSDK
 
     # Wait for the first result before closing stdin when hooks or SDK MCP
     # servers may still need to exchange control messages with the CLI.
+    # The control protocol requires stdin to stay open for the entire turn
+    # (hook replies, can_use_tool replies and SDK MCP tool results are all
+    # written to stdin), so no timeout is applied — closing stdin mid-turn
+    # silently broke hooks/MCP on turns longer than the old 60s bound
+    # (mirrors Python SDK commit c3d96cb). The condition is guaranteed to be
+    # signaled: by the result branch in read_messages, or by its ensure block
+    # when the process exits early.
     def wait_for_result_and_end_input
       if !@first_result_received &&
          ((@sdk_mcp_servers && !@sdk_mcp_servers.empty?) || (@hooks && !@hooks.empty?))
-        Async::Task.current.with_timeout(stream_close_timeout_seconds) do
-          @first_result_condition.wait unless @first_result_received
-        end
+        @first_result_condition.wait
       end
-    rescue Async::TimeoutError
-      nil
     ensure
       @transport.end_input
     end
 
-    # Stream input messages to transport
+    # Stream input messages to transport. NOTE: iteration runs on the
+    # reactor (the deliberate FiberBoundary carve-out — see
+    # fiber_boundary.rb): scheduler-aware blocking (Thread::Queue#pop,
+    # sleep, socket IO) parks only this task; CPU-bound or scheduler-opaque
+    # work in the enumerator must be moved to a producer Thread by the user.
     def stream_input(stream)
+      wrote_message = false
       stream.each do |message|
         break if @closed
         serialized = message.is_a?(Hash) ? JSON.generate(message) : message.to_s
         writeln(serialized)
+        wrote_message = true
       end
     rescue StandardError => e
       # Log error but don't raise
       warn "Error streaming input: #{e.message}"
     ensure
-      wait_for_result_and_end_input
+      # Three teardown shapes:
+      # - #close in progress (@closed, Async::Stop unwinding): do nothing —
+      #   the transport is about to be closed, and waiting on
+      #   @first_result_condition inside a stopping fiber could suspend
+      #   teardown. Mirrors Python, where cancellation skips this entirely.
+      # - A turn is in flight (some message reached the CLI): hold stdin
+      #   open until its first result so hooks/SDK MCP control replies can
+      #   still be written (no timeout — the result or process exit is
+      #   guaranteed to signal).
+      # - No complete message ever reached the CLI (empty stream, or the
+      #   stream raised before the first write): no result can ever arrive,
+      #   so waiting would park query() forever beside an idle CLI. Close
+      #   stdin so the CLI sees EOF and exits. Deliberate improvement over
+      #   Python, which leaves stdin open and hangs on this path.
+      unless @closed
+        if wrote_message
+          wait_for_result_and_end_input
+        else
+          @transport.end_input
+        end
+      end
     end
 
     def writeln(string)
@@ -1027,9 +1147,24 @@ module ClaudeAgentSDK
     # Close the query and transport
     def close
       @closed = true
+      # Wake pending control-request waiters (same shape as the read-loop
+      # rescue broadcast): close stops the read task with Async::Stop, which
+      # bypasses that broadcast — a worker-thread caller parked in
+      # ThreadWaiter#wait would otherwise leak its OS thread for the full
+      # control-request timeout (up to 1200s) in long-lived processes.
+      # INVARIANT: store the result before signaling (level-trigger).
+      @pending_control_responses.dup.each do |request_id, waiter|
+        @pending_control_results[request_id] ||= CLIConnectionError.new('Query closed')
+        waiter.signal
+      end
       # Final mirror flush BEFORE stopping the read task, so the last turn's
       # entries reach the store. #close on the batcher never raises.
       @transcript_mirror_batcher&.close
+      # Stop tracked child tasks (e.g. stream_input) before the read task and
+      # transport so a parked input stream can never keep the reactor alive
+      # (mirrors Python close() cancelling _child_tasks).
+      @child_tasks.each(&:stop)
+      @child_tasks.clear
       @task&.stop
       @transport.close
     end

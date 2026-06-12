@@ -344,6 +344,10 @@ module ClaudeAgentSDK
          (env_override.key?('CLAUDE_CONFIG_DIR') || env_override.key?(:CLAUDE_CONFIG_DIR))
         override = env_override['CLAUDE_CONFIG_DIR'] || env_override[:CLAUDE_CONFIG_DIR]
         override = nil if override.respond_to?(:empty?) && override.empty?
+        # NFC like Python's _get_projects_dir(env_override) — a decomposed
+        # Unicode override would otherwise mismatch the NFC paths used for
+        # the mirror's projects-dir prefix comparison and drop every frame.
+        override = override.unicode_normalize(:nfc) if override
         return File.join(override || File.expand_path('~/.claude'), 'projects')
       end
 

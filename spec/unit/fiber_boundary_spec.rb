@@ -20,6 +20,7 @@ RSpec.describe 'Fiber scheduler boundary' do
     allow(handler).to receive(:receive_messages) do |&block|
       messages.each { |m| block.call(m) }
     end
+    allow(handler).to receive(:spawn_task) { |&blk| blk.call }
     allow(ClaudeAgentSDK::Query).to receive(:new).and_return(handler)
     handler
   end
@@ -152,6 +153,160 @@ RSpec.describe 'Fiber scheduler boundary' do
       end.wait
 
       expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+    end
+  end
+
+  describe '`break` inside user-yielded blocks' do
+    # The FiberBoundary thread hop severs `break` from the surrounding loop:
+    # it surfaces as LocalJumpError(reason: :break) on the worker thread.
+    # FiberBoundary.invoke_iteration translates it into a Break sentinel and
+    # the SDK loops break on the calling fiber, restoring the native block
+    # semantics Python users get from breaking out of `async for`.
+    def assistant_hash
+      { type: 'assistant', message: { role: 'assistant', model: 'claude', content: [{ type: 'text', text: 'hi' }] } }
+    end
+
+    def result_hash
+      { type: 'result', subtype: 'success', duration_ms: 1, duration_api_ms: 1, is_error: false, num_turns: 1,
+        session_id: 's', total_cost_usd: 0 }
+    end
+
+    it 'query() supports break in the user block and returns the break value' do
+      stub_transport
+      stub_query_handler_yielding(assistant_hash, result_hash, assistant_hash)
+
+      received = []
+      ret = ClaudeAgentSDK.query(prompt: 'hi') do |msg|
+        received << msg.class
+        break :stopped if msg.is_a?(ClaudeAgentSDK::ResultMessage)
+      end
+
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+      expect(ret).to eq(:stopped)
+    end
+
+    it 'Client#receive_messages supports break and returns the break value inside Async' do
+      stub_transport
+      stub_query_handler_yielding(assistant_hash, result_hash, assistant_hash)
+
+      received = []
+      ret = nil
+      Async do
+        client = ClaudeAgentSDK::Client.new
+        client.connect
+        begin
+          ret = client.receive_messages do |msg|
+            received << msg.class
+            break :early if msg.is_a?(ClaudeAgentSDK::ResultMessage)
+          end
+        ensure
+          client.disconnect
+        end
+      end.wait
+
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+      expect(ret).to eq(:early)
+    end
+
+    it 'Client#receive_messages break is the exit on a never-terminating stream' do
+      stub_transport
+
+      queue = Async::Queue.new
+      handler = instance_double(
+        ClaudeAgentSDK::Query,
+        start: true, initialize_protocol: nil,
+        wait_for_result_and_end_input: nil, close: nil
+      )
+      allow(handler).to receive(:receive_messages) do |&block|
+        loop { block.call(queue.dequeue) }
+      end
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(handler)
+
+      received = []
+      Async do |task|
+        client = ClaudeAgentSDK::Client.new
+        client.connect
+        begin
+          task.async do
+            queue.enqueue(assistant_hash)
+            queue.enqueue(result_hash)
+          end
+
+          task.with_timeout(2.0) do
+            client.receive_messages do |msg|
+              received << msg.class
+              break if msg.is_a?(ClaudeAgentSDK::ResultMessage)
+            end
+          end
+        ensure
+          client.disconnect
+        end
+      end.wait
+
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+    end
+
+    it 'Client#receive_response supports a user break before ResultMessage' do
+      stub_transport
+      stub_query_handler_yielding(assistant_hash, result_hash)
+
+      received = []
+      Async do
+        client = ClaudeAgentSDK::Client.new
+        client.connect
+        begin
+          client.receive_response do |msg|
+            received << msg.class
+            break
+          end
+        ensure
+          client.disconnect
+        end
+      end.wait
+
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage])
+    end
+
+    it 'still propagates non-break errors from the user block' do
+      stub_transport
+      stub_query_handler_yielding(assistant_hash)
+
+      expect do
+        Async do
+          client = ClaudeAgentSDK::Client.new
+          client.connect
+          begin
+            client.receive_messages { |_msg| raise ArgumentError, 'user boom' }
+          ensure
+            client.disconnect
+          end
+        end.wait
+      end.to raise_error(ArgumentError, 'user boom')
+    end
+  end
+
+  describe 'FiberBoundary.invoke_iteration' do
+    it 'returns nil when the block completes, even with a truthy return value' do
+      result = Async { ClaudeAgentSDK::FiberBoundary.invoke_iteration(proc { :truthy }) }.wait
+      expect(result).to be_nil
+    end
+
+    it 'returns a Break sentinel carrying the break value' do
+      result = Async { ClaudeAgentSDK::FiberBoundary.invoke_iteration(proc { break :v }) }.wait
+      expect(result).to be_a(ClaudeAgentSDK::FiberBoundary::Break)
+      expect(result.value).to eq(:v)
+    end
+
+    it 're-raises LocalJumpError for non-break jumps' do
+      expect do
+        Async { ClaudeAgentSDK::FiberBoundary.invoke_iteration(proc { return 1 }) }.wait
+      end.to raise_error(LocalJumpError)
+    end
+
+    it 'hides the Fiber scheduler from the block' do
+      captured = :unset
+      Async { ClaudeAgentSDK::FiberBoundary.invoke_iteration(proc { captured = Fiber.scheduler }) }.wait
+      expect(captured).to be_nil
     end
   end
 

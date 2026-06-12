@@ -4,6 +4,204 @@ require 'spec_helper'
 require 'async'
 
 RSpec.describe ClaudeAgentSDK::Query do
+  describe '#spawn_task' do
+    it 'stops spawned child tasks on close so a blocked input stream cannot hang the reactor' do
+      transport = mock_transport
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      started = false
+      spawned = nil
+      Async do
+        blocked = Enumerator.new do |y|
+          y << { type: 'user', message: { role: 'user', content: 'hi' }, session_id: '' }
+          started = true
+          sleep # parked forever, like a Queue#pop awaiting more input
+        end
+        spawned = query.spawn_task { query.stream_input(blocked) }
+        sleep 0.01 # let stream_input run up to the park point
+        query.close
+
+        expect(started).to be true
+        expect(spawned).to be_stopped
+      ensure
+        spawned&.stop # guard: never hang the suite if close regresses
+      end.wait
+    end
+
+    it 'raises CLIConnectionError when called outside an Async reactor' do
+      query = described_class.new(transport: mock_transport, is_streaming_mode: true)
+
+      expect { query.spawn_task { nil } }.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Async/)
+    end
+  end
+
+  describe '#wait_for_result_and_end_input' do
+    # The control protocol writes hook/permission/SDK-MCP replies to stdin,
+    # so stdin must stay open for the whole first turn — no timeout (mirrors
+    # Python SDK commit c3d96cb; turns longer than the old 60s bound silently
+    # broke hooks and in-process MCP tools).
+    def queue_fed_transport(queue)
+      ended = []
+      transport = mock_transport
+      allow(transport).to receive(:end_input) { ended << true }
+      allow(transport).to receive(:read_messages) do |&blk|
+        loop do
+          msg = queue.dequeue
+          raise ClaudeAgentSDK::ProcessError.new('died', exit_code: 1, stderr: '') if msg == :crash
+
+          blk.call(msg)
+        end
+      end
+      [transport, ended]
+    end
+
+    def hooks_config
+      { 'PreToolUse' => [{ matcher: 'Bash', hooks: [proc {}] }] }
+    end
+
+    it 'keeps stdin open past any timeout while hooks are configured' do
+      # The old implementation read CLAUDE_CODE_STREAM_CLOSE_TIMEOUT and
+      # force-closed stdin when it fired; 50ms makes that regression trip
+      # quickly. The variable is dead after the fix.
+      previous = ENV.fetch('CLAUDE_CODE_STREAM_CLOSE_TIMEOUT', nil)
+      ENV['CLAUDE_CODE_STREAM_CLOSE_TIMEOUT'] = '50'
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+        task.sleep 0.2
+        expect(ended).to be_empty
+
+        queue.enqueue(sample_result_message)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    ensure
+      if previous
+        ENV['CLAUDE_CODE_STREAM_CLOSE_TIMEOUT'] = previous
+      else
+        ENV.delete('CLAUDE_CODE_STREAM_CLOSE_TIMEOUT')
+      end
+    end
+
+    it 'ends input only after the first result when SDK MCP servers are configured' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(
+        transport: transport, is_streaming_mode: true, sdk_mcp_servers: { calc: double('sdk server') }
+      )
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+        task.sleep 0.05
+        expect(ended).to be_empty
+
+        queue.enqueue(sample_result_message)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    it 'ends input immediately when no hooks or SDK MCP servers are configured' do
+      transport = mock_transport
+      ended = []
+      allow(transport).to receive(:end_input) { ended << true }
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      Async { query.wait_for_result_and_end_input }.wait
+
+      expect(ended).not_to be_empty
+    end
+
+    it 'unblocks a parked waiter when the read loop dies without a result' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+        task.sleep 0.05
+        expect(ended).to be_empty
+
+        queue.enqueue(:crash)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    # stream_input teardown: when no complete message ever reached the CLI,
+    # no result can ever arrive — waiting on the first-result condition would
+    # park query() forever beside an idle CLI (the pre-0.18 60s timeout used
+    # to self-heal this). stdin must be closed directly instead.
+    it 'closes stdin without waiting when the input stream raises before any message is written' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      allow(query).to receive(:warn) # swallow-and-warn contract; keep CI stderr clean
+      Async do |task|
+        query.start
+        task.with_timeout(2.0) do
+          query.stream_input(Enumerator.new { |_y| raise 'enumerator bug' })
+        end
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    it 'closes stdin without waiting when the input stream is empty' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        task.with_timeout(2.0) { query.stream_input([]) }
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    it 'still waits for the first result when the stream raised after a message was written' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      half_stream = Enumerator.new do |y|
+        y << { type: 'user', message: { role: 'user', content: 'hi' }, session_id: '' }
+        raise 'enumerator bug after first message'
+      end
+
+      allow(query).to receive(:warn) # swallow-and-warn contract; keep CI stderr clean
+      Async do |task|
+        query.start
+        streamer = task.async { query.stream_input(half_stream) }
+        task.sleep 0.05
+        # A turn is in flight, so stdin must stay open for control replies.
+        expect(ended).to be_empty
+
+        queue.enqueue(sample_result_message)
+        task.with_timeout(2.0) { streamer.wait }
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+  end
+
   describe '#reconnect_mcp_server' do
     it 'sends mcp_reconnect control request with camelCase serverName' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
@@ -239,6 +437,34 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(timeouts['hook_0']).to eq(5)
     end
 
+    it 'sends HookMatcher timeout to the CLI in the initialize request' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      hook_fn = ->(_input, _tool_use_id, _context) { {} }
+      hooks = {
+        'PreToolUse' => [
+          { matcher: 'Bash', hooks: [hook_fn], timeout: 2.5 },
+          { matcher: 'Read', hooks: [hook_fn] }
+        ]
+      }
+
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks)
+      captured = nil
+      allow(query).to receive(:send_control_request) { |req|
+        captured = req
+        {}
+      }
+
+      query.initialize_protocol
+
+      with_timeout, without_timeout = captured[:hooks]['PreToolUse']
+      # Literal "timeout" key, SECONDS, per matcher; omitted when absent
+      # (Python wire parity — not camelCase, not milliseconds).
+      expect(with_timeout[:timeout]).to eq(2.5)
+      expect(with_timeout[:hookCallbackIds]).to eq(['hook_0'])
+      expect(without_timeout).not_to have_key(:timeout)
+      expect(without_timeout[:hookCallbackIds]).to eq(['hook_1'])
+    end
+
     it 'enforces HookMatcher timeouts' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
       query = described_class.new(transport: transport, is_streaming_mode: true)
@@ -270,54 +496,109 @@ RSpec.describe ClaudeAgentSDK::Query do
   end
 
   describe 'SDK MCP tool responses' do
-    it 'preserves non-text content and maps is_error to isError' do
+    # Real servers end-to-end through the dispatch (no call_tool stubs):
+    # the old instance_double('SdkMcpServer') stubs asserted behavior the
+    # real server contradicted (audit M20b).
+    def dispatch(server, message)
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
-      query = described_class.new(transport: transport, is_streaming_mode: true)
-
-      tool_result = {
-        content: [
-          { type: 'text', text: 'ok' },
-          { type: 'image', data: 'abc123', mimeType: 'image/png' }
-        ],
-        is_error: true
-      }
-      server = instance_double('SdkMcpServer')
-      allow(server).to receive(:call_tool).with('mixed_content', {}).and_return(tool_result)
-
-      response = query.send(
-        :handle_mcp_tools_call,
-        server,
-        { id: 1 },
-        { name: 'mixed_content', arguments: {} }
+      query = described_class.new(
+        transport: transport, is_streaming_mode: true, sdk_mcp_servers: { 'srv' => server }
       )
+      query.send(:handle_sdk_mcp_request, 'srv', message)
+    end
 
-      expect(response.dig(:result, :content)).to eq(tool_result[:content])
+    def server_with(name, &handler)
+      tool = ClaudeAgentSDK.create_tool(name, "Tool #{name}", {}, &handler)
+      ClaudeAgentSDK::SdkMcpServer.new(name: 'srv', tools: [tool])
+    end
+
+    it 'preserves non-text content and maps is_error to isError' do
+      server = server_with('mixed_content') do |_args|
+        { content: [
+            { type: 'text', text: 'ok' },
+            { type: 'image', data: 'abc123', mimeType: 'image/png' }
+          ],
+          is_error: true }
+      end
+
+      response = dispatch(server, { id: 1, method: 'tools/call', params: { name: 'mixed_content', arguments: {} } })
+
+      expect(response.dig(:result, :content).length).to eq(2)
+      expect(response.dig(:result, :content).last[:type]).to eq('image')
       expect(response.dig(:result, :isError)).to eq(true)
     end
 
-    it 'accepts camelCase keys from server results' do
-      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
-      query = described_class.new(transport: transport, is_streaming_mode: true)
-
-      server = instance_double('SdkMcpServer')
-      allow(server).to receive(:call_tool).with('tool', {}).and_return(
-        {
-          'content' => [{ 'type' => 'text', 'text' => 'done' }],
+    it 'accepts string-keyed handler results end-to-end' do
+      server = server_with('tool') do |_args|
+        { 'content' => [{ 'type' => 'text', 'text' => 'done' }],
           'isError' => false,
-          'structuredContent' => { 'status' => 'ok' }
-        }
-      )
+          'structuredContent' => { 'status' => 'ok' } }
+      end
 
-      response = query.send(
-        :handle_mcp_tools_call,
-        server,
-        { id: 2 },
-        { name: 'tool', arguments: {} }
-      )
+      response = dispatch(server, { id: 2, method: 'tools/call', params: { name: 'tool', arguments: {} } })
 
       expect(response.dig(:result, :content)).to eq([{ 'type' => 'text', 'text' => 'done' }])
       expect(response.dig(:result, :isError)).to eq(false)
       expect(response.dig(:result, :structuredContent)).to eq({ 'status' => 'ok' })
+    end
+
+    it 'reports handler exceptions in-band with isError, not as JSON-RPC errors' do
+      server = server_with('boom') { |_args| raise 'kaboom from user handler' }
+
+      response = dispatch(server, { id: 3, method: 'tools/call', params: { name: 'boom', arguments: {} } })
+
+      expect(response[:error]).to be_nil
+      expect(response.dig(:result, :isError)).to eq(true)
+      # gem text ("Internal error calling tool X: msg"); Python says
+      # "msg" bare — same semantics, different prefix (accepted divergence)
+      expect(response.dig(:result, :content).first[:text]).to include('kaboom from user handler')
+    end
+
+    it 'reports unknown tools in-band with isError' do
+      server = ClaudeAgentSDK::SdkMcpServer.new(name: 'srv', tools: [])
+
+      response = dispatch(server, { id: 4, method: 'tools/call', params: { name: 'nope', arguments: {} } })
+
+      expect(response[:error]).to be_nil
+      expect(response.dig(:result, :isError)).to eq(true)
+      expect(response.dig(:result, :content).first[:text]).to match(/Tool not found: nope/)
+    end
+
+    it 'validates arguments against the tool inputSchema before invoking the handler' do
+      invoked = false
+      tool = ClaudeAgentSDK.create_tool(
+        'typed', 'Typed',
+        { type: 'object', properties: { n: { type: 'integer' } }, required: ['n'] }
+      ) do |_args|
+        invoked = true
+        { content: [{ type: 'text', text: 'ran' }] }
+      end
+      server = ClaudeAgentSDK::SdkMcpServer.new(name: 'srv', tools: [tool])
+
+      missing = dispatch(server, { id: 6, method: 'tools/call', params: { name: 'typed', arguments: {} } })
+      expect(missing.dig(:result, :isError)).to eq(true)
+      expect(missing.dig(:result, :content).first[:text]).to match(/Missing required arguments: n/)
+
+      wrong_type = dispatch(server, { id: 7, method: 'tools/call',
+                                      params: { name: 'typed', arguments: { n: 'NaN' } } })
+      expect(wrong_type.dig(:result, :isError)).to eq(true)
+      # Distinguish TYPE validation from the required-presence check.
+      expect(wrong_type.dig(:result, :content, 0, :text)).to match(/did not match the following type: integer/)
+      expect(invoked).to be(false) # handler never ran for invalid args
+
+      ok = dispatch(server, { id: 8, method: 'tools/call', params: { name: 'typed', arguments: { n: 3 } } })
+      expect(ok.dig(:result, :content).first[:text]).to eq('ran')
+      expect(ok[:id]).to eq(8) # original id re-stamped through the gem bridge
+    end
+
+    it 'keeps -32601 protocol errors for unknown servers' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true, sdk_mcp_servers: {})
+
+      response = query.send(:handle_sdk_mcp_request, 'ghost',
+                            { id: 5, method: 'tools/call', params: { name: 'x', arguments: {} } })
+
+      expect(response.dig(:error, :code)).to eq(-32_601)
     end
   end
 
@@ -363,6 +644,30 @@ RSpec.describe ClaudeAgentSDK::Query do
       end
 
       query.initialize_protocol
+    end
+
+    it 'sends top-level skills in initialize only for explicit lists' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      # Array (including []) is sent; 'all' and nil are wire-equivalent to
+      # "no filter" and omitted (mirrors Python).
+      { %w[pdf docx] => %w[pdf docx], [] => [] }.each do |skills, expected|
+        query = described_class.new(transport: transport, is_streaming_mode: true, skills: skills)
+        allow(query).to receive(:send_control_request) do |request|
+          expect(request[:skills]).to eq(expected)
+          {}
+        end
+        query.initialize_protocol
+      end
+
+      ['all', nil].each do |skills|
+        query = described_class.new(transport: transport, is_streaming_mode: true, skills: skills)
+        allow(query).to receive(:send_control_request) do |request|
+          expect(request).not_to have_key(:skills)
+          {}
+        end
+        query.initialize_protocol
+      end
     end
 
     it 'includes skills, memory, mcpServers in agents dict' do
@@ -424,6 +729,32 @@ RSpec.describe ClaudeAgentSDK::Query do
   end
 
   describe '#parse_hook_input' do
+    it 'preserves the event name and raw payload for unknown hook events' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      payload = { hook_event_name: 'SomeFutureEvent', session_id: 's1', transcript_path: '/t',
+                  cwd: '/c', permission_mode: 'default', novel_field: 'payload' }
+      input = query.send(:parse_hook_input, payload)
+
+      expect(input).to be_a(ClaudeAgentSDK::UnknownHookInput)
+      expect(input.hook_event_name).to eq('SomeFutureEvent')
+      expect(input.raw_input[:novel_field]).to eq('payload')
+      expect(input.session_id).to eq('s1')
+    end
+
+    it 'handles string-keyed unknown hook events (transcript shape)' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      payload = { 'hook_event_name' => 'SomeFutureEvent', 'session_id' => 's1', 'extra' => 1 }
+      input = query.send(:parse_hook_input, payload)
+
+      expect(input.hook_event_name).to eq('SomeFutureEvent')
+      expect(input.session_id).to eq('s1')
+      expect(input.raw_input).to eq(payload)
+    end
+
     it 'populates tool_use_id for PreToolUse events' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
       query = described_class.new(transport: transport, is_streaming_mode: true)
@@ -527,6 +858,289 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'remaining audit test gaps' do
+    # Gap 4: close must unblock a consumer parked in receive_messages on an
+    # empty queue (close -> @task.stop -> read-loop ensure -> 'end' sentinel).
+    it 'close unblocks a consumer blocked in receive_messages' do
+      queue = Async::Queue.new
+      transport = mock_transport
+      allow(transport).to receive(:read_messages) do |&blk|
+        loop { blk.call(queue.dequeue) } # parks forever; only close ends it
+      end
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      received = []
+      Async do |task|
+        query.start
+        consumer = task.async do
+          query.receive_messages { |m| received << m }
+        end
+        task.sleep 0.05 # let the consumer park on the empty queue
+        query.close
+
+        task.with_timeout(2.0) { consumer.wait }
+        expect(received).to eq([]) # clean unblock via the end sentinel
+      end.wait
+    end
+
+    # Gap 7: a hook callback raising a plain StandardError must produce an
+    # error control_response on the wire (not kill the handler task).
+    it 'writes an error control_response when a hook callback raises' do
+      writes = []
+      transport = instance_double(ClaudeAgentSDK::Transport)
+      allow(transport).to receive(:write) { |data| writes << data }
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+      query.instance_variable_set(:@hook_callbacks,
+                                  { 'hook_0' => ->(_i, _t, _c) { raise 'hook exploded' } })
+
+      message = {
+        request_id: 'req_9',
+        request: { subtype: 'hook_callback', callback_id: 'hook_0',
+                   tool_use_id: 't1', input: { hook_event_name: 'PreToolUse' } }
+      }
+      Async { query.send(:handle_control_request, message) }.wait
+
+      payload = JSON.parse(writes.last, symbolize_names: true)
+      expect(payload.dig(:response, :subtype)).to eq('error')
+      expect(payload.dig(:response, :error)).to eq('hook exploded')
+      expect(payload.dig(:response, :request_id)).to eq('req_9')
+    end
+
+    # Gap 1 residue: a CLI control_response with subtype 'error' must raise
+    # the CLI-reported error from send_control_request.
+    it 'raises the CLI-reported error for an error-subtype control_response' do
+      tq = Thread::Queue.new
+      transport = mock_transport
+      allow(transport).to receive(:read_messages) do |&blk|
+        loop { blk.call(tq.pop) }
+      end
+      allow(transport).to receive(:write) do |data|
+        msg = JSON.parse(data, symbolize_names: true)
+        if msg[:type] == 'control_request'
+          tq << { type: 'control_response',
+                  response: { subtype: 'error', request_id: msg[:request_id],
+                              error: 'model not available' } }
+        end
+      end
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      Async do |task|
+        query.start
+        task.with_timeout(2.0) do
+          expect { query.set_model('bogus') }
+            .to raise_error(StandardError, 'model not available')
+        end
+      ensure
+        query.close
+      end.wait
+    end
+
+    # Gap 2 residue: the deny path through the real permission handler.
+    it 'serializes PermissionResultDeny through handle_permission_request' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      callback = lambda do |_tool, _input, _ctx|
+        ClaudeAgentSDK::PermissionResultDeny.new(message: 'not allowed', interrupt: true)
+      end
+      query = described_class.new(transport: transport, is_streaming_mode: true, can_use_tool: callback)
+
+      result = query.send(:handle_permission_request,
+                          { subtype: 'can_use_tool', tool_name: 'Bash',
+                            input: { command: 'rm -rf /' }, tool_use_id: 't9' })
+
+      expect(result).to eq({ behavior: 'deny', message: 'not allowed', interrupt: true })
+    end
+  end
+
+  describe 'control request waiting (reentrancy + level-trigger)' do
+    def queue_driven_transport(thread_queue)
+      transport = mock_transport
+      allow(transport).to receive(:read_messages) do |&blk|
+        loop { blk.call(thread_queue.pop) } # Thread::Queue#pop is scheduler-aware
+      end
+      transport
+    end
+
+    it 'supports control requests from a FiberBoundary worker thread (in-callback reentrancy)' do
+      tq = Thread::Queue.new
+      transport = queue_driven_transport(tq)
+      allow(transport).to receive(:write) do |data|
+        msg = JSON.parse(data, symbolize_names: true)
+        if msg[:type] == 'control_request' && msg.dig(:request, :subtype) == 'interrupt'
+          tq << { type: 'control_response',
+                  response: { subtype: 'success', request_id: msg[:request_id], response: {} } }
+        end
+      end
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      result = nil
+      Async do |task|
+        query.start
+        # Simulate the hook/can_use_tool environment: user code on a plain
+        # FiberBoundary thread, no reactor. Pre-fix this raised RuntimeError
+        # "No async task available!" AFTER the request reached the wire.
+        task.with_timeout(5.0) do
+          result = ClaudeAgentSDK::FiberBoundary.invoke { query.interrupt }
+        end
+      ensure
+        query.close
+      end.wait
+
+      expect(result).to eq({})
+    end
+
+    it 'does not lose a control response that arrives while the sender is suspended in write' do
+      tq = Thread::Queue.new
+      transport = queue_driven_transport(tq)
+      allow(transport).to receive(:write) do |data|
+        msg = JSON.parse(data, symbolize_names: true)
+        if msg[:type] == 'control_request'
+          # Feed the response, then suspend the sender (scheduler-aware
+          # sleep) so the read loop processes it BEFORE the sender reaches
+          # its wait — the edge-triggered Condition lost this wakeup.
+          tq << { type: 'control_response',
+                  response: { subtype: 'success', request_id: msg[:request_id], response: { ok: true } } }
+          sleep 0.05
+        end
+      end
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      result = nil
+      Async do |task|
+        query.start
+        task.with_timeout(2.0) do
+          result = query.send(:send_control_request, { subtype: 'ping' })
+        end
+      ensure
+        query.close
+      end.wait
+
+      expect(result).to eq({ ok: true })
+    end
+  end
+
+  describe 'control response signal safety' do
+    it 'tolerates a response whose waiter was already evicted (no session teardown)' do
+      # check-then-act race: a worker-thread caller can satisfy its
+      # level-trigger check and evict between the result store and the
+      # signal — handle_control_response must capture the waiter once and
+      # never re-look it up (nil.signal was a session-fatal NoMethodError).
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      message = { type: 'control_response',
+                  response: { subtype: 'success', request_id: 'req_gone', response: {} } }
+      # No pending entry at all — must be a silent no-op.
+      expect { query.send(:handle_control_response, message) }.not_to raise_error
+    end
+
+    it 'close wakes a parked worker-thread waiter with a Query-closed error' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil, close: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      waiter = ClaudeAgentSDK::Query::ThreadWaiter.new
+      query.instance_variable_get(:@pending_control_responses)['req_parked'] = waiter
+
+      worker = Thread.new { waiter.wait(5) }
+      sleep 0.05 # let the worker park
+      query.close
+
+      expect(worker.join(2)).not_to be_nil, 'parked waiter was not woken by close'
+      result = query.instance_variable_get(:@pending_control_results)['req_parked']
+      expect(result).to be_a(ClaudeAgentSDK::CLIConnectionError)
+    end
+  end
+
+  describe 'can_use_tool permission requests' do
+    def handle_permission_request(callback, request)
+      writes = []
+      transport = instance_double(ClaudeAgentSDK::Transport)
+      allow(transport).to receive(:write) { |data| writes << data }
+      query = described_class.new(transport: transport, is_streaming_mode: true, can_use_tool: callback)
+
+      query.send(:handle_control_request, { request_id: 'req_1', request: request })
+      JSON.parse(writes.last, symbolize_names: true)
+    end
+
+    it 'forwards display fields and blocked_path/decision_reason to ToolPermissionContext' do
+      received = nil
+      callback = lambda do |_tool_name, _input, context|
+        received = context
+        ClaudeAgentSDK::PermissionResultAllow.new
+      end
+
+      handle_permission_request(callback, {
+                                  subtype: 'can_use_tool',
+                                  tool_name: 'Bash',
+                                  input: { command: 'rm -rf /tmp/x' },
+                                  permission_suggestions: [],
+                                  tool_use_id: 'toolu_01DEF456',
+                                  blocked_path: '/tmp/x',
+                                  decision_reason: 'PreToolUse hook flagged this as destructive',
+                                  title: 'Claude wants to run a Bash command',
+                                  display_name: 'Bash',
+                                  description: 'rm -rf /tmp/x'
+                                })
+
+      expect(received.tool_use_id).to eq('toolu_01DEF456')
+      expect(received.blocked_path).to eq('/tmp/x')
+      expect(received.decision_reason).to eq('PreToolUse hook flagged this as destructive')
+      expect(received.title).to eq('Claude wants to run a Bash command')
+      expect(received.display_name).to eq('Bash')
+      expect(received.description).to eq('rm -rf /tmp/x')
+    end
+
+    it 'delivers suggestions as PermissionUpdate objects and round-trips them through updatedPermissions' do
+      wire_suggestion = {
+        type: 'addRules',
+        destination: 'localSettings',
+        behavior: 'allow',
+        rules: [{ toolName: 'Bash', ruleContent: 'git status' }]
+      }
+      seen = []
+      callback = lambda do |_tool_name, _input, context|
+        seen.concat(context.suggestions)
+        ClaudeAgentSDK::PermissionResultAllow.new(
+          updated_permissions: context.suggestions.select { |s| s.destination == 'localSettings' }
+        )
+      end
+
+      response = handle_permission_request(callback, {
+                                             subtype: 'can_use_tool',
+                                             tool_name: 'Bash',
+                                             input: { command: 'git status' },
+                                             permission_suggestions: [wire_suggestion],
+                                             tool_use_id: 'toolu_2'
+                                           })
+
+      expect(seen.first).to be_a(ClaudeAgentSDK::PermissionUpdate)
+      expect(seen.first.destination).to eq('localSettings')
+      expect(seen.first.rules.first).to be_a(ClaudeAgentSDK::PermissionRuleValue)
+      expect(seen.first.rules.first.tool_name).to eq('Bash')
+      expect(response.dig(:response, :subtype)).to eq('success')
+      expect(response.dig(:response, :response, :updatedPermissions)).to eq([wire_suggestion])
+    end
+
+    it 'defaults display fields to nil and suggestions to [] when the CLI omits them' do
+      received = nil
+      callback = lambda do |_tool_name, _input, context|
+        received = context
+        ClaudeAgentSDK::PermissionResultAllow.new
+      end
+
+      response = handle_permission_request(callback, {
+                                             subtype: 'can_use_tool',
+                                             tool_name: 'Read',
+                                             input: {},
+                                             tool_use_id: 'toolu_3'
+                                           })
+
+      expect(received.suggestions).to eq([])
+      expect([received.title, received.display_name, received.description,
+              received.blocked_path, received.decision_reason]).to all(be_nil)
+      expect(response.dig(:response, :subtype)).to eq('success')
+    end
+  end
+
   describe 'control request cancellation' do
     it 'writes a cancelled response when stopped' do
       writes = []
@@ -535,8 +1149,17 @@ RSpec.describe ClaudeAgentSDK::Query do
 
       query = described_class.new(transport: transport, is_streaming_mode: true)
 
+      # Deterministic fixture: the old Async::Task.current.sleep(1) callback
+      # crashed instantly on the FiberBoundary worker thread (no reactor
+      # there) and the assertion passed via a race against child.stop.
+      # Thread::Queue (NOT Async::Queue — its dequeue hangs silently off the
+      # reactor) gates both directions: `entered` proves the worker is
+      # parked at the only suspension point (thread.value) before we stop.
+      entered = Thread::Queue.new
+      release = Thread::Queue.new
       callback = lambda do |_input, _tool_use_id, _context|
-        Async::Task.current.sleep(1)
+        entered << true
+        release.pop
         {}
       end
       query.instance_variable_set(:@hook_callbacks, { 'hook_0' => callback })
@@ -556,12 +1179,14 @@ RSpec.describe ClaudeAgentSDK::Query do
           query.send(:handle_control_request, message)
         end
 
-        task.sleep(0)
+        entered.pop(timeout: 5) or raise 'hook callback never entered'
         child.stop
         child.wait
+      ensure
+        release << true # never leak a parked FiberBoundary worker
       end.wait
 
-      expect(writes).not_to be_empty
+      expect(writes.length).to eq(1)
       payload = JSON.parse(writes.last, symbolize_names: true)
       expect(payload[:type]).to eq('control_response')
       expect(payload.dig(:response, :subtype)).to eq('error')

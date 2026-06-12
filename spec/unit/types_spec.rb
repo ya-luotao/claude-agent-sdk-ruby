@@ -621,6 +621,22 @@ RSpec.describe ClaudeAgentSDK do
         expect(hash[:behavior]).to eq('allow')
         expect(hash[:rules].first[:toolName]).to eq('Bash')
       end
+
+      it 'hydrates wire-format rule hashes into PermissionRuleValue and round-trips via to_h' do
+        wire = {
+          type: 'addRules',
+          destination: 'localSettings',
+          behavior: 'allow',
+          rules: [{ toolName: 'Bash', ruleContent: 'git status' }]
+        }
+
+        update = described_class.new(wire)
+
+        expect(update.rules.first).to be_a(ClaudeAgentSDK::PermissionRuleValue)
+        expect(update.rules.first.tool_name).to eq('Bash')
+        expect(update.rules.first.rule_content).to eq('git status')
+        expect(update.to_h).to eq(wire)
+      end
     end
 
     describe ClaudeAgentSDK::PermissionResultAllow do
@@ -1533,11 +1549,22 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.enable_file_checkpointing).to eq(false)
       end
 
-      it 'accepts append_allowed_tools option' do
-        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-          append_allowed_tools: ['Write', 'Bash']
-        )
-        expect(options.append_allowed_tools).to eq(['Write', 'Bash'])
+      it 'accepts skills as all, an Array, or nil' do
+        expect(ClaudeAgentSDK::ClaudeAgentOptions.new(skills: 'all').skills).to eq('all')
+        expect(ClaudeAgentSDK::ClaudeAgentOptions.new(skills: %w[pdf docx]).skills).to eq(%w[pdf docx])
+        expect(ClaudeAgentSDK::ClaudeAgentOptions.new.skills).to be_nil
+      end
+
+      it 'raises for the removed append_allowed_tools option' do
+        expect do
+          ClaudeAgentSDK::ClaudeAgentOptions.new(append_allowed_tools: %w[Write Bash])
+        end.to raise_error(ArgumentError, /unknown ClaudeAgentOptions option:.*append_allowed_tools/)
+      end
+
+      it 'does not expose append_allowed_tools accessors' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new
+        expect(options).not_to respond_to(:append_allowed_tools)
+        expect(options).not_to respond_to(:append_allowed_tools=)
       end
 
       it 'accepts thinking option with ThinkingConfigAdaptive' do
@@ -2190,16 +2217,43 @@ RSpec.describe ClaudeAgentSDK do
         expect(msg.content.first.name).to eq('web_search')
       end
 
-      it 'parses server_tool_result block' do
+      it 'parses advisor_tool_result block into ServerToolResultBlock' do
         data = {
           type: 'assistant',
           message: {
-            content: [{ type: 'server_tool_result', tool_use_id: 'srv_1', content: 'ok', is_error: false }]
+            content: [{ type: 'advisor_tool_result', tool_use_id: 'srv_1',
+                        content: { type: 'advisor_result', advice: 'x' } }]
           }
         }
         msg = ClaudeAgentSDK::MessageParser.parse(data)
         expect(msg.content.first).to be_a(ClaudeAgentSDK::ServerToolResultBlock)
         expect(msg.content.first.tool_use_id).to eq('srv_1')
+        expect(msg.content.first.content).to eq({ type: 'advisor_result', advice: 'x' })
+      end
+
+      it 'parses string-keyed advisor_tool_result (transcript read path)' do
+        block = ClaudeAgentSDK::MessageParser.parse_content_block(
+          { 'type' => 'advisor_tool_result', 'tool_use_id' => 'srv_1', 'content' => { 'type' => 'advisor_result' } }
+        )
+        expect(block).to be_a(ClaudeAgentSDK::ServerToolResultBlock)
+        expect(block.tool_use_id).to eq('srv_1')
+      end
+
+      it 'demotes the dead server_tool_result wire type to UnknownBlock' do
+        block = ClaudeAgentSDK::MessageParser.parse_content_block(
+          { type: 'server_tool_result', tool_use_id: 'srv_1', content: 'ok' }
+        )
+        expect(block).to be_a(ClaudeAgentSDK::UnknownBlock)
+        expect(block.type).to eq('server_tool_result')
+      end
+
+      it 'parses advisor_tool_result without is_error/content nil-safely' do
+        block = ClaudeAgentSDK::MessageParser.parse_content_block(
+          { type: 'advisor_tool_result', tool_use_id: 'srv_2' }
+        )
+        expect(block).to be_a(ClaudeAgentSDK::ServerToolResultBlock)
+        expect(block.is_error).to be_nil
+        expect(block.content).to be_nil
       end
     end
 
