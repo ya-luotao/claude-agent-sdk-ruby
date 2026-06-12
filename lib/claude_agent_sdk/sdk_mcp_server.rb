@@ -71,24 +71,31 @@ module ClaudeAgentSDK
       end
     end
 
-    # Execute a tool by name (for backward compatibility)
+    # Execute a tool by name (used by Query's tools/call dispatch).
+    # Tool-execution failures are reported in-band (isError: true) per the
+    # MCP spec and Python parity (the mcp lowlevel server converts handler
+    # exceptions to CallToolResult(isError=True)); they must NOT become
+    # JSON-RPC protocol errors — the model needs the error text to
+    # self-correct.
     # @param name [String] Tool name
     # @param arguments [Hash] Tool arguments
-    # @return [Hash] Tool result
+    # @return [Hash] Tool result (with isError: true on failure)
     def call_tool(name, arguments)
       tool = @tools.find { |t| t.name == name }
-      raise "Tool '#{name}' not found" unless tool
+      return error_tool_result("Tool '#{name}' not found") unless tool
 
       # Call the tool's handler on a plain thread so the async gem's
       # Fiber scheduler is not visible to user code (which may hit AR/PG).
       result = FiberBoundary.invoke { tool.handler.call(arguments) }
 
-      # Ensure result has the expected format
-      unless result.is_a?(Hash) && result[:content]
-        raise "Tool '#{name}' must return a hash with :content key"
-      end
+      # Guard before flexible_fetch: it raises on non-Hash inputs.
+      content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "content", "content") : nil
+      return error_tool_result("Tool '#{name}' must return a hash with :content key") unless content
 
       result
+    rescue StandardError => e
+      # Bare e.message like Python's str(e) — no prefix.
+      error_tool_result(e.message)
     end
 
     # List all available resources (for backward compatibility)
@@ -116,10 +123,10 @@ module ClaudeAgentSDK
       # libraries (ActiveRecord, pg, ...) and must run on a plain thread.
       content = FiberBoundary.invoke { resource.reader.call }
 
-      # Ensure content has the expected format
-      unless content.is_a?(Hash) && content[:contents]
-        raise "Resource '#{uri}' must return a hash with :contents key"
-      end
+      # Ensure content has the expected format (symbol or string keys; guard
+      # before flexible_fetch — it raises on non-Hash inputs)
+      contents = content.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(content, "contents", "contents") : nil
+      raise "Resource '#{uri}' must return a hash with :contents key" if contents.nil?
 
       content
     end
@@ -148,15 +155,21 @@ module ClaudeAgentSDK
       # as `call_tool` above.
       result = FiberBoundary.invoke { prompt.generator.call(arguments) }
 
-      # Ensure result has the expected format
-      unless result.is_a?(Hash) && result[:messages]
-        raise "Prompt '#{name}' must return a hash with :messages key"
-      end
+      # Ensure result has the expected format (symbol or string keys)
+      messages = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "messages", "messages") : nil
+      raise "Prompt '#{name}' must return a hash with :messages key" if messages.nil?
 
       result
     end
 
     private
+
+    # Mirrors Python mcp lowlevel Server._make_error_result: error text goes
+    # in content with isError: true, returned as a *successful* JSON-RPC
+    # result.
+    def error_tool_result(text)
+      { content: [{ type: "text", text: text }], isError: true }
+    end
 
     # Create dynamic Tool classes from tool definitions
     def create_tool_classes(tools)
@@ -188,10 +201,13 @@ module ClaudeAgentSDK
               # Hop to a plain thread so user handlers don't see the Fiber scheduler.
               result = FiberBoundary.invoke { @tool_def.handler.call(args) }
 
+              # Guard BEFORE flexible_fetch: on a non-Hash it raises
+              # TypeError/NoMethodError, surfacing garbage instead of the
+              # friendly message.
+              raise "Tool '#{@tool_def.name}' must return a hash with :content key" unless result.is_a?(Hash)
+
               content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content')
-              unless result.is_a?(Hash) && content
-                raise "Tool '#{@tool_def.name}' must return a hash with :content key"
-              end
+              raise "Tool '#{@tool_def.name}' must return a hash with :content key" if content.nil?
 
               is_error = ClaudeAgentSDK.flexible_fetch(result, 'isError', 'is_error')
               structured_content = ClaudeAgentSDK.flexible_fetch(result, 'structuredContent', 'structured_content')

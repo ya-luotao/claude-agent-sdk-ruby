@@ -468,54 +468,80 @@ RSpec.describe ClaudeAgentSDK::Query do
   end
 
   describe 'SDK MCP tool responses' do
-    it 'preserves non-text content and maps is_error to isError' do
+    # Real servers end-to-end through the dispatch (no call_tool stubs):
+    # the old instance_double('SdkMcpServer') stubs asserted behavior the
+    # real server contradicted (audit M20b).
+    def dispatch(server, message)
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
-      query = described_class.new(transport: transport, is_streaming_mode: true)
-
-      tool_result = {
-        content: [
-          { type: 'text', text: 'ok' },
-          { type: 'image', data: 'abc123', mimeType: 'image/png' }
-        ],
-        is_error: true
-      }
-      server = instance_double('SdkMcpServer')
-      allow(server).to receive(:call_tool).with('mixed_content', {}).and_return(tool_result)
-
-      response = query.send(
-        :handle_mcp_tools_call,
-        server,
-        { id: 1 },
-        { name: 'mixed_content', arguments: {} }
+      query = described_class.new(
+        transport: transport, is_streaming_mode: true, sdk_mcp_servers: { 'srv' => server }
       )
+      query.send(:handle_sdk_mcp_request, 'srv', message)
+    end
 
-      expect(response.dig(:result, :content)).to eq(tool_result[:content])
+    def server_with(name, &handler)
+      tool = ClaudeAgentSDK.create_tool(name, "Tool #{name}", {}, &handler)
+      ClaudeAgentSDK::SdkMcpServer.new(name: 'srv', tools: [tool])
+    end
+
+    it 'preserves non-text content and maps is_error to isError' do
+      server = server_with('mixed_content') do |_args|
+        { content: [
+            { type: 'text', text: 'ok' },
+            { type: 'image', data: 'abc123', mimeType: 'image/png' }
+          ],
+          is_error: true }
+      end
+
+      response = dispatch(server, { id: 1, method: 'tools/call', params: { name: 'mixed_content', arguments: {} } })
+
+      expect(response.dig(:result, :content).length).to eq(2)
+      expect(response.dig(:result, :content).last[:type]).to eq('image')
       expect(response.dig(:result, :isError)).to eq(true)
     end
 
-    it 'accepts camelCase keys from server results' do
-      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
-      query = described_class.new(transport: transport, is_streaming_mode: true)
-
-      server = instance_double('SdkMcpServer')
-      allow(server).to receive(:call_tool).with('tool', {}).and_return(
-        {
-          'content' => [{ 'type' => 'text', 'text' => 'done' }],
+    it 'accepts string-keyed handler results end-to-end' do
+      server = server_with('tool') do |_args|
+        { 'content' => [{ 'type' => 'text', 'text' => 'done' }],
           'isError' => false,
-          'structuredContent' => { 'status' => 'ok' }
-        }
-      )
+          'structuredContent' => { 'status' => 'ok' } }
+      end
 
-      response = query.send(
-        :handle_mcp_tools_call,
-        server,
-        { id: 2 },
-        { name: 'tool', arguments: {} }
-      )
+      response = dispatch(server, { id: 2, method: 'tools/call', params: { name: 'tool', arguments: {} } })
 
       expect(response.dig(:result, :content)).to eq([{ 'type' => 'text', 'text' => 'done' }])
       expect(response.dig(:result, :isError)).to eq(false)
       expect(response.dig(:result, :structuredContent)).to eq({ 'status' => 'ok' })
+    end
+
+    it 'reports handler exceptions in-band with isError, not as JSON-RPC errors' do
+      server = server_with('boom') { |_args| raise 'kaboom from user handler' }
+
+      response = dispatch(server, { id: 3, method: 'tools/call', params: { name: 'boom', arguments: {} } })
+
+      expect(response[:error]).to be_nil
+      expect(response.dig(:result, :isError)).to eq(true)
+      expect(response.dig(:result, :content).first[:text]).to eq('kaboom from user handler')
+    end
+
+    it 'reports unknown tools in-band with isError' do
+      server = ClaudeAgentSDK::SdkMcpServer.new(name: 'srv', tools: [])
+
+      response = dispatch(server, { id: 4, method: 'tools/call', params: { name: 'nope', arguments: {} } })
+
+      expect(response[:error]).to be_nil
+      expect(response.dig(:result, :isError)).to eq(true)
+      expect(response.dig(:result, :content).first[:text]).to eq("Tool 'nope' not found")
+    end
+
+    it 'keeps -32601 protocol errors for unknown servers' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true, sdk_mcp_servers: {})
+
+      response = query.send(:handle_sdk_mcp_request, 'ghost',
+                            { id: 5, method: 'tools/call', params: { name: 'x', arguments: {} } })
+
+      expect(response.dig(:error, :code)).to eq(-32_601)
     end
   end
 

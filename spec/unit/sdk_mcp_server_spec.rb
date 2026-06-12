@@ -182,10 +182,12 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       expect(result[:content].first[:text]).to eq('Result: 8')
     end
 
-    it 'raises error for unknown tool' do
+    it 'returns an in-band isError result for unknown tool' do
       server = described_class.new(name: 'test')
-      expect { server.call_tool('unknown', {}) }
-        .to raise_error(/Tool 'unknown' not found/)
+      result = server.call_tool('unknown', {})
+
+      expect(result[:isError]).to be(true)
+      expect(result[:content].first[:text]).to eq("Tool 'unknown' not found")
     end
 
     it 'passes through error results' do
@@ -211,7 +213,7 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       expect(result[:content].first[:text]).to include('Error')
     end
 
-    it 'raises error if handler returns invalid format' do
+    it 'returns an in-band isError result if handler returns invalid format' do
       handler = ->(_) { 'invalid' } # Should return hash with :content
 
       tool = ClaudeAgentSDK::SdkMcpTool.new(
@@ -222,8 +224,67 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       )
 
       server = described_class.new(name: 'test', tools: [tool])
-      expect { server.call_tool('bad', {}) }
-        .to raise_error(/must return a hash with :content key/)
+      result = server.call_tool('bad', {})
+
+      expect(result[:isError]).to be(true)
+      expect(result[:content].first[:text]).to match(/must return a hash with :content key/)
+    end
+
+    it 'converts handler exceptions to in-band isError results (never JSON-RPC errors)' do
+      handler = ->(_) { raise 'database connection refused' }
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'db', description: 'DB', input_schema: {}, handler: handler
+      )
+
+      server = described_class.new(name: 'test', tools: [tool])
+      result = server.call_tool('db', {})
+
+      expect(result[:isError]).to be(true)
+      # Bare message like Python's str(e) — no prefix.
+      expect(result[:content].first[:text]).to eq('database connection refused')
+    end
+
+    it 'accepts string-keyed handler results' do
+      handler = ->(_) { { 'content' => [{ 'type' => 'text', 'text' => 'ok' }] } }
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'stringy', description: 'S', input_schema: {}, handler: handler
+      )
+
+      server = described_class.new(name: 'test', tools: [tool])
+      result = server.call_tool('stringy', {})
+
+      expect(result['content'].first['text']).to eq('ok')
+      expect(result[:isError]).to be_nil
+    end
+  end
+
+  describe '#read_resource and #get_prompt key flexibility' do
+    it 'accepts string-keyed resource reader results' do
+      resource = ClaudeAgentSDK.create_resource(uri: 'res://a', name: 'A') do
+        { 'contents' => [{ 'uri' => 'res://a', 'text' => 'data' }] }
+      end
+      server = described_class.new(name: 'srv', resources: [resource])
+
+      result = server.read_resource('res://a')
+      expect(result['contents'].first['text']).to eq('data')
+    end
+
+    it 'accepts string-keyed prompt generator results' do
+      prompt = ClaudeAgentSDK.create_prompt(name: 'greet') do |_args|
+        { 'messages' => [{ 'role' => 'user', 'content' => { 'type' => 'text', 'text' => 'hi' } }] }
+      end
+      server = described_class.new(name: 'srv', prompts: [prompt])
+
+      result = server.get_prompt('greet')
+      expect(result['messages'].first['role']).to eq('user')
+    end
+
+    it 'still raises the friendly message for malformed results' do
+      resource = ClaudeAgentSDK.create_resource(uri: 'res://bad', name: 'Bad') { 'not a hash' }
+      server = described_class.new(name: 'srv', resources: [resource])
+
+      expect { server.read_resource('res://bad') }
+        .to raise_error(/must return a hash with :contents key/)
     end
   end
 
