@@ -395,14 +395,65 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       expect(tools[0][:_meta]).to eq({ 'anthropic/maxResultSizeChars': 100 })
     end
 
-    it 'raises lazily (as -32603) for a malformed prebuilt schema instead of silent garbage' do
-      bad_tool = ClaudeAgentSDK.create_tool(
-        'bad', 'B', { type: :object, properties: { name: :string } }
-      ) { |_| { content: [] } }
-      server3 = described_class.new(name: 'demo3', tools: [bad_tool])
+    it 'falls back to a permissive schema (with a warning) for draft4-incompatible schemas' do
+      # Valid modern JSON Schema that draft4's metaschema rejects (numeric
+      # exclusiveMinimum) — Python accepts it; the tool must keep working
+      # instead of being permanently uncallable.
+      tool = ClaudeAgentSDK.create_tool(
+        'count', 'Count',
+        { type: 'object', properties: { n: { type: 'integer', exclusiveMinimum: 0 } }, required: ['n'] }
+      ) { |args| { content: [{ type: 'text', text: "n=#{args[:n]}" }] } }
+      server3 = described_class.new(name: 'demo3', tools: [tool])
 
-      res = rpc(server3, 'tools/list')
-      expect(res[:error]).not_to be_nil
+      res = nil
+      expect do
+        res = rpc(server3, 'tools/call', { name: 'count', arguments: { n: 3 } })
+      end.to output(/argument validation disabled/).to_stderr
+      expect(res.dig(:result, :content, 0, :text)).to eq('n=3')
+      expect(res.dig(:result, :isError)).to eq(false)
+    end
+
+    it 'normalizes gem protocol errors on tools/call to in-band isError (version drift guard)' do
+      # mcp 0.7.1+/0.18 turned various tool failures back into JSON-RPC
+      # protocol errors; handle_message must normalize ANY tools/call error
+      # envelope so the model always sees the text.
+      tool = ClaudeAgentSDK.create_tool('t', 'T', {}) { |_| { content: [] } }
+      server4 = described_class.new(name: 'demo4', tools: [tool])
+      allow(server4.mcp_server).to receive(:handle).and_return(
+        { jsonrpc: '2.0', id: 0, error: { code: -32_603, message: 'Internal error', data: 'boom detail' } }
+      )
+
+      res = server4.handle_message({ jsonrpc: '2.0', id: 9, method: 'tools/call',
+                                     params: { name: 't', arguments: {} } })
+      expect(res[:error]).to be_nil
+      expect(res.dig(:result, :isError)).to eq(true)
+      expect(res.dig(:result, :content, 0, :text)).to eq('boom detail')
+    end
+
+    it 're-stamps non-gem-safe string ids through handle_message' do
+      # The gem rejects ids not matching /\A[a-zA-Z0-9_-]+\z/ with
+      # {id: nil, error: -32600}; the bridge swaps in a safe id and restores
+      # the original (Python echoes any id verbatim).
+      tool = ClaudeAgentSDK.create_tool('echo', 'E', {}) { |_| { content: [{ type: 'text', text: 'ok' }] } }
+      server5 = described_class.new(name: 'demo5', tools: [tool])
+
+      res = server5.handle_message({ id: 'req.1:weird', method: 'tools/call',
+                                     params: { name: 'echo', arguments: {} } })
+      expect(res[:id]).to eq('req.1:weird')
+      expect(res.dig(:result, :content, 0, :text)).to eq('ok')
+    end
+
+    it 'answers notifications/initialized with an empty result via the Query dispatch shape' do
+      # Pin the boundary: the Query dispatch returns {jsonrpc:, result: {}}
+      # (Python parity); the gem's notification semantics (nil) must not
+      # leak in if this is ever rerouted through handle_message.
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      server6 = described_class.new(name: 'demo6', tools: [])
+      query = ClaudeAgentSDK::Query.new(
+        transport: transport, is_streaming_mode: true, sdk_mcp_servers: { 'srv' => server6 }
+      )
+      res = query.send(:handle_sdk_mcp_request, 'srv', { method: 'notifications/initialized' })
+      expect(res).to eq({ jsonrpc: '2.0', result: {} })
     end
   end
 

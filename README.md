@@ -186,6 +186,8 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
+Tool arguments are JSON-Schema-validated (draft4, via the official mcp gem) before your handler runs: the simple `{ name: :string }` idiom marks every parameter required, so a missing argument returns an in-band error to the model instead of invoking the handler with `nil`. Handler exceptions and unknown tools are also reported in-band (`isError: true`) so the model can read the text and self-correct. Opt out globally with `MCP.configure { |c| c.validate_tool_call_arguments = false }`. Schemas the draft4 metaschema rejects (e.g. numeric `exclusiveMinimum`, `$ref`) fall back to validation-disabled with a warning.
+
 Resources, prompts, mixed (SDK + external) servers, RubyLLM schema compatibility → see [docs/mcp-servers.md](docs/mcp-servers.md).
 
 ## Hooks & Permission Callbacks

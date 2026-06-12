@@ -121,11 +121,16 @@ module ClaudeAgentSDK
     #    is not guaranteed — force it.
     # @param message [Hash] JSON-RPC request hash
     # @return [Hash] JSON-RPC response hash
+    # NOTE on concurrency: Query runs each control_request in its own async
+    # task, so two tools/call can interleave inside the gem's Server#handle.
+    # Responses are built from per-call locals (safe), but the gem's
+    # instrumentation_callback attribution (@instrumentation_data ivar) can
+    # cross-contaminate under concurrency — harmless with the default no-op.
     def handle_message(message)
       original_id = message[:id]
       response = @mcp_server.handle(message.merge(jsonrpc: '2.0', id: 0))
       response[:id] = original_id if response.is_a?(Hash) && response.key?(:id)
-      response
+      normalize_tools_call_errors(message, response)
     end
 
     # List all available tools (for backward compatibility)
@@ -246,6 +251,27 @@ module ClaudeAgentSDK
       { content: [{ type: "text", text: text }], isError: true }
     end
 
+    # The mcp gem's tools/call error behavior swung across 0.x releases:
+    # 0.5-0.7.0 return validation/unknown-tool/handler failures in-band,
+    # 0.7.1+ progressively turned them back into JSON-RPC protocol errors
+    # (0.18 raises for handler exceptions and unknown tools). The in-band
+    # contract is load-bearing — the model must see the error text to
+    # self-correct — so normalize ANY tools/call error envelope to an
+    # in-band isError result, version-independently. Protocol-level errors
+    # cannot legitimately occur here: the method name is fixed and the
+    # envelope is sanitized by handle_message.
+    def normalize_tools_call_errors(message, response)
+      return response unless message[:method] == 'tools/call'
+      return response unless response.is_a?(Hash) && response[:error].is_a?(Hash)
+
+      error = response[:error]
+      {
+        jsonrpc: '2.0',
+        id: response[:id],
+        result: error_tool_result((error[:data] || error[:message]).to_s)
+      }
+    end
+
     # Create dynamic Tool classes from tool definitions
     def create_tool_classes(tools)
       tools.map do |tool_def|
@@ -266,16 +292,25 @@ module ClaudeAgentSDK
 
             def input_schema_value
               # Full-schema construction: the gem JSON-round-trips and
-              # validates against the draft4 metaschema, so a malformed
-              # prebuilt schema raises here (lazily, memoized) instead of
-              # producing silent garbage. additionalProperties/enum/
-              # description survive. Empty required arrays are stripped —
+              # validates against the draft4 metaschema. additionalProperties/
+              # enum/description survive. Empty required arrays are stripped —
               # draft4's metaschema mandates non-empty required (Python's
-              # modern jsonschema accepts []).
+              # modern jsonschema accepts []). Schemas the draft4 metaschema
+              # rejects (numeric exclusiveMinimum, $ref/$defs — valid modern
+              # JSON Schema that Python accepts) fall back to a permissive
+              # schema with a one-time warning: the tool keeps working with
+              # argument validation disabled instead of being permanently
+              # uncallable while tools/list advertises it as healthy.
               @input_schema_value ||= begin
                 schema = ClaudeAgentSDK.normalize_tool_schema(@tool_def.input_schema)
                 schema = schema.except(:required) if schema[:required].is_a?(Array) && schema[:required].empty?
-                MCP::Tool::InputSchema.new(schema)
+                begin
+                  MCP::Tool::InputSchema.new(schema)
+                rescue ArgumentError => e
+                  warn "Claude SDK: tool '#{@tool_def.name}' schema not draft4-compatible " \
+                       "(#{e.message.lines.first&.strip}); argument validation disabled for this tool"
+                  MCP::Tool::InputSchema.new({ type: 'object', properties: {} })
+                end
               end
             end
 

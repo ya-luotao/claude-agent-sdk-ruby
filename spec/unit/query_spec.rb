@@ -554,6 +554,8 @@ RSpec.describe ClaudeAgentSDK::Query do
       wrong_type = dispatch(server, { id: 7, method: 'tools/call',
                                       params: { name: 'typed', arguments: { n: 'NaN' } } })
       expect(wrong_type.dig(:result, :isError)).to eq(true)
+      # Distinguish TYPE validation from the required-presence check.
+      expect(wrong_type.dig(:result, :content, 0, :text)).to match(/did not match the following type: integer/)
       expect(invoked).to be(false) # handler never ran for invalid args
 
       ok = dispatch(server, { id: 8, method: 'tools/call', params: { name: 'typed', arguments: { n: 3 } } })
