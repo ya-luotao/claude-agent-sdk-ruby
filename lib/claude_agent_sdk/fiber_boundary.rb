@@ -26,12 +26,22 @@ module ClaudeAgentSDK
   #
   # The thread hop severs `break`/`return`/`next` from the surrounding method,
   # so SDK loops yielding user callbacks must keep loop control outside the
-  # invoked block (see `Client#receive_response`).
+  # invoked block (see `Client#receive_response`); user-initiated `break` is
+  # bridged back to the calling fiber via `.invoke_iteration`.
   module FiberBoundary
     # Raised by .invoke when a timeout-bounded call exceeds its allotted time.
     # The worker thread is abandoned (cancellation is best-effort; the
     # in-flight call may still complete).
     class JoinTimeout < StandardError; end
+
+    # Sentinel returned by .invoke_iteration when the user block attempted `break`.
+    class Break
+      attr_reader :value
+
+      def initialize(value)
+        @value = value
+      end
+    end
 
     module_function
 
@@ -50,6 +60,24 @@ module ClaudeAgentSDK
       raise JoinTimeout, "timed out after #{timeout}s" unless thread.join(timeout)
 
       thread.value
+    end
+
+    # Invoke a user-supplied iteration block across the boundary. The thread
+    # hop severs `break` from the surrounding loop, surfacing as
+    # LocalJumpError(reason: :break) on the worker thread; translate it into
+    # a Break sentinel so the SDK loop can break on the calling fiber.
+    # Returns Break when the user broke, nil when the block completed.
+    # Without a scheduler the block runs in place and `break` unwinds
+    # natively, never reaching the translation.
+    def invoke_iteration(block, *args)
+      invoke do
+        block.call(*args)
+        nil
+      rescue LocalJumpError => e
+        raise unless e.reason == :break
+
+        Break.new(e.exit_value)
+      end
     end
   end
 end

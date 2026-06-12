@@ -373,10 +373,11 @@ module ClaudeAgentSDK
         # inside it don't see the async gem's Fiber scheduler.
         query_handler.receive_messages do |data|
           message = MessageParser.parse(data)
-          if message
-            ClaudeAgentSDK.notify_observers(resolved_observers, :on_message, message)
-            FiberBoundary.invoke { block.call(message) }
-          end
+          next unless message
+
+          ClaudeAgentSDK.notify_observers(resolved_observers, :on_message, message)
+          signal = FiberBoundary.invoke_iteration(block, message)
+          break signal.value if signal.is_a?(FiberBoundary::Break)
         end
       ensure
         ClaudeAgentSDK.notify_observers(resolved_observers, :on_close)
@@ -531,10 +532,11 @@ module ClaudeAgentSDK
 
       @query_handler.receive_messages do |data|
         message = MessageParser.parse(data)
-        if message
-          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
-          FiberBoundary.invoke { block.call(message) }
-        end
+        next unless message
+
+        ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
+        signal = FiberBoundary.invoke_iteration(block, message)
+        break signal.value if signal.is_a?(FiberBoundary::Break)
       end
     end
 
@@ -545,15 +547,17 @@ module ClaudeAgentSDK
 
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      # Keep `break` on the same fiber as the underlying dequeue. Going through
-      # Client#receive_messages would put the FiberBoundary hop above the break
-      # and hang in Client mode — the CLI keeps stdin open and never emits `:end`.
+      # Keep loop control on the same fiber as the underlying dequeue: both
+      # the SDK's ResultMessage break and the user's translated break happen
+      # here, never inside the FiberBoundary hop (break in a proc on a
+      # foreign thread raises LocalJumpError).
       @query_handler.receive_messages do |data|
         message = MessageParser.parse(data)
         next unless message
 
         ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
-        FiberBoundary.invoke { block.call(message) }
+        signal = FiberBoundary.invoke_iteration(block, message)
+        break signal.value if signal.is_a?(FiberBoundary::Break)
         break if message.is_a?(ResultMessage)
       end
     end
