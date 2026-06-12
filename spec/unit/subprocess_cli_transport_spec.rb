@@ -444,14 +444,87 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
   end
 
   describe '#check_claude_version' do
-    it 'uses Open3.capture3 to avoid shelling out' do
-      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
-      transport = described_class.new('hi', options)
+    around do |example|
+      previous = ENV.fetch('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK', nil)
+      ENV.delete('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK')
+      example.run
+    ensure
+      if previous
+        ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = previous
+      else
+        ENV.delete('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK')
+      end
+    end
 
-      expect(Open3).to receive(:capture3).with('/usr/bin/claude', '-v')
-                                         .and_return(["2.1.22 (Claude Code)\n", '', nil])
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
 
-      transport.send(:check_claude_version)
+    # Real pipes so the drainer thread reads to EOF like production.
+    def fake_version_probe(output)
+      stdin_r, stdin_w = IO.pipe
+      out_r, out_w = IO.pipe
+      err_r, err_w = IO.pipe
+      out_w.binmode
+      out_w.write(output)
+      [out_w, err_w, stdin_r].each(&:close)
+      waiter = instance_double(Process::Waiter, alive?: false, pid: 4242)
+      [stdin_w, out_r, err_r, waiter]
+    end
+
+    it 'probes via arg-vector popen3 (no shell)' do
+      expect(Open3).to receive(:popen3).with('/usr/bin/claude', '-v')
+                                       .and_return(fake_version_probe("2.1.22 (Claude Code)\n"))
+
+      expect { transport.check_claude_version }.not_to output.to_stderr
+    end
+
+    it 'skips the probe entirely when CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK is set' do
+      ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = '1'
+      expect(Open3).not_to receive(:popen3)
+
+      expect { transport.check_claude_version }.not_to output.to_stderr
+    end
+
+    it "skips for any non-empty value, including '0' (Python truthiness parity)" do
+      ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = '0'
+      expect(Open3).not_to receive(:popen3)
+
+      transport.check_claude_version
+    end
+
+    it 'does not skip for an empty string' do
+      ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = ''
+      expect(Open3).to receive(:popen3).with('/usr/bin/claude', '-v')
+                                       .and_return(fake_version_probe("2.1.22 (Claude Code)\n"))
+
+      transport.check_claude_version
+    end
+
+    it 'gives up silently when the probe hangs past the deadline' do
+      stub_const("#{described_class}::VERSION_CHECK_TIMEOUT_SECONDS", 0.2)
+      # Pipes whose write ends stay open: the drainer never reaches EOF,
+      # exactly like a wedged `claude -v`.
+      stdin_r, stdin_w = IO.pipe
+      out_r, out_w = IO.pipe
+      err_r, err_w = IO.pipe
+      waiter = instance_double(Process::Waiter, alive?: false, pid: 4242)
+      allow(Open3).to receive(:popen3).and_return([stdin_w, out_r, err_r, waiter])
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect { transport.check_claude_version }.not_to raise_error
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      expect(elapsed).to be < 2
+    ensure
+      [stdin_r, out_w, err_w].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'warns (with the cli path) for unsupported versions' do
+      allow(Open3).to receive(:popen3)
+        .and_return(fake_version_probe("1.0.0 (Claude Code)\n"))
+
+      expect { transport.check_claude_version }
+        .to output(%r{1\.0\.0 at /usr/bin/claude is unsupported}).to_stderr
     end
   end
 
@@ -489,7 +562,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       stdin = instance_double(IO)
       captured_env = nil
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
         [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
@@ -514,7 +587,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       stdin = instance_double(IO)
       captured_env = nil
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
         [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
@@ -536,7 +609,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       stdin = instance_double(IO)
       captured_env = nil
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
         [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
@@ -558,7 +631,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       stdin = instance_double(IO)
       captured_env = nil
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
         [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
@@ -713,7 +786,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       # Real StringIOs so the stderr-drain thread (#each_line) and #close work
       # without per-method stubs. alive?: false lets #close skip the wait/kill.
       waiter = instance_double(Process::Waiter, alive?: false)
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3).and_return([StringIO.new, StringIO.new, StringIO.new, waiter])
 
       transport.connect
@@ -733,7 +806,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       status = instance_double(Process::Status, exitstatus: 0)
       waiter = instance_double(Process::Waiter, value: status, alive?: false)
       stdout = StringIO.new(%({"type":"system","subtype":"init"}\n))
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout, StringIO.new, waiter])
 
       transport.connect
@@ -771,7 +844,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     def connect_with_pipes(stdout_r, stderr_r, waiter)
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
       transport = described_class.new('hi', options)
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout_r, stderr_r, waiter])
       transport.connect
       transport
@@ -829,8 +902,15 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     it 'still warns about unsupported versions when -v output carries non-ASCII bytes' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
       transport = described_class.new('hi', options)
-      allow(Open3).to receive(:capture3)
-        .and_return(["1.0.0 — héllo\n".b.force_encoding('US-ASCII'), '', nil])
+      stdin_r, stdin_w = IO.pipe
+      out_r, out_w = IO.pipe
+      err_r, err_w = IO.pipe
+      out_w.binmode
+      out_w.write("1.0.0 — héllo\n".b)
+      out_r.set_encoding(Encoding::US_ASCII)
+      [out_w, err_w, stdin_r].each(&:close)
+      waiter = instance_double(Process::Waiter, alive?: false, pid: 4242)
+      allow(Open3).to receive(:popen3).and_return([stdin_w, out_r, err_r, waiter])
 
       expect { transport.check_claude_version }.to output(/unsupported/).to_stderr
     end

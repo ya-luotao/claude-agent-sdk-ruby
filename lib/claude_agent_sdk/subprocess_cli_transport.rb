@@ -14,6 +14,8 @@ module ClaudeAgentSDK
   class SubprocessCLITransport < Transport
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
+    SKIP_VERSION_CHECK_ENV_VAR = 'CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'
+    VERSION_CHECK_TIMEOUT_SECONDS = 2 # mirrors Python's anyio.fail_after(2)
     RECENT_STDERR_LINES_LIMIT = 20
 
     # Track live CLI subprocesses so we can terminate them when the parent Ruby
@@ -507,12 +509,13 @@ module ClaudeAgentSDK
     end
 
     def check_claude_version
+      # Mirrors Python's os.environ.get truthiness: any non-empty value skips,
+      # including '0'/'false'/' '; unset or empty string runs the check.
+      skip = ENV.fetch(SKIP_VERSION_CHECK_ENV_VAR, nil)
+      return if skip && !skip.empty?
+
       begin
-        stdout, stderr, = Open3.capture3(@cli_path.to_s, '-v')
-        # Explicit UTF-8 decode like Python's stdout_bytes.decode(); scrub is
-        # a deliberate softening of Python's strict decode so a stray invalid
-        # byte can't suppress the version warning via the blanket rescue.
-        output = (stdout.to_s + stderr.to_s).force_encoding(Encoding::UTF_8).scrub.strip
+        output = capture_cli_version_output
         if match = output.match(/([0-9]+\.[0-9]+\.[0-9]+)/)
           version = match[1]
           version_parts = version.split('.').map(&:to_i)
@@ -521,14 +524,15 @@ module ClaudeAgentSDK
           # Array has no #< — the old `version_parts < min_parts` raised
           # NoMethodError into the blanket rescue, so the warning never fired.
           if (version_parts <=> min_parts).negative?
-            warning = "Warning: Claude Code version #{version} is unsupported in the Agent SDK. " \
+            warning = "Warning: Claude Code version #{version} at #{@cli_path} is unsupported in the Agent SDK. " \
                       "Minimum required version is #{MINIMUM_CLAUDE_CODE_VERSION}. " \
                       "Some features may not work correctly."
             warn warning
           end
         end
       rescue StandardError
-        # Ignore version check errors
+        # Ignore version check errors — including Timeout::Error from the
+        # probe deadline, mirroring Python's `except Exception: pass`.
       end
     end
 
@@ -537,6 +541,47 @@ module ClaudeAgentSDK
     end
 
     private
+
+    # Run `claude -v` with a hard deadline. Arg-vector popen3 — no shell, same
+    # injection-safety as capture3. Raises Timeout::Error past
+    # VERSION_CHECK_TIMEOUT_SECONDS (swallowed by check_claude_version's
+    # blanket rescue, mirroring Python's `except Exception: pass` around
+    # anyio.fail_after(2)). Monotonic-deadline poll instead of stdlib
+    # Timeout.timeout for the same reason as wait_process_with_timeout:
+    # Thread#raise corrupts Async fiber-scheduler state, and connect runs
+    # inside the reactor. Divergence: Python takes a single stdout chunk; we
+    # read both pipes to EOF (pre-existing capture3 shape), so the deadline
+    # also bounds CLI exit. ensure always reaps the probe (mirrors Python's
+    # finally: terminate(); wait()).
+    def capture_cli_version_output
+      stdin, stdout, stderr, wait_thr = Open3.popen3(@cli_path.to_s, '-v')
+      stdin.close
+      drainer = Thread.new { [stdout.read, stderr.read] }
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + VERSION_CHECK_TIMEOUT_SECONDS
+      task = defined?(Async::Task) ? Async::Task.current? : nil
+      until drainer.join(0)
+        raise Timeout::Error if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        task ? task.sleep(0.05) : sleep(0.05)
+      end
+      out, err = drainer.value
+      (out.to_s + err.to_s).force_encoding(Encoding::UTF_8).scrub.strip
+    ensure
+      if wait_thr&.alive?
+        begin
+          Process.kill('TERM', wait_thr.pid)
+          Process.kill('KILL', wait_thr.pid) if !wait_thr.join(0.5) && wait_thr.alive?
+        rescue StandardError
+          # ESRCH etc. — probe already gone
+        end
+      end
+      drainer&.kill if drainer&.alive?
+      [stdout, stderr].each do |io|
+        io&.close
+      rescue StandardError
+        # already closed
+      end
+    end
 
     # Append a stderr line to the recent-stderr ring, dropping the oldest
     # entry once the buffer exceeds RECENT_STDERR_LINES_LIMIT. Used to surface the
