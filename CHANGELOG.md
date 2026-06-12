@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `on_user_prompt` observers now fire for Enumerator/streaming-input prompts (once per `type: 'user'` message with extractable text). OTel traces for streaming sessions now get an `input.value` for the first trace; later turns' capture depends on prompt timing relative to each init (`OTelObserver` keeps one prompt per trace).
 
 ### Fixed
+- Oversized CLI stdout lines no longer allocate unbounded memory: the read loop's 1MB buffer cap previously fired only AFTER `each_line` had read the whole line into memory; reads are now chunk-bounded at `max_buffer_size + 1` bytes (Python's TextReceiveStream reads ≤64KB chunks — same incremental-cap semantics). The same bound applies to the stderr drain loops.
 - `advisor_tool_result` content blocks now parse into `ServerToolResultBlock` (they previously fell through to `UnknownBlock`); the `server_tool_result` wire type was dead code — no CLI version emits it — and now takes the forward-compat `UnknownBlock` path.
 - README's Client quick-start example used `receive_messages` with no termination and hung forever when pasted; it now uses `receive_response`.
 - `Configuration#default_options` containers are now deep-duplicated when constructing `ClaudeAgentOptions`: `options.allowed_tools << 'Bash'` in one session no longer mutates the global default (cross-session permission widening) and nested default hashes/arrays no longer leak mutations. Leaf objects (callbacks, observer factories, SDK MCP server instances) keep identity.

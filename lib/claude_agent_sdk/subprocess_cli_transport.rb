@@ -264,7 +264,7 @@ module ClaudeAgentSDK
     def handle_stderr
       return unless @stderr
 
-      @stderr.each_line do |line|
+      @stderr.each_line("\n", @max_buffer_size + 1) do |line|
         line_str = line.chomp
         next if line_str.empty?
 
@@ -302,7 +302,7 @@ module ClaudeAgentSDK
     def drain_stderr_with_accumulation
       return unless @stderr
 
-      @stderr.each_line do |line|
+      @stderr.each_line("\n", @max_buffer_size + 1) do |line|
         line_str = line.chomp
         next if line_str.empty?
 
@@ -463,7 +463,16 @@ module ClaudeAgentSDK
       json_buffer = ''
 
       begin
-        @stdout.each_line do |line|
+        # The limit bounds per-read allocation: a line longer than
+        # max_buffer_size+1 arrives as bounded chunks that the existing
+        # accumulation + cap machinery below handles (mirrors Python, where
+        # TextReceiveStream yields <=64KB chunks and the cap fires
+        # incrementally). +1 so an exactly-max line plus "\n" arrives whole.
+        # With UTF-8 external encoding Ruby extends a few bytes past the
+        # limit rather than splitting a multibyte char. Without the limit,
+        # an oversized line was fully allocated BEFORE the 1MB cap could
+        # fire — unbounded memory on hostile/buggy stdout.
+        @stdout.each_line("\n", @max_buffer_size + 1) do |line|
           line_str = line.strip
           next if line_str.empty?
 

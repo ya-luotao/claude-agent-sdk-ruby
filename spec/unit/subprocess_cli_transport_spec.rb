@@ -443,6 +443,42 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
   end
 
+  describe '#read_messages — oversized line memory bound (M15)' do
+    it 'yields bounded chunks for oversized lines instead of allocating the whole line' do
+      spy = Class.new do
+        attr_reader :max_chunk
+
+        def initialize(io)
+          @io = io
+          @max_chunk = 0
+        end
+
+        def set_encoding(*) = self
+
+        def each_line(*args, &blk)
+          @io.each_line(*args) do |chunk|
+            @max_chunk = [@max_chunk, chunk.bytesize].max
+            blk.call(chunk)
+          end
+        end
+      end
+
+      oversized = "{\"type\":\"x\",\"data\":\"#{'a' * 8192}\"}\n"
+      stdout = spy.new(StringIO.new(oversized))
+      status = instance_double(Process::Status, exitstatus: 0)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', max_buffer_size: 1024)
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout, StringIO.new, waiter])
+      transport.connect
+
+      expect { transport.read_messages { |m| m } }.to raise_error(ClaudeAgentSDK::CLIJSONDecodeError)
+      # limit 1025 + a few bytes of multibyte slack — never the full 8KB line
+      expect(stdout.max_chunk).to be <= 1032
+    end
+  end
+
   describe 'OTel trace context propagation' do
     around do |example|
       saved = %w[TRACEPARENT TRACESTATE BAGGAGE].to_h { |k| [k, ENV.fetch(k, nil)] }
