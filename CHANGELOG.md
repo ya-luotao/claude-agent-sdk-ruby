@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks and SDK MCP servers no longer silently stop working when a one-shot `query()`'s first turn runs past 60 seconds: stdin stays open (without timeout) until the first result, mirroring Python SDK commit c3d96cb. String-prompt queries also now stream messages to the block while that wait is pending instead of deferring delivery.
 
 ### Changed
+- `can_use_tool` callbacks now receive fully populated `ToolPermissionContext`s: the CLI display fields (`title`, `display_name`, `description`, `blocked_path`, `decision_reason`) are forwarded (previously always nil), and `suggestions` are typed `PermissionUpdate` objects instead of raw wire hashes (Python #920 parity) — `PermissionUpdate.new` also hydrates wire-format rule hashes into `PermissionRuleValue`. Code treating suggestion entries as plain Hashes (`dig`, `fetch`) must use the typed accessors; echoing `context.suggestions` into `updated_permissions` keeps working.
 - A `ProcessError` that directly follows a result with `is_error: true` (the CLI exits non-zero on purpose, e.g. structured-output errors) is now raised with the structured error text the CLI reported (`Claude Code returned an error result: …`, preserving `exit_code`/`stderr`) instead of ending the stream silently — matching the Python SDK.
 - `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT` is now a no-op (the internal `Query::STREAM_CLOSE_TIMEOUT_*` constants were removed with the stdin-close timeout).
 

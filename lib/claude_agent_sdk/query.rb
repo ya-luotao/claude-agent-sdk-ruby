@@ -384,11 +384,20 @@ module ClaudeAgentSDK
 
       original_input = request_data[:input]
 
+      # Field order mirrors Python _internal/query.py's can_use_tool branch.
+      # Suggestions are hydrated into PermissionUpdate (Python #920); a
+      # malformed entry raises here, on the reactor, and becomes an error
+      # control_response — same observable behavior as Python.
       context = ToolPermissionContext.new(
         signal: nil,
-        suggestions: request_data[:permission_suggestions] || [],
+        suggestions: (request_data[:permission_suggestions] || []).map { |s| PermissionUpdate.new(s) },
         tool_use_id: request_data[:tool_use_id],
-        agent_id: request_data[:agent_id]
+        agent_id: request_data[:agent_id],
+        blocked_path: request_data[:blocked_path],
+        decision_reason: request_data[:decision_reason],
+        title: request_data[:title],
+        display_name: request_data[:display_name],
+        description: request_data[:description]
       )
 
       # User-supplied permission callback runs on a plain thread, not the

@@ -621,6 +621,22 @@ RSpec.describe ClaudeAgentSDK do
         expect(hash[:behavior]).to eq('allow')
         expect(hash[:rules].first[:toolName]).to eq('Bash')
       end
+
+      it 'hydrates wire-format rule hashes into PermissionRuleValue and round-trips via to_h' do
+        wire = {
+          type: 'addRules',
+          destination: 'localSettings',
+          behavior: 'allow',
+          rules: [{ toolName: 'Bash', ruleContent: 'git status' }]
+        }
+
+        update = described_class.new(wire)
+
+        expect(update.rules.first).to be_a(ClaudeAgentSDK::PermissionRuleValue)
+        expect(update.rules.first.tool_name).to eq('Bash')
+        expect(update.rules.first.rule_content).to eq('git status')
+        expect(update.to_h).to eq(wire)
+      end
     end
 
     describe ClaudeAgentSDK::PermissionResultAllow do

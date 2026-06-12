@@ -723,6 +723,97 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'can_use_tool permission requests' do
+    def handle_permission_request(callback, request)
+      writes = []
+      transport = instance_double(ClaudeAgentSDK::Transport)
+      allow(transport).to receive(:write) { |data| writes << data }
+      query = described_class.new(transport: transport, is_streaming_mode: true, can_use_tool: callback)
+
+      query.send(:handle_control_request, { request_id: 'req_1', request: request })
+      JSON.parse(writes.last, symbolize_names: true)
+    end
+
+    it 'forwards display fields and blocked_path/decision_reason to ToolPermissionContext' do
+      received = nil
+      callback = lambda do |_tool_name, _input, context|
+        received = context
+        ClaudeAgentSDK::PermissionResultAllow.new
+      end
+
+      handle_permission_request(callback, {
+                                  subtype: 'can_use_tool',
+                                  tool_name: 'Bash',
+                                  input: { command: 'rm -rf /tmp/x' },
+                                  permission_suggestions: [],
+                                  tool_use_id: 'toolu_01DEF456',
+                                  blocked_path: '/tmp/x',
+                                  decision_reason: 'PreToolUse hook flagged this as destructive',
+                                  title: 'Claude wants to run a Bash command',
+                                  display_name: 'Bash',
+                                  description: 'rm -rf /tmp/x'
+                                })
+
+      expect(received.tool_use_id).to eq('toolu_01DEF456')
+      expect(received.blocked_path).to eq('/tmp/x')
+      expect(received.decision_reason).to eq('PreToolUse hook flagged this as destructive')
+      expect(received.title).to eq('Claude wants to run a Bash command')
+      expect(received.display_name).to eq('Bash')
+      expect(received.description).to eq('rm -rf /tmp/x')
+    end
+
+    it 'delivers suggestions as PermissionUpdate objects and round-trips them through updatedPermissions' do
+      wire_suggestion = {
+        type: 'addRules',
+        destination: 'localSettings',
+        behavior: 'allow',
+        rules: [{ toolName: 'Bash', ruleContent: 'git status' }]
+      }
+      seen = []
+      callback = lambda do |_tool_name, _input, context|
+        seen.concat(context.suggestions)
+        ClaudeAgentSDK::PermissionResultAllow.new(
+          updated_permissions: context.suggestions.select { |s| s.destination == 'localSettings' }
+        )
+      end
+
+      response = handle_permission_request(callback, {
+                                             subtype: 'can_use_tool',
+                                             tool_name: 'Bash',
+                                             input: { command: 'git status' },
+                                             permission_suggestions: [wire_suggestion],
+                                             tool_use_id: 'toolu_2'
+                                           })
+
+      expect(seen.first).to be_a(ClaudeAgentSDK::PermissionUpdate)
+      expect(seen.first.destination).to eq('localSettings')
+      expect(seen.first.rules.first).to be_a(ClaudeAgentSDK::PermissionRuleValue)
+      expect(seen.first.rules.first.tool_name).to eq('Bash')
+      expect(response.dig(:response, :subtype)).to eq('success')
+      expect(response.dig(:response, :response, :updatedPermissions)).to eq([wire_suggestion])
+    end
+
+    it 'defaults display fields to nil and suggestions to [] when the CLI omits them' do
+      received = nil
+      callback = lambda do |_tool_name, _input, context|
+        received = context
+        ClaudeAgentSDK::PermissionResultAllow.new
+      end
+
+      response = handle_permission_request(callback, {
+                                             subtype: 'can_use_tool',
+                                             tool_name: 'Read',
+                                             input: {},
+                                             tool_use_id: 'toolu_3'
+                                           })
+
+      expect(received.suggestions).to eq([])
+      expect([received.title, received.display_name, received.description,
+              received.blocked_path, received.decision_reason]).to all(be_nil)
+      expect(response.dig(:response, :subtype)).to eq('success')
+    end
+  end
+
   describe 'control request cancellation' do
     it 'writes a cancelled response when stopped' do
       writes = []

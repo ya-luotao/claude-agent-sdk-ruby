@@ -525,7 +525,16 @@ module ClaudeAgentSDK
 
   # Permission update configuration
   class PermissionUpdate < Type
-    attr_accessor :type, :rules, :behavior, :mode, :directories, :destination
+    attr_accessor :type, :behavior, :mode, :directories, :destination
+    attr_reader :rules
+
+    # Wire-format parity with Python PermissionUpdate.from_dict (#920): the CLI
+    # sends rules as camelCase hashes ({toolName:, ruleContent:}); hydrate them
+    # into PermissionRuleValue (Type#assign_attribute normalizes the camelCase
+    # keys). Already-typed PermissionRuleValue entries pass through unchanged.
+    def rules=(value)
+      @rules = value&.map { |rule| rule.is_a?(Hash) ? PermissionRuleValue.new(rule) : rule }
+    end
 
     def to_h
       result = { type: @type }
