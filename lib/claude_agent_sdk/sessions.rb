@@ -319,10 +319,13 @@ module ClaudeAgentSDK
       tag_value = tag_line ? extract_json_string_field(tag_line, 'tag', last: true) : nil
       tag_value = nil if tag_value && tag_value.empty?
 
-      # created_at from first entry's ISO timestamp (epoch ms). More reliable
-      # than stat().birthtime which is unsupported on some filesystems.
-      first_line = head.lines.first || ''
-      first_timestamp = extract_json_string_field(first_line, 'timestamp', last: false)
+      # created_at from the first ISO timestamp found in the head (epoch ms).
+      # More reliable than stat().birthtime which is unsupported on some
+      # filesystems. Scans the whole head rather than only the first line
+      # because the first record may be a metadata-only entry (e.g.
+      # permission-mode) with no timestamp field; the first user/assistant
+      # record that follows does carry one (Python #907).
+      first_timestamp = extract_json_string_field(head, 'timestamp', last: false)
       created_at = parse_iso_timestamp_ms(first_timestamp) if first_timestamp
 
       SDKSessionInfo.new(

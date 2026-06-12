@@ -21,7 +21,7 @@ ClaudeAgentSDK.list_sessions(directory: '.', limit: 10, offset: 10)
 ClaudeAgentSDK.list_sessions(directory: '.', include_worktrees: true)
 ```
 
-Each `SDKSessionInfo` includes: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`.
+Each `SDKSessionInfo` includes: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`, `tag`, `created_at`.
 
 ## Reading Session Messages
 

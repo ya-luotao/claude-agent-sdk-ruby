@@ -248,13 +248,27 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       end
     end
 
-    it 'returns nil created_at when no timestamp in first entry' do
+    it 'returns nil created_at when no head entry has a timestamp field' do
       Dir.mktmpdir do |dir|
         file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
         File.write(file_path, { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json)
 
         result = described_class.read_session_lite(file_path, '/test')
         expect(result.created_at).to be_nil
+      end
+    end
+
+    it 'finds created_at when the first record is metadata-only (Python #907)' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'permission-mode', permissionMode: 'acceptEdits' }.to_json,
+          { type: 'user', uuid: 'u1', timestamp: '2026-01-15T10:30:00.000Z',
+            message: { content: 'Hello' } }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.created_at).to eq((Time.utc(2026, 1, 15, 10, 30, 0).to_f * 1000).to_i)
       end
     end
 

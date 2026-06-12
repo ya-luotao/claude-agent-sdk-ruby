@@ -145,7 +145,7 @@ result = ClaudeAgentSDK.fork_session(session_id: "uuid-here", up_to_message_id: 
 ```
 
 Return types:
-- `list_sessions` → `Array<SDKSessionInfo>` (fields: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`)
+- `list_sessions` → `Array<SDKSessionInfo>` (fields: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`, `tag`, `created_at`)
 - `get_session_messages` → `Array<SessionMessage>` (fields: `type`, `uuid`, `session_id`, `message`, `parent_tool_use_id`)
 - `fork_session` → `ForkSessionResult` (field: `session_id`)
 
