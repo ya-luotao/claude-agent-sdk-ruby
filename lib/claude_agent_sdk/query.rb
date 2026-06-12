@@ -23,8 +23,30 @@ module ClaudeAgentSDK
     CONTROL_REQUEST_TIMEOUT_ENV_VAR = 'CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS'
     DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
 
+    # Waiter for control responses awaited OFF the reactor — i.e. a control
+    # method called from inside a hook/can_use_tool/SDK-MCP callback, which
+    # runs on a FiberBoundary worker thread (Python supports this reentrancy
+    # natively: callbacks are event-loop tasks and anyio.Event is
+    # level-triggered). Duck-types Async::Condition#signal for the read
+    # loop's signal sites; the unconditional token push makes it
+    # level-triggered, closing the check-then-wait gap that an
+    # edge-triggered Condition would lose across threads.
+    class ThreadWaiter
+      def initialize
+        @queue = ::Queue.new
+      end
+
+      def signal(_value = nil)
+        @queue << true
+      end
+
+      def wait(timeout)
+        @queue.pop(timeout: timeout)
+      end
+    end
+
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
-                   exclude_dynamic_sections: nil)
+                   exclude_dynamic_sections: nil, skills: nil)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
@@ -32,6 +54,7 @@ module ClaudeAgentSDK
       @sdk_mcp_servers = sdk_mcp_servers || {}
       @agents = agents
       @exclude_dynamic_sections = exclude_dynamic_sections
+      @skills = skills
 
       # Control protocol state
       @pending_control_responses = {}
@@ -40,6 +63,7 @@ module ClaudeAgentSDK
       @hook_callback_timeouts = {}
       @next_callback_id = 0
       @request_counter = 0
+      @request_counter_mutex = Mutex.new
       @inflight_control_request_tasks = {}
 
       # Message stream
@@ -76,10 +100,17 @@ module ClaudeAgentSDK
               @hook_callback_timeouts[callback_id] = matcher[:timeout] if matcher[:timeout]
               callback_ids << callback_id
             end
-            hooks_config[event] << {
+            matcher_config = {
               matcher: matcher[:matcher],
               hookCallbackIds: callback_ids
             }
+            # Wire field is literal "timeout" in SECONDS, per matcher,
+            # omitted when absent (Python _internal/query.py parity — no
+            # camelCase, no ms conversion). Local enforcement via
+            # @hook_callback_timeouts stays as defense-in-depth for CLIs
+            # that ignore the field.
+            matcher_config[:timeout] = matcher[:timeout] if matcher[:timeout]
+            hooks_config[event] << matcher_config
           end
         end
       end
@@ -113,6 +144,9 @@ module ClaudeAgentSDK
         agents: agents_dict
       }
       request[:excludeDynamicSections] = @exclude_dynamic_sections unless @exclude_dynamic_sections.nil?
+      # 'all' and omitted are equivalent at the wire level (no filter), so
+      # only send the field when it's an explicit list (mirrors Python).
+      request[:skills] = @skills if @skills.is_a?(Array)
 
       response = send_control_request(request)
       @initialized = true
@@ -260,7 +294,9 @@ module ClaudeAgentSDK
         end
       end
     rescue StandardError => e
-      # Unblock pending control requests (e.g., initialize) so callers don't hang until timeout.
+      # Unblock pending control requests (e.g., initialize) so callers don't
+      # hang until timeout. INVARIANT: store the result before signaling —
+      # senders check the slot before waiting (level-trigger).
       @pending_control_responses.dup.each do |request_id, condition|
         @pending_control_results[request_id] ||= e
         condition.signal
@@ -312,7 +348,14 @@ module ClaudeAgentSDK
     def handle_control_response(message)
       response = message[:response] || {}
       request_id = response[:request_id] || response[:requestId] || message[:request_id] || message[:requestId]
-      return unless @pending_control_responses.key?(request_id)
+      # Capture the waiter ONCE: a worker-thread caller can satisfy its
+      # level-trigger check and evict the entries between our key? check and
+      # a re-lookup, so `@pending_control_responses[request_id].signal` could
+      # call signal on nil — a NoMethodError the read loop would treat as a
+      # fatal transport error, tearing down the whole session. Signaling an
+      # already-evicted waiter is harmless (orphan token push / no-op).
+      waiter = @pending_control_responses[request_id]
+      return unless waiter
 
       if response[:subtype] == 'error'
         @pending_control_results[request_id] = StandardError.new(response[:error] || 'Unknown error')
@@ -320,8 +363,10 @@ module ClaudeAgentSDK
         @pending_control_results[request_id] = response
       end
 
-      # Signal that response is ready
-      @pending_control_responses[request_id].signal
+      # Signal that response is ready. INVARIANT: the result slot above
+      # MUST be written before this signal — senders check the slot before
+      # waiting (level-trigger).
+      waiter.signal
     end
 
     def handle_control_request(request)
@@ -672,8 +717,10 @@ module ClaudeAgentSDK
           **base_args
         )
       else
-        # Return base input for unknown event types
-        BaseHookInput.new(**base_args)
+        # Unknown event: preserve the wire event name and full raw payload
+        # rather than dropping event-specific fields (Python passes the raw
+        # dict through, so nothing is lost there).
+        UnknownHookInput.new(hook_event_name: event_name, raw_input: input_data, **base_args)
       end
     end
 
@@ -726,15 +773,25 @@ module ClaudeAgentSDK
 
       timeout_seconds = control_request_timeout_seconds
 
-      # Generate unique request ID
-      @request_counter += 1
-      request_id = "req_#{@request_counter}_#{SecureRandom.hex(4)}"
+      # Detect the execution mode BEFORE any write: a control method called
+      # from inside a hook/permission/SDK-MCP callback runs on a
+      # FiberBoundary worker thread with no reactor. Detecting after the
+      # write left a half-executed request (written to the CLI, then
+      # RuntimeError; the eventual response dropped by the key? guard).
+      task = Async::Task.current?
 
-      # Create condition for response
-      condition = Async::Condition.new
-      @pending_control_responses[request_id] = condition
+      # Generate unique request ID (callbacks may issue requests from
+      # worker threads concurrently with the reactor)
+      request_id = @request_counter_mutex.synchronize do
+        @request_counter += 1
+        "req_#{@request_counter}_#{SecureRandom.hex(4)}"
+      end
 
-      # Build and send request
+      # Reactor callers wait on an Async::Condition; worker-thread callers
+      # on a ThreadWaiter. Registration must precede the write.
+      waiter = task ? Async::Condition.new : ThreadWaiter.new
+      @pending_control_responses[request_id] = waiter
+
       control_request = {
         type: 'control_request',
         request_id: request_id,
@@ -744,29 +801,48 @@ module ClaudeAgentSDK
 
       writeln(JSON.generate(control_request))
 
-      # Wait for response with timeout. Use the current task's timeout so we
-      # stay in the caller's fiber (a nested `Async do ... end.wait` spawned a
-      # separate task and could leak the pending entries when an Async::Stop
-      # propagated through `.wait` before either the success-path or the
-      # timeout-path cleanup ran). Control requests must run inside an Async
-      # reactor — `Query#start` already enforces this precondition, so the
-      # cleanest place to surface the contract is the start hand-off; here we
-      # assume an active task is present.
       begin
-        Async::Task.current.with_timeout(timeout_seconds) do
-          condition.wait
-        end
+        await_control_response(request_id, waiter, task, timeout_seconds, request[:subtype])
         result = @pending_control_results[request_id]
         raise result if result.is_a?(Exception)
 
         result&.[](:response) || {}
-      rescue Async::TimeoutError
-        raise ControlRequestTimeoutError, "Control request timeout: #{request[:subtype]}"
       ensure
         # Always evict the entries so a late control_response (after timeout)
         # or an Async::Stop propagating through wait does not leak state.
         @pending_control_responses.delete(request_id)
         @pending_control_results.delete(request_id)
+      end
+    end
+
+    # Level-triggered wait: every signal site stores the result BEFORE
+    # signaling, so checking the result slot before (and between) waits
+    # cannot lose a wakeup — Async::Condition is edge-triggered and a signal
+    # arriving before the sender reaches wait would otherwise be dropped
+    # (reachable when a custom transport's #write suspends after delivery,
+    # or when the read loop's rescue broadcast fires mid-write). Mirrors
+    # anyio.Event's level-trigger semantics in Python.
+    #
+    # Do NOT reimplement the reactor wait as a nested `Async do ... end.wait`
+    # — that spawned a separate task and leaked the pending entries when an
+    # Async::Stop propagated through `.wait` before cleanup ran.
+    def await_control_response(request_id, waiter, task, timeout_seconds, subtype)
+      if task
+        begin
+          task.with_timeout(timeout_seconds) do
+            waiter.wait until @pending_control_results.key?(request_id)
+          end
+        rescue Async::TimeoutError
+          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}"
+        end
+      else
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
+        until @pending_control_results.key?(request_id)
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}" if remaining <= 0
+
+          waiter.wait(remaining)
+        end
       end
     end
 
@@ -851,27 +927,15 @@ module ClaudeAgentSDK
       }
     end
 
-    def handle_mcp_tools_call(server, message, params)
-      # Execute tool on the SDK MCP server
-      tool_name = params[:name]
-      arguments = params[:arguments] || {}
-
-      # Call the tool
-      result = server.call_tool(tool_name, arguments)
-      content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content') || []
-      response_data = { content: content }
-
-      is_error = ClaudeAgentSDK.flexible_fetch(result, 'isError', 'is_error')
-      response_data[:isError] = !!is_error unless is_error.nil?
-
-      structured_content = ClaudeAgentSDK.flexible_fetch(result, 'structuredContent', 'structured_content')
-      response_data[:structuredContent] = structured_content unless structured_content.nil?
-
-      {
-        jsonrpc: '2.0',
-        id: message[:id],
-        result: response_data
-      }
+    def handle_mcp_tools_call(server, message, _params)
+      # Route through the official MCP::Server (Python parity: its lowlevel
+      # server validates arguments against the tool's inputSchema BEFORE the
+      # handler runs and reports validation failures, unknown tools, and
+      # handler exceptions as in-band isError results). tools/list,
+      # initialize, resources/* and prompts/* stay on the SDK paths — the
+      # gem drops annotations/_meta from tools/list and negotiates newer
+      # protocol versions.
+      server.handle_message(message)
     end
 
     def handle_mcp_resources_list(server, message)
@@ -1019,7 +1083,11 @@ module ClaudeAgentSDK
       @transport.end_input
     end
 
-    # Stream input messages to transport
+    # Stream input messages to transport. NOTE: iteration runs on the
+    # reactor (the deliberate FiberBoundary carve-out — see
+    # fiber_boundary.rb): scheduler-aware blocking (Thread::Queue#pop,
+    # sleep, socket IO) parks only this task; CPU-bound or scheduler-opaque
+    # work in the enumerator must be moved to a producer Thread by the user.
     def stream_input(stream)
       wrote_message = false
       stream.each do |message|
@@ -1079,6 +1147,16 @@ module ClaudeAgentSDK
     # Close the query and transport
     def close
       @closed = true
+      # Wake pending control-request waiters (same shape as the read-loop
+      # rescue broadcast): close stops the read task with Async::Stop, which
+      # bypasses that broadcast — a worker-thread caller parked in
+      # ThreadWaiter#wait would otherwise leak its OS thread for the full
+      # control-request timeout (up to 1200s) in long-lived processes.
+      # INVARIANT: store the result before signaling (level-trigger).
+      @pending_control_responses.dup.each do |request_id, waiter|
+        @pending_control_results[request_id] ||= CLIConnectionError.new('Query closed')
+        waiter.signal
+      end
       # Final mirror flush BEFORE stopping the read task, so the last turn's
       # entries reach the store. #close on the batcher never raises.
       @transcript_mirror_batcher&.close

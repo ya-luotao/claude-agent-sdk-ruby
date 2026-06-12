@@ -897,6 +897,22 @@ module ClaudeAgentSDK
     end
   end
 
+  # Fallback for hook events the SDK does not yet model. Carries the wire
+  # event name and the complete raw payload so no fields are lost (Python
+  # passes hook input through as a raw dict, so unknown events lose
+  # nothing there).
+  class UnknownHookInput < BaseHookInput
+    attr_accessor :raw_input
+
+    def initialize(attributes = {})
+      super
+      # Direct assignment: BaseHookInput exposes hook_event_name as
+      # attr_reader only, and Type#assign_attribute silently drops keys
+      # without public setters.
+      @hook_event_name = attributes[:hook_event_name] || attributes['hook_event_name']
+    end
+  end
+
   # Setup hook specific output
   class SetupHookSpecificOutput < Type
     attr_accessor :additional_context
@@ -1489,7 +1505,7 @@ module ClaudeAgentSDK
                   :model, :permission_prompt_tool_name, :cwd, :cli_path, :settings,
                   :add_dirs, :env, :extra_args, :max_buffer_size, :stderr,
                   :can_use_tool, :hooks, :user,
-                  :agents, :setting_sources,
+                  :agents, :setting_sources, :skills,
                   :output_format, :max_budget_usd, :max_thinking_tokens,
                   :fallback_model, :plugins, :debug_stderr,
                   :betas, :tools, :sandbox,
@@ -1605,8 +1621,11 @@ module ClaudeAgentSDK
       defaults = ClaudeAgentSDK.default_options
       return attributes unless defaults.any?
 
-      # Start from configured defaults (deep dup hashes to prevent mutation)
-      result = defaults.transform_values { |v| v.is_a?(Hash) ? v.dup : v }
+      # Start from configured defaults. Container values are recursively
+      # duped so per-instance mutation (options.allowed_tools << 'Bash')
+      # can never corrupt the global defaults; non-container leaves
+      # (Strings, Procs, SdkMcpServer instances) intentionally keep identity.
+      result = deep_dup_containers(defaults)
       attributes.each do |key, value|
         default_val = result[key]
         result[key] = if value.nil?
@@ -1618,6 +1637,16 @@ module ClaudeAgentSDK
                       end
       end
       result
+    end
+
+    # Recurse ONLY into Hash/Array; leaves keep object identity (observer
+    # factories, callbacks, SDK MCP server instances must not be duped).
+    def deep_dup_containers(value)
+      case value
+      when Hash then value.to_h { |k, v| [k, deep_dup_containers(v)] }
+      when Array then value.map { |v| deep_dup_containers(v) }
+      else value
+      end
     end
   end
 

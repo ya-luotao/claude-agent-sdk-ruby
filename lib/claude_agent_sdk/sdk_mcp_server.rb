@@ -12,6 +12,57 @@ module ClaudeAgentSDK
     end
   end
 
+  # Like deep_symbolize_keys, but also converts Symbol VALUES to strings so a
+  # prebuilt schema written with symbols ({ type: :object, ... }) emits clean
+  # wire-format JSON Schema.
+  def self.deep_normalize_schema(obj)
+    case obj
+    when Hash then obj.transform_keys(&:to_sym).transform_values { |v| deep_normalize_schema(v) }
+    when Array then obj.map { |v| deep_normalize_schema(v) }
+    when Symbol then obj.to_s
+    else obj
+    end
+  end
+
+  # A prebuilt JSON Schema is detected by type == 'object' (String or Symbol)
+  # AND a Hash properties value. Deliberately stricter than Python's rule:
+  # Ruby's simple-schema idiom uses Symbols as type VALUES, so
+  # { type: :string, properties: :string } is a legal simple schema with
+  # params literally named type/properties.
+  def self.prebuilt_json_schema?(schema)
+    return false unless schema.is_a?(Hash)
+
+    type_val = schema[:type] || schema['type']
+    props_val = schema[:properties] || schema['properties']
+    (type_val.is_a?(String) || type_val.is_a?(Symbol)) && type_val.to_s == 'object' && props_val.is_a?(Hash)
+  end
+
+  # Single source of truth for tool input schemas: prebuilt schemas are
+  # normalized (symbol keys, string values); simple { name: :type } hashes
+  # become a full JSON Schema with every param required (string keys).
+  def self.normalize_tool_schema(schema)
+    return deep_normalize_schema(schema) if prebuilt_json_schema?(schema)
+
+    if schema.is_a?(Hash)
+      properties = schema.to_h { |param, type| [param.to_sym, ruby_type_to_json_schema(type)] }
+      result = { type: 'object', properties: properties }
+      result[:required] = properties.keys.map(&:to_s) unless properties.empty?
+      return result
+    end
+
+    { type: 'object', properties: {} }
+  end
+
+  def self.ruby_type_to_json_schema(type)
+    case type
+    when :string, String then { type: 'string' }
+    when :integer, Integer then { type: 'integer' }
+    when :float, Float, :number then { type: 'number' }
+    when :boolean, TrueClass, FalseClass then { type: 'boolean' }
+    else { type: 'string' } # Default fallback
+    end
+  end
+
   # SDK MCP Server - wraps official MCP::Server with block-based API
   #
   # Unlike external MCP servers that run as separate processes, SDK MCP servers
@@ -33,8 +84,9 @@ module ClaudeAgentSDK
       # Create dynamic Tool classes from tool definitions
       tool_classes = create_tool_classes(tools)
 
-      # Create dynamic Resource classes from resource definitions
-      resource_classes = create_resource_classes(resources)
+      # Resources are served as MCP::Resource instances; reads go through
+      # the gem's registerable handler (see register_resources_read_handler).
+      resource_instances = create_resource_instances(resources)
 
       # Create dynamic Prompt classes from prompt definitions
       prompt_classes = create_prompt_classes(prompts)
@@ -44,9 +96,10 @@ module ClaudeAgentSDK
         name: name,
         version: version,
         tools: tool_classes,
-        resources: resource_classes,
+        resources: resource_instances,
         prompts: prompt_classes
       )
+      register_resources_read_handler
     end
 
     # Handle a JSON-RPC request
@@ -54,6 +107,30 @@ module ClaudeAgentSDK
     # @return [String] JSON-RPC response
     def handle_json(json_string)
       @mcp_server.handle_json(json_string)
+    end
+
+    # Route one JSON-RPC request hash (symbol keys, as produced by the
+    # transport) through the official MCP::Server. Two sanitations, both
+    # empirically required:
+    # 1. The gem's JsonRpcHandler rejects string ids not matching
+    #    /\A[a-zA-Z0-9_-]+\z/ with {id: nil, error: -32600} (Python echoes
+    #    any id verbatim) — swap in a safe id and re-stamp the original on
+    #    the response (error envelopes too).
+    # 2. The gem rejects messages lacking jsonrpc: '2.0' with -32600; Python
+    #    never inspects this field and the CLI's embedded mcp_message shape
+    #    is not guaranteed — force it.
+    # @param message [Hash] JSON-RPC request hash
+    # @return [Hash] JSON-RPC response hash
+    # NOTE on concurrency: Query runs each control_request in its own async
+    # task, so two tools/call can interleave inside the gem's Server#handle.
+    # Responses are built from per-call locals (safe), but the gem's
+    # instrumentation_callback attribution (@instrumentation_data ivar) can
+    # cross-contaminate under concurrency — harmless with the default no-op.
+    def handle_message(message)
+      original_id = message[:id]
+      response = @mcp_server.handle(message.merge(jsonrpc: '2.0', id: 0))
+      response[:id] = original_id if response.is_a?(Hash) && response.key?(:id)
+      normalize_tools_call_errors(message, response)
     end
 
     # List all available tools (for backward compatibility)
@@ -71,24 +148,34 @@ module ClaudeAgentSDK
       end
     end
 
-    # Execute a tool by name (for backward compatibility)
+    # Execute a tool by name (backward-compat public API; Query's tools/call
+    # dispatch routes through handle_message/the official MCP::Server, which
+    # also validates arguments against the tool's inputSchema — this direct
+    # path bypasses that validation).
+    # Tool-execution failures are reported in-band (isError: true) per the
+    # MCP spec and Python parity (the mcp lowlevel server converts handler
+    # exceptions to CallToolResult(isError=True)); they must NOT become
+    # JSON-RPC protocol errors — the model needs the error text to
+    # self-correct.
     # @param name [String] Tool name
     # @param arguments [Hash] Tool arguments
-    # @return [Hash] Tool result
+    # @return [Hash] Tool result (with isError: true on failure)
     def call_tool(name, arguments)
       tool = @tools.find { |t| t.name == name }
-      raise "Tool '#{name}' not found" unless tool
+      return error_tool_result("Tool '#{name}' not found") unless tool
 
       # Call the tool's handler on a plain thread so the async gem's
       # Fiber scheduler is not visible to user code (which may hit AR/PG).
       result = FiberBoundary.invoke { tool.handler.call(arguments) }
 
-      # Ensure result has the expected format
-      unless result.is_a?(Hash) && result[:content]
-        raise "Tool '#{name}' must return a hash with :content key"
-      end
+      # Guard before flexible_fetch: it raises on non-Hash inputs.
+      content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "content", "content") : nil
+      return error_tool_result("Tool '#{name}' must return a hash with :content key") unless content
 
       result
+    rescue StandardError => e
+      # Bare e.message like Python's str(e) — no prefix.
+      error_tool_result(e.message)
     end
 
     # List all available resources (for backward compatibility)
@@ -116,10 +203,10 @@ module ClaudeAgentSDK
       # libraries (ActiveRecord, pg, ...) and must run on a plain thread.
       content = FiberBoundary.invoke { resource.reader.call }
 
-      # Ensure content has the expected format
-      unless content.is_a?(Hash) && content[:contents]
-        raise "Resource '#{uri}' must return a hash with :contents key"
-      end
+      # Ensure content has the expected format (symbol or string keys; guard
+      # before flexible_fetch — it raises on non-Hash inputs)
+      contents = content.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(content, "contents", "contents") : nil
+      raise "Resource '#{uri}' must return a hash with :contents key" if contents.nil?
 
       content
     end
@@ -148,15 +235,42 @@ module ClaudeAgentSDK
       # as `call_tool` above.
       result = FiberBoundary.invoke { prompt.generator.call(arguments) }
 
-      # Ensure result has the expected format
-      unless result.is_a?(Hash) && result[:messages]
-        raise "Prompt '#{name}' must return a hash with :messages key"
-      end
+      # Ensure result has the expected format (symbol or string keys)
+      messages = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "messages", "messages") : nil
+      raise "Prompt '#{name}' must return a hash with :messages key" if messages.nil?
 
       result
     end
 
     private
+
+    # Mirrors Python mcp lowlevel Server._make_error_result: error text goes
+    # in content with isError: true, returned as a *successful* JSON-RPC
+    # result.
+    def error_tool_result(text)
+      { content: [{ type: "text", text: text }], isError: true }
+    end
+
+    # The mcp gem's tools/call error behavior swung across 0.x releases:
+    # 0.5-0.7.0 return validation/unknown-tool/handler failures in-band,
+    # 0.7.1+ progressively turned them back into JSON-RPC protocol errors
+    # (0.18 raises for handler exceptions and unknown tools). The in-band
+    # contract is load-bearing — the model must see the error text to
+    # self-correct — so normalize ANY tools/call error envelope to an
+    # in-band isError result, version-independently. Protocol-level errors
+    # cannot legitimately occur here: the method name is fixed and the
+    # envelope is sanitized by handle_message.
+    def normalize_tools_call_errors(message, response)
+      return response unless message[:method] == 'tools/call'
+      return response unless response.is_a?(Hash) && response[:error].is_a?(Hash)
+
+      error = response[:error]
+      {
+        jsonrpc: '2.0',
+        id: response[:id],
+        result: error_tool_result((error[:data] || error[:message]).to_s)
+      }
+    end
 
     # Create dynamic Tool classes from tool definitions
     def create_tool_classes(tools)
@@ -177,10 +291,39 @@ module ClaudeAgentSDK
             end
 
             def input_schema_value
-              schema = convert_schema(@tool_def.input_schema)
-              opts = { properties: schema[:properties] || {} }
-              opts[:required] = schema[:required] if schema[:required]&.any?
-              MCP::Tool::InputSchema.new(**opts)
+              # Full-schema construction: the gem JSON-round-trips and
+              # validates against the draft4 metaschema. additionalProperties/
+              # enum/description survive. Empty required arrays are stripped —
+              # draft4's metaschema mandates non-empty required (Python's
+              # modern jsonschema accepts []). Schemas the draft4 metaschema
+              # rejects (numeric exclusiveMinimum, $ref/$defs — valid modern
+              # JSON Schema that Python accepts) fall back to a permissive
+              # schema with a one-time warning: the tool keeps working with
+              # argument validation disabled instead of being permanently
+              # uncallable while tools/list advertises it as healthy.
+              @input_schema_value ||= begin
+                schema = ClaudeAgentSDK.normalize_tool_schema(@tool_def.input_schema)
+                schema = schema.except(:required) if schema[:required].is_a?(Array) && schema[:required].empty?
+                begin
+                  MCP::Tool::InputSchema.new(schema)
+                rescue ArgumentError => e
+                  warn "Claude SDK: tool '#{@tool_def.name}' schema not draft4-compatible " \
+                       "(#{e.message.lines.first&.strip}); argument validation disabled for this tool"
+                  MCP::Tool::InputSchema.new({ type: 'object', properties: {} })
+                end
+              end
+            end
+
+            def annotations_value
+              # Raw hash, not MCP::Annotations: the gem's class only accepts
+              # audience/priority/last_modified, but SDK annotations carry
+              # arbitrary keys (e.g. maxResultSizeChars). Hash#to_h is
+              # identity, so Tool.to_h serializes it unchanged.
+              @tool_def.annotations
+            end
+
+            def meta_value
+              @tool_def.meta
             end
 
             def call(server_context: nil, **args)
@@ -188,10 +331,13 @@ module ClaudeAgentSDK
               # Hop to a plain thread so user handlers don't see the Fiber scheduler.
               result = FiberBoundary.invoke { @tool_def.handler.call(args) }
 
+              # Guard BEFORE flexible_fetch: on a non-Hash it raises
+              # TypeError/NoMethodError, surfacing garbage instead of the
+              # friendly message.
+              raise "Tool '#{@tool_def.name}' must return a hash with :content key" unless result.is_a?(Hash)
+
               content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content')
-              unless result.is_a?(Hash) && content
-                raise "Tool '#{@tool_def.name}' must return a hash with :content key"
-              end
+              raise "Tool '#{@tool_def.name}' must return a hash with :content key" if content.nil?
 
               is_error = ClaudeAgentSDK.flexible_fetch(result, 'isError', 'is_error')
               structured_content = ClaudeAgentSDK.flexible_fetch(result, 'structuredContent', 'structured_content')
@@ -202,182 +348,87 @@ module ClaudeAgentSDK
                 structured_content: structured_content
               )
             end
-
-            private
-
-            def convert_schema(schema)
-              # If it's already a proper JSON schema (symbol or string keys), normalize
-              # to symbol keys so downstream code (schema[:properties]) works uniformly.
-              if schema.is_a?(Hash)
-                type_val = schema[:type] || schema['type']
-                props_val = schema[:properties] || schema['properties']
-                return ClaudeAgentSDK.deep_symbolize_keys(schema) if type_val == 'object' && props_val.is_a?(Hash)
-              end
-
-              # Simple schema: hash mapping parameter names to types
-              if schema.is_a?(Hash)
-                properties = {}
-                schema.each do |param_name, param_type|
-                  properties[param_name] = type_to_json_schema(param_type)
-                end
-
-                result = { type: 'object', properties: properties }
-                required_keys = properties.keys.map(&:to_s)
-                result[:required] = required_keys unless required_keys.empty?
-                return result
-              end
-
-              # Default fallback
-              { type: 'object', properties: {} }
-            end
-
-            def type_to_json_schema(type)
-              case type
-              when :string, String
-                { type: 'string' }
-              when :integer, Integer
-                { type: 'integer' }
-              when :float, Float
-                { type: 'number' }
-              when :boolean, TrueClass, FalseClass
-                { type: 'boolean' }
-              when :number
-                { type: 'number' }
-              else
-                { type: 'string' } # Default fallback
-              end
-            end
           end
         end
       end
     end
 
-    # Create dynamic Resource classes from resource definitions
-    def create_resource_classes(resources)
+    # The mcp gem serves resources as MCP::Resource INSTANCES (Resource#to_h
+    # drives resources/list) and reads exclusively through the registerable
+    # resources_read_handler — the old Class.new(MCP::Resource) approach broke
+    # resources/list (Class has no #to_h) and its read method referenced
+    # MCP::ResourceContents, a constant that has never existed in any gem
+    # version.
+    def create_resource_instances(resources)
       resources.map do |resource_def|
-        # Create a new class that extends MCP::Resource
-        Class.new(MCP::Resource) do
-          @resource_def = resource_def
-
-          class << self
-            attr_reader :resource_def
-
-            def uri
-              @resource_def.uri
-            end
-
-            def name
-              @resource_def.name
-            end
-
-            def description
-              @resource_def.description
-            end
-
-            def mime_type
-              @resource_def.mime_type
-            end
-
-            def read
-              # Hop off the Fiber scheduler before invoking user code so the
-              # async gem's scheduler is not visible to ActiveRecord / pg.
-              result = ClaudeAgentSDK::FiberBoundary.invoke { @resource_def.reader.call }
-
-              # Convert to MCP format
-              result[:contents].map do |content|
-                MCP::ResourceContents.new(
-                  uri: content[:uri],
-                  mime_type: content[:mimeType] || content[:mime_type],
-                  text: content[:text]
-                )
-              end
-            end
-          end
-        end
+        MCP::Resource.new(
+          uri: resource_def.uri,
+          name: resource_def.name,
+          description: resource_def.description,
+          mime_type: resource_def.mime_type
+        )
       end
     end
 
-    # Create dynamic Prompt classes from prompt definitions
-    def create_prompt_classes(prompts)
-      prompts.map do |prompt_def|
-        # Create a new class that extends MCP::Prompt
-        Class.new(MCP::Prompt) do
-          @prompt_def = prompt_def
-
-          class << self
-            attr_reader :prompt_def
-
-            def name
-              @prompt_def.name
-            end
-
-            def description
-              @prompt_def.description
-            end
-
-            def arguments
-              @prompt_def.arguments || []
-            end
-
-            def get(**args)
-              # Hop off the Fiber scheduler before invoking user code (see read above).
-              result = ClaudeAgentSDK::FiberBoundary.invoke { @prompt_def.generator.call(args) }
-
-              # Convert to MCP format
-              {
-                messages: result[:messages].map do |msg|
-                  {
-                    role: msg[:role],
-                    content: msg[:content]
-                  }
-                end
-              }
-            end
-          end
+    # Register the gem's read hook, delegating to read_resource so the
+    # FiberBoundary hop and result validation apply on the handle_json path
+    # too. The handler must return the INNER contents array (the gem wraps
+    # {contents: ...}); RequestHandlerError keeps the human-readable detail
+    # in error.data (a plain raise is swallowed into 'Internal error ...').
+    def register_resources_read_handler
+      sdk_server = self
+      @mcp_server.resources_read_handler do |params|
+        uri = params[:uri] || params['uri']
+        unless sdk_server.resources.any? { |r| r.uri == uri }
+          raise MCP::Server::RequestHandlerError.new(
+            "Resource '#{uri}' not found", params, error_type: :internal_error
+          )
         end
+
+        ClaudeAgentSDK.flexible_fetch(sdk_server.read_resource(uri), 'contents', 'contents')
+      end
+    end
+
+    # Prompts via the gem's canonical factory: Prompt.define sets
+    # @name_value (exact name, no class-name mangling), @description_value
+    # and @arguments_value, so prompts/list and prompts/get work. The
+    # template block delegates to get_prompt, preserving the FiberBoundary
+    # hop and :messages validation. Inside the block self is the prompt
+    # class (instance_exec), so capture the server first.
+    def create_prompt_classes(prompts)
+      sdk_server = self
+      prompts.map do |prompt_def|
+        klass = MCP::Prompt.define(
+          name: prompt_def.name,
+          description: prompt_def.description,
+          arguments: build_prompt_arguments(prompt_def.arguments)
+        ) do |args|
+          sdk_server.get_prompt(prompt_def.name, args || {})
+        end
+        # The gem passes request[:arguments] (nil when omitted) straight into
+        # validate_arguments! -> nil.keys NoMethodError; default it.
+        klass.define_singleton_method(:validate_arguments!) { |args| super(args || {}) }
+        klass
+      end
+    end
+
+    # Arguments must be MCP::Prompt::Argument instances: the gem's
+    # required-args check calls arg.name/arg.required on each entry.
+    def build_prompt_arguments(arguments)
+      (arguments || []).map do |arg|
+        next arg if arg.is_a?(MCP::Prompt::Argument)
+
+        MCP::Prompt::Argument.new(
+          name: ClaudeAgentSDK.flexible_fetch(arg, 'name', 'name').to_s,
+          description: ClaudeAgentSDK.flexible_fetch(arg, 'description', 'description'),
+          required: !ClaudeAgentSDK.flexible_fetch(arg, 'required', 'required').nil? &&
+                    ClaudeAgentSDK.flexible_fetch(arg, 'required', 'required') != false
+        )
       end
     end
 
     def convert_input_schema(schema)
-      # If it's already a proper JSON schema (symbol or string keys), normalize
-      # to symbol keys for consistent output.
-      if schema.is_a?(Hash)
-        type_val = schema[:type] || schema['type']
-        props_val = schema[:properties] || schema['properties']
-        return ClaudeAgentSDK.deep_symbolize_keys(schema) if type_val == 'object' && props_val.is_a?(Hash)
-      end
-
-      # Simple schema: hash mapping parameter names to types
-      if schema.is_a?(Hash)
-        properties = {}
-        schema.each do |param_name, param_type|
-          properties[param_name] = type_to_json_schema(param_type)
-        end
-
-        result = { type: 'object', properties: properties }
-        result[:required] = properties.keys unless properties.empty?
-        return result
-      end
-
-      # Default fallback
-      { type: 'object', properties: {} }
-    end
-
-    def type_to_json_schema(type)
-      case type
-      when :string, String
-        { type: 'string' }
-      when :integer, Integer
-        { type: 'integer' }
-      when :float, Float
-        { type: 'number' }
-      when :boolean, TrueClass, FalseClass
-        { type: 'boolean' }
-      when :number
-        { type: 'number' }
-      else
-        { type: 'string' } # Default fallback
-      end
+      ClaudeAgentSDK.normalize_tool_schema(schema)
     end
   end
 

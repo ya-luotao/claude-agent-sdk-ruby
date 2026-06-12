@@ -26,7 +26,11 @@ Gem::Specification.new do |spec|
 
   # Runtime dependencies
   spec.add_dependency 'async', '~> 2.0'
-  spec.add_dependency 'mcp', '~> 0.4'
+  # >= 0.6: 0.4 raised protocol errors for tool failures; 0.5 serializes
+  # empty icons arrays into resources/prompts lists. tools/call error
+  # envelopes are normalized to in-band isError by the SDK itself, so the
+  # gem's per-version error behavior swings (0.7.1+/0.18) don't leak through.
+  spec.add_dependency 'mcp', '>= 0.6', '< 1'
 
   # Development dependencies
   spec.add_development_dependency 'bundler', '~> 2.0'

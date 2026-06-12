@@ -17,9 +17,14 @@ module ClaudeAgentSDK
     def build
       cmd = [@cli_path, "--output-format", "stream-json", "--verbose"]
 
+      # skills auto-wires the Skill tool into --allowedTools and defaults
+      # --setting-sources; compute both once so the two flags cannot diverge
+      # (mirrors Python _apply_skills_defaults).
+      effective_allowed_tools, effective_setting_sources = skills_defaults
+
       append_system_prompt(cmd)
       append_tools(cmd)
-      append_allowed_tools(cmd)
+      append_allowed_tools(cmd, effective_allowed_tools)
       append_disallowed_tools(cmd)
       append_max_turns(cmd)
       append_model(cmd)
@@ -35,7 +40,7 @@ module ClaudeAgentSDK
       append_mcp_servers(cmd)
       append_boolean_flags(cmd)
       append_plugins(cmd)
-      append_setting_sources(cmd)
+      append_setting_sources(cmd, effective_setting_sources)
       append_extra_args(cmd)
 
       # Always use streaming mode for bidirectional control protocol.
@@ -79,8 +84,33 @@ module ClaudeAgentSDK
       end
     end
 
-    def append_allowed_tools(cmd)
-      cmd.push("--allowedTools", @options.allowed_tools.join(",")) unless @options.allowed_tools.empty?
+    def append_allowed_tools(cmd, allowed_tools)
+      cmd.push("--allowedTools", allowed_tools.join(",")) unless allowed_tools.empty?
+    end
+
+    # Mirror of Python's _apply_skills_defaults: when skills are requested,
+    # auto-allow the Skill tool ('all' -> bare Skill, list -> Skill(name) per
+    # entry, no duplicates) and default setting_sources to user+project so
+    # skill files are actually discovered. Explicit setting_sources (including
+    # []) is never overridden. Non-mutating; returns the effective pair.
+    # Justified divergence: a non-'all' String raises (NoMethodError on #each)
+    # instead of Python's quirk of iterating its characters.
+    def skills_defaults
+      allowed_tools = @options.allowed_tools.dup
+      setting_sources = @options.setting_sources&.dup
+      skills = @options.skills
+      return [allowed_tools, setting_sources] if skills.nil?
+
+      # Fail loudly with a clear message instead of a bare NoMethodError from
+      # deep inside build for skills: :all / 'pdf' / Hash typos (and instead
+      # of Python's quirk of iterating a String's characters).
+      valid = skills == "all" || skills.is_a?(Array)
+      raise ArgumentError, "skills must be 'all' or an Array of skill names (got #{skills.inspect})" unless valid
+
+      entries = skills == "all" ? ["Skill"] : skills.map { |name| "Skill(#{name})" }
+      entries.each { |entry| allowed_tools << entry unless allowed_tools.include?(entry) }
+      setting_sources = %w[user project] if setting_sources.nil?
+      [allowed_tools, setting_sources]
     end
 
     def append_disallowed_tools(cmd)
@@ -170,21 +200,45 @@ module ClaudeAgentSDK
       cmd.push("--task-budget", total.to_s) if total
     end
 
-    # Thinking configuration takes precedence over deprecated max_thinking_tokens
+    # Thinking configuration takes precedence over deprecated
+    # max_thinking_tokens. Accepts the ThinkingConfig* classes and the
+    # wire-shaped Hash form ({ type: 'adaptive'|'enabled'|'disabled',
+    # budget_tokens:, display: }, symbol or string keys) — the Hash form
+    # was previously dropped silently AND suppressed the
+    # max_thinking_tokens fallback.
     def append_thinking(cmd)
       if @options.thinking
-        case @options.thinking
-        when ThinkingConfigAdaptive
+        type, budget, display = thinking_fields(@options.thinking)
+        case type
+        when "adaptive"
           cmd.push("--thinking", "adaptive")
-          append_thinking_display(cmd, @options.thinking.display)
-        when ThinkingConfigEnabled
-          cmd.push("--max-thinking-tokens", @options.thinking.budget_tokens.to_s)
-          append_thinking_display(cmd, @options.thinking.display)
-        when ThinkingConfigDisabled
+          append_thinking_display(cmd, display)
+        when "enabled"
+          raise ArgumentError, "thinking type 'enabled' requires budget_tokens" if budget.nil?
+
+          cmd.push("--max-thinking-tokens", budget.to_s)
+          append_thinking_display(cmd, display)
+        when "disabled"
           cmd.push("--thinking", "disabled")
+        else
+          raise ArgumentError, "unsupported thinking config: #{@options.thinking.inspect}"
         end
       elsif @options.max_thinking_tokens
         cmd.push("--max-thinking-tokens", @options.max_thinking_tokens.to_s)
+      end
+    end
+
+    # Explicit class dispatch — never respond_to? probes (Kernel#display
+    # exists on every object and PRINTS the receiver to $stdout).
+    def thinking_fields(thinking)
+      case thinking
+      when Hash
+        type = (thinking[:type] || thinking["type"])&.to_s
+        [type, thinking[:budget_tokens] || thinking["budget_tokens"], thinking[:display] || thinking["display"]]
+      when ThinkingConfigAdaptive then [thinking.type, nil, thinking.display]
+      when ThinkingConfigEnabled then [thinking.type, thinking.budget_tokens, thinking.display]
+      when ThinkingConfigDisabled then [thinking.type, nil, nil]
+      else [nil, nil, nil] # falls into append_thinking's else -> ArgumentError
       end
     end
 
@@ -291,10 +345,10 @@ module ClaudeAgentSDK
       end
     end
 
-    def append_setting_sources(cmd)
-      return unless @options.setting_sources
+    def append_setting_sources(cmd, setting_sources)
+      return if setting_sources.nil?
 
-      cmd.push("--setting-sources", @options.setting_sources.join(","))
+      cmd.push("--setting-sources", setting_sources.join(","))
     end
 
     def append_extra_args(cmd)

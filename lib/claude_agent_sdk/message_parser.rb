@@ -156,7 +156,10 @@ module ClaudeAgentSDK
         )
       when 'server_tool_use'
         ServerToolUseBlock.new(id: get.call(:id), name: get.call(:name), input: get.call(:input))
-      when 'server_tool_result'
+      when 'advisor_tool_result'
+        # The CLI's wire type for server-side tool results is
+        # advisor_tool_result (the old 'server_tool_result' branch was dead
+        # code — no CLI version emits it; Python parses advisor_tool_result).
         ServerToolResultBlock.new(
           tool_use_id: get.call(:tool_use_id),
           content: get.call(:content),

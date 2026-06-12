@@ -134,6 +134,11 @@ module ClaudeAgentSDK
     # realpath can't resolve it (e.g. the directory does not exist yet) — Ruby's
     # File.realpath raises on missing paths whereas Python's os.path.realpath is
     # lexical for the missing suffix, so expand_path restores that behavior.
+    # Known divergence: for a MISSING path Python still resolves symlinks in
+    # the existing prefix (so a deleted /tmp/proj on macOS canonicalizes to
+    # /private/tmp/proj and its project dir is found); the expand_path
+    # fallback resolves none, so deleted-directory lookups under symlinked
+    # prefixes can miss.
     def canonicalize_path(dir)
       File.realpath(dir).unicode_normalize(:nfc)
     rescue SystemCallError
@@ -153,9 +158,14 @@ module ClaudeAgentSDK
       sanitize_path(canonicalize_path(directory.nil? ? '.' : directory.to_s))
     end
 
-    # Get the Claude config directory
+    # Get the Claude config directory (respects CLAUDE_CONFIG_DIR; an empty
+    # value is treated as unset, matching the Node CLI and the Python SDK).
+    # NFC-normalized on both branches like Python's _get_claude_config_home_dir.
     def config_dir
-      ENV.fetch('CLAUDE_CONFIG_DIR', File.expand_path('~/.claude'))
+      dir = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+      return dir.unicode_normalize(:nfc) if dir && !dir.empty?
+
+      File.expand_path('~/.claude').unicode_normalize(:nfc)
     end
 
     # Find the project directory for a given path
@@ -319,10 +329,13 @@ module ClaudeAgentSDK
       tag_value = tag_line ? extract_json_string_field(tag_line, 'tag', last: true) : nil
       tag_value = nil if tag_value && tag_value.empty?
 
-      # created_at from first entry's ISO timestamp (epoch ms). More reliable
-      # than stat().birthtime which is unsupported on some filesystems.
-      first_line = head.lines.first || ''
-      first_timestamp = extract_json_string_field(first_line, 'timestamp', last: false)
+      # created_at from the first ISO timestamp found in the head (epoch ms).
+      # More reliable than stat().birthtime which is unsupported on some
+      # filesystems. Scans the whole head rather than only the first line
+      # because the first record may be a metadata-only entry (e.g.
+      # permission-mode) with no timestamp field; the first user/assistant
+      # record that follows does carry one (Python #907).
+      first_timestamp = extract_json_string_field(head, 'timestamp', last: false)
       created_at = parse_iso_timestamp_ms(first_timestamp) if first_timestamp
 
       SDKSessionInfo.new(
@@ -433,7 +446,14 @@ module ClaudeAgentSDK
       file_path = find_session_file(session_id, directory)
       return [] unless file_path && File.exist?(file_path)
 
-      entries = parse_jsonl_entries(file_path)
+      begin
+        entries = parse_jsonl_entries(file_path)
+      rescue SystemCallError
+        # TOCTOU between resolution and read (file deleted by another
+        # process) — return [] like Python's except OSError, and like the
+        # sibling get_subagent_messages.
+        return []
+      end
       chain = build_conversation_chain(entries)
       messages = filter_visible_messages(chain)
 
@@ -441,6 +461,55 @@ module ClaudeAgentSDK
       messages = messages[offset..] || []
       messages = messages.first([limit, 0].max) if limit
       messages
+    end
+
+    # List subagent IDs recorded for a session on local disk (counterpart to
+    # list_subagents_from_store). Scans
+    # <projectDir>/<sessionId>/subagents/**/agent-<id>.jsonl, including nested
+    # workflows/<runId>/ paths, in sorted walk order. Mirrors the Python SDK's
+    # list_subagents (#825) — no dedupe (the store variant dedupes because
+    # adapter subkey ordering is adapter-defined; the sorted disk walk is
+    # already deterministic).
+    # @param session_id [String] The session UUID
+    # @param directory [String, nil] Working directory to search in (strictly
+    #   scopes to that project + its worktrees; nil searches all projects)
+    # @return [Array<String>] Subagent IDs
+    def list_subagents(session_id:, directory: nil)
+      return [] unless session_id.match?(UUID_RE)
+
+      subagents_dir = resolve_subagents_dir(session_id, directory)
+      return [] if subagents_dir.nil?
+
+      collect_agent_files(subagents_dir).map(&:first)
+    end
+
+    # Read a subagent's conversation messages from local disk (counterpart to
+    # get_subagent_messages_from_store). First match in sorted walk order wins
+    # when the same agent id exists at multiple depths (mirrors Python).
+    # @param session_id [String] The session UUID
+    # @param agent_id [String] The subagent ID (without the agent- prefix)
+    # @param directory [String, nil] Working directory to search in
+    # @param limit [Integer, nil] Maximum number of messages
+    # @param offset [Integer] Number of messages to skip
+    # @return [Array<SessionMessage>] Ordered messages from the subagent
+    def get_subagent_messages(session_id:, agent_id:, directory: nil, limit: nil, offset: 0)
+      return [] unless session_id.match?(UUID_RE)
+      return [] if agent_id.nil? || agent_id.empty?
+
+      subagents_dir = resolve_subagents_dir(session_id, directory)
+      return [] if subagents_dir.nil?
+
+      _id, path = collect_agent_files(subagents_dir).find { |id, _path| id == agent_id }
+      return [] if path.nil?
+
+      begin
+        entries = parse_jsonl_entries(path)
+      rescue SystemCallError
+        # TOCTOU between the walk and the read (mirrors Python's
+        # `except OSError: return []`).
+        return []
+      end
+      entries_to_subagent_messages(entries, limit, offset)
     end
 
     # ---- SessionStore-backed reads (store counterparts to the disk readers) ----
@@ -854,7 +923,10 @@ module ClaudeAgentSDK
     end
 
     def get_session_info_for_directory(file_name, directory)
-      canonical = File.realpath(directory).unicode_normalize(:nfc)
+      # canonicalize_path (not raw realpath): a nonexistent directory must
+      # canonicalize lexically and yield nil from find_project_dir — Python's
+      # os.path.realpath never raises here.
+      canonical = canonicalize_path(directory)
       project_dir = find_project_dir(canonical)
       if project_dir
         info = read_session_lite(File.join(project_dir, file_name), canonical)
@@ -876,7 +948,7 @@ module ClaudeAgentSDK
     end
 
     def list_sessions_for_directory(directory, include_worktrees)
-      path = File.realpath(directory).unicode_normalize(:nfc)
+      path = canonicalize_path(directory)
 
       worktree_paths = []
       worktree_paths = detect_worktrees(path) if include_worktrees
@@ -978,34 +1050,81 @@ module ClaudeAgentSDK
       projects_dir = File.join(config_dir, 'projects')
       return nil unless File.directory?(projects_dir)
 
+      file_name = "#{session_id}.jsonl"
+
       if directory
-        path = File.realpath(directory).unicode_normalize(:nfc)
-        project_dir = find_project_dir(path)
-        if project_dir
-          candidate = File.join(project_dir, "#{session_id}.jsonl")
-          return candidate if File.exist?(candidate)
-        end
+        path = canonicalize_path(directory)
+        found = stat_candidate(find_project_dir(path), file_name)
+        return found if found
 
-        # Try worktrees
         detect_worktrees(path).each do |wt_path|
-          pd = find_project_dir(wt_path)
-          next unless pd
+          next if wt_path == path # already tried above
 
-          candidate = File.join(pd, "#{session_id}.jsonl")
-          return candidate if File.exist?(candidate)
+          found = stat_candidate(find_project_dir(wt_path), file_name)
+          return found if found
         end
+
+        # An explicit directory strictly scopes the search — never fall
+        # through to the global scan, which could resolve an unrelated
+        # project's same-id session (mirrors Python's _resolve_session_file_path).
+        return nil
       end
 
-      # Scan all project dirs
+      # No directory provided — search all project directories.
       Dir.children(projects_dir).each do |child|
         dir = File.join(projects_dir, child)
         next unless File.directory?(dir)
 
-        candidate = File.join(dir, "#{session_id}.jsonl")
-        return candidate if File.exist?(candidate)
+        found = stat_candidate(dir, file_name)
+        return found if found
       end
 
       nil
+    end
+
+    # Mirrors Python's _stat_candidate: a candidate counts only when it
+    # exists AND is non-empty — a 0-byte stub in one project dir must not
+    # stop the search when the real transcript lives under another
+    # worktree's project dir (same hazard SessionMutations.try_append guards).
+    def stat_candidate(project_dir, file_name)
+      return nil if project_dir.nil?
+
+      candidate = File.join(project_dir, file_name)
+      File.size(candidate).positive? ? candidate : nil
+    rescue SystemCallError
+      nil
+    end
+
+    # Resolve the on-disk subagents directory for a session:
+    # <projectDir>/<sessionId>/subagents (mirrors Python's
+    # _resolve_subagents_dir). nil when the session transcript can't be found.
+    def resolve_subagents_dir(session_id, directory)
+      resolved = find_session_file(session_id, directory)
+      return nil if resolved.nil?
+
+      File.join(resolved.delete_suffix('.jsonl'), 'subagents')
+    end
+
+    # Depth-first sorted walk collecting [agent_id, path] pairs for
+    # agent-<id>.jsonl files, recursing into subdirectories (e.g.
+    # workflows/<runId>/) in the same sorted interleave. Mirrors Python's
+    # _collect_agent_files: no dedupe; [] for a missing/unreadable base dir.
+    def collect_agent_files(base_dir, results = [])
+      begin
+        children = Dir.children(base_dir).sort
+      rescue SystemCallError
+        return results
+      end
+
+      children.each do |name|
+        path = File.join(base_dir, name)
+        if File.directory?(path)
+          collect_agent_files(path, results)
+        elsif File.file?(path) && name.start_with?('agent-') && name.end_with?('.jsonl')
+          results << [name.delete_prefix('agent-').delete_suffix('.jsonl'), path]
+        end
+      end
+      results
     end
 
     def parse_jsonl_entries(file_path)
@@ -1113,7 +1232,8 @@ module ClaudeAgentSDK
     private_class_method :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions,
-                         :find_session_file, :parse_jsonl_entries,
+                         :find_session_file, :stat_candidate, :resolve_subagents_dir,
+                         :collect_agent_files, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :filter_visible_messages, :read_head_tail, :build_session_info,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,

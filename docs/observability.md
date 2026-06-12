@@ -2,6 +2,10 @@
 
 The SDK includes a built-in **observer interface** and an **OpenTelemetry observer** for tracing agent sessions. Traces are emitted using standard `gen_ai.*` semantic conventions, compatible with Langfuse, Jaeger, Datadog, and any OTel backend.
 
+## Distributed Trace Context (W3C)
+
+When `connect` spawns the CLI and there is an active OTel span, the SDK injects `TRACEPARENT`/`TRACESTATE` (and any other propagator carrier keys, e.g. `BAGGAGE` — which may carry user-defined key/values — uppercased) into the subprocess environment so CLI-side telemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`) joins the caller's distributed trace. This requires the `opentelemetry` gem to be loaded with a configured propagator — there is no hard dependency, and it is a no-op otherwise. Explicit `ClaudeAgentOptions#env` keys always win; stale inherited `TRACEPARENT`/`TRACESTATE` is replaced (or unset) only when an active span supersedes it. This works independently of `OTelObserver`: the CLI parents under the caller's surrounding span, not under `claude_agent.session` (which starts at InitMessage, after spawn).
+
 ## How It Works
 
 Register observers via `ClaudeAgentOptions`. The SDK calls `on_user_prompt` when a prompt is sent — the verbatim string for String prompts (`query()` / `Client#query`), and once per `type: 'user'` message with extractable text for Enumerator/streaming input (`query()` stream path and `Client#connect` with an initial enumerable). It calls `on_message` for every parsed message, `on_error` once per error that surfaces to your code (before `on_close` where both fire), and `on_close` when the session ends. Observer errors are silently rescued so they never crash your application.

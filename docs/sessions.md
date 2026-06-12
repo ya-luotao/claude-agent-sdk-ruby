@@ -1,6 +1,8 @@
 # Session Browsing & Mutations
 
-Browse, read, mutate, fork, and resume Claude Code sessions directly from Ruby — no CLI subprocess required. These APIs read and write `~/.claude/projects/` JSONL files directly, respecting the `CLAUDE_CONFIG_DIR` environment variable and auto-detecting git worktrees.
+Browse, read, mutate, fork, and resume Claude Code sessions directly from Ruby — no CLI subprocess required. These APIs read and write `~/.claude/projects/` JSONL files directly, respecting the `CLAUDE_CONFIG_DIR` environment variable (an empty value is treated as unset, falling back to `~/.claude`) and auto-detecting git worktrees.
+
+Not-found semantics: the read APIs return `[]`/`nil` for unknown sessions and for directories that do not exist or have no recorded sessions. An explicit `directory:` strictly scopes the search to that project and its git worktrees — there is no cross-project fallback (pass `directory: nil` to search all projects). 0-byte transcript stubs are skipped during session-file resolution.
 
 ## Listing Sessions
 
@@ -21,7 +23,7 @@ ClaudeAgentSDK.list_sessions(directory: '.', limit: 10, offset: 10)
 ClaudeAgentSDK.list_sessions(directory: '.', include_worktrees: true)
 ```
 
-Each `SDKSessionInfo` includes: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`.
+Each `SDKSessionInfo` includes: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`, `tag`, `created_at`.
 
 ## Reading Session Messages
 
@@ -35,6 +37,17 @@ ClaudeAgentSDK.get_session_messages(session_id: 'abc-123-...', offset: 10, limit
 ```
 
 Each `SessionMessage` includes `type` (`"user"` or `"assistant"`), `uuid`, `session_id`, and `message` (raw API hash).
+
+## Reading Subagent Transcripts
+
+Subagent transcripts live at `<projectDir>/<sessionId>/subagents/agent-<id>.jsonl` and may nest under `workflows/<runId>/`:
+
+```ruby
+ids = ClaudeAgentSDK.list_subagents(session_id: "uuid-here", directory: "/path/to/project")
+messages = ClaudeAgentSDK.get_subagent_messages(session_id: "uuid-here", agent_id: ids.first, limit: 50)
+```
+
+With `directory:` given, only that project and its git worktrees are searched (no global fallback). Store-backed counterparts: `list_subagents_from_store` / `get_subagent_messages_from_store`.
 
 ## Renaming a Session
 

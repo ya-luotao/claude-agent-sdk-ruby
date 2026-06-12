@@ -14,6 +14,8 @@ module ClaudeAgentSDK
   class SubprocessCLITransport < Transport
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
+    SKIP_VERSION_CHECK_ENV_VAR = 'CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'
+    VERSION_CHECK_TIMEOUT_SECONDS = 2 # mirrors Python's anyio.fail_after(2)
     RECENT_STDERR_LINES_LIMIT = 20
 
     # Track live CLI subprocesses so we can terminate them when the parent Ruby
@@ -143,6 +145,37 @@ module ClaudeAgentSDK
       )
     end
 
+    # Inject W3C trace context (TRACEPARENT/TRACESTATE, plus BAGGAGE) into the
+    # subprocess env when an OTel span is active. Guard via defined? +
+    # respond_to?, not require: an active span implies the constant is loaded,
+    # and requiring here would break against the test mock / optional gem
+    # group. Gate on the carrier's traceparent key (the W3C propagator writes
+    # it only for a valid span context) so a baggage-only carrier or a noop
+    # propagator preserves inherited env.
+    def inject_otel_trace_context(process_env, custom_env)
+      return unless defined?(OpenTelemetry) && OpenTelemetry.respond_to?(:propagation)
+
+      carrier = {}
+      OpenTelemetry.propagation.inject(carrier)
+      return unless carrier.key?('traceparent')
+
+      # Active span: scrub stale inherited W3C context (CI/k8s ambient env)
+      # before writing fresh values, so an inherited TRACESTATE is never
+      # paired with a new TRACEPARENT. nil actively unsets (spawn overlay
+      # semantics — see the CLAUDECODE note in #connect; Python pops from a
+      # complete env dict instead). Explicit options.env keys always win.
+      %w[TRACEPARENT TRACESTATE].each do |key|
+        process_env[key] = nil unless custom_env.key?(key)
+      end
+      carrier.each do |key, value|
+        env_key = key.upcase
+        process_env[env_key] = value unless custom_env.key?(env_key)
+      end
+    rescue StandardError, ScriptError
+      # Best-effort tracing must never break connect() (Python: except
+      # Exception). ScriptError too: NotImplementedError < ScriptError.
+    end
+
     def build_command
       CommandBuilder.new(@cli_path, @options).build
     end
@@ -161,8 +194,18 @@ module ClaudeAgentSDK
       # launches Claude Code from within an existing Claude Code terminal.
       # NOTE: Must set to nil (not just omit the key) — Ruby's spawn only overlays
       # the env hash on top of the parent environment; a nil value actively unsets.
-      process_env = ENV.to_h.merge('CLAUDECODE' => nil, 'CLAUDE_AGENT_SDK_VERSION' => VERSION).merge(custom_env)
-      process_env['CLAUDE_CODE_ENTRYPOINT'] ||= 'sdk-rb'
+      # ENTRYPOINT defaults to sdk-rb regardless of inherited process env
+      # (the old ||= let an inherited 'cli' win and mis-attribute telemetry);
+      # options.env may still override it. VERSION is merged last: always
+      # set by the SDK, never overridable (Python merge-order parity).
+      process_env = ENV.to_h
+                       .merge('CLAUDECODE' => nil, 'CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb')
+                       .merge(custom_env)
+                       .merge('CLAUDE_AGENT_SDK_VERSION' => VERSION)
+      # Propagate the active OTel trace context to the CLI so its spans parent
+      # under the caller's distributed trace (Python SDK #821 parity). No-op
+      # when opentelemetry is not loaded or there is no active span.
+      inject_otel_trace_context(process_env, custom_env)
       process_env['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING'] = 'true' if @options.enable_file_checkpointing
       process_env['PWD'] = @cwd.to_s if @cwd
 
@@ -171,7 +214,12 @@ module ClaudeAgentSDK
 
       begin
         # Start process using Open3
-        opts = { chdir: @cwd&.to_s }.compact
+        # :uid mirrors Python's anyio.open_process(user=...): String username
+        # or Integer uid (Unix; requires privileges — typically root). The
+        # .compact is mandatory: uid: nil raises TypeError on every connect.
+        # On Windows spawn raises for :uid, wrapped below into
+        # CLIConnectionError — fail-loud instead of the old silent ignore.
+        opts = { chdir: @cwd&.to_s, uid: @options.user }.compact
 
         @stdin, @stdout, @stderr, @process = Open3.popen3(process_env, *cmd, opts)
         # The CLI emits UTF-8 regardless of the parent locale. popen3 pipes
@@ -217,7 +265,10 @@ module ClaudeAgentSDK
         error = CLINotFoundError.new("Claude Code not found at: #{@cli_path}")
         @exit_error = error
         raise error
-      rescue StandardError => e
+      rescue StandardError, NotImplementedError => e
+        # NotImplementedError < ScriptError, not StandardError (the trap this
+        # repo keeps hitting): spawn raises it for :uid on platforms without
+        # setuid (Windows), and it must wrap like every other spawn failure.
         error = CLIConnectionError.new("Failed to start Claude Code: #{e}")
         @exit_error = error
         raise error
@@ -227,7 +278,7 @@ module ClaudeAgentSDK
     def handle_stderr
       return unless @stderr
 
-      @stderr.each_line do |line|
+      @stderr.each_line("\n", @max_buffer_size + 1) do |line|
         line_str = line.chomp
         next if line_str.empty?
 
@@ -265,7 +316,7 @@ module ClaudeAgentSDK
     def drain_stderr_with_accumulation
       return unless @stderr
 
-      @stderr.each_line do |line|
+      @stderr.each_line("\n", @max_buffer_size + 1) do |line|
         line_str = line.chomp
         next if line_str.empty?
 
@@ -408,14 +459,21 @@ module ClaudeAgentSDK
     end
 
     def end_input
-      return unless @stdin
+      # Under @stdin_mutex like write/close (the transport's documented
+      # locking protocol; Python's end_input takes _write_lock too). The
+      # nil-guard must live INSIDE the critical section or the TOCTOU
+      # returns. NOTE: non-reentrant — close() inlines its own stdin
+      # handling and must never delegate here.
+      @stdin_mutex.synchronize do
+        return unless @stdin
 
-      begin
-        @stdin.close
-      rescue StandardError
-        # Ignore
+        begin
+          @stdin.close
+        rescue StandardError
+          # Ignore
+        end
+        @stdin = nil
       end
-      @stdin = nil
     end
 
     def read_messages(&block)
@@ -426,43 +484,59 @@ module ClaudeAgentSDK
       json_buffer = ''
 
       begin
-        @stdout.each_line do |line|
-          line_str = line.strip
-          next if line_str.empty?
+        # The limit bounds per-read allocation: a line longer than
+        # max_buffer_size+1 arrives as bounded chunks that the existing
+        # accumulation + cap machinery below handles (mirrors Python, where
+        # TextReceiveStream yields <=64KB chunks and the cap fires
+        # incrementally). +1 so an exactly-max line plus "\n" arrives whole.
+        # With UTF-8 external encoding Ruby extends a few bytes past the
+        # limit rather than splitting a multibyte char. Without the limit,
+        # an oversized line was fully allocated BEFORE the 1MB cap could
+        # fire — unbounded memory on hostile/buggy stdout.
+        @stdout.each_line("\n", @max_buffer_size + 1) do |line|
+          # Position-aware whitespace handling: a chunk of an over-limit line
+          # must keep its interior whitespace — a blanket per-chunk strip
+          # deleted spaces inside JSON strings straddling the chunk boundary
+          # and could let a just-over-cap line PARSE with bytes silently
+          # missing instead of raising. Only safe edges are trimmed: full
+          # single-chunk lines strip both ends (the common path, original
+          # behavior); a truncated line-initial chunk keeps its tail; a
+          # continuation chunk keeps its head and only drops the newline.
+          ends_line = line.end_with?("\n")
+          if json_buffer.empty?
+            chunk = ends_line ? line.strip : line.lstrip
+            next if chunk.empty?
 
-          json_lines = line_str.split("\n")
-
-          json_lines.each do |json_line|
-            json_line = json_line.strip
-            next if json_line.empty?
-
-            # When no partial JSON is buffered, the next line must start with
-            # `{` to be a valid stream-json message. Stray stderr-like text
+            # When no partial JSON is buffered, the line must start with `{`
+            # to be a valid stream-json message. Stray stderr-like text
             # (e.g., debug warnings the CLI occasionally writes to stdout)
             # would otherwise be appended into json_buffer, poisoning every
             # subsequent parse until the buffer overflows. Matches the Python
-            # SDK's `if not json_buffer and not json_line.startswith("{")` guard.
-            next if json_buffer.empty? && !json_line.start_with?('{')
+            # SDK's `if not json_buffer and not json_line.startswith("{")`.
+            next unless chunk.start_with?('{')
+          else
+            chunk = ends_line ? line.chomp : line
+          end
 
-            json_buffer += json_line
+          json_buffer += chunk
 
-            if json_buffer.bytesize > @max_buffer_size
-              buffer_length = json_buffer.bytesize
-              json_buffer = ''
-              raise CLIJSONDecodeError.new(
-                "JSON message exceeded maximum buffer size",
-                StandardError.new("Buffer size #{buffer_length} exceeds limit #{@max_buffer_size}")
-              )
-            end
+          if json_buffer.bytesize > @max_buffer_size
+            buffer_length = json_buffer.bytesize
+            json_buffer = ''
+            raise CLIJSONDecodeError.new(
+              "JSON message exceeded maximum buffer size",
+              StandardError.new("Buffer size #{buffer_length} exceeds limit #{@max_buffer_size}")
+            )
+          end
 
-            begin
-              data = JSON.parse(json_buffer, symbolize_names: true)
-              json_buffer = ''
-              yield data
-            rescue JSON::ParserError
-              # Continue accumulating
-              next
-            end
+          begin
+            data = JSON.parse(json_buffer, symbolize_names: true)
+            json_buffer = ''
+            yield data
+          rescue JSON::ParserError
+            # Continue accumulating (multi-line JSON, or a truncated chunk
+            # awaiting the rest of its line)
+            next
           end
         end
       rescue IOError
@@ -507,12 +581,17 @@ module ClaudeAgentSDK
     end
 
     def check_claude_version
+      # Mirrors Python's os.environ.get truthiness: any non-empty value skips,
+      # including '0'/'false'/' '; unset or empty string runs the check.
+      skip = ENV.fetch(SKIP_VERSION_CHECK_ENV_VAR, nil)
+      return if skip && !skip.empty?
+
       begin
-        stdout, stderr, = Open3.capture3(@cli_path.to_s, '-v')
-        # Explicit UTF-8 decode like Python's stdout_bytes.decode(); scrub is
-        # a deliberate softening of Python's strict decode so a stray invalid
-        # byte can't suppress the version warning via the blanket rescue.
-        output = (stdout.to_s + stderr.to_s).force_encoding(Encoding::UTF_8).scrub.strip
+        output = capture_cli_version_output
+        # Residual divergence from Python (anchored re.match over the first
+        # stdout chunk): this searches anywhere in stdout+stderr, so leading
+        # noise (a shim's own version line) could be mistaken for the CLI
+        # version. Pre-existing shape; the check is best-effort only.
         if match = output.match(/([0-9]+\.[0-9]+\.[0-9]+)/)
           version = match[1]
           version_parts = version.split('.').map(&:to_i)
@@ -521,14 +600,15 @@ module ClaudeAgentSDK
           # Array has no #< — the old `version_parts < min_parts` raised
           # NoMethodError into the blanket rescue, so the warning never fired.
           if (version_parts <=> min_parts).negative?
-            warning = "Warning: Claude Code version #{version} is unsupported in the Agent SDK. " \
+            warning = "Warning: Claude Code version #{version} at #{@cli_path} is unsupported in the Agent SDK. " \
                       "Minimum required version is #{MINIMUM_CLAUDE_CODE_VERSION}. " \
                       "Some features may not work correctly."
             warn warning
           end
         end
       rescue StandardError
-        # Ignore version check errors
+        # Ignore version check errors — including Timeout::Error from the
+        # probe deadline, mirroring Python's `except Exception: pass`.
       end
     end
 
@@ -537,6 +617,47 @@ module ClaudeAgentSDK
     end
 
     private
+
+    # Run `claude -v` with a hard deadline. Arg-vector popen3 — no shell, same
+    # injection-safety as capture3. Raises Timeout::Error past
+    # VERSION_CHECK_TIMEOUT_SECONDS (swallowed by check_claude_version's
+    # blanket rescue, mirroring Python's `except Exception: pass` around
+    # anyio.fail_after(2)). Monotonic-deadline poll instead of stdlib
+    # Timeout.timeout for the same reason as wait_process_with_timeout:
+    # Thread#raise corrupts Async fiber-scheduler state, and connect runs
+    # inside the reactor. Divergence: Python takes a single stdout chunk; we
+    # read both pipes to EOF (pre-existing capture3 shape), so the deadline
+    # also bounds CLI exit. ensure always reaps the probe (mirrors Python's
+    # finally: terminate(); wait()).
+    def capture_cli_version_output
+      stdin, stdout, stderr, wait_thr = Open3.popen3(@cli_path.to_s, '-v')
+      stdin.close
+      drainer = Thread.new { [stdout.read, stderr.read] }
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + VERSION_CHECK_TIMEOUT_SECONDS
+      task = defined?(Async::Task) ? Async::Task.current? : nil
+      until drainer.join(0)
+        raise Timeout::Error if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        task ? task.sleep(0.05) : sleep(0.05)
+      end
+      out, err = drainer.value
+      (out.to_s + err.to_s).force_encoding(Encoding::UTF_8).scrub.strip
+    ensure
+      if wait_thr&.alive?
+        begin
+          Process.kill('TERM', wait_thr.pid)
+          Process.kill('KILL', wait_thr.pid) if !wait_thr.join(0.5) && wait_thr.alive?
+        rescue StandardError
+          # ESRCH etc. — probe already gone
+        end
+      end
+      drainer&.kill if drainer&.alive?
+      [stdout, stderr].each do |io|
+        io&.close
+      rescue StandardError
+        # already closed
+      end
+    end
 
     # Append a stderr line to the recent-stderr ring, dropping the oldest
     # entry once the buffer exceeds RECENT_STDERR_LINES_LIMIT. Used to surface the

@@ -443,15 +443,333 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
   end
 
-  describe '#check_claude_version' do
-    it 'uses Open3.capture3 to avoid shelling out' do
+  describe '#read_messages — oversized line memory bound (M15)' do
+    it 'yields bounded chunks for oversized lines instead of allocating the whole line' do
+      spy = Class.new do
+        attr_reader :max_chunk
+
+        def initialize(io)
+          @io = io
+          @max_chunk = 0
+        end
+
+        def set_encoding(*) = self
+
+        def each_line(*args, &blk)
+          @io.each_line(*args) do |chunk|
+            @max_chunk = [@max_chunk, chunk.bytesize].max
+            blk.call(chunk)
+          end
+        end
+      end
+
+      oversized = "{\"type\":\"x\",\"data\":\"#{'a' * 8192}\"}\n"
+      stdout = spy.new(StringIO.new(oversized))
+      status = instance_double(Process::Status, exitstatus: 0)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', max_buffer_size: 1024)
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout, StringIO.new, waiter])
+      transport.connect
+
+      expect { transport.read_messages { |m| m } }.to raise_error(ClaudeAgentSDK::CLIJSONDecodeError)
+      # limit 1025 + a few bytes of multibyte slack — never the full 8KB line
+      expect(stdout.max_chunk).to be <= 1032
+    ensure
+      transport&.close
+    end
+
+    it 'accumulates multi-line (pretty-printed) JSON and parses it once complete' do
+      # The chunked-read rewrite only had failure-path coverage for the
+      # accumulation machinery; this pins the success path the json_buffer
+      # exists for: one JSON object split across multiple newline-terminated
+      # lines parses byte-identically, including a continuation line whose
+      # LEADING whitespace is part of the message (position-aware handling
+      # must not strip it into invalid JSON).
+      lines = %({"type":"assistant",\n  "data":"with  interior  spaces"}\n)
+      status = instance_double(Process::Status, exitstatus: 0)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
       transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3)
+        .and_return([StringIO.new, StringIO.new(lines), StringIO.new, waiter])
+      transport.connect
 
-      expect(Open3).to receive(:capture3).with('/usr/bin/claude', '-v')
-                                         .and_return(["2.1.22 (Claude Code)\n", '', nil])
+      messages = []
+      transport.read_messages { |m| messages << m }
 
-      transport.send(:check_claude_version)
+      expect(messages.length).to eq(1)
+      expect(messages.first[:data]).to eq('with  interior  spaces')
+    ensure
+      transport&.close
+    end
+
+    it 'raises (never silently drops whitespace) for a line just over the cap' do
+      # A whitespace run straddling the chunk boundary of a barely-over-cap
+      # line: a per-chunk strip shrank the first chunk back under the cap and
+      # the line PARSED with the interior spaces deleted — silent corruption.
+      max = 1024
+      prefix = %({"type":"x","data":")
+      pad = 'a' * (max + 1 - prefix.bytesize - 15)
+      line = "#{prefix}#{pad}#{' ' * 30}tail\"}\n"
+      expect(line.bytesize).to be_between(max + 2, max + 40)
+
+      status = instance_double(Process::Status, exitstatus: 0)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', max_buffer_size: max)
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3)
+        .and_return([StringIO.new, StringIO.new(line), StringIO.new, waiter])
+      transport.connect
+
+      messages = []
+      expect { transport.read_messages { |m| messages << m } }
+        .to raise_error(ClaudeAgentSDK::CLIJSONDecodeError)
+      expect(messages).to be_empty
+    ensure
+      transport&.close
+    end
+  end
+
+  describe '#end_input locking' do
+    it 'respects @stdin_mutex (deterministic lock-hold test)' do
+      transport = described_class.new('hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+      r, w = IO.pipe
+      transport.instance_variable_set(:@stdin, w)
+      mutex = transport.instance_variable_get(:@stdin_mutex)
+
+      mutex.lock
+      worker = Thread.new { transport.end_input }
+      sleep 0.05
+      # Pre-fix: end_input ignored the held mutex — stdin already nil/closed here.
+      expect(transport.instance_variable_get(:@stdin)).to equal(w)
+      expect(w.closed?).to be(false)
+
+      mutex.unlock
+      expect(worker.join(1)).not_to be_nil
+      expect(transport.instance_variable_get(:@stdin)).to be_nil
+      expect(w.closed?).to be(true)
+    ensure
+      mutex.unlock if mutex&.owned?
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'is idempotent' do
+      transport = described_class.new('hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+      expect { 2.times { transport.end_input } }.not_to raise_error
+    end
+  end
+
+  describe 'user option (spawn :uid)' do
+    def connect_capturing_opts(options)
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      captured_opts = nil
+      stdin = instance_double(IO, close: nil)
+      allow(Open3).to receive(:popen3) do |_env, *rest|
+        captured_opts = rest.last.is_a?(Hash) ? rest.last : {}
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
+      end
+      transport.connect
+      captured_opts
+    end
+
+    it 'passes options.user as the spawn :uid option (String or Integer)' do
+      opts = connect_capturing_opts(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude',
+                                                                           user: 'claude-runner'))
+      expect(opts[:uid]).to eq('claude-runner')
+
+      opts = connect_capturing_opts(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', user: 1001))
+      expect(opts[:uid]).to eq(1001)
+    end
+
+    it 'omits :uid when user is nil (uid: nil raises TypeError in spawn)' do
+      opts = connect_capturing_opts(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+      expect(opts).not_to have_key(:uid)
+    end
+  end
+
+  describe 'OTel trace context propagation' do
+    around do |example|
+      saved = %w[TRACEPARENT TRACESTATE BAGGAGE].to_h { |k| [k, ENV.fetch(k, nil)] }
+      saved.each_key { |k| ENV.delete(k) }
+      example.run
+    ensure
+      saved.each { |k, v| v ? ENV[k] = v : ENV.delete(k) }
+    end
+
+    def connect_and_capture_env(options)
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      captured_env = nil
+      stdin = instance_double(IO)
+      allow(stdin).to receive(:close)
+      allow(Open3).to receive(:popen3) do |env, *_args|
+        captured_env = env
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
+      end
+      transport.connect
+      captured_env
+    end
+
+    def stub_otel_propagation(carrier_content)
+      propagation = double('propagation')
+      allow(propagation).to receive(:inject) { |carrier| carrier.merge!(carrier_content) }
+      stub_const('OpenTelemetry', double('OpenTelemetry', propagation: propagation))
+    end
+
+    it 'injects TRACEPARENT (uppercased) when a span is active' do
+      stub_otel_propagation('traceparent' => '00-aaaa-bbbb-01', 'tracestate' => 'vendor=1')
+      env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      expect(env['TRACEPARENT']).to eq('00-aaaa-bbbb-01')
+      expect(env['TRACESTATE']).to eq('vendor=1')
+    end
+
+    it 'scrubs stale inherited TRACESTATE when the fresh carrier has none' do
+      ENV['TRACEPARENT'] = '00-stale-stale-00'
+      ENV['TRACESTATE'] = 'stale=1'
+      stub_otel_propagation('traceparent' => '00-aaaa-bbbb-01')
+      env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      expect(env['TRACEPARENT']).to eq('00-aaaa-bbbb-01')
+      # nil actively unsets through the spawn overlay
+      expect(env).to have_key('TRACESTATE')
+      expect(env['TRACESTATE']).to be_nil
+    end
+
+    it 'never overrides explicit options.env keys' do
+      stub_otel_propagation('traceparent' => '00-aaaa-bbbb-01', 'tracestate' => 'vendor=1')
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude', env: { 'TRACEPARENT' => '00-user-user-01' }
+      )
+      env = connect_and_capture_env(options)
+
+      expect(env['TRACEPARENT']).to eq('00-user-user-01')
+      expect(env['TRACESTATE']).to eq('vendor=1')
+    end
+
+    it 'preserves inherited W3C env for a baggage-only carrier' do
+      ENV['TRACEPARENT'] = '00-inherited-inherited-01'
+      stub_otel_propagation('baggage' => 'k=v')
+      env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      expect(env['TRACEPARENT']).to eq('00-inherited-inherited-01')
+      expect(env).not_to have_key('BAGGAGE')
+    end
+
+    it 'forwards all carrier keys (e.g. BAGGAGE) when a span is active' do
+      stub_otel_propagation('traceparent' => '00-aaaa-bbbb-01', 'baggage' => 'tenant=acme')
+      env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      expect(env['BAGGAGE']).to eq('tenant=acme')
+    end
+
+    it 'is a no-op without OpenTelemetry loaded' do
+      hide_const('OpenTelemetry')
+      env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      expect(env).not_to have_key('TRACEPARENT')
+    end
+
+    it 'never breaks connect when the propagator raises' do
+      propagation = double('propagation')
+      allow(propagation).to receive(:inject).and_raise(NotImplementedError, 'abstract propagator')
+      stub_const('OpenTelemetry', double('OpenTelemetry', propagation: propagation))
+
+      expect do
+        connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+      end.not_to raise_error
+    end
+  end
+
+  describe '#check_claude_version' do
+    around do |example|
+      previous = ENV.fetch('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK', nil)
+      ENV.delete('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK')
+      example.run
+    ensure
+      if previous
+        ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = previous
+      else
+        ENV.delete('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK')
+      end
+    end
+
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+
+    # Real pipes so the drainer thread reads to EOF like production.
+    def fake_version_probe(output)
+      stdin_r, stdin_w = IO.pipe
+      out_r, out_w = IO.pipe
+      err_r, err_w = IO.pipe
+      out_w.binmode
+      out_w.write(output)
+      [out_w, err_w, stdin_r].each(&:close)
+      waiter = instance_double(Process::Waiter, alive?: false, pid: 4242)
+      [stdin_w, out_r, err_r, waiter]
+    end
+
+    it 'probes via arg-vector popen3 (no shell)' do
+      expect(Open3).to receive(:popen3).with('/usr/bin/claude', '-v')
+                                       .and_return(fake_version_probe("2.1.22 (Claude Code)\n"))
+
+      expect { transport.check_claude_version }.not_to output.to_stderr
+    end
+
+    it 'skips the probe entirely when CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK is set' do
+      ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = '1'
+      expect(Open3).not_to receive(:popen3)
+
+      expect { transport.check_claude_version }.not_to output.to_stderr
+    end
+
+    it "skips for any non-empty value, including '0' (Python truthiness parity)" do
+      ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = '0'
+      expect(Open3).not_to receive(:popen3)
+
+      transport.check_claude_version
+    end
+
+    it 'does not skip for an empty string' do
+      ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = ''
+      expect(Open3).to receive(:popen3).with('/usr/bin/claude', '-v')
+                                       .and_return(fake_version_probe("2.1.22 (Claude Code)\n"))
+
+      transport.check_claude_version
+    end
+
+    it 'gives up silently when the probe hangs past the deadline' do
+      stub_const("#{described_class}::VERSION_CHECK_TIMEOUT_SECONDS", 0.2)
+      # Pipes whose write ends stay open: the drainer never reaches EOF,
+      # exactly like a wedged `claude -v`.
+      stdin_r, stdin_w = IO.pipe
+      out_r, out_w = IO.pipe
+      err_r, err_w = IO.pipe
+      waiter = instance_double(Process::Waiter, alive?: false, pid: 4242)
+      allow(Open3).to receive(:popen3).and_return([stdin_w, out_r, err_r, waiter])
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect { transport.check_claude_version }.not_to raise_error
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      expect(elapsed).to be < 2
+    ensure
+      [stdin_r, out_w, err_w].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'warns (with the cli path) for unsupported versions' do
+      allow(Open3).to receive(:popen3)
+        .and_return(fake_version_probe("1.0.0 (Claude Code)\n"))
+
+      expect { transport.check_claude_version }
+        .to output(%r{1\.0\.0 at /usr/bin/claude is unsupported}).to_stderr
     end
   end
 
@@ -489,7 +807,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       stdin = instance_double(IO)
       captured_env = nil
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
         [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
@@ -505,6 +823,52 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb')
     end
 
+    it 'overrides an inherited CLAUDE_CODE_ENTRYPOINT with sdk-rb' do
+      previous = ENV.fetch('CLAUDE_CODE_ENTRYPOINT', nil)
+      ENV['CLAUDE_CODE_ENTRYPOINT'] = 'cli' # ambient value inside a Claude Code terminal
+      transport = described_class.new('hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      stdin = instance_double(IO, close: nil)
+      captured_env = nil
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3) do |env, *_args|
+        captured_env = env
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
+      end
+
+      transport.connect
+
+      # Pre-fix ||= let the inherited 'cli' win, mis-attributing telemetry.
+      expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb')
+    ensure
+      if previous
+        ENV['CLAUDE_CODE_ENTRYPOINT'] = previous
+      else
+        ENV.delete('CLAUDE_CODE_ENTRYPOINT')
+      end
+    end
+
+    it 'never lets options.env override CLAUDE_AGENT_SDK_VERSION' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude', env: { 'CLAUDE_AGENT_SDK_VERSION' => 'fake' }
+      )
+      transport = described_class.new('hi', options)
+
+      stdin = instance_double(IO, close: nil)
+      captured_env = nil
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3) do |env, *_args|
+        captured_env = env
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
+      end
+
+      transport.connect
+
+      expect(captured_env['CLAUDE_AGENT_SDK_VERSION']).to eq(ClaudeAgentSDK::VERSION)
+    end
+
     it 'preserves a caller-provided CLAUDE_CODE_ENTRYPOINT value' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
@@ -514,7 +878,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       stdin = instance_double(IO)
       captured_env = nil
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
         [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
@@ -536,7 +900,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       stdin = instance_double(IO)
       captured_env = nil
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
         [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
@@ -558,7 +922,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       stdin = instance_double(IO)
       captured_env = nil
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
         [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
@@ -713,7 +1077,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       # Real StringIOs so the stderr-drain thread (#each_line) and #close work
       # without per-method stubs. alive?: false lets #close skip the wait/kill.
       waiter = instance_double(Process::Waiter, alive?: false)
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3).and_return([StringIO.new, StringIO.new, StringIO.new, waiter])
 
       transport.connect
@@ -733,7 +1097,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       status = instance_double(Process::Status, exitstatus: 0)
       waiter = instance_double(Process::Waiter, value: status, alive?: false)
       stdout = StringIO.new(%({"type":"system","subtype":"init"}\n))
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout, StringIO.new, waiter])
 
       transport.connect
@@ -771,7 +1135,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     def connect_with_pipes(stdout_r, stderr_r, waiter)
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
       transport = described_class.new('hi', options)
-      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout_r, stderr_r, waiter])
       transport.connect
       transport
@@ -827,12 +1191,25 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
 
     it 'still warns about unsupported versions when -v output carries non-ASCII bytes' do
+      # Shield from an ambient CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK, which
+      # would silently skip the probe and fail the stderr expectation.
+      previous_skip = ENV.fetch('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK', nil)
+      ENV.delete('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK')
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
       transport = described_class.new('hi', options)
-      allow(Open3).to receive(:capture3)
-        .and_return(["1.0.0 — héllo\n".b.force_encoding('US-ASCII'), '', nil])
+      stdin_r, stdin_w = IO.pipe
+      out_r, out_w = IO.pipe
+      err_r, err_w = IO.pipe
+      out_w.binmode
+      out_w.write("1.0.0 — héllo\n".b)
+      out_r.set_encoding(Encoding::US_ASCII)
+      [out_w, err_w, stdin_r].each(&:close)
+      waiter = instance_double(Process::Waiter, alive?: false, pid: 4242)
+      allow(Open3).to receive(:popen3).and_return([stdin_w, out_r, err_r, waiter])
 
       expect { transport.check_claude_version }.to output(/unsupported/).to_stderr
+    ensure
+      ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = previous_skip if previous_skip
     end
   end
 end

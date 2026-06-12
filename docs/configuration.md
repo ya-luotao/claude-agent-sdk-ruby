@@ -124,6 +124,20 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: ['Read', 'Edit', 'Bash']
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code'))
 ```
 
+## Skills
+
+`skills` is the single place to enable skills for the main session — it auto-allows the `Skill` tool and defaults `setting_sources` to `['user', 'project']` (when unset) so skill files are discovered:
+
+```ruby
+# Every discovered skill ('all' is the only valid String)
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(skills: 'all')
+
+# Specific skills only — also sent to the CLI so only these are loaded
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(skills: %w[pdf docx])
+```
+
+Semantics: `nil` (default) leaves CLI defaults untouched; `[]` hides every skill from the listing; an Array adds `Skill(name)` allow-rules per entry (use `plugin:skill` for plugin-qualified names). An explicitly set `setting_sources` (including `[]`) is never overridden. This is a context filter, not a sandbox — skill files remain readable on disk.
+
 ## Sandbox Settings
 
 Configure [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) restrictions (network policy, filesystem access) via the CLI's `--sandbox` flag. The CLI handles OS-level process isolation using `srt`.

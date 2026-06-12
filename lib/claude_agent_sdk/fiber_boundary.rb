@@ -28,6 +28,16 @@ module ClaudeAgentSDK
   # so SDK loops yielding user callbacks must keep loop control outside the
   # invoked block (see `Client#receive_response`); user-initiated `break` is
   # bridged back to the calling fiber via `.invoke_iteration`.
+  #
+  # Deliberate carve-out: the STREAMING-INPUT enumerable is the one user-code
+  # path iterated ON the reactor (Query#stream_input), matching Python where
+  # async input generators run on the event loop. Enumerator#next is
+  # fiber-based and cannot be pulled across threads, and a whole-iteration
+  # thread bridge would break Async-native producers (Async::Queue#dequeue
+  # etc.). Thread::Queue#pop / sleep / socket IO inside the enumerator are
+  # scheduler-aware and park only the stream task; CPU-bound or
+  # scheduler-opaque work must be moved by the user (a producer Thread
+  # feeding a Thread::Queue, or FiberBoundary.invoke inside the enumerator).
   module FiberBoundary
     # Raised by .invoke when a timeout-bounded call exceeds its allotted time.
     # The worker thread is abandoned (cancellation is best-effort; the

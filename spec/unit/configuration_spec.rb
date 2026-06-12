@@ -281,6 +281,46 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    context 'container isolation from defaults' do
+      it 'appending to a default-sourced array does not mutate the global default' do
+        ClaudeAgentSDK.configure { |c| c.default_options = { allowed_tools: %w[Read Write] } }
+
+        described_class.new.allowed_tools << 'Bash'
+
+        expect(ClaudeAgentSDK.default_options[:allowed_tools]).to eq(%w[Read Write])
+        expect(described_class.new.allowed_tools).to eq(%w[Read Write])
+      end
+
+      it 'mutating a nested default hash does not leak into the global default' do
+        ClaudeAgentSDK.configure do |c|
+          c.default_options = { mcp_servers: { server1: { command: 'cmd1' } } }
+        end
+
+        described_class.new.mcp_servers[:server1][:command] = 'evil'
+
+        expect(described_class.new.mcp_servers[:server1][:command]).to eq('cmd1')
+      end
+
+      it 'appending to a nested default array does not leak' do
+        ClaudeAgentSDK.configure do |c|
+          c.default_options = { mcp_servers: { server1: { args: ['--verbose'] } } }
+        end
+
+        described_class.new.mcp_servers[:server1][:args] << '--evil'
+
+        expect(described_class.new.mcp_servers[:server1][:args]).to eq(['--verbose'])
+      end
+
+      it 'keeps leaf object identity (SDK MCP server instances are not duped)' do
+        server = Object.new
+        ClaudeAgentSDK.configure do |c|
+          c.default_options = { mcp_servers: { tools: { type: 'sdk', instance: server } } }
+        end
+
+        expect(described_class.new.mcp_servers[:tools][:instance]).to equal(server)
+      end
+    end
+
     context 'when no default options are configured' do
       it 'creates options with defaults unchanged' do
         options = described_class.new(model: 'haiku')

@@ -73,6 +73,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 - `ClaudeAgentSDK.delete_session(session_id:, directory:)` — hard-deletes a session
 - `ClaudeAgentSDK.fork_session(session_id:, directory:, up_to_message_id:, title:)` → `ForkSessionResult` — filesystem fork with UUID remapping
 - `ClaudeAgentSDK.list_sessions(directory:, limit:, offset:, include_worktrees:)` — supports `offset` for pagination
+- `ClaudeAgentSDK.list_subagents(session_id:, directory:)` / `ClaudeAgentSDK.get_subagent_messages(session_id:, agent_id:, directory:, limit:, offset:)` — local-disk subagent transcript readers (disk counterparts of the `*_from_store` pair)
 - **SessionStore mirroring**: `ClaudeAgentOptions.new(session_store: store)` mirrors transcripts to external storage (subclass `ClaudeAgentSDK::SessionStore` — only `#append`/`#load` required; `InMemorySessionStore` for tests; S3/Redis/Postgres reference adapters in `examples/session_stores/`). `session_store_flush: 'eager'` flushes per frame; `load_timeout_ms` bounds resume store calls.
 - **Resume from store**: pair `session_store` with `resume:`/`continue_conversation` — no local JSONL needed. Note: runs the CLI against a bare temp `CLAUDE_CONFIG_DIR` (user-scope settings.json/agents/skills invisible; project `.claude/*` still applies).
 - **Store-backed helpers**: `list_sessions_from_store`, `get_session_info_from_store`, `get_session_messages_from_store`, `list_subagents_from_store`, `get_subagent_messages_from_store`, `rename_session_via_store`, `tag_session_via_store`, `delete_session_via_store`, `fork_session_via_store`, `import_session_to_store` (migrate disk → store). Store reads default `directory:` to cwd. Validate adapters with `ClaudeAgentSDK::Testing.run_session_store_conformance`.
@@ -95,7 +96,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 ### references/
 - Read `references/usage-map.md` to map tasks to README and `docs/` subpages, gem paths, and minimal skeletons.
 - Read `references/message-handling.md` to extract text/tool blocks, build streaming input, use Client runtime APIs, and capture UUIDs for rewind.
-- Read `references/options.md` to configure `ClaudeAgentOptions` (defaults, tools, permissions, output formats, budgets, sandbox, sessions, agents, custom transports), and to browse/mutate sessions.
+- Read `references/options.md` to configure `ClaudeAgentOptions` (defaults, tools, permissions, skills, output formats, budgets, sandbox, sessions, agents, custom transports), and to browse/mutate sessions.
 - Read `references/mcp-servers.md` to define in-process SDK MCP tools/resources/prompts, configure external MCP servers, or manage MCP servers at runtime.
 - Read `references/rails.md` for initializers, background jobs, ActionCable streaming, and session resumption patterns.
 - Read `references/troubleshooting.md` for common setup/runtime errors and timeout tuning.
