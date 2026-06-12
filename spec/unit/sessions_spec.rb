@@ -832,4 +832,111 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
 
     ClaudeAgentSDK.get_session_messages(session_id: 'abc')
   end
+
+  describe 'sessions read-path hygiene (M12/M11/L8/L9)' do
+    let(:described_class) { ClaudeAgentSDK::Sessions }
+    let(:uuid) { '12345678-1234-1234-1234-123456789abc' }
+
+    def with_config_dir
+      Dir.mktmpdir do |config_dir|
+        allow(described_class).to receive(:config_dir).and_return(config_dir)
+        FileUtils.mkdir_p(File.join(config_dir, 'projects'))
+        yield config_dir
+      end
+    end
+
+    def project_dir_for(config_dir, path)
+      dir = File.join(config_dir, 'projects', described_class.sanitize_path(path))
+      FileUtils.mkdir_p(dir)
+      dir
+    end
+
+    describe 'with a nonexistent directory argument' do
+      it 'list_sessions returns [] instead of raising' do
+        with_config_dir do
+          expect(described_class.list_sessions(directory: '/definitely/not/a/dir')).to eq([])
+        end
+      end
+
+      it 'get_session_info returns nil instead of raising' do
+        with_config_dir do
+          expect(described_class.get_session_info(session_id: uuid, directory: '/definitely/not/a/dir')).to be_nil
+        end
+      end
+
+      it 'get_session_messages returns [] instead of raising' do
+        with_config_dir do
+          expect(described_class.get_session_messages(session_id: uuid, directory: '/definitely/not/a/dir')).to eq([])
+        end
+      end
+    end
+
+    describe '0-byte transcript stubs' do
+      it 'skips a stub in the canonical project dir and finds the worktree transcript' do
+        with_config_dir do |config_dir|
+          Dir.mktmpdir do |repo|
+            canonical = File.realpath(repo).unicode_normalize(:nfc)
+            worktree = File.join(canonical, 'wt')
+            FileUtils.mkdir_p(worktree)
+            allow(described_class).to receive(:detect_worktrees).and_return([canonical, worktree])
+
+            stub_dir = project_dir_for(config_dir, canonical)
+            File.write(File.join(stub_dir, "#{uuid}.jsonl"), '')
+
+            wt_dir = project_dir_for(config_dir, worktree)
+            File.write(File.join(wt_dir, "#{uuid}.jsonl"),
+                       { type: 'user', uuid: 'u1', sessionId: uuid,
+                         message: { role: 'user', content: 'Hello' } }.to_json)
+
+            messages = described_class.get_session_messages(session_id: uuid, directory: canonical)
+            expect(messages.length).to eq(1)
+          end
+        end
+      end
+    end
+
+    describe 'explicit directory scoping' do
+      it 'does not fall back to scanning unrelated project dirs' do
+        with_config_dir do |config_dir|
+          Dir.mktmpdir do |repo|
+            canonical = File.realpath(repo).unicode_normalize(:nfc)
+            allow(described_class).to receive(:detect_worktrees).and_return([canonical])
+
+            other_dir = File.join(config_dir, 'projects', 'unrelated-project')
+            FileUtils.mkdir_p(other_dir)
+            File.write(File.join(other_dir, "#{uuid}.jsonl"),
+                       { type: 'user', uuid: 'u1', sessionId: uuid,
+                         message: { role: 'user', content: 'Hello' } }.to_json)
+
+            expect(described_class.get_session_messages(session_id: uuid, directory: canonical)).to eq([])
+            # nil directory still searches all projects
+            expect(described_class.get_session_messages(session_id: uuid).length).to eq(1)
+          end
+        end
+      end
+    end
+
+    describe 'CLAUDE_CONFIG_DIR handling' do
+      around do |example|
+        previous = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+        example.run
+      ensure
+        if previous
+          ENV['CLAUDE_CONFIG_DIR'] = previous
+        else
+          ENV.delete('CLAUDE_CONFIG_DIR')
+        end
+      end
+
+      it 'treats an empty CLAUDE_CONFIG_DIR as unset' do
+        ENV['CLAUDE_CONFIG_DIR'] = ''
+        expect(described_class.config_dir).to eq(File.expand_path('~/.claude'))
+      end
+
+      it 'NFC-normalizes a set CLAUDE_CONFIG_DIR' do
+        ENV['CLAUDE_CONFIG_DIR'] = "/tmp/café" # decomposed é
+        expect(described_class.config_dir).to eq("/tmp/café")
+      end
+    end
+  end
 end

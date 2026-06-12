@@ -153,9 +153,14 @@ module ClaudeAgentSDK
       sanitize_path(canonicalize_path(directory.nil? ? '.' : directory.to_s))
     end
 
-    # Get the Claude config directory
+    # Get the Claude config directory (respects CLAUDE_CONFIG_DIR; an empty
+    # value is treated as unset, matching the Node CLI and the Python SDK).
+    # NFC-normalized on both branches like Python's _get_claude_config_home_dir.
     def config_dir
-      ENV.fetch('CLAUDE_CONFIG_DIR', File.expand_path('~/.claude'))
+      dir = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+      return dir.unicode_normalize(:nfc) if dir && !dir.empty?
+
+      File.expand_path('~/.claude').unicode_normalize(:nfc)
     end
 
     # Find the project directory for a given path
@@ -857,7 +862,10 @@ module ClaudeAgentSDK
     end
 
     def get_session_info_for_directory(file_name, directory)
-      canonical = File.realpath(directory).unicode_normalize(:nfc)
+      # canonicalize_path (not raw realpath): a nonexistent directory must
+      # canonicalize lexically and yield nil from find_project_dir — Python's
+      # os.path.realpath never raises here.
+      canonical = canonicalize_path(directory)
       project_dir = find_project_dir(canonical)
       if project_dir
         info = read_session_lite(File.join(project_dir, file_name), canonical)
@@ -879,7 +887,7 @@ module ClaudeAgentSDK
     end
 
     def list_sessions_for_directory(directory, include_worktrees)
-      path = File.realpath(directory).unicode_normalize(:nfc)
+      path = canonicalize_path(directory)
 
       worktree_paths = []
       worktree_paths = detect_worktrees(path) if include_worktrees
@@ -981,33 +989,48 @@ module ClaudeAgentSDK
       projects_dir = File.join(config_dir, 'projects')
       return nil unless File.directory?(projects_dir)
 
+      file_name = "#{session_id}.jsonl"
+
       if directory
-        path = File.realpath(directory).unicode_normalize(:nfc)
-        project_dir = find_project_dir(path)
-        if project_dir
-          candidate = File.join(project_dir, "#{session_id}.jsonl")
-          return candidate if File.exist?(candidate)
-        end
+        path = canonicalize_path(directory)
+        found = stat_candidate(find_project_dir(path), file_name)
+        return found if found
 
-        # Try worktrees
         detect_worktrees(path).each do |wt_path|
-          pd = find_project_dir(wt_path)
-          next unless pd
+          next if wt_path == path # already tried above
 
-          candidate = File.join(pd, "#{session_id}.jsonl")
-          return candidate if File.exist?(candidate)
+          found = stat_candidate(find_project_dir(wt_path), file_name)
+          return found if found
         end
+
+        # An explicit directory strictly scopes the search — never fall
+        # through to the global scan, which could resolve an unrelated
+        # project's same-id session (mirrors Python's _resolve_session_file_path).
+        return nil
       end
 
-      # Scan all project dirs
+      # No directory provided — search all project directories.
       Dir.children(projects_dir).each do |child|
         dir = File.join(projects_dir, child)
         next unless File.directory?(dir)
 
-        candidate = File.join(dir, "#{session_id}.jsonl")
-        return candidate if File.exist?(candidate)
+        found = stat_candidate(dir, file_name)
+        return found if found
       end
 
+      nil
+    end
+
+    # Mirrors Python's _stat_candidate: a candidate counts only when it
+    # exists AND is non-empty — a 0-byte stub in one project dir must not
+    # stop the search when the real transcript lives under another
+    # worktree's project dir (same hazard SessionMutations.try_append guards).
+    def stat_candidate(project_dir, file_name)
+      return nil if project_dir.nil?
+
+      candidate = File.join(project_dir, file_name)
+      File.size(candidate).positive? ? candidate : nil
+    rescue SystemCallError
       nil
     end
 
@@ -1116,7 +1139,7 @@ module ClaudeAgentSDK
     private_class_method :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions,
-                         :find_session_file, :parse_jsonl_entries,
+                         :find_session_file, :stat_candidate, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :filter_visible_messages, :read_head_tail, :build_session_info,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
