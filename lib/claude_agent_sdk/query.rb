@@ -855,27 +855,15 @@ module ClaudeAgentSDK
       }
     end
 
-    def handle_mcp_tools_call(server, message, params)
-      # Execute tool on the SDK MCP server
-      tool_name = params[:name]
-      arguments = params[:arguments] || {}
-
-      # Call the tool
-      result = server.call_tool(tool_name, arguments)
-      content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content') || []
-      response_data = { content: content }
-
-      is_error = ClaudeAgentSDK.flexible_fetch(result, 'isError', 'is_error')
-      response_data[:isError] = !!is_error unless is_error.nil?
-
-      structured_content = ClaudeAgentSDK.flexible_fetch(result, 'structuredContent', 'structured_content')
-      response_data[:structuredContent] = structured_content unless structured_content.nil?
-
-      {
-        jsonrpc: '2.0',
-        id: message[:id],
-        result: response_data
-      }
+    def handle_mcp_tools_call(server, message, _params)
+      # Route through the official MCP::Server (Python parity: its lowlevel
+      # server validates arguments against the tool's inputSchema BEFORE the
+      # handler runs and reports validation failures, unknown tools, and
+      # handler exceptions as in-band isError results). tools/list,
+      # initialize, resources/* and prompts/* stay on the SDK paths — the
+      # gem drops annotations/_meta from tools/list and negotiates newer
+      # protocol versions.
+      server.handle_message(message)
     end
 
     def handle_mcp_resources_list(server, message)

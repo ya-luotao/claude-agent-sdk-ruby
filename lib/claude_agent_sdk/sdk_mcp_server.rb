@@ -109,6 +109,25 @@ module ClaudeAgentSDK
       @mcp_server.handle_json(json_string)
     end
 
+    # Route one JSON-RPC request hash (symbol keys, as produced by the
+    # transport) through the official MCP::Server. Two sanitations, both
+    # empirically required:
+    # 1. The gem's JsonRpcHandler rejects string ids not matching
+    #    /\A[a-zA-Z0-9_-]+\z/ with {id: nil, error: -32600} (Python echoes
+    #    any id verbatim) — swap in a safe id and re-stamp the original on
+    #    the response (error envelopes too).
+    # 2. The gem rejects messages lacking jsonrpc: '2.0' with -32600; Python
+    #    never inspects this field and the CLI's embedded mcp_message shape
+    #    is not guaranteed — force it.
+    # @param message [Hash] JSON-RPC request hash
+    # @return [Hash] JSON-RPC response hash
+    def handle_message(message)
+      original_id = message[:id]
+      response = @mcp_server.handle(message.merge(jsonrpc: '2.0', id: 0))
+      response[:id] = original_id if response.is_a?(Hash) && response.key?(:id)
+      response
+    end
+
     # List all available tools (for backward compatibility)
     # @return [Array<Hash>] Array of tool definitions
     def list_tools
@@ -124,7 +143,10 @@ module ClaudeAgentSDK
       end
     end
 
-    # Execute a tool by name (used by Query's tools/call dispatch).
+    # Execute a tool by name (backward-compat public API; Query's tools/call
+    # dispatch routes through handle_message/the official MCP::Server, which
+    # also validates arguments against the tool's inputSchema — this direct
+    # path bypasses that validation).
     # Tool-execution failures are reported in-band (isError: true) per the
     # MCP spec and Python parity (the mcp lowlevel server converts handler
     # exceptions to CallToolResult(isError=True)); they must NOT become
@@ -247,10 +269,14 @@ module ClaudeAgentSDK
               # validates against the draft4 metaschema, so a malformed
               # prebuilt schema raises here (lazily, memoized) instead of
               # producing silent garbage. additionalProperties/enum/
-              # description survive.
-              @input_schema_value ||= MCP::Tool::InputSchema.new(
-                ClaudeAgentSDK.normalize_tool_schema(@tool_def.input_schema)
-              )
+              # description survive. Empty required arrays are stripped —
+              # draft4's metaschema mandates non-empty required (Python's
+              # modern jsonschema accepts []).
+              @input_schema_value ||= begin
+                schema = ClaudeAgentSDK.normalize_tool_schema(@tool_def.input_schema)
+                schema = schema.except(:required) if schema[:required].is_a?(Array) && schema[:required].empty?
+                MCP::Tool::InputSchema.new(schema)
+              end
             end
 
             def annotations_value

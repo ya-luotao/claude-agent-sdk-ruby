@@ -521,7 +521,9 @@ RSpec.describe ClaudeAgentSDK::Query do
 
       expect(response[:error]).to be_nil
       expect(response.dig(:result, :isError)).to eq(true)
-      expect(response.dig(:result, :content).first[:text]).to eq('kaboom from user handler')
+      # gem text ("Internal error calling tool X: msg"); Python says
+      # "msg" bare — same semantics, different prefix (accepted divergence)
+      expect(response.dig(:result, :content).first[:text]).to include('kaboom from user handler')
     end
 
     it 'reports unknown tools in-band with isError' do
@@ -531,7 +533,32 @@ RSpec.describe ClaudeAgentSDK::Query do
 
       expect(response[:error]).to be_nil
       expect(response.dig(:result, :isError)).to eq(true)
-      expect(response.dig(:result, :content).first[:text]).to eq("Tool 'nope' not found")
+      expect(response.dig(:result, :content).first[:text]).to match(/Tool not found: nope/)
+    end
+
+    it 'validates arguments against the tool inputSchema before invoking the handler' do
+      invoked = false
+      tool = ClaudeAgentSDK.create_tool(
+        'typed', 'Typed',
+        { type: 'object', properties: { n: { type: 'integer' } }, required: ['n'] }
+      ) do |_args|
+        invoked = true
+        { content: [{ type: 'text', text: 'ran' }] }
+      end
+      server = ClaudeAgentSDK::SdkMcpServer.new(name: 'srv', tools: [tool])
+
+      missing = dispatch(server, { id: 6, method: 'tools/call', params: { name: 'typed', arguments: {} } })
+      expect(missing.dig(:result, :isError)).to eq(true)
+      expect(missing.dig(:result, :content).first[:text]).to match(/Missing required arguments: n/)
+
+      wrong_type = dispatch(server, { id: 7, method: 'tools/call',
+                                      params: { name: 'typed', arguments: { n: 'NaN' } } })
+      expect(wrong_type.dig(:result, :isError)).to eq(true)
+      expect(invoked).to be(false) # handler never ran for invalid args
+
+      ok = dispatch(server, { id: 8, method: 'tools/call', params: { name: 'typed', arguments: { n: 3 } } })
+      expect(ok.dig(:result, :content).first[:text]).to eq('ran')
+      expect(ok[:id]).to eq(8) # original id re-stamped through the gem bridge
     end
 
     it 'keeps -32601 protocol errors for unknown servers' do

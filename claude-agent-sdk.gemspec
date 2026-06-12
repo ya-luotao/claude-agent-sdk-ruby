@@ -26,7 +26,9 @@ Gem::Specification.new do |spec|
 
   # Runtime dependencies
   spec.add_dependency 'async', '~> 2.0'
-  spec.add_dependency 'mcp', '~> 0.4'
+  # >= 0.5: tools/call validation failures, unknown tools, and handler
+  # exceptions return in-band isError results (0.4 raised protocol errors).
+  spec.add_dependency 'mcp', '>= 0.5', '< 1'
 
   # Development dependencies
   spec.add_development_dependency 'bundler', '~> 2.0'
