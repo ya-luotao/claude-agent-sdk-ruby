@@ -194,8 +194,14 @@ module ClaudeAgentSDK
       # launches Claude Code from within an existing Claude Code terminal.
       # NOTE: Must set to nil (not just omit the key) — Ruby's spawn only overlays
       # the env hash on top of the parent environment; a nil value actively unsets.
-      process_env = ENV.to_h.merge('CLAUDECODE' => nil, 'CLAUDE_AGENT_SDK_VERSION' => VERSION).merge(custom_env)
-      process_env['CLAUDE_CODE_ENTRYPOINT'] ||= 'sdk-rb'
+      # ENTRYPOINT defaults to sdk-rb regardless of inherited process env
+      # (the old ||= let an inherited 'cli' win and mis-attribute telemetry);
+      # options.env may still override it. VERSION is merged last: always
+      # set by the SDK, never overridable (Python merge-order parity).
+      process_env = ENV.to_h
+                       .merge('CLAUDECODE' => nil, 'CLAUDE_CODE_ENTRYPOINT' => 'sdk-rb')
+                       .merge(custom_env)
+                       .merge('CLAUDE_AGENT_SDK_VERSION' => VERSION)
       # Propagate the active OTel trace context to the CLI so its spans parent
       # under the caller's distributed trace (Python SDK #821 parity). No-op
       # when opentelemetry is not loaded or there is no active span.
@@ -208,7 +214,12 @@ module ClaudeAgentSDK
 
       begin
         # Start process using Open3
-        opts = { chdir: @cwd&.to_s }.compact
+        # :uid mirrors Python's anyio.open_process(user=...): String username
+        # or Integer uid (Unix; requires privileges — typically root). The
+        # .compact is mandatory: uid: nil raises TypeError on every connect.
+        # On Windows spawn raises for :uid, wrapped below into
+        # CLIConnectionError — fail-loud instead of the old silent ignore.
+        opts = { chdir: @cwd&.to_s, uid: @options.user }.compact
 
         @stdin, @stdout, @stderr, @process = Open3.popen3(process_env, *cmd, opts)
         # The CLI emits UTF-8 regardless of the parent locale. popen3 pipes
@@ -445,14 +456,21 @@ module ClaudeAgentSDK
     end
 
     def end_input
-      return unless @stdin
+      # Under @stdin_mutex like write/close (the transport's documented
+      # locking protocol; Python's end_input takes _write_lock too). The
+      # nil-guard must live INSIDE the critical section or the TOCTOU
+      # returns. NOTE: non-reentrant — close() inlines its own stdin
+      # handling and must never delegate here.
+      @stdin_mutex.synchronize do
+        return unless @stdin
 
-      begin
-        @stdin.close
-      rescue StandardError
-        # Ignore
+        begin
+          @stdin.close
+        rescue StandardError
+          # Ignore
+        end
+        @stdin = nil
       end
-      @stdin = nil
     end
 
     def read_messages(&block)

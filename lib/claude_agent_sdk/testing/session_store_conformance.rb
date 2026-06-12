@@ -15,6 +15,17 @@ module ClaudeAgentSDK
 
     # Assert the 15 SessionStore behavioral contracts against an adapter.
     #
+    # Contracts 1-14 mirror the Python SDK's run_session_store_conformance.
+    # Contract 15 is a Ruby SDK extension locking empty-subpath delete
+    # coherence ('' == no subpath, the same addressing append/load already
+    # use in every implementation in both SDKs); it runs only for stores
+    # implementing #delete, and skip_optional: %w[delete] excludes the
+    # delete contracts wholesale. Note: a store ported 1:1 from Python's
+    # reference patterns that gates its delete cascade on
+    # `subpath is not None` will fail contract 15 — that pattern orphans
+    # subkeys (a known upstream incoherence; Python's own postgres example
+    # passes while its redis/s3 examples fail).
+    #
     # Framework-agnostic: raises ConformanceError on the first violated
     # contract, otherwise returns nil. Call it from any test framework, e.g.
     #
@@ -205,7 +216,10 @@ module ClaudeAgentSDK
       [key, sub1, sub2].each { |k| store.append(k, [entry('n' => 1)]) }
       store.delete(key.merge('subpath' => ''))
       assert(store.load(key).nil?, 'delete with empty subpath must remove the main transcript')
-      assert(store.load(sub1).nil?, 'delete with empty subpath must cascade to subkeys')
+      assert(store.load(sub1).nil?,
+             'delete with empty subpath must cascade to subkeys "
+             "(gate the cascade on sub.nil? || sub.empty? — a nil?-only gate, "
+             "the direct port of Python\'s `is not None`, orphans subkeys)')
       if has_list_sessions
         listed = store.list_sessions(key['project_key']).map { |s| s['session_id'] }
         assert(!listed.include?(key['session_id']), 'session deleted via empty subpath must not be listed')

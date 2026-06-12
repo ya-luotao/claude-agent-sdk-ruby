@@ -897,6 +897,22 @@ module ClaudeAgentSDK
     end
   end
 
+  # Fallback for hook events the SDK does not yet model. Carries the wire
+  # event name and the complete raw payload so no fields are lost (Python
+  # passes hook input through as a raw dict, so unknown events lose
+  # nothing there).
+  class UnknownHookInput < BaseHookInput
+    attr_accessor :raw_input
+
+    def initialize(attributes = {})
+      super
+      # Direct assignment: BaseHookInput exposes hook_event_name as
+      # attr_reader only, and Type#assign_attribute silently drops keys
+      # without public setters.
+      @hook_event_name = attributes[:hook_event_name] || attributes['hook_event_name']
+    end
+  end
+
   # Setup hook specific output
   class SetupHookSpecificOutput < Type
     attr_accessor :additional_context

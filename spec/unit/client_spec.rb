@@ -418,6 +418,84 @@ RSpec.describe ClaudeAgentSDK::Client do
       expect(received_options.permission_mode).to eq('bypassPermissions')
     end
   end
+  describe 'Client#query with an iterable (F7)' do
+    def connected_client_capturing(writes)
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil)
+      allow(transport).to receive(:write) { |data| writes << data }
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+      client = described_class.new
+      client.connect
+      client
+    end
+
+    it 'streams Hashes inline, stamping session_id only when absent' do
+      writes = []
+      client = connected_client_capturing(writes)
+
+      client.query([
+                     { type: 'user', message: { role: 'user', content: 'one' } },
+                     { type: 'user', message: { role: 'user', content: 'two' }, session_id: 'explicit' }
+                   ], session_id: 'sess-9')
+
+      frames = writes.map { |w| JSON.parse(w, symbolize_names: true) }
+      expect(frames[0][:session_id]).to eq('sess-9')
+      expect(frames[1][:session_id]).to eq('explicit')
+    end
+
+    it 'passes JSONL strings through verbatim and rejects other item types' do
+      writes = []
+      client = connected_client_capturing(writes)
+
+      jsonl = ClaudeAgentSDK::Streaming.user_message('pre-serialized')
+      client.query([jsonl])
+      expect(JSON.parse(writes.first, symbolize_names: true).dig(:message, :content)).to eq('pre-serialized')
+
+      expect { client.query([42]) }.to raise_error(ArgumentError, /stream items must be Hashes or JSONL Strings/)
+    end
+
+    it 'rejects a bare Hash prompt (would iterate key-value pairs)' do
+      client = connected_client_capturing([])
+      expect { client.query({ type: 'user' }) }.to raise_error(ArgumentError, /got Hash/)
+    end
+  end
+
+  describe 'Client.open (F10)' do
+    it 'connects, yields the client, disconnects, and returns the block value' do
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil, close: nil)
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      yielded = nil
+      result = described_class.open(options: ClaudeAgentSDK::ClaudeAgentOptions.new) do |client|
+        yielded = client
+        :block_value
+      end
+
+      expect(result).to eq(:block_value)
+      expect(yielded).to be_a(described_class)
+      expect(query_handler).to have_received(:close) # disconnect ran
+    end
+
+    it 'disconnects even when the block raises, and propagates the exception' do
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil, close: nil)
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      expect do
+        described_class.open { |_client| raise 'block boom' }
+      end.to raise_error(RuntimeError, 'block boom')
+      expect(query_handler).to have_received(:close)
+    end
+
+    it 'requires a block' do
+      expect { described_class.open }.to raise_error(ArgumentError, /requires a block/)
+    end
+  end
+
   describe 'observer on_error wiring' do
     let(:recording_observer) do
       Class.new do

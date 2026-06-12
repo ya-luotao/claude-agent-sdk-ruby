@@ -100,10 +100,17 @@ module ClaudeAgentSDK
               @hook_callback_timeouts[callback_id] = matcher[:timeout] if matcher[:timeout]
               callback_ids << callback_id
             end
-            hooks_config[event] << {
+            matcher_config = {
               matcher: matcher[:matcher],
               hookCallbackIds: callback_ids
             }
+            # Wire field is literal "timeout" in SECONDS, per matcher,
+            # omitted when absent (Python _internal/query.py parity — no
+            # camelCase, no ms conversion). Local enforcement via
+            # @hook_callback_timeouts stays as defense-in-depth for CLIs
+            # that ignore the field.
+            matcher_config[:timeout] = matcher[:timeout] if matcher[:timeout]
+            hooks_config[event] << matcher_config
           end
         end
       end
@@ -710,8 +717,10 @@ module ClaudeAgentSDK
           **base_args
         )
       else
-        # Return base input for unknown event types
-        BaseHookInput.new(**base_args)
+        # Unknown event: preserve the wire event name and full raw payload
+        # rather than dropping event-specific fields (Python passes the raw
+        # dict through, so nothing is lost there).
+        UnknownHookInput.new(hook_event_name: event_name, raw_input: input_data, **base_args)
       end
     end
 

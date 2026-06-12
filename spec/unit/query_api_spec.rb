@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'securerandom'
 
 RSpec.describe ClaudeAgentSDK, '.query' do
   it 'passes entrypoint via transport env without mutating global ENV' do
@@ -247,6 +248,79 @@ RSpec.describe ClaudeAgentSDK, '.query' do
 
     expect(order.index(:messages_delivered)).to be < order.index(:wait_finished),
                                                 "messages were deferred until stdin close completed: #{order.inspect}"
+  end
+
+  context 'with a custom transport' do
+    def fake_streaming_transport(writes)
+      Class.new do
+        define_method(:initialize) do
+          @incoming = Async::Queue.new
+          @writes = writes
+        end
+        def connect; end
+        def end_input; end
+
+        def close
+          @closed = true
+        end
+
+        def closed?
+          !!@closed
+        end
+
+        def write(data)
+          @writes << data
+          msg = JSON.parse(data, symbolize_names: true)
+          return unless msg[:type] == 'control_request' && msg.dig(:request, :subtype) == 'initialize'
+
+          @incoming.enqueue(
+            type: 'control_response',
+            response: { subtype: 'success', request_id: msg[:request_id], response: {} }
+          )
+          @incoming.enqueue(type: 'result', subtype: 'success', is_error: false, duration_ms: 1,
+                            duration_api_ms: 1, num_turns: 1, session_id: 's', total_cost_usd: 0)
+          @incoming.enqueue(:end)
+        end
+
+        def read_messages
+          loop do
+            msg = @incoming.dequeue
+            break if msg == :end
+
+            yield msg
+          end
+        end
+      end.new
+    end
+
+    it 'uses the injected transport and never constructs SubprocessCLITransport' do
+      writes = []
+      fake = fake_streaming_transport(writes)
+      expect(ClaudeAgentSDK::SubprocessCLITransport).not_to receive(:new)
+
+      described_class.query(prompt: 'hello', transport: fake) { |_m| nil }
+
+      expect(fake.closed?).to be(true)
+      user_frame = writes.map { |w| JSON.parse(w, symbolize_names: true) }.find { |m| m[:type] == 'user' }
+      expect(user_frame.dig(:message, :content)).to eq('hello')
+    end
+
+    it 'skips resume materialization when a transport is injected' do
+      writes = []
+      fake = fake_streaming_transport(writes)
+      expect(ClaudeAgentSDK::SessionResume).not_to receive(:materialize_resume_session)
+
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        session_store: ClaudeAgentSDK::InMemorySessionStore.new, resume: SecureRandom.uuid
+      )
+      described_class.query(prompt: 'hello', options: options, transport: fake) { |_m| nil }
+    end
+
+    it 'rejects transports that do not respond to #connect' do
+      expect do
+        described_class.query(prompt: 'hello', transport: Object.new) { |_m| nil }
+      end.to raise_error(ArgumentError, /must respond to #connect/)
+    end
   end
 
   it 'rejects string prompts when can_use_tool is configured' do

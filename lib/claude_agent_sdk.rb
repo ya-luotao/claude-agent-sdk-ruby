@@ -122,35 +122,6 @@ module ClaudeAgentSDK
     val
   end
 
-  # Query Claude Code for one-shot or unidirectional streaming interactions
-  #
-  # This function is ideal for simple, stateless queries where you don't need
-  # bidirectional communication or conversation management.
-  #
-  # @param prompt [String, Enumerator] The prompt to send to Claude, or an Enumerator for streaming input
-  # @param options [ClaudeAgentOptions] Optional configuration
-  # @yield [Message] Each message from the conversation
-  # @return [Enumerator] if no block given
-  #
-  # @example Simple query
-  #   ClaudeAgentSDK.query(prompt: "What is 2 + 2?") do |message|
-  #     puts message
-  #   end
-  #
-  # @example With options
-  #   options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  #     allowed_tools: ['Read', 'Bash'],
-  #     permission_mode: 'acceptEdits'
-  #   )
-  #   ClaudeAgentSDK.query(prompt: "Create a hello.rb file", options: options) do |msg|
-  #     puts msg.text if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
-  #   end
-  #
-  # @example Streaming input
-  #   messages = Streaming.from_array(['Hello', 'What is 2+2?', 'Thanks!'])
-  #   ClaudeAgentSDK.query(prompt: messages) do |message|
-  #     puts message
-  #   end
   # List sessions for a directory (or all sessions)
   # @param directory [String, nil] Working directory to list sessions for
   # @param limit [Integer, nil] Maximum number of sessions to return
@@ -334,8 +305,43 @@ module ClaudeAgentSDK
                                      include_subagents: include_subagents, batch_size: batch_size)
   end
 
-  def self.query(prompt:, options: nil, &block)
-    return enum_for(:query, prompt: prompt, options: options) unless block
+  # Query Claude Code for one-shot or unidirectional streaming interactions
+  #
+  # This function is ideal for simple, stateless queries where you don't need
+  # bidirectional communication or conversation management.
+  #
+  # @param prompt [String, Enumerator] The prompt to send to Claude, or an Enumerator for streaming input
+  # @param options [ClaudeAgentOptions] Optional configuration
+  # @yield [Message] Each message from the conversation
+  # @return [Enumerator] if no block given. Internal iteration only: consume
+  #   with #each or each-driven Enumerable methods (#first, #take, #map,
+  #   #to_a). External iteration (#next, #peek, #rewind) is NOT supported —
+  #   message delivery runs inside the SDK's Async reactor, which cannot run
+  #   on the Enumerator's fiber; #next raises or hangs depending on context.
+  # @note An attempted #next may still spawn the CLI subprocess before
+  #   failing and leaves the query unusable.
+  #
+  # @example Simple query
+  #   ClaudeAgentSDK.query(prompt: "What is 2 + 2?") do |message|
+  #     puts message
+  #   end
+  #
+  # @example With options
+  #   options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  #     allowed_tools: ['Read', 'Bash'],
+  #     permission_mode: 'acceptEdits'
+  #   )
+  #   ClaudeAgentSDK.query(prompt: "Create a hello.rb file", options: options) do |msg|
+  #     puts msg.text if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
+  #   end
+  #
+  # @example Streaming input
+  #   messages = Streaming.from_array(['Hello', 'What is 2+2?', 'Thanks!'])
+  #   ClaudeAgentSDK.query(prompt: messages) do |message|
+  #     puts message
+  #   end
+  def self.query(prompt:, options: nil, transport: nil, &block)
+    return enum_for(:query, prompt: prompt, options: options, transport: transport) unless block
 
     options ||= ClaudeAgentOptions.new
 
@@ -357,23 +363,31 @@ module ClaudeAgentSDK
     # Resolve callable observers into fresh instances (thread-safe for global defaults)
     resolved_observers = ClaudeAgentSDK.resolve_observers(configured_options.observers)
 
+    raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)' if transport && !transport.respond_to?(:connect)
+
     Async do
       materialized = nil
-      transport = nil
       query_handler = nil
       begin
-        # Resume-from-store: when a session_store is set and resume/continue is
-        # requested, load the session into a temp CLAUDE_CONFIG_DIR and repoint
-        # options at it (env + --resume) BEFORE spawning. Returns options
-        # unchanged when no materialization applies. query() always uses the
-        # default subprocess transport, so no custom-transport gate is needed.
-        materialized = SessionResume.materialize_resume_session(configured_options)
-        configured_options = SessionResume.apply_materialized_options(configured_options, materialized) if materialized
+        if transport.nil?
+          # Resume-from-store: when a session_store is set and resume/continue
+          # is requested, load the session into a temp CLAUDE_CONFIG_DIR and
+          # repoint options at it (env + --resume) BEFORE spawning. Returns
+          # options unchanged when no materialization applies. Skipped
+          # entirely for an injected transport — the materialized
+          # env/--resume only apply to the CLI subprocess (Python parity:
+          # client.py skips materialization when a transport is supplied).
+          materialized = SessionResume.materialize_resume_session(configured_options)
+          configured_options = SessionResume.apply_materialized_options(configured_options, materialized) if materialized
 
-        # Always use streaming mode with control protocol (matches Python SDK).
-        # This sends agents via initialize request instead of CLI args,
-        # avoiding OS ARG_MAX limits.
-        transport = SubprocessCLITransport.new(configured_options)
+          # Always use streaming mode with control protocol (matches Python
+          # SDK). This sends agents via initialize request instead of CLI
+          # args, avoiding OS ARG_MAX limits.
+          transport = SubprocessCLITransport.new(configured_options)
+        end
+        # Deliberate deviation from Python: the ensure below also closes an
+        # injected transport whose #connect raised (Python leaves it
+        # unclosed); Transport#close must be idempotent.
         transport.connect
 
         # Extract SDK MCP servers
@@ -551,6 +565,37 @@ module ClaudeAgentSDK
       @materialized = nil
     end
 
+    # Block-scoped Client lifecycle, mirroring Python's
+    # `async with ClaudeSDKClient() as client` and File.open ergonomics:
+    # connects, yields the client, and always disconnects (block exceptions
+    # propagate). Kernel#Sync runs inline inside an existing reactor and
+    # creates one otherwise, so this works standalone too. Returns the
+    # block's value.
+    #
+    # @param prompt [String, Enumerator, nil] Optional initial prompt (same as #connect)
+    # @note In standalone (non-Async) use, `break` inside the block raises
+    #   LocalJumpError (teardown still runs) — return a value instead.
+    # @example
+    #   ClaudeAgentSDK::Client.open(options: options) do |client|
+    #     client.query('Hello')
+    #     client.receive_response { |msg| puts msg }
+    #   end
+    def self.open(prompt = nil, options: nil, transport_class: SubprocessCLITransport, transport_args: {})
+      raise ArgumentError, 'Client.open requires a block' unless block_given?
+
+      Sync do
+        client = new(options: options, transport_class: transport_class, transport_args: transport_args)
+        # connect failures self-clean via connect's rescue -> disconnect ->
+        # raise, and disconnect is idempotent — no double-teardown.
+        client.connect(prompt)
+        begin
+          yield client
+        ensure
+          client.disconnect
+        end
+      end
+    end
+
     # Connect to Claude with optional initial prompt.
     #
     # Client always uses streaming mode for bidirectional communication. If you
@@ -630,16 +675,30 @@ module ClaudeAgentSDK
     # @param session_id [String] Session identifier
     def query(prompt, session_id: 'default')
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      # A bare Hash responds to #each and would silently iterate [key, value]
+      # pairs (Python's async-for over a dict raises TypeError).
+      raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)' if prompt.is_a?(Hash)
 
-      ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, prompt)
       begin
-        message = {
-          type: 'user',
-          message: { role: 'user', content: prompt },
-          parent_tool_use_id: nil,
-          session_id: session_id
-        }
-        writeln(JSON.generate(message))
+        if prompt.is_a?(String)
+          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, prompt)
+          message = {
+            type: 'user',
+            message: { role: 'user', content: prompt },
+            parent_tool_use_id: nil,
+            session_id: session_id
+          }
+          writeln(JSON.generate(message))
+        elsif prompt.respond_to?(:each)
+          # Inline iteration on the caller, Python client.py parity — NOT
+          # Query#stream_input, whose ensure always ends input after
+          # exhaustion (correct for connect-time sole-input streams, fatal
+          # for a mid-session query). Blocks until the iterable is exhausted,
+          # identical to Python's async-for.
+          stream_query_messages(prompt, session_id)
+        else
+          raise ArgumentError, "prompt must be a String or respond to #each (got #{prompt.class})"
+        end
       rescue StandardError => e
         notify_error(e)
         raise
@@ -648,6 +707,11 @@ module ClaudeAgentSDK
 
     # Receive all messages from Claude
     # @yield [Message] Each message received
+    # @return [Enumerator] when no block is given (internal iteration only)
+    # @note #next/#peek either raise FiberError or hang depending on message
+    #   timing, and can kill the session's read loop, leaving the client
+    #   unusable; iterate with a block or each-driven Enumerable methods
+    #   (#first, #take) inside the Async block instead.
     def receive_messages(&block)
       return enum_for(:receive_messages) unless block
 
@@ -898,6 +962,34 @@ module ClaudeAgentSDK
       rescue StandardError => e
         notify_error(e)
         raise
+      end
+    end
+
+    # Stream an iterable of message Hashes / JSONL Strings as session input,
+    # stamping session_id on Hashes that lack one (key-presence check, both
+    # key styles — an explicit nil is preserved, mirroring Python's
+    # `"session_id" not in msg`). Strings pass through verbatim (Ruby
+    # superset: Streaming.user_message emits pre-serialized JSONL; no
+    # parse-stamp-regenerate, which would block the reactor on huge frames).
+    def stream_query_messages(prompt, session_id)
+      prompt.each do |msg|
+        case msg
+        when Hash
+          msg = msg.merge(session_id: session_id) unless msg.key?(:session_id) || msg.key?('session_id')
+          if (text = ClaudeAgentSDK.extract_user_prompt_text(msg))
+            ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text)
+          end
+          writeln(JSON.generate(msg))
+        when String
+          if (text = ClaudeAgentSDK.extract_user_prompt_text(msg))
+            ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text)
+          end
+          writeln(msg)
+        else
+          # No to_s fallback — silently serializing arbitrary objects is the
+          # exact inspect-garbage bug class this method exists to prevent.
+          raise ArgumentError, "stream items must be Hashes or JSONL Strings (got #{msg.class})"
+        end
       end
     end
 

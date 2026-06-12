@@ -437,6 +437,34 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(timeouts['hook_0']).to eq(5)
     end
 
+    it 'sends HookMatcher timeout to the CLI in the initialize request' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      hook_fn = ->(_input, _tool_use_id, _context) { {} }
+      hooks = {
+        'PreToolUse' => [
+          { matcher: 'Bash', hooks: [hook_fn], timeout: 2.5 },
+          { matcher: 'Read', hooks: [hook_fn] }
+        ]
+      }
+
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks)
+      captured = nil
+      allow(query).to receive(:send_control_request) { |req|
+        captured = req
+        {}
+      }
+
+      query.initialize_protocol
+
+      with_timeout, without_timeout = captured[:hooks]['PreToolUse']
+      # Literal "timeout" key, SECONDS, per matcher; omitted when absent
+      # (Python wire parity — not camelCase, not milliseconds).
+      expect(with_timeout[:timeout]).to eq(2.5)
+      expect(with_timeout[:hookCallbackIds]).to eq(['hook_0'])
+      expect(without_timeout).not_to have_key(:timeout)
+      expect(without_timeout[:hookCallbackIds]).to eq(['hook_1'])
+    end
+
     it 'enforces HookMatcher timeouts' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
       query = described_class.new(transport: transport, is_streaming_mode: true)
@@ -701,6 +729,32 @@ RSpec.describe ClaudeAgentSDK::Query do
   end
 
   describe '#parse_hook_input' do
+    it 'preserves the event name and raw payload for unknown hook events' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      payload = { hook_event_name: 'SomeFutureEvent', session_id: 's1', transcript_path: '/t',
+                  cwd: '/c', permission_mode: 'default', novel_field: 'payload' }
+      input = query.send(:parse_hook_input, payload)
+
+      expect(input).to be_a(ClaudeAgentSDK::UnknownHookInput)
+      expect(input.hook_event_name).to eq('SomeFutureEvent')
+      expect(input.raw_input[:novel_field]).to eq('payload')
+      expect(input.session_id).to eq('s1')
+    end
+
+    it 'handles string-keyed unknown hook events (transcript shape)' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      payload = { 'hook_event_name' => 'SomeFutureEvent', 'session_id' => 's1', 'extra' => 1 }
+      input = query.send(:parse_hook_input, payload)
+
+      expect(input.hook_event_name).to eq('SomeFutureEvent')
+      expect(input.session_id).to eq('s1')
+      expect(input.raw_input).to eq(payload)
+    end
+
     it 'populates tool_use_id for PreToolUse events' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
       query = described_class.new(transport: transport, is_streaming_mode: true)

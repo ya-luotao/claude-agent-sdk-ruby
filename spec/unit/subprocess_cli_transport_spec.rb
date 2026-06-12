@@ -508,6 +508,65 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
   end
 
+  describe '#end_input locking' do
+    it 'respects @stdin_mutex (deterministic lock-hold test)' do
+      transport = described_class.new('hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+      r, w = IO.pipe
+      transport.instance_variable_set(:@stdin, w)
+      mutex = transport.instance_variable_get(:@stdin_mutex)
+
+      mutex.lock
+      worker = Thread.new { transport.end_input }
+      sleep 0.05
+      # Pre-fix: end_input ignored the held mutex — stdin already nil/closed here.
+      expect(transport.instance_variable_get(:@stdin)).to equal(w)
+      expect(w.closed?).to be(false)
+
+      mutex.unlock
+      expect(worker.join(1)).not_to be_nil
+      expect(transport.instance_variable_get(:@stdin)).to be_nil
+      expect(w.closed?).to be(true)
+    ensure
+      mutex.unlock if mutex&.owned?
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'is idempotent' do
+      transport = described_class.new('hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+      expect { 2.times { transport.end_input } }.not_to raise_error
+    end
+  end
+
+  describe 'user option (spawn :uid)' do
+    def connect_capturing_opts(options)
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      captured_opts = nil
+      stdin = instance_double(IO, close: nil)
+      allow(Open3).to receive(:popen3) do |_env, *rest|
+        captured_opts = rest.last.is_a?(Hash) ? rest.last : {}
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
+      end
+      transport.connect
+      captured_opts
+    end
+
+    it 'passes options.user as the spawn :uid option (String or Integer)' do
+      opts = connect_capturing_opts(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude',
+                                                                           user: 'claude-runner'))
+      expect(opts[:uid]).to eq('claude-runner')
+
+      opts = connect_capturing_opts(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', user: 1001))
+      expect(opts[:uid]).to eq(1001)
+    end
+
+    it 'omits :uid when user is nil (uid: nil raises TypeError in spawn)' do
+      opts = connect_capturing_opts(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+      expect(opts).not_to have_key(:uid)
+    end
+  end
+
   describe 'OTel trace context propagation' do
     around do |example|
       saved = %w[TRACEPARENT TRACESTATE BAGGAGE].to_h { |k| [k, ENV.fetch(k, nil)] }
@@ -736,6 +795,52 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(captured_env['STRING_KEY']).to eq('value2')
       expect(captured_env.key?(:SYMBOL_KEY)).to be false
       expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb')
+    end
+
+    it 'overrides an inherited CLAUDE_CODE_ENTRYPOINT with sdk-rb' do
+      previous = ENV.fetch('CLAUDE_CODE_ENTRYPOINT', nil)
+      ENV['CLAUDE_CODE_ENTRYPOINT'] = 'cli' # ambient value inside a Claude Code terminal
+      transport = described_class.new('hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      stdin = instance_double(IO, close: nil)
+      captured_env = nil
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3) do |env, *_args|
+        captured_env = env
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
+      end
+
+      transport.connect
+
+      # Pre-fix ||= let the inherited 'cli' win, mis-attributing telemetry.
+      expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb')
+    ensure
+      if previous
+        ENV['CLAUDE_CODE_ENTRYPOINT'] = previous
+      else
+        ENV.delete('CLAUDE_CODE_ENTRYPOINT')
+      end
+    end
+
+    it 'never lets options.env override CLAUDE_AGENT_SDK_VERSION' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cli_path: '/usr/bin/claude', env: { 'CLAUDE_AGENT_SDK_VERSION' => 'fake' }
+      )
+      transport = described_class.new('hi', options)
+
+      stdin = instance_double(IO, close: nil)
+      captured_env = nil
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3) do |env, *_args|
+        captured_env = env
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
+      end
+
+      transport.connect
+
+      expect(captured_env['CLAUDE_AGENT_SDK_VERSION']).to eq(ClaudeAgentSDK::VERSION)
     end
 
     it 'preserves a caller-provided CLAUDE_CODE_ENTRYPOINT value' do
