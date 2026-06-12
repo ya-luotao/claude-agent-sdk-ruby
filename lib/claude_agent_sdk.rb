@@ -44,6 +44,65 @@ module ClaudeAgentSDK
     end
   end
 
+  # Extract the user-visible prompt text from a streamed input item, or nil
+  # when there is none (non-user messages, tool_result-only content, …).
+  # Only Hash and JSON-string items are inspected; arbitrary objects written
+  # via to_s are never notified.
+  def self.extract_user_prompt_text(message)
+    data = case message
+           when Hash then message
+           when String
+             begin
+               JSON.parse(message)
+             rescue JSON::ParserError
+               nil
+             end
+           end
+    return nil unless data.is_a?(Hash)
+    return nil unless (data[:type] || data['type']) == 'user'
+
+    inner = data[:message] || data['message']
+    return nil unless inner.is_a?(Hash)
+
+    prompt_text_from_content(inner[:content] || inner['content'])
+  end
+
+  # Text from a user-message content payload: the string itself, or the
+  # newline-joined non-empty top-level text blocks. Returns nil (never '')
+  # when there is no extractable text — on_user_prompt('') would latch
+  # OTelObserver's first-prompt buffer while never setting the attribute,
+  # permanently suppressing later real prompts.
+  def self.prompt_text_from_content(content)
+    case content
+    when String
+      content.empty? ? nil : content
+    when Array
+      texts = content.filter_map do |block|
+        next unless block.is_a?(Hash)
+        next unless (block[:type] || block['type']) == 'text'
+
+        text = block[:text] || block['text']
+        text unless text.to_s.empty?
+      end
+      texts.empty? ? nil : texts.join("\n")
+    end
+  end
+
+  # Wrap a streaming-input enumerable so observers get on_user_prompt for
+  # each user message before it is written to stdin. Identity when no
+  # observers are configured.
+  def self.observing_prompt_stream(prompt, observers)
+    return prompt if observers.empty?
+
+    Enumerator.new do |yielder|
+      prompt.each do |message|
+        text = extract_user_prompt_text(message)
+        notify_observers(observers, :on_user_prompt, text) if text
+        yielder << message
+      end
+    end
+  end
+
   # Look up a value in a hash that may use symbol or string keys in camelCase or snake_case.
   # Returns the first non-nil value found, preserving false as a meaningful value.
   def self.flexible_fetch(hash, camel_key, snake_key)
@@ -365,7 +424,8 @@ module ClaudeAgentSDK
           # here kept the root reactor alive forever when the read loop died
           # while the user enumerator was still blocked (matches Python's
           # query.spawn_task(query.stream_input(prompt))).
-          query_handler.spawn_task { query_handler.stream_input(prompt) }
+          observed_prompt = ClaudeAgentSDK.observing_prompt_stream(prompt, resolved_observers)
+          query_handler.spawn_task { query_handler.stream_input(observed_prompt) }
         end
 
         # Read and yield messages from the query handler (filters out control messages).
@@ -775,6 +835,9 @@ module ClaudeAgentSDK
       else
         begin
           prompt.each do |message_json|
+            if (text = ClaudeAgentSDK.extract_user_prompt_text(message_json))
+              ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text)
+            end
             writeln(message_json.to_s)
           end
         rescue StandardError => e

@@ -513,4 +513,39 @@ RSpec.describe ClaudeAgentSDK::Client do
       expect(recording_observer.errors.length).to eq(1)
     end
   end
+
+  describe 'observer on_user_prompt for streaming connect' do
+    it 'fires on_user_prompt for user messages with extractable text only' do
+      prompt_observer = Class.new do
+        include ClaudeAgentSDK::Observer
+
+        attr_reader :prompts
+
+        def initialize
+          @prompts = []
+        end
+
+        def on_user_prompt(prompt)
+          @prompts << prompt
+        end
+      end.new
+
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil, close: nil)
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      stream = [
+        JSON.generate(type: 'user', message: { role: 'user', content: 'streamed question' }),
+        JSON.generate(type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't' }] })
+      ].to_enum
+
+      client = described_class.new(
+        options: ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [prompt_observer])
+      )
+      client.connect(stream)
+
+      expect(prompt_observer.prompts).to eq(['streamed question'])
+    end
+  end
 end

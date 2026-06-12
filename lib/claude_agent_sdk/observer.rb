@@ -20,7 +20,14 @@ module ClaudeAgentSDK
   #     end
   #   end
   module Observer
-    # Called with the user's prompt text (not echoed back by CLI in streaming mode).
+    # Called with the user's prompt text (not echoed back by CLI in streaming
+    # mode): the verbatim string for String prompts (query() / Client#query),
+    # and once per `type: 'user'` message for Enumerator/streaming input with
+    # extracted text (string content, or newline-joined non-empty top-level
+    # text blocks). User messages with no extractable text (tool_result-only,
+    # image-only, empty text) are skipped; only Hash or JSON-string stream
+    # items are inspected. In streaming mode, ordering relative to on_message
+    # is not guaranteed.
     # @param prompt [String] The user's prompt string
     def on_user_prompt(prompt); end
 

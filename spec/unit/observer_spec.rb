@@ -60,6 +60,46 @@ RSpec.describe ClaudeAgentSDK::Observer do
     end
   end
 
+  describe '.extract_user_prompt_text' do
+    it 'extracts string content from a user message hash' do
+      msg = { type: 'user', message: { role: 'user', content: 'hello' } }
+      expect(ClaudeAgentSDK.extract_user_prompt_text(msg)).to eq('hello')
+    end
+
+    it 'extracts and joins non-empty text blocks' do
+      msg = { type: 'user', message: { content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] } }
+      expect(ClaudeAgentSDK.extract_user_prompt_text(msg)).to eq("a\nb")
+    end
+
+    it 'parses JSON-string stream items (with trailing newline)' do
+      json = "#{JSON.generate(type: 'user', message: { content: 'from json' })}\n"
+      expect(ClaudeAgentSDK.extract_user_prompt_text(json)).to eq('from json')
+    end
+
+    it 'returns nil for non-user messages, invalid JSON, and arbitrary objects' do
+      expect(ClaudeAgentSDK.extract_user_prompt_text({ type: 'control_request' })).to be_nil
+      expect(ClaudeAgentSDK.extract_user_prompt_text('not json')).to be_nil
+      expect(ClaudeAgentSDK.extract_user_prompt_text(42)).to be_nil
+    end
+
+    it 'never returns an empty string (would poison the OTel first-prompt latch)' do
+      empty_shapes = [
+        { type: 'user', message: { content: '' } },
+        { type: 'user', message: { content: [{ type: 'text', text: '' }] } },
+        { type: 'user', message: { content: [{ type: 'text' }] } },
+        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] } }
+      ]
+      empty_shapes.each do |msg|
+        expect(ClaudeAgentSDK.extract_user_prompt_text(msg)).to be_nil
+      end
+    end
+
+    it 'skips empty blocks but keeps real ones' do
+      msg = { type: 'user', message: { content: [{ type: 'text', text: '' }, { type: 'text', text: 'real' }] } }
+      expect(ClaudeAgentSDK.extract_user_prompt_text(msg)).to eq('real')
+    end
+  end
+
   describe '.resolve_observers' do
     it 'passes plain observer instances through' do
       obs = observer_class.new
@@ -174,6 +214,36 @@ RSpec.describe ClaudeAgentSDK::Observer do
       end.wait
 
       expect(call_count).to eq(1)
+    end
+
+    it 'fires on_user_prompt for each user message in a streaming-input prompt' do
+      allow(query_handler).to receive(:stream_input) { |stream| stream.each { |_m| nil } }
+      prompts = []
+      prompt_observer = Class.new do
+        include ClaudeAgentSDK::Observer
+
+        def initialize(sink)
+          @sink = sink
+        end
+
+        def on_user_prompt(prompt)
+          @sink << prompt
+        end
+      end.new(prompts)
+
+      stream = [
+        { type: 'user', message: { role: 'user', content: 'first question' }, session_id: '' },
+        { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'second' }] }, session_id: '' },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1' }] },
+          session_id: '' }
+      ].each
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [prompt_observer])
+
+      Async do
+        ClaudeAgentSDK.query(prompt: stream, options: options) { |_msg| nil }
+      end.wait
+
+      expect(prompts).to eq(['first question', 'second'])
     end
 
     it 'calls on_error before on_close and re-raises when the message stream dies' do
