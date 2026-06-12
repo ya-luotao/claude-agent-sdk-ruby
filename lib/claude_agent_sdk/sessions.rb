@@ -451,6 +451,55 @@ module ClaudeAgentSDK
       messages
     end
 
+    # List subagent IDs recorded for a session on local disk (counterpart to
+    # list_subagents_from_store). Scans
+    # <projectDir>/<sessionId>/subagents/**/agent-<id>.jsonl, including nested
+    # workflows/<runId>/ paths, in sorted walk order. Mirrors the Python SDK's
+    # list_subagents (#825) — no dedupe (the store variant dedupes because
+    # adapter subkey ordering is adapter-defined; the sorted disk walk is
+    # already deterministic).
+    # @param session_id [String] The session UUID
+    # @param directory [String, nil] Working directory to search in (strictly
+    #   scopes to that project + its worktrees; nil searches all projects)
+    # @return [Array<String>] Subagent IDs
+    def list_subagents(session_id:, directory: nil)
+      return [] unless session_id.match?(UUID_RE)
+
+      subagents_dir = resolve_subagents_dir(session_id, directory)
+      return [] if subagents_dir.nil?
+
+      collect_agent_files(subagents_dir).map(&:first)
+    end
+
+    # Read a subagent's conversation messages from local disk (counterpart to
+    # get_subagent_messages_from_store). First match in sorted walk order wins
+    # when the same agent id exists at multiple depths (mirrors Python).
+    # @param session_id [String] The session UUID
+    # @param agent_id [String] The subagent ID (without the agent- prefix)
+    # @param directory [String, nil] Working directory to search in
+    # @param limit [Integer, nil] Maximum number of messages
+    # @param offset [Integer] Number of messages to skip
+    # @return [Array<SessionMessage>] Ordered messages from the subagent
+    def get_subagent_messages(session_id:, agent_id:, directory: nil, limit: nil, offset: 0)
+      return [] unless session_id.match?(UUID_RE)
+      return [] if agent_id.nil? || agent_id.empty?
+
+      subagents_dir = resolve_subagents_dir(session_id, directory)
+      return [] if subagents_dir.nil?
+
+      _id, path = collect_agent_files(subagents_dir).find { |id, _path| id == agent_id }
+      return [] if path.nil?
+
+      begin
+        entries = parse_jsonl_entries(path)
+      rescue SystemCallError
+        # TOCTOU between the walk and the read (mirrors Python's
+        # `except OSError: return []`).
+        return []
+      end
+      entries_to_subagent_messages(entries, limit, offset)
+    end
+
     # ---- SessionStore-backed reads (store counterparts to the disk readers) ----
 
     # List sessions from a SessionStore. Store-backed counterpart to
@@ -1034,6 +1083,38 @@ module ClaudeAgentSDK
       nil
     end
 
+    # Resolve the on-disk subagents directory for a session:
+    # <projectDir>/<sessionId>/subagents (mirrors Python's
+    # _resolve_subagents_dir). nil when the session transcript can't be found.
+    def resolve_subagents_dir(session_id, directory)
+      resolved = find_session_file(session_id, directory)
+      return nil if resolved.nil?
+
+      File.join(resolved.delete_suffix('.jsonl'), 'subagents')
+    end
+
+    # Depth-first sorted walk collecting [agent_id, path] pairs for
+    # agent-<id>.jsonl files, recursing into subdirectories (e.g.
+    # workflows/<runId>/) in the same sorted interleave. Mirrors Python's
+    # _collect_agent_files: no dedupe; [] for a missing/unreadable base dir.
+    def collect_agent_files(base_dir, results = [])
+      begin
+        children = Dir.children(base_dir).sort
+      rescue SystemCallError
+        return results
+      end
+
+      children.each do |name|
+        path = File.join(base_dir, name)
+        if File.directory?(path)
+          collect_agent_files(path, results)
+        elsif File.file?(path) && name.start_with?('agent-') && name.end_with?('.jsonl')
+          results << [name.delete_prefix('agent-').delete_suffix('.jsonl'), path]
+        end
+      end
+      results
+    end
+
     def parse_jsonl_entries(file_path)
       entries = []
 
@@ -1139,7 +1220,8 @@ module ClaudeAgentSDK
     private_class_method :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions,
-                         :find_session_file, :stat_candidate, :parse_jsonl_entries,
+                         :find_session_file, :stat_candidate, :resolve_subagents_dir,
+                         :collect_agent_files, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :filter_visible_messages, :read_head_tail, :build_session_info,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,

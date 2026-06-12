@@ -38,6 +38,17 @@ ClaudeAgentSDK.get_session_messages(session_id: 'abc-123-...', offset: 10, limit
 
 Each `SessionMessage` includes `type` (`"user"` or `"assistant"`), `uuid`, `session_id`, and `message` (raw API hash).
 
+## Reading Subagent Transcripts
+
+Subagent transcripts live at `<projectDir>/<sessionId>/subagents/agent-<id>.jsonl` and may nest under `workflows/<runId>/`:
+
+```ruby
+ids = ClaudeAgentSDK.list_subagents(session_id: "uuid-here", directory: "/path/to/project")
+messages = ClaudeAgentSDK.get_subagent_messages(session_id: "uuid-here", agent_id: ids.first, limit: 50)
+```
+
+With `directory:` given, only that project and its git worktrees are searched (no global fallback). Store-backed counterparts: `list_subagents_from_store` / `get_subagent_messages_from_store`.
+
 ## Renaming a Session
 
 ```ruby

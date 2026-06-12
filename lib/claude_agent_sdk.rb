@@ -179,6 +179,26 @@ module ClaudeAgentSDK
     Sessions.get_session_messages(session_id: session_id, directory: directory, limit: limit, offset: offset)
   end
 
+  # List subagent IDs recorded for a session on local disk
+  # @param session_id [String] The session UUID
+  # @param directory [String, nil] Working directory to search in
+  # @return [Array<String>] Subagent IDs
+  def self.list_subagents(session_id:, directory: nil)
+    Sessions.list_subagents(session_id: session_id, directory: directory)
+  end
+
+  # Read a subagent's conversation messages from local disk
+  # @param session_id [String] The session UUID
+  # @param agent_id [String] The subagent ID (without the agent- prefix)
+  # @param directory [String, nil] Working directory to search in
+  # @param limit [Integer, nil] Maximum number of messages
+  # @param offset [Integer] Number of messages to skip
+  # @return [Array<SessionMessage>] Ordered messages from the subagent
+  def self.get_subagent_messages(session_id:, agent_id:, directory: nil, limit: nil, offset: 0)
+    Sessions.get_subagent_messages(session_id: session_id, agent_id: agent_id,
+                                   directory: directory, limit: limit, offset: offset)
+  end
+
   # Rename a session by appending a custom-title entry
   # @param session_id [String] UUID of the session to rename
   # @param title [String] New session title

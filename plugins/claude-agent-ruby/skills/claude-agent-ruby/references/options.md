@@ -142,12 +142,17 @@ puts result.session_id  # new session UUID
 
 # Fork up to a specific message (partial fork)
 result = ClaudeAgentSDK.fork_session(session_id: "uuid-here", up_to_message_id: "msg-uuid")
+
+# List subagent transcripts for a session, then read one
+ids = ClaudeAgentSDK.list_subagents(session_id: "uuid-here", directory: "/path/to/project")
+msgs = ClaudeAgentSDK.get_subagent_messages(session_id: "uuid-here", agent_id: ids.first, limit: 50)
 ```
 
 Return types:
 - `list_sessions` → `Array<SDKSessionInfo>` (fields: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`, `tag`, `created_at`)
 - `get_session_messages` → `Array<SessionMessage>` (fields: `type`, `uuid`, `session_id`, `message`, `parent_tool_use_id`)
 - `fork_session` → `ForkSessionResult` (field: `session_id`)
+- `list_subagents` → `Array<String>`; `get_subagent_messages` → `Array<SessionMessage>` (disk counterparts of the `*_from_store` pair)
 
 ## SessionStore: mirror transcripts to external storage
 
