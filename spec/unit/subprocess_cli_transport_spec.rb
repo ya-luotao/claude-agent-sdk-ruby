@@ -480,6 +480,32 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       transport&.close
     end
 
+    it 'accumulates multi-line (pretty-printed) JSON and parses it once complete' do
+      # The chunked-read rewrite only had failure-path coverage for the
+      # accumulation machinery; this pins the success path the json_buffer
+      # exists for: one JSON object split across multiple newline-terminated
+      # lines parses byte-identically, including a continuation line whose
+      # LEADING whitespace is part of the message (position-aware handling
+      # must not strip it into invalid JSON).
+      lines = %({"type":"assistant",\n  "data":"with  interior  spaces"}\n)
+      status = instance_double(Process::Status, exitstatus: 0)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3)
+        .and_return([StringIO.new, StringIO.new(lines), StringIO.new, waiter])
+      transport.connect
+
+      messages = []
+      transport.read_messages { |m| messages << m }
+
+      expect(messages.length).to eq(1)
+      expect(messages.first[:data]).to eq('with  interior  spaces')
+    ensure
+      transport&.close
+    end
+
     it 'raises (never silently drops whitespace) for a line just over the cap' do
       # A whitespace run straddling the chunk boundary of a barely-over-cap
       # line: a per-chunk strip shrank the first chunk back under the cap and

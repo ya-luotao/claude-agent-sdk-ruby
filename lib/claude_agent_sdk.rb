@@ -671,7 +671,13 @@ module ClaudeAgentSDK
     end
 
     # Send a query to Claude
-    # @param prompt [String] The prompt to send
+    # @param prompt [String, Enumerable] The prompt to send — a String, or an
+    #   Enumerable of message Hashes / JSONL Strings streamed inline (blocks
+    #   until exhausted, like Python's async-for). Hashes lacking a
+    #   session_id are stamped with the session_id: argument; JSONL Strings
+    #   pass through VERBATIM — generate them with the matching session_id
+    #   (Streaming.user_message defaults to 'default'). Bare Hashes are
+    #   rejected (they would iterate as key-value pairs).
     # @param session_id [String] Session identifier
     def query(prompt, session_id: 'default')
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected

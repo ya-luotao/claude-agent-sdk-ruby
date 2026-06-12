@@ -265,7 +265,10 @@ module ClaudeAgentSDK
         error = CLINotFoundError.new("Claude Code not found at: #{@cli_path}")
         @exit_error = error
         raise error
-      rescue StandardError => e
+      rescue StandardError, NotImplementedError => e
+        # NotImplementedError < ScriptError, not StandardError (the trap this
+        # repo keeps hitting): spawn raises it for :uid on platforms without
+        # setuid (Windows), and it must wrap like every other spawn failure.
         error = CLIConnectionError.new("Failed to start Claude Code: #{e}")
         @exit_error = error
         raise error

@@ -858,6 +858,99 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'remaining audit test gaps' do
+    # Gap 4: close must unblock a consumer parked in receive_messages on an
+    # empty queue (close -> @task.stop -> read-loop ensure -> 'end' sentinel).
+    it 'close unblocks a consumer blocked in receive_messages' do
+      queue = Async::Queue.new
+      transport = mock_transport
+      allow(transport).to receive(:read_messages) do |&blk|
+        loop { blk.call(queue.dequeue) } # parks forever; only close ends it
+      end
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      received = []
+      Async do |task|
+        query.start
+        consumer = task.async do
+          query.receive_messages { |m| received << m }
+        end
+        task.sleep 0.05 # let the consumer park on the empty queue
+        query.close
+
+        task.with_timeout(2.0) { consumer.wait }
+        expect(received).to eq([]) # clean unblock via the end sentinel
+      end.wait
+    end
+
+    # Gap 7: a hook callback raising a plain StandardError must produce an
+    # error control_response on the wire (not kill the handler task).
+    it 'writes an error control_response when a hook callback raises' do
+      writes = []
+      transport = instance_double(ClaudeAgentSDK::Transport)
+      allow(transport).to receive(:write) { |data| writes << data }
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+      query.instance_variable_set(:@hook_callbacks,
+                                  { 'hook_0' => ->(_i, _t, _c) { raise 'hook exploded' } })
+
+      message = {
+        request_id: 'req_9',
+        request: { subtype: 'hook_callback', callback_id: 'hook_0',
+                   tool_use_id: 't1', input: { hook_event_name: 'PreToolUse' } }
+      }
+      Async { query.send(:handle_control_request, message) }.wait
+
+      payload = JSON.parse(writes.last, symbolize_names: true)
+      expect(payload.dig(:response, :subtype)).to eq('error')
+      expect(payload.dig(:response, :error)).to eq('hook exploded')
+      expect(payload.dig(:response, :request_id)).to eq('req_9')
+    end
+
+    # Gap 1 residue: a CLI control_response with subtype 'error' must raise
+    # the CLI-reported error from send_control_request.
+    it 'raises the CLI-reported error for an error-subtype control_response' do
+      tq = Thread::Queue.new
+      transport = mock_transport
+      allow(transport).to receive(:read_messages) do |&blk|
+        loop { blk.call(tq.pop) }
+      end
+      allow(transport).to receive(:write) do |data|
+        msg = JSON.parse(data, symbolize_names: true)
+        if msg[:type] == 'control_request'
+          tq << { type: 'control_response',
+                  response: { subtype: 'error', request_id: msg[:request_id],
+                              error: 'model not available' } }
+        end
+      end
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      Async do |task|
+        query.start
+        task.with_timeout(2.0) do
+          expect { query.set_model('bogus') }
+            .to raise_error(StandardError, 'model not available')
+        end
+      ensure
+        query.close
+      end.wait
+    end
+
+    # Gap 2 residue: the deny path through the real permission handler.
+    it 'serializes PermissionResultDeny through handle_permission_request' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      callback = lambda do |_tool, _input, _ctx|
+        ClaudeAgentSDK::PermissionResultDeny.new(message: 'not allowed', interrupt: true)
+      end
+      query = described_class.new(transport: transport, is_streaming_mode: true, can_use_tool: callback)
+
+      result = query.send(:handle_permission_request,
+                          { subtype: 'can_use_tool', tool_name: 'Bash',
+                            input: { command: 'rm -rf /' }, tool_use_id: 't9' })
+
+      expect(result).to eq({ behavior: 'deny', message: 'not allowed', interrupt: true })
+    end
+  end
+
   describe 'control request waiting (reentrancy + level-trigger)' do
     def queue_driven_transport(thread_queue)
       transport = mock_transport

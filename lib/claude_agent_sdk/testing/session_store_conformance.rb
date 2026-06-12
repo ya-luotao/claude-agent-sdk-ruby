@@ -217,9 +217,9 @@ module ClaudeAgentSDK
       store.delete(key.merge('subpath' => ''))
       assert(store.load(key).nil?, 'delete with empty subpath must remove the main transcript')
       assert(store.load(sub1).nil?,
-             'delete with empty subpath must cascade to subkeys "
-             "(gate the cascade on sub.nil? || sub.empty? — a nil?-only gate, "
-             "the direct port of Python\'s `is not None`, orphans subkeys)')
+             'delete with empty subpath must cascade to subkeys ' \
+             '(gate the cascade on sub.nil? || sub.empty? — a nil?-only gate, ' \
+             'the direct port of Python\'s `is not None`, orphans subkeys)')
       if has_list_sessions
         listed = store.list_sessions(key['project_key']).map { |s| s['session_id'] }
         assert(!listed.include?(key['session_id']), 'session deleted via empty subpath must not be listed')
