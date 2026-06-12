@@ -94,16 +94,20 @@ module ClaudeAgentSDK
       end
 
       def on_close
-        @tool_spans.each_value(&:finish)
-        @tool_spans.clear
-        @root_span&.finish
-        @root_span = nil
-        @root_context = nil
+        finish_open_spans
+        reset_session_buffers
       end
 
       private
 
       def start_trace(message)
+        # A new init without an intervening ResultMessage (e.g. /clear or an
+        # interrupted turn) supersedes the current trace; finish it so it is
+        # exported instead of leaking as a never-ended span. Unconditional —
+        # end_trace nils @root_span but can leave @tool_spans populated, and
+        # the helper is an idempotent no-op in the normal flow.
+        finish_open_spans
+
         attrs = {
           # gen_ai semantic conventions (recognized by Langfuse, Datadog, etc.)
           'gen_ai.system' => 'anthropic',
@@ -223,9 +227,12 @@ module ClaudeAgentSDK
         @root_span.status = OpenTelemetry::Trace::Status.error(message.stop_reason || 'error') if message.is_error
 
         @root_span.add_attributes(compact_attrs(attrs))
-        @root_span.finish
-        @root_span = nil
-        @root_context = nil
+        # A tool span still open at the ResultMessage means the tool never
+        # completed (interrupt/error/denial) — finish it with the trace so a
+        # later same-id tool_result cannot mutate a dead-trace span. Buffer
+        # reset must come AFTER trace_output consumed @last_assistant_text.
+        finish_open_spans
+        reset_session_buffers
       end
 
       def start_tool_span(block)
@@ -252,9 +259,32 @@ module ClaudeAgentSDK
         return unless span
 
         # OpenInference: Langfuse maps output.value to the Preview Output field
-        span.set_attribute('output.value', truncate(block.content.to_s))
+        value, mime = serialize_tool_output(block.content)
+        if value
+          span.set_attribute('output.value', truncate(value))
+          span.set_attribute('output.mime_type', mime)
+        end
         span.status = OpenTelemetry::Trace::Status.error('tool error') if block.is_error
         span.finish
+      end
+
+      # Finish any spans still open (unfinished spans are never exported by
+      # OTel batch processors) and drop references to them. Tool spans are
+      # finished before the root span (children before parent). Idempotent.
+      def finish_open_spans
+        @tool_spans.each_value(&:finish)
+        @tool_spans.clear
+        @root_span&.finish
+        @root_span = nil
+        @root_context = nil
+      end
+
+      # Clear per-trace buffers so a reused observer instance (sequential
+      # query() calls or multi-turn Client sessions) does not stamp stale
+      # input/output onto later traces.
+      def reset_session_buffers
+        @first_user_input = nil
+        @last_assistant_text = nil
       end
 
       def record_retry_event(message)
@@ -306,6 +336,15 @@ module ClaudeAgentSDK
         JSON.generate(obj)
       rescue StandardError
         obj.to_s
+      end
+
+      # Tool result content is a String or an Array of content-block hashes;
+      # serialize structured content as JSON, consistent with input.value.
+      def serialize_tool_output(content)
+        return nil if content.nil?
+        return [content, 'text/plain'] if content.is_a?(String)
+
+        [safe_json(content), 'application/json']
       end
     end
   end

@@ -544,4 +544,176 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       expect(root_span.attributes['langfuse.session.id']).to eq('my-session')
     end
   end
+  describe 'trace hygiene across observer reuse' do
+    let(:init_message) do
+      ClaudeAgentSDK::InitMessage.new(
+        subtype: 'init', data: {}, uuid: nil, session_id: 'sess-1',
+        model: 'claude-sonnet-4', cwd: nil, claude_code_version: nil,
+        permission_mode: nil, tools: nil, mcp_servers: nil, agents: nil,
+        api_key_source: nil, betas: nil, slash_commands: nil, output_style: nil,
+        skills: nil, plugins: nil, fast_mode_state: nil
+      )
+    end
+
+    def result_message(result: nil)
+      ClaudeAgentSDK::ResultMessage.new(
+        subtype: 'success', duration_ms: 1, duration_api_ms: 1, is_error: false,
+        num_turns: 1, session_id: 'sess-1', total_cost_usd: 0.0,
+        usage: { input_tokens: 1, output_tokens: 1 }, result: result
+      )
+    end
+
+    def assistant_with(text: nil, tool_id: nil)
+      content = []
+      content << ClaudeAgentSDK::TextBlock.new(text: text) if text
+      content << ClaudeAgentSDK::ToolUseBlock.new(id: tool_id, name: 'Bash', input: {}) if tool_id
+      ClaudeAgentSDK::AssistantMessage.new(content: content, model: 'claude-sonnet-4')
+    end
+
+    def tool_result(tool_use_id, content)
+      ClaudeAgentSDK::UserMessage.new(
+        content: [ClaudeAgentSDK::ToolResultBlock.new(tool_use_id: tool_use_id, content: content, is_error: false)]
+      )
+    end
+
+    def session_spans
+      created_spans.select { |s| s.name == 'claude_agent.session' }
+    end
+
+    it 'labels a later trace with its own prompt after a full lifecycle' do
+      observer.on_user_prompt('First prompt')
+      observer.on_message(init_message)
+      observer.on_message(result_message)
+      observer.on_close
+
+      observer.on_user_prompt('Second prompt')
+      observer.on_message(init_message)
+
+      expect(session_spans.last.attributes['input.value']).to eq('Second prompt')
+    end
+
+    it 'resets the prompt buffer when the session ends without a ResultMessage (break/error path)' do
+      observer.on_user_prompt('First prompt')
+      observer.on_message(init_message)
+      observer.on_close # no result — user break or stream error
+
+      observer.on_user_prompt('Second prompt')
+      observer.on_message(init_message)
+
+      expect(session_spans.last.attributes['input.value']).to eq('Second prompt')
+    end
+
+    it 'captures the new turn prompt after a ResultMessage ends the previous trace' do
+      observer.on_user_prompt('Turn one')
+      observer.on_message(init_message)
+      observer.on_message(result_message)
+      # multi-turn Client: CLI emits init per turn, no on_close between
+      observer.on_user_prompt('Turn two')
+      observer.on_message(init_message)
+
+      expect(session_spans.last.attributes['input.value']).to eq('Turn two')
+    end
+
+    it 'does not leak the previous query output into a later trace' do
+      observer.on_message(init_message)
+      observer.on_message(assistant_with(text: 'Old answer'))
+      observer.on_message(result_message(result: 'Old answer'))
+      observer.on_close
+
+      observer.on_message(init_message)
+      observer.on_message(result_message)
+
+      expect(session_spans.last.attributes['output.value']).to be_nil
+    end
+
+    it 'finishes a dangling root span when a new InitMessage arrives without a ResultMessage' do
+      observer.on_message(init_message)
+      observer.on_message(init_message)
+
+      expect(session_spans.length).to eq(2)
+      expect(session_spans.first.finished).to be(true)
+      expect(session_spans.last.finished).to be(false)
+    end
+
+    it 'finishes open tool spans from the superseded trace' do
+      observer.on_message(init_message)
+      observer.on_message(assistant_with(tool_id: 'toolu_1'))
+      observer.on_message(init_message)
+
+      tool_span = created_spans.find { |s| s.name == 'claude_agent.tool.Bash' }
+      expect(tool_span.finished).to be(true)
+
+      observer.on_message(tool_result('toolu_1', 'late'))
+      expect(tool_span.attributes).not_to have_key('output.value')
+    end
+
+    it 'finishes a tool span left pending at the ResultMessage and detaches it from later results' do
+      observer.on_message(init_message)
+      observer.on_message(assistant_with(tool_id: 'toolu_1'))
+      observer.on_message(result_message)
+
+      tool_span = created_spans.find { |s| s.name == 'claude_agent.tool.Bash' }
+      expect(tool_span.finished).to be(true)
+
+      observer.on_message(init_message)
+      observer.on_message(tool_result('toolu_1', 'late'))
+      expect(tool_span.attributes).not_to have_key('output.value')
+    end
+  end
+
+  describe 'tool output serialization' do
+    let(:init_message) do
+      ClaudeAgentSDK::InitMessage.new(
+        subtype: 'init', data: {}, uuid: nil, session_id: 'sess-1',
+        model: 'claude-sonnet-4', cwd: nil, claude_code_version: nil,
+        permission_mode: nil, tools: nil, mcp_servers: nil, agents: nil,
+        api_key_source: nil, betas: nil, slash_commands: nil, output_style: nil,
+        skills: nil, plugins: nil, fast_mode_state: nil
+      )
+    end
+
+    def open_tool_span(tool_use_id)
+      observer.on_message(init_message)
+      assistant = ClaudeAgentSDK::AssistantMessage.new(
+        content: [ClaudeAgentSDK::ToolUseBlock.new(id: tool_use_id, name: 'Read', input: {})],
+        model: 'claude-sonnet-4'
+      )
+      observer.on_message(assistant)
+      created_spans.find { |s| s.name == 'claude_agent.tool.Read' }
+    end
+
+    def deliver_result(tool_use_id, content)
+      observer.on_message(
+        ClaudeAgentSDK::UserMessage.new(
+          content: [
+            ClaudeAgentSDK::ToolResultBlock.new(tool_use_id: tool_use_id, content: content, is_error: false)
+          ]
+        )
+      )
+    end
+
+    it 'serializes Array tool-result content as JSON' do
+      span = open_tool_span('toolu_abc')
+      deliver_result('toolu_abc', [{ type: 'text', text: 'hello world' }])
+
+      expect(span.attributes['output.value']).to eq('[{"type":"text","text":"hello world"}]')
+      expect(span.attributes['output.mime_type']).to eq('application/json')
+    end
+
+    it 'tags String tool-result content text/plain' do
+      span = open_tool_span('toolu_abc')
+      deliver_result('toolu_abc', 'plain text result')
+
+      expect(span.attributes['output.value']).to eq('plain text result')
+      expect(span.attributes['output.mime_type']).to eq('text/plain')
+    end
+
+    it 'omits output.value for nil tool-result content' do
+      span = open_tool_span('toolu_abc')
+      deliver_result('toolu_abc', nil)
+
+      expect(span.attributes).not_to have_key('output.value')
+      expect(span.finished).to be(true)
+    end
+  end
 end

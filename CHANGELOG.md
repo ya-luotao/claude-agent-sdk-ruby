@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `Observer#on_error` is now actually invoked — once per error surfacing from `query()` or `Client#query`/`#receive_messages`/`#receive_response`/`#connect`, before `on_close` where both fire. Crashed sessions now produce OTel traces with error status and a recorded exception.
+- `OTelObserver` no longer mislabels traces when one instance is reused: the buffered prompt/output are reset at every trace boundary (previously every trace after the first showed the first query's prompt as its `input.value`, and a nil-result trace could leak the previous query's output).
+- `OTelObserver` no longer leaks unfinished (never-exported) spans: a new `InitMessage` without an intervening `ResultMessage` finishes the superseded root span, and tool spans still pending at a `ResultMessage` or superseded init are finished at that boundary instead of waiting for `on_close`.
+- OTel tool spans now serialize Array tool-result content as JSON with `output.mime_type: application/json` (previously Ruby `inspect` format); String results gain `output.mime_type: text/plain`; nil results omit `output.value` (previously empty string).
 - `break` inside the user block of `query()`, `Client#receive_messages` and `Client#receive_response` now stops iteration (returning the break value) instead of raising `LocalJumpError` — the FiberBoundary thread hop translates the break back to the calling fiber (new internal `FiberBoundary.invoke_iteration`).
 - CLI stdout/stderr are now always decoded as UTF-8: under `LANG=C`/`LC_ALL=C` (minimal Docker images, systemd, CI) the pipes inherited US-ASCII and the first non-ASCII byte from the CLI killed the read loop with `Encoding::CompatibilityError`. Mirrors the Python SDK's UTF-8 `TextReceiveStream`.
 - The unsupported-CLI-version warning now actually fires: `Array#<` does not exist, so the version comparison raised `NoMethodError` into the version check's blanket rescue and the warning had never been emitted; the `-v` output is also UTF-8-scrubbed so a stray invalid byte cannot suppress it.
