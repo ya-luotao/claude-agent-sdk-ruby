@@ -51,6 +51,7 @@ module ClaudeAgentSDK
       # Message stream
       @message_queue = Async::Queue.new
       @first_result_received = false
+      @last_error_result_text = nil
       @first_result_condition = Async::Condition.new
       @task = nil
       @child_tasks = []
@@ -251,23 +252,22 @@ module ClaudeAgentSDK
               @first_result_received = true
               @first_result_condition.signal
             end
+            if message[:is_error]
+              errors = (message[:errors] || []).join('; ')
+              @last_error_result_text = errors.empty? ? (message[:subtype] || 'unknown error').to_s : errors
+            else
+              @last_error_result_text = nil
+            end
+          elsif !(msg_type == 'system' && message[:subtype] == 'session_state_changed')
+            # Anything other than the post-turn session_state_changed marker
+            # means the conversation moved on; a ProcessError now is a fresh
+            # crash, not the expected exit from a prior error result. Mirrors
+            # the Python/TypeScript SDK reset logic.
+            @last_error_result_text = nil
           end
           # Regular SDK messages go to the queue
           @message_queue.enqueue(message)
         end
-      end
-    rescue ProcessError => e
-      # The CLI can exit non-zero after delivering a valid result (e.g.,
-      # StructuredOutput tool_use triggers exit code 1). When we already
-      # received a result message, treat the process error as non-fatal.
-      if @first_result_received
-        warn "Claude SDK: Process exited with code #{e.exit_code} after result — ignoring"
-      else
-        @pending_control_responses.dup.each do |request_id, condition|
-          @pending_control_results[request_id] ||= e
-          condition.signal
-        end
-        @message_queue.enqueue({ type: 'error', error: e })
       end
     rescue StandardError => e
       # Unblock pending control requests (e.g., initialize) so callers don't hang until timeout.
@@ -276,8 +276,22 @@ module ClaudeAgentSDK
         condition.signal
       end
 
+      # When the CLI emits a result with is_error=true (e.g. error_max_turns,
+      # error_during_execution, a StructuredOutput error) it then exits
+      # non-zero on purpose, for shell-script consumers. The trailing
+      # ProcessError carries no information beyond "exit code 1" — replace it
+      # with the structured error the CLI already reported so the exception is
+      # actionable. Mirrors the Python SDK (_read_messages) and the TypeScript
+      # SDK (Query.ts readMessages).
+      error = if e.is_a?(ProcessError) && @last_error_result_text
+                ProcessError.new("Claude Code returned an error result: #{@last_error_result_text}",
+                                 exit_code: e.exit_code, stderr: e.stderr)
+              else
+                e
+              end
+
       # Put error in queue so iterators can handle it
-      @message_queue.enqueue({ type: 'error', error: e })
+      @message_queue.enqueue({ type: 'error', error: error })
     ensure
       # Catch entries from a turn that ended without a `result` (early EOF /
       # transport error) so they aren't dropped. The flush can suspend (lock
