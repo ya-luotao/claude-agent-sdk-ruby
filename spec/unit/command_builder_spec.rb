@@ -143,6 +143,13 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       expect(flag_value(cmd, '--setting-sources')).to eq('user,project')
     end
 
+    it 'raises a clear ArgumentError for invalid skills values' do
+      [:all, 'pdf', { name: 'pdf' }].each do |bad|
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(skills: bad)
+        expect { build(options) }.to raise_error(ArgumentError, /skills must be 'all' or an Array/)
+      end
+    end
+
     it 'skills: nil leaves both flags untouched' do
       cmd = build(ClaudeAgentSDK::ClaudeAgentOptions.new(allowed_tools: %w[Read]))
 

@@ -134,6 +134,11 @@ module ClaudeAgentSDK
     # realpath can't resolve it (e.g. the directory does not exist yet) — Ruby's
     # File.realpath raises on missing paths whereas Python's os.path.realpath is
     # lexical for the missing suffix, so expand_path restores that behavior.
+    # Known divergence: for a MISSING path Python still resolves symlinks in
+    # the existing prefix (so a deleted /tmp/proj on macOS canonicalizes to
+    # /private/tmp/proj and its project dir is found); the expand_path
+    # fallback resolves none, so deleted-directory lookups under symlinked
+    # prefixes can miss.
     def canonicalize_path(dir)
       File.realpath(dir).unicode_normalize(:nfc)
     rescue SystemCallError
@@ -441,7 +446,14 @@ module ClaudeAgentSDK
       file_path = find_session_file(session_id, directory)
       return [] unless file_path && File.exist?(file_path)
 
-      entries = parse_jsonl_entries(file_path)
+      begin
+        entries = parse_jsonl_entries(file_path)
+      rescue SystemCallError
+        # TOCTOU between resolution and read (file deleted by another
+        # process) — return [] like Python's except OSError, and like the
+        # sibling get_subagent_messages.
+        return []
+      end
       chain = build_conversation_chain(entries)
       messages = filter_visible_messages(chain)
 

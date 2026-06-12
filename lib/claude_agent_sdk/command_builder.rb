@@ -101,14 +101,14 @@ module ClaudeAgentSDK
       skills = @options.skills
       return [allowed_tools, setting_sources] if skills.nil?
 
-      if skills == "all"
-        allowed_tools << "Skill" unless allowed_tools.include?("Skill")
-      else
-        skills.each do |name|
-          pattern = "Skill(#{name})"
-          allowed_tools << pattern unless allowed_tools.include?(pattern)
-        end
-      end
+      # Fail loudly with a clear message instead of a bare NoMethodError from
+      # deep inside build for skills: :all / 'pdf' / Hash typos (and instead
+      # of Python's quirk of iterating a String's characters).
+      valid = skills == "all" || skills.is_a?(Array)
+      raise ArgumentError, "skills must be 'all' or an Array of skill names (got #{skills.inspect})" unless valid
+
+      entries = skills == "all" ? ["Skill"] : skills.map { |name| "Skill(#{name})" }
+      entries.each { |entry| allowed_tools << entry unless allowed_tools.include?(entry) }
       setting_sources = %w[user project] if setting_sources.nil?
       [allowed_tools, setting_sources]
     end

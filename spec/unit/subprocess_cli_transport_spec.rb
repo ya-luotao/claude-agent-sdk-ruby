@@ -513,6 +513,13 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(env).not_to have_key('BAGGAGE')
     end
 
+    it 'forwards all carrier keys (e.g. BAGGAGE) when a span is active' do
+      stub_otel_propagation('traceparent' => '00-aaaa-bbbb-01', 'baggage' => 'tenant=acme')
+      env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+
+      expect(env['BAGGAGE']).to eq('tenant=acme')
+    end
+
     it 'is a no-op without OpenTelemetry loaded' do
       hide_const('OpenTelemetry')
       env = connect_and_capture_env(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
@@ -988,6 +995,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
 
     it 'still warns about unsupported versions when -v output carries non-ASCII bytes' do
+      # Shield from an ambient CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK, which
+      # would silently skip the probe and fail the stderr expectation.
+      previous_skip = ENV.fetch('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK', nil)
+      ENV.delete('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK')
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
       transport = described_class.new('hi', options)
       stdin_r, stdin_w = IO.pipe
@@ -1001,6 +1012,8 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(Open3).to receive(:popen3).and_return([stdin_w, out_r, err_r, waiter])
 
       expect { transport.check_claude_version }.to output(/unsupported/).to_stderr
+    ensure
+      ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = previous_skip if previous_skip
     end
   end
 end

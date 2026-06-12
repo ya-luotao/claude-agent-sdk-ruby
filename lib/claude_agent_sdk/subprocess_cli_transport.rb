@@ -551,6 +551,10 @@ module ClaudeAgentSDK
 
       begin
         output = capture_cli_version_output
+        # Residual divergence from Python (anchored re.match over the first
+        # stdout chunk): this searches anywhere in stdout+stderr, so leading
+        # noise (a shim's own version line) could be mistaken for the CLI
+        # version. Pre-existing shape; the check is best-effort only.
         if match = output.match(/([0-9]+\.[0-9]+\.[0-9]+)/)
           version = match[1]
           version_parts = version.split('.').map(&:to_i)

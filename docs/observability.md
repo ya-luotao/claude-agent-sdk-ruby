@@ -4,7 +4,7 @@ The SDK includes a built-in **observer interface** and an **OpenTelemetry observ
 
 ## Distributed Trace Context (W3C)
 
-When `connect` spawns the CLI and there is an active OTel span, the SDK injects `TRACEPARENT`/`TRACESTATE` into the subprocess environment so CLI-side telemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`) joins the caller's distributed trace. This requires the `opentelemetry` gem to be loaded with a configured propagator — there is no hard dependency, and it is a no-op otherwise. Explicit `ClaudeAgentOptions#env` keys always win; stale inherited `TRACEPARENT`/`TRACESTATE` is replaced (or unset) only when an active span supersedes it. This works independently of `OTelObserver`: the CLI parents under the caller's surrounding span, not under `claude_agent.session` (which starts at InitMessage, after spawn).
+When `connect` spawns the CLI and there is an active OTel span, the SDK injects `TRACEPARENT`/`TRACESTATE` (and any other propagator carrier keys, e.g. `BAGGAGE` — which may carry user-defined key/values — uppercased) into the subprocess environment so CLI-side telemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`) joins the caller's distributed trace. This requires the `opentelemetry` gem to be loaded with a configured propagator — there is no hard dependency, and it is a no-op otherwise. Explicit `ClaudeAgentOptions#env` keys always win; stale inherited `TRACEPARENT`/`TRACESTATE` is replaced (or unset) only when an active span supersedes it. This works independently of `OTelObserver`: the CLI parents under the caller's surrounding span, not under `claude_agent.session` (which starts at InitMessage, after spawn).
 
 ## How It Works
 
