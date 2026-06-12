@@ -53,6 +53,7 @@ module ClaudeAgentSDK
       @first_result_received = false
       @first_result_condition = Async::Condition.new
       @task = nil
+      @child_tasks = []
       @initialized = false
       @closed = false
       @initialization_result = nil
@@ -149,6 +150,19 @@ module ClaudeAgentSDK
       raise CLIConnectionError, 'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})' unless parent
 
       @task = parent.async { read_messages }
+    end
+
+    # Spawn a child task that is stopped by #close (mirrors the Python SDK's
+    # Query#spawn_task / _child_tasks). Used for background input streaming so
+    # a dying read loop or #close can never strand the stream task and hang
+    # the enclosing Async reactor.
+    def spawn_task(&block)
+      parent = Async::Task.current?
+      raise CLIConnectionError, 'Query#spawn_task must be called inside an Async{} block' unless parent
+
+      task = parent.async(&block)
+      @child_tasks << task
+      task
     end
 
     # Install the transcript-mirror batcher fed by `transcript_mirror` frames
@@ -1000,7 +1014,12 @@ module ClaudeAgentSDK
       # Log error but don't raise
       warn "Error streaming input: #{e.message}"
     ensure
-      wait_for_result_and_end_input
+      # Skip end-of-input handling when we are being torn down by #close
+      # (Async::Stop unwinding): the transport is about to be closed anyway,
+      # and waiting on @first_result_condition inside a stopping fiber could
+      # suspend teardown. Mirrors Python, where cancellation skips
+      # wait_for_result_and_end_input entirely.
+      wait_for_result_and_end_input unless @closed
     end
 
     def writeln(string)
@@ -1030,6 +1049,11 @@ module ClaudeAgentSDK
       # Final mirror flush BEFORE stopping the read task, so the last turn's
       # entries reach the store. #close on the batcher never raises.
       @transcript_mirror_batcher&.close
+      # Stop tracked child tasks (e.g. stream_input) before the read task and
+      # transport so a parked input stream can never keep the reactor alive
+      # (mirrors Python close() cancelling _child_tasks).
+      @child_tasks.each(&:stop)
+      @child_tasks.clear
       @task&.stop
       @transport.close
     end

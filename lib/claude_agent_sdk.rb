@@ -357,9 +357,11 @@ module ClaudeAgentSDK
           transport.write(JSON.generate(message) + "\n")
           query_handler.wait_for_result_and_end_input
         elsif prompt.is_a?(Enumerator) || prompt.respond_to?(:each)
-          Async do
-            query_handler.stream_input(prompt)
-          end
+          # Tracked on the Query so close() stops it; an untracked Async task
+          # here kept the root reactor alive forever when the read loop died
+          # while the user enumerator was still blocked (matches Python's
+          # query.spawn_task(query.stream_input(prompt))).
+          query_handler.spawn_task { query_handler.stream_input(prompt) }
         end
 
         # Read and yield messages from the query handler (filters out control messages).

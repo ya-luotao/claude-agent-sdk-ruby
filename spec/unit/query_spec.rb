@@ -4,6 +4,37 @@ require 'spec_helper'
 require 'async'
 
 RSpec.describe ClaudeAgentSDK::Query do
+  describe '#spawn_task' do
+    it 'stops spawned child tasks on close so a blocked input stream cannot hang the reactor' do
+      transport = mock_transport
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      started = false
+      spawned = nil
+      Async do
+        blocked = Enumerator.new do |y|
+          y << { type: 'user', message: { role: 'user', content: 'hi' }, session_id: '' }
+          started = true
+          sleep # parked forever, like a Queue#pop awaiting more input
+        end
+        spawned = query.spawn_task { query.stream_input(blocked) }
+        sleep 0.01 # let stream_input run up to the park point
+        query.close
+
+        expect(started).to be true
+        expect(spawned).to be_stopped
+      ensure
+        spawned&.stop # guard: never hang the suite if close regresses
+      end.wait
+    end
+
+    it 'raises CLIConnectionError when called outside an Async reactor' do
+      query = described_class.new(transport: mock_transport, is_streaming_mode: true)
+
+      expect { query.spawn_task { nil } }.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Async/)
+    end
+  end
+
   describe '#reconnect_mcp_server' do
     it 'sends mcp_reconnect control request with camelCase serverName' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)

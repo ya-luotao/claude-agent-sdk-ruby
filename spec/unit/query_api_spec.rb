@@ -147,6 +147,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       close: nil
     )
     allow(query_handler).to receive(:receive_messages)
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
 
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |opts|
       captured_options = opts
@@ -164,6 +165,60 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     expect(captured_options.permission_prompt_tool_name).to eq('stdio')
     expect(captured_query_args[:can_use_tool]).to eq(callback)
     expect(query_handler).to have_received(:stream_input).with(prompt)
+  end
+
+  it 'propagates a read-loop failure instead of hanging when streaming input is still blocked' do
+    # Transport that completes the initialize handshake, then crashes the read
+    # loop while the user's input enumerator is still parked. Before the fix,
+    # the untracked stream_input task kept the root reactor alive forever and
+    # query() never returned (the error decayed to an async console warning).
+    fake_transport = Class.new do
+      def initialize
+        @incoming = Async::Queue.new
+      end
+
+      def connect; end
+      def end_input; end
+      def close; end
+
+      def write(data)
+        msg = JSON.parse(data, symbolize_names: true)
+        return unless msg[:type] == 'control_request' && msg.dig(:request, :subtype) == 'initialize'
+
+        @incoming.enqueue(
+          type: 'control_response',
+          response: { subtype: 'success', request_id: msg[:request_id], response: {} }
+        )
+        @incoming.enqueue(:crash)
+      end
+
+      def read_messages
+        loop do
+          msg = @incoming.dequeue
+          raise ClaudeAgentSDK::CLIConnectionError, 'CLI crashed mid-stream' if msg == :crash
+
+          yield msg
+        end
+      end
+    end.new
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(fake_transport)
+
+    blocked_prompt = Enumerator.new do |y|
+      y << { type: 'user', message: { role: 'user', content: 'hi' }, session_id: '' }
+      sleep # blocked indefinitely, like a Queue#pop awaiting more input
+    end
+
+    error = nil
+    thread = Thread.new do
+      described_class.query(prompt: blocked_prompt) { |_message| nil }
+    rescue StandardError => e
+      error = e
+    end
+
+    expect(thread.join(5)).not_to be_nil, 'query() hung: stream_input child task was not stopped on close'
+    expect(error).to be_a(ClaudeAgentSDK::CLIConnectionError)
+  ensure
+    thread&.kill
   end
 
   it 'rejects string prompts when can_use_tool is configured' do
