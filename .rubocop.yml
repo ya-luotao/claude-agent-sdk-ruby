@@ -28,6 +28,7 @@ Metrics/ClassLength:
     - 'lib/claude_agent_sdk/query.rb'
     - 'lib/claude_agent_sdk/message_parser.rb'
     - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
+    - 'lib/claude_agent_sdk/command_builder.rb'
 
 Metrics/ModuleLength:
   Exclude:

@@ -1605,8 +1605,11 @@ module ClaudeAgentSDK
       defaults = ClaudeAgentSDK.default_options
       return attributes unless defaults.any?
 
-      # Start from configured defaults (deep dup hashes to prevent mutation)
-      result = defaults.transform_values { |v| v.is_a?(Hash) ? v.dup : v }
+      # Start from configured defaults. Container values are recursively
+      # duped so per-instance mutation (options.allowed_tools << 'Bash')
+      # can never corrupt the global defaults; non-container leaves
+      # (Strings, Procs, SdkMcpServer instances) intentionally keep identity.
+      result = deep_dup_containers(defaults)
       attributes.each do |key, value|
         default_val = result[key]
         result[key] = if value.nil?
@@ -1618,6 +1621,16 @@ module ClaudeAgentSDK
                       end
       end
       result
+    end
+
+    # Recurse ONLY into Hash/Array; leaves keep object identity (observer
+    # factories, callbacks, SDK MCP server instances must not be duped).
+    def deep_dup_containers(value)
+      case value
+      when Hash then value.to_h { |k, v| [k, deep_dup_containers(v)] }
+      when Array then value.map { |v| deep_dup_containers(v) }
+      else value
+      end
     end
   end
 

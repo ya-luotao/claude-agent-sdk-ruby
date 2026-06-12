@@ -158,6 +158,36 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
     end
   end
 
+  describe 'Hash-form thinking config' do
+    def build(options)
+      described_class.new('/usr/bin/claude', options).build
+    end
+
+    it 'serializes adaptive Hash thinking (previously dropped silently)' do
+      cmd = build(ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: { type: 'adaptive', display: 'summarized' }))
+      expect(cmd).to include('--thinking', 'adaptive')
+      expect(cmd).to include('--thinking-display', 'summarized')
+    end
+
+    it 'serializes enabled Hash thinking with budget (string keys, symbol type)' do
+      cmd = build(ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: { 'type' => :enabled, 'budget_tokens' => 5000 }))
+      expect(cmd).to include('--max-thinking-tokens', '5000')
+    end
+
+    it 'serializes disabled Hash thinking without a display flag' do
+      cmd = build(ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: { type: 'disabled', display: 'summarized' }))
+      expect(cmd).to include('--thinking', 'disabled')
+      expect(cmd).not_to include('--thinking-display')
+    end
+
+    it 'raises a clear ArgumentError for enabled without budget_tokens and for garbage' do
+      expect { build(ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: { type: 'enabled' })) }
+        .to raise_error(ArgumentError, /requires budget_tokens/)
+      expect { build(ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: 'adaptive')) }
+        .to raise_error(ArgumentError, /unsupported thinking config/)
+    end
+  end
+
   describe 'allow/disallow lists' do
     it 'joins allowed_tools with commas' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(allowed_tools: %w[Read Write])

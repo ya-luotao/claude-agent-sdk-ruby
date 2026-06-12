@@ -200,21 +200,45 @@ module ClaudeAgentSDK
       cmd.push("--task-budget", total.to_s) if total
     end
 
-    # Thinking configuration takes precedence over deprecated max_thinking_tokens
+    # Thinking configuration takes precedence over deprecated
+    # max_thinking_tokens. Accepts the ThinkingConfig* classes and the
+    # wire-shaped Hash form ({ type: 'adaptive'|'enabled'|'disabled',
+    # budget_tokens:, display: }, symbol or string keys) — the Hash form
+    # was previously dropped silently AND suppressed the
+    # max_thinking_tokens fallback.
     def append_thinking(cmd)
       if @options.thinking
-        case @options.thinking
-        when ThinkingConfigAdaptive
+        type, budget, display = thinking_fields(@options.thinking)
+        case type
+        when "adaptive"
           cmd.push("--thinking", "adaptive")
-          append_thinking_display(cmd, @options.thinking.display)
-        when ThinkingConfigEnabled
-          cmd.push("--max-thinking-tokens", @options.thinking.budget_tokens.to_s)
-          append_thinking_display(cmd, @options.thinking.display)
-        when ThinkingConfigDisabled
+          append_thinking_display(cmd, display)
+        when "enabled"
+          raise ArgumentError, "thinking type 'enabled' requires budget_tokens" if budget.nil?
+
+          cmd.push("--max-thinking-tokens", budget.to_s)
+          append_thinking_display(cmd, display)
+        when "disabled"
           cmd.push("--thinking", "disabled")
+        else
+          raise ArgumentError, "unsupported thinking config: #{@options.thinking.inspect}"
         end
       elsif @options.max_thinking_tokens
         cmd.push("--max-thinking-tokens", @options.max_thinking_tokens.to_s)
+      end
+    end
+
+    # Explicit class dispatch — never respond_to? probes (Kernel#display
+    # exists on every object and PRINTS the receiver to $stdout).
+    def thinking_fields(thinking)
+      case thinking
+      when Hash
+        type = (thinking[:type] || thinking["type"])&.to_s
+        [type, thinking[:budget_tokens] || thinking["budget_tokens"], thinking[:display] || thinking["display"]]
+      when ThinkingConfigAdaptive then [thinking.type, nil, thinking.display]
+      when ThinkingConfigEnabled then [thinking.type, thinking.budget_tokens, thinking.display]
+      when ThinkingConfigDisabled then [thinking.type, nil, nil]
+      else [nil, nil, nil] # falls into append_thinking's else -> ArgumentError
       end
     end
 
