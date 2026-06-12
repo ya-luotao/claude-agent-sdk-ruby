@@ -970,8 +970,17 @@ RSpec.describe ClaudeAgentSDK::Query do
 
       query = described_class.new(transport: transport, is_streaming_mode: true)
 
+      # Deterministic fixture: the old Async::Task.current.sleep(1) callback
+      # crashed instantly on the FiberBoundary worker thread (no reactor
+      # there) and the assertion passed via a race against child.stop.
+      # Thread::Queue (NOT Async::Queue — its dequeue hangs silently off the
+      # reactor) gates both directions: `entered` proves the worker is
+      # parked at the only suspension point (thread.value) before we stop.
+      entered = Thread::Queue.new
+      release = Thread::Queue.new
       callback = lambda do |_input, _tool_use_id, _context|
-        Async::Task.current.sleep(1)
+        entered << true
+        release.pop
         {}
       end
       query.instance_variable_set(:@hook_callbacks, { 'hook_0' => callback })
@@ -991,12 +1000,14 @@ RSpec.describe ClaudeAgentSDK::Query do
           query.send(:handle_control_request, message)
         end
 
-        task.sleep(0)
+        entered.pop(timeout: 5) or raise 'hook callback never entered'
         child.stop
         child.wait
+      ensure
+        release << true # never leak a parked FiberBoundary worker
       end.wait
 
-      expect(writes).not_to be_empty
+      expect(writes.length).to eq(1)
       payload = JSON.parse(writes.last, symbolize_names: true)
       expect(payload[:type]).to eq('control_response')
       expect(payload.dig(:response, :subtype)).to eq('error')

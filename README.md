@@ -50,7 +50,7 @@ Async do
   client = ClaudeAgentSDK::Client.new(options: options)
   client.connect
   client.query("Hello")
-  client.receive_messages { |msg| puts msg }
+  client.receive_response { |msg| puts msg }
   client.disconnect
 end.wait
 ```

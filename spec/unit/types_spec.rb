@@ -2217,16 +2217,43 @@ RSpec.describe ClaudeAgentSDK do
         expect(msg.content.first.name).to eq('web_search')
       end
 
-      it 'parses server_tool_result block' do
+      it 'parses advisor_tool_result block into ServerToolResultBlock' do
         data = {
           type: 'assistant',
           message: {
-            content: [{ type: 'server_tool_result', tool_use_id: 'srv_1', content: 'ok', is_error: false }]
+            content: [{ type: 'advisor_tool_result', tool_use_id: 'srv_1',
+                        content: { type: 'advisor_result', advice: 'x' } }]
           }
         }
         msg = ClaudeAgentSDK::MessageParser.parse(data)
         expect(msg.content.first).to be_a(ClaudeAgentSDK::ServerToolResultBlock)
         expect(msg.content.first.tool_use_id).to eq('srv_1')
+        expect(msg.content.first.content).to eq({ type: 'advisor_result', advice: 'x' })
+      end
+
+      it 'parses string-keyed advisor_tool_result (transcript read path)' do
+        block = ClaudeAgentSDK::MessageParser.parse_content_block(
+          { 'type' => 'advisor_tool_result', 'tool_use_id' => 'srv_1', 'content' => { 'type' => 'advisor_result' } }
+        )
+        expect(block).to be_a(ClaudeAgentSDK::ServerToolResultBlock)
+        expect(block.tool_use_id).to eq('srv_1')
+      end
+
+      it 'demotes the dead server_tool_result wire type to UnknownBlock' do
+        block = ClaudeAgentSDK::MessageParser.parse_content_block(
+          { type: 'server_tool_result', tool_use_id: 'srv_1', content: 'ok' }
+        )
+        expect(block).to be_a(ClaudeAgentSDK::UnknownBlock)
+        expect(block.type).to eq('server_tool_result')
+      end
+
+      it 'parses advisor_tool_result without is_error/content nil-safely' do
+        block = ClaudeAgentSDK::MessageParser.parse_content_block(
+          { type: 'advisor_tool_result', tool_use_id: 'srv_2' }
+        )
+        expect(block).to be_a(ClaudeAgentSDK::ServerToolResultBlock)
+        expect(block.is_error).to be_nil
+        expect(block.content).to be_nil
       end
     end
 
