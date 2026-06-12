@@ -492,7 +492,8 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO), instance_double(IO), instance_double(Process::Waiter)]
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
       end
       allow(stdin).to receive(:close)
 
@@ -516,7 +517,8 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO), instance_double(IO), instance_double(Process::Waiter)]
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
       end
       allow(stdin).to receive(:close)
 
@@ -537,7 +539,8 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO), instance_double(IO), instance_double(Process::Waiter)]
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
       end
       allow(stdin).to receive(:close)
 
@@ -558,7 +561,8 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO), instance_double(IO), instance_double(Process::Waiter)]
+        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
+         instance_double(Process::Waiter)]
       end
       allow(stdin).to receive(:close)
 
@@ -749,6 +753,86 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect { subclass.register_active_process(waiter) }.not_to raise_error
       expect(subclass.active_processes).to equal(described_class.active_processes)
       expect(described_class.active_processes).to include(waiter)
+    end
+  end
+  describe '#connect — pipe encoding (locale independence)' do
+    # popen3 pipes inherit Encoding.default_external (US-ASCII under
+    # LANG=C/LC_ALL=C). Instead of mutating the locale, pre-tag real pipe
+    # read ends US-ASCII — exactly what popen3 produces under LANG=C —
+    # which is deterministic on UTF-8 CI runners.
+    def c_locale_pipes
+      stdout_r, stdout_w = IO.pipe
+      stderr_r, stderr_w = IO.pipe
+      stdout_r.set_encoding(Encoding::US_ASCII)
+      stderr_r.set_encoding(Encoding::US_ASCII)
+      [stdout_r, stdout_w, stderr_r, stderr_w]
+    end
+
+    def connect_with_pipes(stdout_r, stderr_r, waiter)
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
+      transport = described_class.new('hi', options)
+      allow(Open3).to receive(:capture3).and_return(["2.1.22 (Claude Code)\n", '', nil])
+      allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout_r, stderr_r, waiter])
+      transport.connect
+      transport
+    end
+
+    it 'tags stdout and stderr pipes UTF-8 regardless of the inherited locale encoding' do
+      stdout_r, stdout_w, stderr_r, stderr_w = c_locale_pipes
+      connect_with_pipes(stdout_r, stderr_r, instance_double(Process::Waiter, alive?: false))
+
+      expect(stdout_r.external_encoding).to eq(Encoding::UTF_8)
+      expect(stderr_r.external_encoding).to eq(Encoding::UTF_8)
+    ensure
+      [stdout_w, stderr_w, stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'reads multibyte CLI output through a C-locale-tagged pipe' do
+      stdout_r, stdout_w, stderr_r, stderr_w = c_locale_pipes
+      status = instance_double(Process::Status, exitstatus: 0)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      transport = connect_with_pipes(stdout_r, stderr_r, waiter)
+
+      stdout_w.write(%({"type":"assistant","message":{"content":[{"type":"text","text":"héllo 好"}]},"session_id":"s1"}\n))
+      stdout_w.close
+      stderr_w.close
+
+      messages = []
+      transport.read_messages { |m| messages << m }
+
+      text = messages.first.dig(:message, :content, 0, :text)
+      expect(text).to eq('héllo 好')
+      expect(text.encoding).to eq(Encoding::UTF_8)
+    ensure
+      [stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'surfaces multibyte stderr in ProcessError' do
+      stdout_r, stdout_w, stderr_r, stderr_w = c_locale_pipes
+      status = instance_double(Process::Status, exitstatus: 1)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      transport = connect_with_pipes(stdout_r, stderr_r, waiter)
+
+      stderr_w.write("Fehler: héllo 好\n")
+      stdout_w.close
+      stderr_w.close
+
+      expect { transport.read_messages { |m| m } }.to raise_error(ClaudeAgentSDK::ProcessError) do |e|
+        expect(e.stderr).to include('héllo 好')
+        expect(e.stderr.valid_encoding?).to be(true)
+        expect(e.stderr.encoding).to eq(Encoding::UTF_8)
+      end
+    ensure
+      [stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'still warns about unsupported versions when -v output carries non-ASCII bytes' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
+      transport = described_class.new('hi', options)
+      allow(Open3).to receive(:capture3)
+        .and_return(["1.0.0 — héllo\n".b.force_encoding('US-ASCII'), '', nil])
+
+      expect { transport.check_claude_version }.to output(/unsupported/).to_stderr
     end
   end
 end

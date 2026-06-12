@@ -174,6 +174,14 @@ module ClaudeAgentSDK
         opts = { chdir: @cwd&.to_s }.compact
 
         @stdin, @stdout, @stderr, @process = Open3.popen3(process_env, *cmd, opts)
+        # The CLI emits UTF-8 regardless of the parent locale. popen3 pipes
+        # default to Encoding.default_external (US-ASCII under LANG=C/LC_ALL=C
+        # — minimal Docker images, systemd, CI), which makes String#strip on
+        # multibyte CLI output raise Encoding::CompatibilityError and kill the
+        # read loop (its rescue only catches IOError). Mirrors the Python
+        # SDK's TextReceiveStream(stdout), which always decodes UTF-8.
+        @stdout&.set_encoding(Encoding::UTF_8)
+        @stderr&.set_encoding(Encoding::UTF_8)
         self.class.register_active_process(@process)
 
         # Always drain stderr to prevent pipe buffer deadlock.
@@ -501,13 +509,18 @@ module ClaudeAgentSDK
     def check_claude_version
       begin
         stdout, stderr, = Open3.capture3(@cli_path.to_s, '-v')
-        output = (stdout.to_s + stderr.to_s).strip
+        # Explicit UTF-8 decode like Python's stdout_bytes.decode(); scrub is
+        # a deliberate softening of Python's strict decode so a stray invalid
+        # byte can't suppress the version warning via the blanket rescue.
+        output = (stdout.to_s + stderr.to_s).force_encoding(Encoding::UTF_8).scrub.strip
         if match = output.match(/([0-9]+\.[0-9]+\.[0-9]+)/)
           version = match[1]
           version_parts = version.split('.').map(&:to_i)
           min_parts = MINIMUM_CLAUDE_CODE_VERSION.split('.').map(&:to_i)
 
-          if version_parts < min_parts
+          # Array has no #< — the old `version_parts < min_parts` raised
+          # NoMethodError into the blanket rescue, so the warning never fired.
+          if (version_parts <=> min_parts).negative?
             warning = "Warning: Claude Code version #{version} is unsupported in the Agent SDK. " \
                       "Minimum required version is #{MINIMUM_CLAUDE_CODE_VERSION}. " \
                       "Some features may not work correctly."
