@@ -5,24 +5,28 @@ RSpec.describe ClaudeAgentSDK::Observer do
     Class.new do
       include ClaudeAgentSDK::Observer
 
-      attr_reader :messages, :errors, :closed
+      attr_reader :messages, :errors, :closed, :events
 
       def initialize
         @messages = []
         @errors = []
         @closed = false
+        @events = []
       end
 
       def on_message(message)
         @messages << message
+        @events << :message
       end
 
       def on_error(error)
         @errors << error
+        @events << :error
       end
 
       def on_close
         @closed = true
+        @events << :close
       end
     end
   end
@@ -170,6 +174,63 @@ RSpec.describe ClaudeAgentSDK::Observer do
       end.wait
 
       expect(call_count).to eq(1)
+    end
+
+    it 'calls on_error before on_close and re-raises when the message stream dies' do
+      msg = sample_assistant_message
+      allow(query_handler).to receive(:receive_messages) do |&block|
+        block.call(msg)
+        raise ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1)
+      end
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer])
+
+      expect do
+        Async { ClaudeAgentSDK.query(prompt: 'test', options: options) { |_m| nil } }.wait
+      end.to raise_error(ClaudeAgentSDK::ProcessError)
+
+      expect(observer.errors.length).to eq(1)
+      expect(observer.errors.first).to be_a(ClaudeAgentSDK::ProcessError)
+      expect(observer.events).to eq(%i[message error close])
+    end
+
+    it 'calls on_error when the user block raises' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer])
+
+      expect do
+        Async do
+          ClaudeAgentSDK.query(prompt: 'test', options: options) { |_m| raise 'user boom' }
+        end.wait
+      end.to raise_error(RuntimeError, 'user boom')
+
+      expect(observer.errors.length).to eq(1)
+      expect(observer.errors.first.message).to eq('user boom')
+    end
+
+    it 'does not call on_error on clean completion' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer])
+
+      Async do
+        ClaudeAgentSDK.query(prompt: 'test', options: options) { |_msg| nil }
+      end.wait
+
+      expect(observer.errors).to be_empty
+    end
+
+    it 'a raising on_error observer does not mask the original error' do
+      bad_observer = Class.new do
+        include ClaudeAgentSDK::Observer
+
+        def on_error(_error)
+          raise 'observer on_error crash'
+        end
+      end.new
+      allow(query_handler).to receive(:receive_messages)
+        .and_raise(ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1))
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [bad_observer])
+
+      expect do
+        Async { ClaudeAgentSDK.query(prompt: 'test', options: options) { |_m| nil } }.wait
+      end.to raise_error(ClaudeAgentSDK::ProcessError, /Command failed/)
     end
 
     it 'does not propagate observer errors to user block' do

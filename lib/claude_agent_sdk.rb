@@ -379,6 +379,14 @@ module ClaudeAgentSDK
           signal = FiberBoundary.invoke_iteration(block, message)
           break signal.value if signal.is_a?(FiberBoundary::Break)
         end
+      rescue StandardError => e
+        # One notify point for every error surfacing from query() — transport
+        # connect, initialize, stream errors re-raised from the message queue,
+        # parse errors, and user-block errors. StandardError only: Async::Stop
+        # is cancellation, not an error. Bare raise preserves the backtrace;
+        # the ensure below still fires on_close after on_error.
+        ClaudeAgentSDK.notify_observers(resolved_observers, :on_error, e)
+        raise
       ensure
         ClaudeAgentSDK.notify_observers(resolved_observers, :on_close)
         # query_handler.close stops the background read task and closes the
@@ -491,7 +499,13 @@ module ClaudeAgentSDK
       # holding a credential copy.
       begin
         connect_inner(configured_options, prompt)
-      rescue Exception # rubocop:disable Lint/RescueException
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        # Pre-handshake failures (@connected still false) are notified here;
+        # post-handshake prompt-send failures were already notified by the
+        # instrumented #query / enumerator branch — the gate keeps on_error
+        # exactly-once. No on_close follows for pre-handshake failures
+        # (disconnect gates it on @connected): the session never opened.
+        notify_error(e) if e.is_a?(StandardError) && !@connected
         # Tear down the partial connect, but never let a cleanup failure (e.g. a
         # custom transport whose #close raises) mask the original connect error.
         # Rescue Exception (not StandardError) so reactor cancellation
@@ -500,8 +514,8 @@ module ClaudeAgentSDK
         # CLAUDE_CONFIG_DIR that holds the redacted .credentials.json copy.
         begin
           disconnect
-        rescue StandardError => e
-          warn "Claude SDK: cleanup after failed connect raised: #{e.message}"
+        rescue StandardError => cleanup_error
+          warn "Claude SDK: cleanup after failed connect raised: #{cleanup_error.message}"
         end
         raise
       end
@@ -514,13 +528,18 @@ module ClaudeAgentSDK
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
       ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, prompt)
-      message = {
-        type: 'user',
-        message: { role: 'user', content: prompt },
-        parent_tool_use_id: nil,
-        session_id: session_id
-      }
-      writeln(JSON.generate(message))
+      begin
+        message = {
+          type: 'user',
+          message: { role: 'user', content: prompt },
+          parent_tool_use_id: nil,
+          session_id: session_id
+        }
+        writeln(JSON.generate(message))
+      rescue StandardError => e
+        notify_error(e)
+        raise
+      end
     end
 
     # Receive all messages from Claude
@@ -530,13 +549,18 @@ module ClaudeAgentSDK
 
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.receive_messages do |data|
-        message = MessageParser.parse(data)
-        next unless message
+      begin
+        @query_handler.receive_messages do |data|
+          message = MessageParser.parse(data)
+          next unless message
 
-        ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
-        signal = FiberBoundary.invoke_iteration(block, message)
-        break signal.value if signal.is_a?(FiberBoundary::Break)
+          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
+          signal = FiberBoundary.invoke_iteration(block, message)
+          break signal.value if signal.is_a?(FiberBoundary::Break)
+        end
+      rescue StandardError => e
+        notify_error(e)
+        raise
       end
     end
 
@@ -551,14 +575,19 @@ module ClaudeAgentSDK
       # the SDK's ResultMessage break and the user's translated break happen
       # here, never inside the FiberBoundary hop (break in a proc on a
       # foreign thread raises LocalJumpError).
-      @query_handler.receive_messages do |data|
-        message = MessageParser.parse(data)
-        next unless message
+      begin
+        @query_handler.receive_messages do |data|
+          message = MessageParser.parse(data)
+          next unless message
 
-        ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
-        signal = FiberBoundary.invoke_iteration(block, message)
-        break signal.value if signal.is_a?(FiberBoundary::Break)
-        break if message.is_a?(ResultMessage)
+          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message)
+          signal = FiberBoundary.invoke_iteration(block, message)
+          break signal.value if signal.is_a?(FiberBoundary::Break)
+          break if message.is_a?(ResultMessage)
+        end
+      rescue StandardError => e
+        notify_error(e)
+        raise
       end
     end
 
@@ -694,6 +723,10 @@ module ClaudeAgentSDK
 
     # The connect body, wrapped by #connect so a failure triggers cleanup.
     def connect_inner(configured_options, prompt)
+      # Resolve observers before any failable step so connect-phase failures
+      # can be notified via on_error.
+      @resolved_observers = ClaudeAgentSDK.resolve_observers(@options.observers)
+
       # Client always uses streaming mode; keep stdin open for bidirectional communication.
       @transport = @transport_class.new(configured_options, **@transport_args)
       @transport.connect
@@ -731,9 +764,6 @@ module ClaudeAgentSDK
       @query_handler.start
       @query_handler.initialize_protocol
 
-      # Resolve callable observers into fresh instances (thread-safe for global defaults)
-      @resolved_observers = ClaudeAgentSDK.resolve_observers(@options.observers)
-
       @connected = true
 
       # Optionally send initial prompt/messages after connection is ready.
@@ -743,10 +773,21 @@ module ClaudeAgentSDK
       when String
         query(prompt)
       else
-        prompt.each do |message_json|
-          writeln(message_json.to_s)
+        begin
+          prompt.each do |message_json|
+            writeln(message_json.to_s)
+          end
+        rescue StandardError => e
+          notify_error(e)
+          raise
         end
       end
+    end
+
+    # Notify observers of an error surfacing to the consumer. `|| []` keeps a
+    # mis-scoped call before connect harmless instead of NoMethodError on nil.
+    def notify_error(error)
+      ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_error, error)
     end
 
     # Build and install the transcript-mirror batcher on the query handler when

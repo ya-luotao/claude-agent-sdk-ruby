@@ -400,4 +400,117 @@ RSpec.describe ClaudeAgentSDK::Client do
       expect(received_options.permission_mode).to eq('bypassPermissions')
     end
   end
+  describe 'observer on_error wiring' do
+    let(:recording_observer) do
+      Class.new do
+        include ClaudeAgentSDK::Observer
+
+        attr_reader :errors, :closed
+
+        def initialize
+          @errors = []
+          @closed = false
+        end
+
+        def on_error(error)
+          @errors << error
+        end
+
+        def on_close
+          @closed = true
+        end
+      end.new
+    end
+
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [recording_observer]) }
+
+    def stub_connectable(query_handler_overrides = {})
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil, close: nil)
+      query_handler = instance_double(
+        ClaudeAgentSDK::Query,
+        { start: true, initialize_protocol: true, close: nil }.merge(query_handler_overrides)
+      )
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+      [transport, query_handler]
+    end
+
+    it 'receive_messages notifies on_error, re-raises, and on_close only fires at disconnect' do
+      _, query_handler = stub_connectable
+      msg = sample_assistant_message
+      allow(query_handler).to receive(:receive_messages) do |&block|
+        block.call(msg)
+        raise ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1)
+      end
+
+      client = described_class.new(options: options)
+      client.connect
+
+      expect { client.receive_messages { |_m| nil } }.to raise_error(ClaudeAgentSDK::ProcessError)
+      expect(recording_observer.errors.length).to eq(1)
+      expect(recording_observer.closed).to be false
+
+      client.disconnect
+      expect(recording_observer.closed).to be true
+    end
+
+    it 'receive_response notifies on_error and re-raises' do
+      _, query_handler = stub_connectable
+      allow(query_handler).to receive(:receive_messages)
+        .and_raise(ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1))
+
+      client = described_class.new(options: options)
+      client.connect
+
+      expect { client.receive_response { |_m| nil } }.to raise_error(ClaudeAgentSDK::ProcessError)
+      expect(recording_observer.errors.length).to eq(1)
+    end
+
+    it 'does not notify on_error for the Not-connected usage guard' do
+      client = described_class.new(options: options)
+
+      expect { client.receive_messages { |_m| nil } }
+        .to raise_error(ClaudeAgentSDK::CLIConnectionError, /Not connected/)
+      expect(recording_observer.errors).to be_empty
+    end
+
+    it 'Client#query notifies on_error when the stdin write fails' do
+      transport, = stub_connectable
+      client = described_class.new(options: options)
+      client.connect
+      allow(transport).to receive(:write)
+        .and_raise(ClaudeAgentSDK::CLIConnectionError, 'not ready')
+
+      expect { client.query('hi') }.to raise_error(ClaudeAgentSDK::CLIConnectionError, 'not ready')
+      expect(recording_observer.errors.length).to eq(1)
+    end
+
+    it 'connect failure notifies on_error without on_close' do
+      stub_connectable(initialize_protocol: nil)
+      # Override: initialize_protocol raises -> pre-handshake failure
+      allow(ClaudeAgentSDK::Query).to receive(:new) do
+        instance_double(ClaudeAgentSDK::Query, start: true, close: nil).tap do |qh|
+          allow(qh).to receive(:initialize_protocol)
+            .and_raise(ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1))
+        end
+      end
+
+      client = described_class.new(options: options)
+
+      expect { client.connect }.to raise_error(ClaudeAgentSDK::ProcessError)
+      expect(recording_observer.errors.length).to eq(1)
+      expect(recording_observer.closed).to be false
+    end
+
+    it 'String-prompt send failure during connect notifies on_error exactly once' do
+      transport, = stub_connectable
+      allow(transport).to receive(:write)
+        .and_raise(ClaudeAgentSDK::CLIConnectionError, 'write failed')
+
+      client = described_class.new(options: options)
+
+      expect { client.connect('hello') }.to raise_error(ClaudeAgentSDK::CLIConnectionError, 'write failed')
+      expect(recording_observer.errors.length).to eq(1)
+    end
+  end
 end

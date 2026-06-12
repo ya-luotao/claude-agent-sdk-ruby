@@ -81,6 +81,11 @@ module ClaudeAgentSDK
         end
       end
 
+      # Recording-only by design: a Client session can survive an error (the
+      # user may rescue one bad message and keep receiving), so finishing here
+      # would orphan later spans and break the next turn. Finish ownership
+      # stays with end_trace/on_close; start_trace also finishes any dangling
+      # span from a previous trace as the never-disconnected backstop.
       def on_error(error)
         return unless @root_span
 
