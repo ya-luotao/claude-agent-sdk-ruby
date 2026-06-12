@@ -486,7 +486,7 @@ RSpec.describe ClaudeAgentSDK::Client do
     end
 
     it 'connect failure notifies on_error without on_close' do
-      stub_connectable(initialize_protocol: nil)
+      stub_connectable
       # Override: initialize_protocol raises -> pre-handshake failure
       allow(ClaudeAgentSDK::Query).to receive(:new) do
         instance_double(ClaudeAgentSDK::Query, start: true, close: nil).tap do |qh|
@@ -500,6 +500,23 @@ RSpec.describe ClaudeAgentSDK::Client do
       expect { client.connect }.to raise_error(ClaudeAgentSDK::ProcessError)
       expect(recording_observer.errors.length).to eq(1)
       expect(recording_observer.closed).to be false
+    end
+
+    it 'resume materialization failure during connect notifies on_error' do
+      stub_connectable
+      allow(ClaudeAgentSDK::SessionStores).to receive(:validate_session_store_options)
+      store_options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        observers: [recording_observer],
+        session_store: ClaudeAgentSDK::InMemorySessionStore.new,
+        resume: 'sess-1'
+      )
+      allow(ClaudeAgentSDK::SessionResume).to receive(:materialize_resume_session)
+        .and_raise(ClaudeAgentSDK::ClaudeSDKError, 'store backend down')
+
+      client = described_class.new(options: store_options)
+
+      expect { client.connect }.to raise_error(ClaudeAgentSDK::ClaudeSDKError, 'store backend down')
+      expect(recording_observer.errors.length).to eq(1)
     end
 
     it 'String-prompt send failure during connect notifies on_error exactly once' do

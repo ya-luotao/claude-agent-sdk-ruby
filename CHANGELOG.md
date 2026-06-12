@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - OTel spans now report prompt-cache usage: `gen_ai.usage.cache_creation_input_tokens` / `gen_ai.usage.cache_read_input_tokens` on generation and session spans, plus OpenInference `llm.token_count.prompt_details.cache_read`/`.cache_write` on the session span. Anthropic's `input_tokens` excludes cached tokens, so heavily cached sessions previously under-reported prompt volume by orders of magnitude. Strictly additive — existing keys unchanged.
-- `on_user_prompt` observers now fire for Enumerator/streaming-input prompts (once per `type: 'user'` message with extractable text), so OTel traces for streaming sessions get an `input.value`.
+- `on_user_prompt` observers now fire for Enumerator/streaming-input prompts (once per `type: 'user'` message with extractable text). OTel traces for streaming sessions now get an `input.value` for the first trace; later turns' capture depends on prompt timing relative to each init (`OTelObserver` keeps one prompt per trace).
 
 ### Fixed
 - `Observer#on_error` is now actually invoked — once per error surfacing from `query()` or `Client#query`/`#receive_messages`/`#receive_response`/`#connect`, before `on_close` where both fire. Crashed sessions now produce OTel traces with error status and a recorded exception.

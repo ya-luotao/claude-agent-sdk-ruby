@@ -635,6 +635,16 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       expect(session_spans.last.finished).to be(false)
     end
 
+    it 'resets the prompt buffer when an init supersedes an interrupted turn' do
+      observer.on_user_prompt('First prompt')
+      observer.on_message(init_message)
+      # turn interrupted: next init arrives with no ResultMessage and no on_close
+      observer.on_user_prompt('Second prompt') # dropped by the latch pre-fix
+      observer.on_message(init_message)
+
+      expect(session_spans.last.attributes['input.value']).not_to eq('First prompt')
+    end
+
     it 'finishes open tool spans from the superseded trace' do
       observer.on_message(init_message)
       observer.on_message(assistant_with(tool_id: 'toolu_1'))
@@ -712,9 +722,11 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       expect(span.attributes['gen_ai.usage.cache_read_input_tokens']).to eq(26_069)
       expect(span.attributes['llm.token_count.prompt_details.cache_read']).to eq(26_069)
       expect(span.attributes['llm.token_count.prompt_details.cache_write']).to eq(11_648)
-      # additive: existing keys untouched
+      # gen_ai.usage.* keep the raw exclusive values (Langfuse prices additively)
       expect(span.attributes['gen_ai.usage.input_tokens']).to eq(2)
-      expect(span.attributes['llm.token_count.total']).to eq(6)
+      # OpenInference prompt/total INCLUDE cache tokens (subset semantics)
+      expect(span.attributes['llm.token_count.prompt']).to eq(2 + 11_648 + 26_069)
+      expect(span.attributes['llm.token_count.total']).to eq(2 + 11_648 + 26_069 + 4)
     end
 
     it 'reads string-keyed usage from session transcripts' do

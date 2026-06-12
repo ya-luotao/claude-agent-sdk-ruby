@@ -100,6 +100,65 @@ RSpec.describe ClaudeAgentSDK::Observer do
     end
   end
 
+  describe '.observing_prompt_stream' do
+    let(:observer) { observer_class.new }
+
+    def prompts_seen(observer)
+      seen = []
+      allow(observer).to receive(:on_user_prompt) { |p| seen << p }
+      seen
+    end
+
+    it 'yields every original item unchanged, including ones with no extractable text' do
+      items = [
+        { type: 'user', message: { content: 'question' } },
+        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] } },
+        'not even json'
+      ]
+
+      wrapped = ClaudeAgentSDK.observing_prompt_stream(items.each, [observer])
+
+      expect(wrapped.to_a).to eq(items)
+    end
+
+    it 'is lazy: does not consume the source ahead of the consumer' do
+      consumed = 0
+      source = Enumerator.new do |y|
+        loop do
+          consumed += 1
+          y << { type: 'user', message: { content: "msg #{consumed}" } }
+        end
+      end
+
+      wrapped = ClaudeAgentSDK.observing_prompt_stream(source, [observer])
+      first = wrapped.first(1)
+
+      expect(first.length).to eq(1)
+      expect(consumed).to be <= 2 # one yielded + at most one buffered by Enumerator
+    end
+
+    it 'returns the original object when no observers are configured' do
+      source = [].each
+      expect(ClaudeAgentSDK.observing_prompt_stream(source, [])).to equal(source)
+    end
+  end
+
+  describe '.notify_observers error containment' do
+    it 'swallows NotImplementedError (ScriptError) from an observer' do
+      stubbed = Class.new do
+        include ClaudeAgentSDK::Observer
+
+        def on_error(_error)
+          raise NotImplementedError, 'observer stub'
+        end
+      end.new
+
+      expect do
+        ClaudeAgentSDK.notify_observers([stubbed], :on_error, StandardError.new('original'))
+      end.not_to raise_error
+    end
+  end
+
   describe '.resolve_observers' do
     it 'passes plain observer instances through' do
       obs = observer_class.new

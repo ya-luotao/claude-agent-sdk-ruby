@@ -4,7 +4,9 @@ The SDK includes a built-in **observer interface** and an **OpenTelemetry observ
 
 ## How It Works
 
-Register observers via `ClaudeAgentOptions`. The SDK calls `on_user_prompt` when a prompt is sent (`query()` with a String prompt, and `Client#query`), `on_message` for every parsed message, `on_error` once per error that surfaces to your code (before `on_close` where both fire), and `on_close` when the session ends. Observer errors are silently rescued so they never crash your application.
+Register observers via `ClaudeAgentOptions`. The SDK calls `on_user_prompt` when a prompt is sent — the verbatim string for String prompts (`query()` / `Client#query`), and once per `type: 'user'` message with extractable text for Enumerator/streaming input (`query()` stream path and `Client#connect` with an initial enumerable). It calls `on_message` for every parsed message, `on_error` once per error that surfaces to your code (before `on_close` where both fire), and `on_close` when the session ends. Observer errors are silently rescued so they never crash your application.
+
+For multi-turn streaming input note that `OTelObserver` captures one prompt per trace (the first one buffered before each init); prompts queued up-front for later turns may not appear as those traces' `input.value`.
 
 In `Client` mode, call `disconnect` (ideally in an `ensure` block) so `on_close` runs and OTel spans are flushed and exported.
 

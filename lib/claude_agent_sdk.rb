@@ -39,7 +39,10 @@ module ClaudeAgentSDK
   def self.notify_observers(observers, method, *args)
     observers.each do |obs|
       FiberBoundary.invoke { obs.send(method, *args) }
-    rescue StandardError
+    rescue StandardError, ScriptError
+      # ScriptError too: NotImplementedError < ScriptError (not
+      # StandardError), and a stubbed observer must never mask the original
+      # error being notified or abort connect/teardown cleanup.
       nil
     end
   end
@@ -52,6 +55,12 @@ module ClaudeAgentSDK
     data = case message
            when Hash then message
            when String
+             # Cheap prefilter: skip the full parse for items that cannot be
+             # user messages (e.g. multi-MB tool_result frames) — parsing
+             # would block the reactor fiber for the duration. False
+             # positives just cost one parse; correctness is unchanged.
+             return nil unless message.include?('user')
+
              begin
                JSON.parse(message)
              rescue JSON::ParserError
@@ -545,19 +554,26 @@ module ClaudeAgentSDK
       end
 
       # Fail fast on invalid session_store combinations before spawning the CLI.
+      # Configuration validation is a usage error, like the ArgumentErrors
+      # above — deliberately outside the on_error notify scope.
       SessionStores.validate_session_store_options(configured_options)
 
-      # Resume-from-store: materialize the session from the store into a temp
-      # CLAUDE_CONFIG_DIR BEFORE spawn, then repoint options at it. Skipped for
-      # custom transports (the materialized env/--resume only apply to the CLI
-      # subprocess). On any later connect failure, disconnect cleans up the dir.
-      configured_options = materialize_resume(configured_options)
+      # Resolve observers before the first failable runtime step so
+      # connect-phase failures (including resume materialization) can be
+      # notified via on_error.
+      @resolved_observers = ClaudeAgentSDK.resolve_observers(@options.observers)
 
-      # If anything after materialization fails, tear down (closes the
+      # If anything from materialization onward fails, tear down (closes the
       # subprocess and removes the materialized temp config dir) before
       # surfacing the error, so a partial connect never leaks a temp dir
       # holding a credential copy.
       begin
+        # Resume-from-store: materialize the session from the store into a
+        # temp CLAUDE_CONFIG_DIR BEFORE spawn, then repoint options at it.
+        # Inside the instrumented begin so store IO failures fire on_error
+        # (matching the one-shot query() path) and disconnect cleans up.
+        configured_options = materialize_resume(configured_options)
+
         connect_inner(configured_options, prompt)
       rescue Exception => e # rubocop:disable Lint/RescueException
         # Pre-handshake failures (@connected still false) are notified here;
@@ -783,11 +799,8 @@ module ClaudeAgentSDK
 
     # The connect body, wrapped by #connect so a failure triggers cleanup.
     def connect_inner(configured_options, prompt)
-      # Resolve observers before any failable step so connect-phase failures
-      # can be notified via on_error.
-      @resolved_observers = ClaudeAgentSDK.resolve_observers(@options.observers)
-
-      # Client always uses streaming mode; keep stdin open for bidirectional communication.
+      # Client always uses streaming mode; keep stdin open for bidirectional
+      # communication. Observers were already resolved by #connect.
       @transport = @transport_class.new(configured_options, **@transport_args)
       @transport.connect
 

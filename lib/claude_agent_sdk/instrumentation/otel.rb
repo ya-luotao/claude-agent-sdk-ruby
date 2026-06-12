@@ -103,10 +103,15 @@ module ClaudeAgentSDK
       def start_trace(message)
         # A new init without an intervening ResultMessage (e.g. /clear or an
         # interrupted turn) supersedes the current trace; finish it so it is
-        # exported instead of leaking as a never-ended span. Unconditional —
-        # end_trace nils @root_span but can leave @tool_spans populated, and
-        # the helper is an idempotent no-op in the normal flow.
+        # exported instead of leaking as a never-ended span, and reset the
+        # buffers so the superseded turn's prompt/output cannot mislabel the
+        # new trace. The reset is conditional on an actual supersede — in the
+        # normal flow the buffered pre-init prompt belongs to THIS trace.
+        # finish_open_spans itself stays unconditional: end_trace nils
+        # @root_span but can leave @tool_spans populated.
+        superseding = !@root_span.nil?
         finish_open_spans
+        reset_session_buffers if superseding
 
         attrs = {
           # gen_ai semantic conventions (recognized by Langfuse, Datadog, etc.)
@@ -196,7 +201,13 @@ module ClaudeAgentSDK
         output_tokens = usage_value(usage, :output_tokens)
         cache_creation_tokens = usage_value(usage, :cache_creation_input_tokens)
         cache_read_tokens = usage_value(usage, :cache_read_input_tokens)
-        total_tokens = (input_tokens || 0) + (output_tokens || 0) if input_tokens || output_tokens
+        # OpenInference subset semantics: prompt_details.* break down
+        # llm.token_count.prompt, so the prompt count must INCLUDE cache
+        # tokens (Anthropic's input_tokens excludes them; OpenInference's own
+        # Anthropic instrumentation sums them in). gen_ai.usage.* keys keep
+        # the raw exclusive values — Langfuse prices those additively.
+        prompt_tokens = (input_tokens || 0) + (cache_creation_tokens || 0) + (cache_read_tokens || 0) if input_tokens || cache_creation_tokens || cache_read_tokens
+        total_tokens = (prompt_tokens || 0) + (output_tokens || 0) if prompt_tokens || output_tokens
 
         # Set trace output (last assistant response — shown in Langfuse UI)
         # ResultMessage.result has the final text; fall back to last tracked assistant text
@@ -205,8 +216,9 @@ module ClaudeAgentSDK
         attrs = {
           # gen_ai conventions
           'gen_ai.usage.cost' => message.total_cost_usd,
-          # OpenInference conventions (Langfuse maps these to usage/cost)
-          'llm.token_count.prompt' => input_tokens,
+          # OpenInference conventions (Langfuse maps these to usage/cost);
+          # prompt includes cache tokens so prompt_details.* are true subsets
+          'llm.token_count.prompt' => prompt_tokens,
           'llm.token_count.completion' => output_tokens,
           'llm.token_count.total' => total_tokens,
           # OpenInference prompt-cache breakdown (cache_read/cache_write details)

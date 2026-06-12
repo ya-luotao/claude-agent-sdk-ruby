@@ -149,6 +149,7 @@ RSpec.describe ClaudeAgentSDK::Query do
       transport, ended = queue_fed_transport(queue)
       query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
 
+      allow(query).to receive(:warn) # swallow-and-warn contract; keep CI stderr clean
       Async do |task|
         query.start
         task.with_timeout(2.0) do
@@ -184,6 +185,7 @@ RSpec.describe ClaudeAgentSDK::Query do
         raise 'enumerator bug after first message'
       end
 
+      allow(query).to receive(:warn) # swallow-and-warn contract; keep CI stderr clean
       Async do |task|
         query.start
         streamer = task.async { query.stream_input(half_stream) }
