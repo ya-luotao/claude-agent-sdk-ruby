@@ -151,6 +151,12 @@ module ClaudeAgentSDK
     # Query#spawn_task / _child_tasks). Used for background input streaming so
     # a dying read loop or #close can never strand the stream task and hang
     # the enclosing Async reactor.
+    #
+    # NOTE: intentionally a partial mirror — Python prunes completed tasks via
+    # add_done_callback(_child_tasks.discard); here entries live until #close.
+    # Fine for the current one-shot call sites (max two tasks per Query); do
+    # not route per-request work (control handlers, per-turn streams) through
+    # this without adding completion-based removal.
     def spawn_task(&block)
       parent = Async::Task.current?
       raise CLIConnectionError, 'Query#spawn_task must be called inside an Async{} block' unless parent
@@ -1006,21 +1012,38 @@ module ClaudeAgentSDK
 
     # Stream input messages to transport
     def stream_input(stream)
+      wrote_message = false
       stream.each do |message|
         break if @closed
         serialized = message.is_a?(Hash) ? JSON.generate(message) : message.to_s
         writeln(serialized)
+        wrote_message = true
       end
     rescue StandardError => e
       # Log error but don't raise
       warn "Error streaming input: #{e.message}"
     ensure
-      # Skip end-of-input handling when we are being torn down by #close
-      # (Async::Stop unwinding): the transport is about to be closed anyway,
-      # and waiting on @first_result_condition inside a stopping fiber could
-      # suspend teardown. Mirrors Python, where cancellation skips
-      # wait_for_result_and_end_input entirely.
-      wait_for_result_and_end_input unless @closed
+      # Three teardown shapes:
+      # - #close in progress (@closed, Async::Stop unwinding): do nothing —
+      #   the transport is about to be closed, and waiting on
+      #   @first_result_condition inside a stopping fiber could suspend
+      #   teardown. Mirrors Python, where cancellation skips this entirely.
+      # - A turn is in flight (some message reached the CLI): hold stdin
+      #   open until its first result so hooks/SDK MCP control replies can
+      #   still be written (no timeout — the result or process exit is
+      #   guaranteed to signal).
+      # - No complete message ever reached the CLI (empty stream, or the
+      #   stream raised before the first write): no result can ever arrive,
+      #   so waiting would park query() forever beside an idle CLI. Close
+      #   stdin so the CLI sees EOF and exits. Deliberate improvement over
+      #   Python, which leaves stdin open and hangs on this path.
+      unless @closed
+        if wrote_message
+          wait_for_result_and_end_input
+        else
+          @transport.end_input
+        end
+      end
     end
 
     def writeln(string)

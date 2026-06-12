@@ -139,6 +139,65 @@ RSpec.describe ClaudeAgentSDK::Query do
         query.close
       end.wait
     end
+
+    # stream_input teardown: when no complete message ever reached the CLI,
+    # no result can ever arrive — waiting on the first-result condition would
+    # park query() forever beside an idle CLI (the pre-0.18 60s timeout used
+    # to self-heal this). stdin must be closed directly instead.
+    it 'closes stdin without waiting when the input stream raises before any message is written' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        task.with_timeout(2.0) do
+          query.stream_input(Enumerator.new { |_y| raise 'enumerator bug' })
+        end
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    it 'closes stdin without waiting when the input stream is empty' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        task.with_timeout(2.0) { query.stream_input([]) }
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    it 'still waits for the first result when the stream raised after a message was written' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      half_stream = Enumerator.new do |y|
+        y << { type: 'user', message: { role: 'user', content: 'hi' }, session_id: '' }
+        raise 'enumerator bug after first message'
+      end
+
+      Async do |task|
+        query.start
+        streamer = task.async { query.stream_input(half_stream) }
+        task.sleep 0.05
+        # A turn is in flight, so stdin must stay open for control replies.
+        expect(ended).to be_empty
+
+        queue.enqueue(sample_result_message)
+        task.with_timeout(2.0) { streamer.wait }
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
   end
 
   describe '#reconnect_mcp_server' do

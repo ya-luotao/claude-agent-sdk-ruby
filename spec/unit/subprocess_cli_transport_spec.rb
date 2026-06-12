@@ -804,7 +804,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(text).to eq('héllo 好')
       expect(text.encoding).to eq(Encoding::UTF_8)
     ensure
-      [stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
+      [stdout_w, stderr_w, stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
     end
 
     it 'surfaces multibyte stderr in ProcessError' do
@@ -823,7 +823,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         expect(e.stderr.encoding).to eq(Encoding::UTF_8)
       end
     ensure
-      [stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
+      [stdout_w, stderr_w, stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
     end
 
     it 'still warns about unsupported versions when -v output carries non-ASCII bytes' do
