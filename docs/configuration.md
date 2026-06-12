@@ -122,9 +122,6 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: ['Read', 'Edit', 'Bash']
 
 # Preset
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code'))
-
-# Append to allowed tools
-options = ClaudeAgentSDK::ClaudeAgentOptions.new(append_allowed_tools: ['Write', 'Bash'])
 ```
 
 ## Sandbox Settings

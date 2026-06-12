@@ -1483,7 +1483,7 @@ module ClaudeAgentSDK
                   :agents, :setting_sources,
                   :output_format, :max_budget_usd, :max_thinking_tokens,
                   :fallback_model, :plugins, :debug_stderr,
-                  :betas, :tools, :sandbox, :append_allowed_tools,
+                  :betas, :tools, :sandbox,
                   :thinking, :effort, :observers, :task_budget,
                   :session_store, :session_store_flush, :load_timeout_ms
     attr_reader :bare, :fork_session, :enable_file_checkpointing,

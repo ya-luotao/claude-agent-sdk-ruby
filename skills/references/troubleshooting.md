@@ -26,7 +26,7 @@ export CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS=1800
 ## Tool calls not working
 
 Checks:
-- Add the tool to `allowed_tools` (or `append_allowed_tools`) — see `references/options.md` (Tools and permissions).
+- Add the tool to `allowed_tools` — see `references/options.md` (Tools and permissions).
 - Use an appropriate `permission_mode` (for example `acceptEdits` for file edits).
 - If using MCP tools, include `mcp__server__tool` in `allowed_tools` — see `references/mcp-servers.md`.
 

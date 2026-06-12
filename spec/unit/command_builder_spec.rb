@@ -102,7 +102,7 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
     end
   end
 
-  describe 'allow/disallow/append lists' do
+  describe 'allow/disallow lists' do
     it 'joins allowed_tools with commas' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(allowed_tools: %w[Read Write])
       cmd = described_class.new('/usr/bin/claude', options).build
@@ -113,12 +113,6 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(disallowed_tools: %w[Bash])
       cmd = described_class.new('/usr/bin/claude', options).build
       expect(cmd).to include('--disallowedTools', 'Bash')
-    end
-
-    it 'joins append_allowed_tools with commas' do
-      options = ClaudeAgentSDK::ClaudeAgentOptions.new(append_allowed_tools: %w[Edit])
-      cmd = described_class.new('/usr/bin/claude', options).build
-      expect(cmd).to include('--append-allowed-tools', 'Edit')
     end
 
     it 'omits empty allowed_tools' do

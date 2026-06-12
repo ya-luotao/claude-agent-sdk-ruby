@@ -30,7 +30,6 @@ module ClaudeAgentSDK
       append_thinking(cmd)
       append_effort(cmd)
       append_betas(cmd)
-      append_append_allowed_tools(cmd)
       append_output_format(cmd)
       append_additional_dirs(cmd)
       append_mcp_servers(cmd)
@@ -227,12 +226,6 @@ module ClaudeAgentSDK
           cmd.push("--tools", JSON.generate(@options.tools))
         end
       end
-    end
-
-    def append_append_allowed_tools(cmd)
-      return unless @options.append_allowed_tools && !@options.append_allowed_tools.empty?
-
-      cmd.push("--append-allowed-tools", @options.append_allowed_tools.join(","))
     end
 
     def append_output_format(cmd)

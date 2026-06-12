@@ -37,7 +37,6 @@ Notes:
 
 - `tools`: Set base tools (Array, Hash, or `ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code')`).
 - `allowed_tools`: Explicit allow-list (examples: `Read`, `Write`, `Edit`, `Bash`, and `mcp__name__tool`).
-- `append_allowed_tools`: Append to tool allow-list without replacing it.
 - `disallowed_tools`: Explicit block-list.
 - `permission_mode`: Valid values: `default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`.
 

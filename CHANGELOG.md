@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `query()` can no longer hang forever when the CLI dies while a streaming-input Enumerator is blocked: the input stream task is tracked on the `Query` (new `Query#spawn_task`, mirroring the Python SDK's `_child_tasks`) and stopped by `close`, so the real error now propagates to the caller instead of decaying to an async console warning.
+- A CLI crash now always unblocks in-flight control requests (`interrupt`, `set_model`, …) immediately instead of leaving them to the 1200s control-request timeout, and a real crash in a multi-turn session is reported to consumers instead of being silently swallowed after the first result.
+- Hooks and SDK MCP servers no longer silently stop working when a one-shot `query()`'s first turn runs past 60 seconds: stdin stays open (without timeout) until the first result, mirroring Python SDK commit c3d96cb. String-prompt queries also now stream messages to the block while that wait is pending instead of deferring delivery.
+
+### Changed
+- A `ProcessError` that directly follows a result with `is_error: true` (the CLI exits non-zero on purpose, e.g. structured-output errors) is now raised with the structured error text the CLI reported (`Claude Code returned an error result: …`, preserving `exit_code`/`stderr`) instead of ending the stream silently — matching the Python SDK.
+- `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT` is now a no-op (the internal `Query::STREAM_CLOSE_TIMEOUT_*` constants were removed with the stdin-close timeout).
+
+### Removed
+- **Breaking**: `ClaudeAgentOptions#append_allowed_tools`. It emitted `--append-allowed-tools`, which no Claude Code CLI version accepts (`error: unknown option`), so any use failed at connect. The option never existed in the Python SDK (mis-port in v0.4.0). Use `allowed_tools` instead — the CLI's `--allowedTools` already appends to settings-derived permission rules. Passing `append_allowed_tools:` now raises `ArgumentError` at construction.
+
 ## [0.17.0] - 2026-06-10
 
 ### Added

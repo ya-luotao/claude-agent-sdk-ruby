@@ -1533,11 +1533,16 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.enable_file_checkpointing).to eq(false)
       end
 
-      it 'accepts append_allowed_tools option' do
-        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-          append_allowed_tools: ['Write', 'Bash']
-        )
-        expect(options.append_allowed_tools).to eq(['Write', 'Bash'])
+      it 'raises for the removed append_allowed_tools option' do
+        expect do
+          ClaudeAgentSDK::ClaudeAgentOptions.new(append_allowed_tools: %w[Write Bash])
+        end.to raise_error(ArgumentError, /unknown ClaudeAgentOptions option:.*append_allowed_tools/)
+      end
+
+      it 'does not expose append_allowed_tools accessors' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new
+        expect(options).not_to respond_to(:append_allowed_tools)
+        expect(options).not_to respond_to(:append_allowed_tools=)
       end
 
       it 'accepts thinking option with ThinkingConfigAdaptive' do
