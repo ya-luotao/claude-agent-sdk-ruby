@@ -476,6 +476,35 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect { transport.read_messages { |m| m } }.to raise_error(ClaudeAgentSDK::CLIJSONDecodeError)
       # limit 1025 + a few bytes of multibyte slack — never the full 8KB line
       expect(stdout.max_chunk).to be <= 1032
+    ensure
+      transport&.close
+    end
+
+    it 'raises (never silently drops whitespace) for a line just over the cap' do
+      # A whitespace run straddling the chunk boundary of a barely-over-cap
+      # line: a per-chunk strip shrank the first chunk back under the cap and
+      # the line PARSED with the interior spaces deleted — silent corruption.
+      max = 1024
+      prefix = %({"type":"x","data":")
+      pad = 'a' * (max + 1 - prefix.bytesize - 15)
+      line = "#{prefix}#{pad}#{' ' * 30}tail\"}\n"
+      expect(line.bytesize).to be_between(max + 2, max + 40)
+
+      status = instance_double(Process::Status, exitstatus: 0)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', max_buffer_size: max)
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3)
+        .and_return([StringIO.new, StringIO.new(line), StringIO.new, waiter])
+      transport.connect
+
+      messages = []
+      expect { transport.read_messages { |m| messages << m } }
+        .to raise_error(ClaudeAgentSDK::CLIJSONDecodeError)
+      expect(messages).to be_empty
+    ensure
+      transport&.close
     end
   end
 

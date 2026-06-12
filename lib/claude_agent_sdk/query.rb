@@ -341,7 +341,14 @@ module ClaudeAgentSDK
     def handle_control_response(message)
       response = message[:response] || {}
       request_id = response[:request_id] || response[:requestId] || message[:request_id] || message[:requestId]
-      return unless @pending_control_responses.key?(request_id)
+      # Capture the waiter ONCE: a worker-thread caller can satisfy its
+      # level-trigger check and evict the entries between our key? check and
+      # a re-lookup, so `@pending_control_responses[request_id].signal` could
+      # call signal on nil — a NoMethodError the read loop would treat as a
+      # fatal transport error, tearing down the whole session. Signaling an
+      # already-evicted waiter is harmless (orphan token push / no-op).
+      waiter = @pending_control_responses[request_id]
+      return unless waiter
 
       if response[:subtype] == 'error'
         @pending_control_results[request_id] = StandardError.new(response[:error] || 'Unknown error')
@@ -352,7 +359,7 @@ module ClaudeAgentSDK
       # Signal that response is ready. INVARIANT: the result slot above
       # MUST be written before this signal — senders check the slot before
       # waiting (level-trigger).
-      @pending_control_responses[request_id].signal
+      waiter.signal
     end
 
     def handle_control_request(request)
@@ -1131,6 +1138,16 @@ module ClaudeAgentSDK
     # Close the query and transport
     def close
       @closed = true
+      # Wake pending control-request waiters (same shape as the read-loop
+      # rescue broadcast): close stops the read task with Async::Stop, which
+      # bypasses that broadcast — a worker-thread caller parked in
+      # ThreadWaiter#wait would otherwise leak its OS thread for the full
+      # control-request timeout (up to 1200s) in long-lived processes.
+      # INVARIANT: store the result before signaling (level-trigger).
+      @pending_control_responses.dup.each do |request_id, waiter|
+        @pending_control_results[request_id] ||= CLIConnectionError.new('Query closed')
+        waiter.signal
+      end
       # Final mirror flush BEFORE stopping the read task, so the last turn's
       # entries reach the store. #close on the batcher never raises.
       @transcript_mirror_batcher&.close

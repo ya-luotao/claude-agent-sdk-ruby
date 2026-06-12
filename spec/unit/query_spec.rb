@@ -871,6 +871,38 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'control response signal safety' do
+    it 'tolerates a response whose waiter was already evicted (no session teardown)' do
+      # check-then-act race: a worker-thread caller can satisfy its
+      # level-trigger check and evict between the result store and the
+      # signal — handle_control_response must capture the waiter once and
+      # never re-look it up (nil.signal was a session-fatal NoMethodError).
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      message = { type: 'control_response',
+                  response: { subtype: 'success', request_id: 'req_gone', response: {} } }
+      # No pending entry at all — must be a silent no-op.
+      expect { query.send(:handle_control_response, message) }.not_to raise_error
+    end
+
+    it 'close wakes a parked worker-thread waiter with a Query-closed error' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil, close: nil)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      waiter = ClaudeAgentSDK::Query::ThreadWaiter.new
+      query.instance_variable_get(:@pending_control_responses)['req_parked'] = waiter
+
+      worker = Thread.new { waiter.wait(5) }
+      sleep 0.05 # let the worker park
+      query.close
+
+      expect(worker.join(2)).not_to be_nil, 'parked waiter was not woken by close'
+      result = query.instance_variable_get(:@pending_control_results)['req_parked']
+      expect(result).to be_a(ClaudeAgentSDK::CLIConnectionError)
+    end
+  end
+
   describe 'can_use_tool permission requests' do
     def handle_permission_request(callback, request)
       writes = []

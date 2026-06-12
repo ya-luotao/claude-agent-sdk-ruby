@@ -473,42 +473,49 @@ module ClaudeAgentSDK
         # an oversized line was fully allocated BEFORE the 1MB cap could
         # fire — unbounded memory on hostile/buggy stdout.
         @stdout.each_line("\n", @max_buffer_size + 1) do |line|
-          line_str = line.strip
-          next if line_str.empty?
+          # Position-aware whitespace handling: a chunk of an over-limit line
+          # must keep its interior whitespace — a blanket per-chunk strip
+          # deleted spaces inside JSON strings straddling the chunk boundary
+          # and could let a just-over-cap line PARSE with bytes silently
+          # missing instead of raising. Only safe edges are trimmed: full
+          # single-chunk lines strip both ends (the common path, original
+          # behavior); a truncated line-initial chunk keeps its tail; a
+          # continuation chunk keeps its head and only drops the newline.
+          ends_line = line.end_with?("\n")
+          if json_buffer.empty?
+            chunk = ends_line ? line.strip : line.lstrip
+            next if chunk.empty?
 
-          json_lines = line_str.split("\n")
-
-          json_lines.each do |json_line|
-            json_line = json_line.strip
-            next if json_line.empty?
-
-            # When no partial JSON is buffered, the next line must start with
-            # `{` to be a valid stream-json message. Stray stderr-like text
+            # When no partial JSON is buffered, the line must start with `{`
+            # to be a valid stream-json message. Stray stderr-like text
             # (e.g., debug warnings the CLI occasionally writes to stdout)
             # would otherwise be appended into json_buffer, poisoning every
             # subsequent parse until the buffer overflows. Matches the Python
-            # SDK's `if not json_buffer and not json_line.startswith("{")` guard.
-            next if json_buffer.empty? && !json_line.start_with?('{')
+            # SDK's `if not json_buffer and not json_line.startswith("{")`.
+            next unless chunk.start_with?('{')
+          else
+            chunk = ends_line ? line.chomp : line
+          end
 
-            json_buffer += json_line
+          json_buffer += chunk
 
-            if json_buffer.bytesize > @max_buffer_size
-              buffer_length = json_buffer.bytesize
-              json_buffer = ''
-              raise CLIJSONDecodeError.new(
-                "JSON message exceeded maximum buffer size",
-                StandardError.new("Buffer size #{buffer_length} exceeds limit #{@max_buffer_size}")
-              )
-            end
+          if json_buffer.bytesize > @max_buffer_size
+            buffer_length = json_buffer.bytesize
+            json_buffer = ''
+            raise CLIJSONDecodeError.new(
+              "JSON message exceeded maximum buffer size",
+              StandardError.new("Buffer size #{buffer_length} exceeds limit #{@max_buffer_size}")
+            )
+          end
 
-            begin
-              data = JSON.parse(json_buffer, symbolize_names: true)
-              json_buffer = ''
-              yield data
-            rescue JSON::ParserError
-              # Continue accumulating
-              next
-            end
+          begin
+            data = JSON.parse(json_buffer, symbolize_names: true)
+            json_buffer = ''
+            yield data
+          rescue JSON::ParserError
+            # Continue accumulating (multi-line JSON, or a truncated chunk
+            # awaiting the rest of its line)
+            next
           end
         end
       rescue IOError
