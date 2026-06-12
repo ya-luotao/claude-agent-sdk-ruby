@@ -355,7 +355,11 @@ module ClaudeAgentSDK
             session_id: ''
           }
           transport.write(JSON.generate(message) + "\n")
-          query_handler.wait_for_result_and_end_input
+          # Background-spawn so messages stream to the user block while stdin
+          # close waits (without timeout) for the first result; a synchronous
+          # call would defer all delivery until the turn completes (mirrors
+          # Python's query.spawn_task(query.wait_for_result_and_end_input())).
+          query_handler.spawn_task { query_handler.wait_for_result_and_end_input }
         elsif prompt.is_a?(Enumerator) || prompt.respond_to?(:each)
           # Tracked on the Query so close() stops it; an untracked Async task
           # here kept the root reactor alive forever when the read loop died

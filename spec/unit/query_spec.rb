@@ -35,6 +35,112 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe '#wait_for_result_and_end_input' do
+    # The control protocol writes hook/permission/SDK-MCP replies to stdin,
+    # so stdin must stay open for the whole first turn — no timeout (mirrors
+    # Python SDK commit c3d96cb; turns longer than the old 60s bound silently
+    # broke hooks and in-process MCP tools).
+    def queue_fed_transport(queue)
+      ended = []
+      transport = mock_transport
+      allow(transport).to receive(:end_input) { ended << true }
+      allow(transport).to receive(:read_messages) do |&blk|
+        loop do
+          msg = queue.dequeue
+          raise ClaudeAgentSDK::ProcessError.new('died', exit_code: 1, stderr: '') if msg == :crash
+
+          blk.call(msg)
+        end
+      end
+      [transport, ended]
+    end
+
+    def hooks_config
+      { 'PreToolUse' => [{ matcher: 'Bash', hooks: [proc {}] }] }
+    end
+
+    it 'keeps stdin open past any timeout while hooks are configured' do
+      # The old implementation read CLAUDE_CODE_STREAM_CLOSE_TIMEOUT and
+      # force-closed stdin when it fired; 50ms makes that regression trip
+      # quickly. The variable is dead after the fix.
+      previous = ENV.fetch('CLAUDE_CODE_STREAM_CLOSE_TIMEOUT', nil)
+      ENV['CLAUDE_CODE_STREAM_CLOSE_TIMEOUT'] = '50'
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+        task.sleep 0.2
+        expect(ended).to be_empty
+
+        queue.enqueue(sample_result_message)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    ensure
+      if previous
+        ENV['CLAUDE_CODE_STREAM_CLOSE_TIMEOUT'] = previous
+      else
+        ENV.delete('CLAUDE_CODE_STREAM_CLOSE_TIMEOUT')
+      end
+    end
+
+    it 'ends input only after the first result when SDK MCP servers are configured' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(
+        transport: transport, is_streaming_mode: true, sdk_mcp_servers: { calc: double('sdk server') }
+      )
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+        task.sleep 0.05
+        expect(ended).to be_empty
+
+        queue.enqueue(sample_result_message)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    it 'ends input immediately when no hooks or SDK MCP servers are configured' do
+      transport = mock_transport
+      ended = []
+      allow(transport).to receive(:end_input) { ended << true }
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      Async { query.wait_for_result_and_end_input }.wait
+
+      expect(ended).not_to be_empty
+    end
+
+    it 'unblocks a parked waiter when the read loop dies without a result' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+        task.sleep 0.05
+        expect(ended).to be_empty
+
+        queue.enqueue(:crash)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+  end
+
   describe '#reconnect_mcp_server' do
     it 'sends mcp_reconnect control request with camelCase serverName' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)

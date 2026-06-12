@@ -20,6 +20,7 @@ RSpec.describe 'Fiber scheduler boundary' do
     allow(handler).to receive(:receive_messages) do |&block|
       messages.each { |m| block.call(m) }
     end
+    allow(handler).to receive(:spawn_task) { |&blk| blk.call }
     allow(ClaudeAgentSDK::Query).to receive(:new).and_return(handler)
     handler
   end

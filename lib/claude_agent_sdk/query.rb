@@ -22,12 +22,6 @@ module ClaudeAgentSDK
 
     CONTROL_REQUEST_TIMEOUT_ENV_VAR = 'CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS'
     DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
-    # NOTE: CLAUDE_CODE_STREAM_CLOSE_TIMEOUT is defined by the CLI in
-    # MILLISECONDS (Python SDK uses `int(os.environ[...])/1000`); the SDK
-    # divides by 1000 to obtain seconds. The default below is *seconds*
-    # for direct use without env conversion (60 s = the CLI's 60000 ms).
-    STREAM_CLOSE_TIMEOUT_ENV_VAR = 'CLAUDE_CODE_STREAM_CLOSE_TIMEOUT'
-    DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS = 60.0
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
                    exclude_dynamic_sections: nil)
@@ -198,16 +192,6 @@ module ClaudeAgentSDK
       value.positive? ? value : DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS
     rescue ArgumentError
       DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS
-    end
-
-    def stream_close_timeout_seconds
-      raw_value = ENV.fetch(STREAM_CLOSE_TIMEOUT_ENV_VAR, nil)
-      return DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS if raw_value.nil? || raw_value.strip.empty?
-
-      value = Float(raw_value) / 1000.0
-      value.positive? ? value : DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS
-    rescue ArgumentError
-      DEFAULT_STREAM_CLOSE_TIMEOUT_SECONDS
     end
 
     def read_messages
@@ -1004,15 +988,18 @@ module ClaudeAgentSDK
 
     # Wait for the first result before closing stdin when hooks or SDK MCP
     # servers may still need to exchange control messages with the CLI.
+    # The control protocol requires stdin to stay open for the entire turn
+    # (hook replies, can_use_tool replies and SDK MCP tool results are all
+    # written to stdin), so no timeout is applied — closing stdin mid-turn
+    # silently broke hooks/MCP on turns longer than the old 60s bound
+    # (mirrors Python SDK commit c3d96cb). The condition is guaranteed to be
+    # signaled: by the result branch in read_messages, or by its ensure block
+    # when the process exits early.
     def wait_for_result_and_end_input
       if !@first_result_received &&
          ((@sdk_mcp_servers && !@sdk_mcp_servers.empty?) || (@hooks && !@hooks.empty?))
-        Async::Task.current.with_timeout(stream_close_timeout_seconds) do
-          @first_result_condition.wait unless @first_result_received
-        end
+        @first_result_condition.wait
       end
-    rescue Async::TimeoutError
-      nil
     ensure
       @transport.end_input
     end

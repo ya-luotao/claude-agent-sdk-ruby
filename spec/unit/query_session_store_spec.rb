@@ -40,6 +40,7 @@ RSpec.describe 'ClaudeAgentSDK.query with session_store' do
     before do
       allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
       allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+      allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
     end
 
     it 'installs a TranscriptMirrorBatcher on the query handler when session_store is set' do

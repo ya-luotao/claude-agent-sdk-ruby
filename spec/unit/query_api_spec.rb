@@ -20,6 +20,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       close: nil
     )
     allow(query_handler).to receive(:receive_messages) # yields nothing
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
 
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |opts|
       captured_options = opts
@@ -73,6 +74,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       close: nil
     )
     allow(query_handler).to receive(:receive_messages)
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
 
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
     allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
@@ -114,6 +116,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       close: nil
     )
     allow(query_handler).to receive(:receive_messages)
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
 
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
     allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
@@ -219,6 +222,31 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     expect(error).to be_a(ClaudeAgentSDK::CLIConnectionError)
   ensure
     thread&.kill
+  end
+
+  it 'delivers messages while the stdin-close wait is still pending for string prompts' do
+    # Guards the background spawn of wait_for_result_and_end_input: a
+    # synchronous call would defer all message delivery until the first
+    # result (unbounded since the 60s timeout was removed).
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+    allow(transport).to receive(:write)
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+
+    order = []
+    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: nil, close: nil)
+    allow(query_handler).to receive(:wait_for_result_and_end_input) do
+      order << :wait_started
+      Async::Task.current.sleep(0.05)
+      order << :wait_finished
+    end
+    allow(query_handler).to receive(:spawn_task) { |&blk| Async::Task.current.async { blk.call } }
+    allow(query_handler).to receive(:receive_messages) { order << :messages_delivered }
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    described_class.query(prompt: 'hello') { |_message| nil }
+
+    expect(order.index(:messages_delivered)).to be < order.index(:wait_finished),
+                                                "messages were deferred until stdin close completed: #{order.inspect}"
   end
 
   it 'rejects string prompts when can_use_tool is configured' do

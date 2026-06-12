@@ -114,6 +114,7 @@ RSpec.describe ClaudeAgentSDK::Observer do
         allow(qh).to receive(:receive_messages) do |&block|
           msgs.each { |m| block.call(m) }
         end
+        allow(qh).to receive(:spawn_task) { |&blk| blk.call }
       end
     end
 
