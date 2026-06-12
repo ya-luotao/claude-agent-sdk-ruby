@@ -23,6 +23,28 @@ module ClaudeAgentSDK
     CONTROL_REQUEST_TIMEOUT_ENV_VAR = 'CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS'
     DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
 
+    # Waiter for control responses awaited OFF the reactor — i.e. a control
+    # method called from inside a hook/can_use_tool/SDK-MCP callback, which
+    # runs on a FiberBoundary worker thread (Python supports this reentrancy
+    # natively: callbacks are event-loop tasks and anyio.Event is
+    # level-triggered). Duck-types Async::Condition#signal for the read
+    # loop's signal sites; the unconditional token push makes it
+    # level-triggered, closing the check-then-wait gap that an
+    # edge-triggered Condition would lose across threads.
+    class ThreadWaiter
+      def initialize
+        @queue = ::Queue.new
+      end
+
+      def signal(_value = nil)
+        @queue << true
+      end
+
+      def wait(timeout)
+        @queue.pop(timeout: timeout)
+      end
+    end
+
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
                    exclude_dynamic_sections: nil, skills: nil)
       @transport = transport
@@ -41,6 +63,7 @@ module ClaudeAgentSDK
       @hook_callback_timeouts = {}
       @next_callback_id = 0
       @request_counter = 0
+      @request_counter_mutex = Mutex.new
       @inflight_control_request_tasks = {}
 
       # Message stream
@@ -264,7 +287,9 @@ module ClaudeAgentSDK
         end
       end
     rescue StandardError => e
-      # Unblock pending control requests (e.g., initialize) so callers don't hang until timeout.
+      # Unblock pending control requests (e.g., initialize) so callers don't
+      # hang until timeout. INVARIANT: store the result before signaling —
+      # senders check the slot before waiting (level-trigger).
       @pending_control_responses.dup.each do |request_id, condition|
         @pending_control_results[request_id] ||= e
         condition.signal
@@ -324,7 +349,9 @@ module ClaudeAgentSDK
         @pending_control_results[request_id] = response
       end
 
-      # Signal that response is ready
+      # Signal that response is ready. INVARIANT: the result slot above
+      # MUST be written before this signal — senders check the slot before
+      # waiting (level-trigger).
       @pending_control_responses[request_id].signal
     end
 
@@ -730,15 +757,25 @@ module ClaudeAgentSDK
 
       timeout_seconds = control_request_timeout_seconds
 
-      # Generate unique request ID
-      @request_counter += 1
-      request_id = "req_#{@request_counter}_#{SecureRandom.hex(4)}"
+      # Detect the execution mode BEFORE any write: a control method called
+      # from inside a hook/permission/SDK-MCP callback runs on a
+      # FiberBoundary worker thread with no reactor. Detecting after the
+      # write left a half-executed request (written to the CLI, then
+      # RuntimeError; the eventual response dropped by the key? guard).
+      task = Async::Task.current?
 
-      # Create condition for response
-      condition = Async::Condition.new
-      @pending_control_responses[request_id] = condition
+      # Generate unique request ID (callbacks may issue requests from
+      # worker threads concurrently with the reactor)
+      request_id = @request_counter_mutex.synchronize do
+        @request_counter += 1
+        "req_#{@request_counter}_#{SecureRandom.hex(4)}"
+      end
 
-      # Build and send request
+      # Reactor callers wait on an Async::Condition; worker-thread callers
+      # on a ThreadWaiter. Registration must precede the write.
+      waiter = task ? Async::Condition.new : ThreadWaiter.new
+      @pending_control_responses[request_id] = waiter
+
       control_request = {
         type: 'control_request',
         request_id: request_id,
@@ -748,29 +785,48 @@ module ClaudeAgentSDK
 
       writeln(JSON.generate(control_request))
 
-      # Wait for response with timeout. Use the current task's timeout so we
-      # stay in the caller's fiber (a nested `Async do ... end.wait` spawned a
-      # separate task and could leak the pending entries when an Async::Stop
-      # propagated through `.wait` before either the success-path or the
-      # timeout-path cleanup ran). Control requests must run inside an Async
-      # reactor — `Query#start` already enforces this precondition, so the
-      # cleanest place to surface the contract is the start hand-off; here we
-      # assume an active task is present.
       begin
-        Async::Task.current.with_timeout(timeout_seconds) do
-          condition.wait
-        end
+        await_control_response(request_id, waiter, task, timeout_seconds, request[:subtype])
         result = @pending_control_results[request_id]
         raise result if result.is_a?(Exception)
 
         result&.[](:response) || {}
-      rescue Async::TimeoutError
-        raise ControlRequestTimeoutError, "Control request timeout: #{request[:subtype]}"
       ensure
         # Always evict the entries so a late control_response (after timeout)
         # or an Async::Stop propagating through wait does not leak state.
         @pending_control_responses.delete(request_id)
         @pending_control_results.delete(request_id)
+      end
+    end
+
+    # Level-triggered wait: every signal site stores the result BEFORE
+    # signaling, so checking the result slot before (and between) waits
+    # cannot lose a wakeup — Async::Condition is edge-triggered and a signal
+    # arriving before the sender reaches wait would otherwise be dropped
+    # (reachable when a custom transport's #write suspends after delivery,
+    # or when the read loop's rescue broadcast fires mid-write). Mirrors
+    # anyio.Event's level-trigger semantics in Python.
+    #
+    # Do NOT reimplement the reactor wait as a nested `Async do ... end.wait`
+    # — that spawned a separate task and leaked the pending entries when an
+    # Async::Stop propagated through `.wait` before cleanup ran.
+    def await_control_response(request_id, waiter, task, timeout_seconds, subtype)
+      if task
+        begin
+          task.with_timeout(timeout_seconds) do
+            waiter.wait until @pending_control_results.key?(request_id)
+          end
+        rescue Async::TimeoutError
+          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}"
+        end
+      else
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
+        until @pending_control_results.key?(request_id)
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}" if remaining <= 0
+
+          waiter.wait(remaining)
+        end
       end
     end
 

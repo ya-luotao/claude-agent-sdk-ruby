@@ -804,6 +804,73 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'control request waiting (reentrancy + level-trigger)' do
+    def queue_driven_transport(thread_queue)
+      transport = mock_transport
+      allow(transport).to receive(:read_messages) do |&blk|
+        loop { blk.call(thread_queue.pop) } # Thread::Queue#pop is scheduler-aware
+      end
+      transport
+    end
+
+    it 'supports control requests from a FiberBoundary worker thread (in-callback reentrancy)' do
+      tq = Thread::Queue.new
+      transport = queue_driven_transport(tq)
+      allow(transport).to receive(:write) do |data|
+        msg = JSON.parse(data, symbolize_names: true)
+        if msg[:type] == 'control_request' && msg.dig(:request, :subtype) == 'interrupt'
+          tq << { type: 'control_response',
+                  response: { subtype: 'success', request_id: msg[:request_id], response: {} } }
+        end
+      end
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      result = nil
+      Async do |task|
+        query.start
+        # Simulate the hook/can_use_tool environment: user code on a plain
+        # FiberBoundary thread, no reactor. Pre-fix this raised RuntimeError
+        # "No async task available!" AFTER the request reached the wire.
+        task.with_timeout(5.0) do
+          result = ClaudeAgentSDK::FiberBoundary.invoke { query.interrupt }
+        end
+      ensure
+        query.close
+      end.wait
+
+      expect(result).to eq({})
+    end
+
+    it 'does not lose a control response that arrives while the sender is suspended in write' do
+      tq = Thread::Queue.new
+      transport = queue_driven_transport(tq)
+      allow(transport).to receive(:write) do |data|
+        msg = JSON.parse(data, symbolize_names: true)
+        if msg[:type] == 'control_request'
+          # Feed the response, then suspend the sender (scheduler-aware
+          # sleep) so the read loop processes it BEFORE the sender reaches
+          # its wait — the edge-triggered Condition lost this wakeup.
+          tq << { type: 'control_response',
+                  response: { subtype: 'success', request_id: msg[:request_id], response: { ok: true } } }
+          sleep 0.05
+        end
+      end
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      result = nil
+      Async do |task|
+        query.start
+        task.with_timeout(2.0) do
+          result = query.send(:send_control_request, { subtype: 'ping' })
+        end
+      ensure
+        query.close
+      end.wait
+
+      expect(result).to eq({ ok: true })
+    end
+  end
+
   describe 'can_use_tool permission requests' do
     def handle_permission_request(callback, request)
       writes = []
