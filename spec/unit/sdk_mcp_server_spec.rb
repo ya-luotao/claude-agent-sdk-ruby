@@ -288,6 +288,124 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
     end
   end
 
+  describe '#handle_json full surface (M9/L5 e2e)' do
+    def build_full_server
+      tool = ClaudeAgentSDK.create_tool(
+        'greet', 'Greet',
+        { type: :object, properties: { name: { type: :string } },
+          required: ['name'], additionalProperties: false }
+      ) do |args|
+        { content: [{ type: 'text', text: "Hi #{args[:name] || args['name']}" }] }
+      end
+      resource = ClaudeAgentSDK.create_resource(
+        uri: 'config://app', name: 'App Config', description: 'cfg', mime_type: 'text/plain'
+      ) do
+        { contents: [{ uri: 'config://app', mimeType: 'text/plain', text: 'hello' }] }
+      end
+      prompt = ClaudeAgentSDK.create_prompt(
+        name: 'codeReview', description: 'Review code',
+        arguments: [{ name: 'changes', description: 'desc', required: true }]
+      ) do |args|
+        { messages: [{ role: 'user', content: { type: 'text', text: "Review: #{args[:changes] || args['changes']}" } }] }
+      end
+      described_class.new(name: 'demo', tools: [tool], resources: [resource], prompts: [prompt])
+    end
+
+    def rpc(server, method, params = nil, id: 1)
+      req = { jsonrpc: '2.0', id: id, method: method }
+      req[:params] = params if params
+      JSON.parse(server.handle_json(JSON.generate(req)), symbolize_names: true)
+    end
+
+    let(:server) { build_full_server }
+
+    it 'serves resources/list (instances, not classes)' do
+      expect(rpc(server, 'resources/list').dig(:result, :resources)).to eq(
+        [{ uri: 'config://app', name: 'App Config', description: 'cfg', mimeType: 'text/plain' }]
+      )
+    end
+
+    it 'serves resources/read through the registered handler' do
+      expect(rpc(server, 'resources/read', { uri: 'config://app' }).dig(:result, :contents)).to eq(
+        [{ uri: 'config://app', mimeType: 'text/plain', text: 'hello' }]
+      )
+    end
+
+    it 'reports unknown resources with readable error data' do
+      res = rpc(server, 'resources/read', { uri: 'config://missing' })
+      expect(res.dig(:error, :code)).to eq(-32_603)
+      expect(res.dig(:error, :data).to_s).to match(%r{Resource 'config://missing' not found})
+    end
+
+    it 'serves prompts/list with exact name, description and arguments' do
+      expect(rpc(server, 'prompts/list').dig(:result, :prompts)).to eq(
+        [{ name: 'codeReview', description: 'Review code',
+           arguments: [{ name: 'changes', description: 'desc', required: true }] }]
+      )
+    end
+
+    it 'serves prompts/get' do
+      res = rpc(server, 'prompts/get', { name: 'codeReview', arguments: { changes: 'x' } })
+      expect(res.dig(:result, :messages)).to eq(
+        [{ role: 'user', content: { type: 'text', text: 'Review: x' } }]
+      )
+    end
+
+    it 'reports missing required prompt arguments, including when arguments is omitted' do
+      res = rpc(server, 'prompts/get', { name: 'codeReview', arguments: {} })
+      expect(res.dig(:error, :data).to_s).to match(/Missing required arguments: changes/)
+
+      res = rpc(server, 'prompts/get', { name: 'codeReview' })
+      expect(res.dig(:error, :data).to_s).to match(/Missing required arguments: changes/)
+    end
+
+    it 'emits prebuilt symbol-keyed schemas intact through tools/list (L5)' do
+      schema = rpc(server, 'tools/list').dig(:result, :tools, 0, :inputSchema)
+      expect(schema[:properties].keys).to eq([:name])
+      expect(schema[:properties][:name][:type]).to eq('string')
+      expect(schema[:required]).to eq(['name'])
+      expect(schema[:additionalProperties]).to eq(false)
+    end
+
+    it 'accepts valid tools/call against a prebuilt symbol schema (L5)' do
+      res = rpc(server, 'tools/call', { name: 'greet', arguments: { name: 'Bob' } })
+      expect(res.dig(:result, :content, 0, :text)).to eq('Hi Bob')
+      expect(res.dig(:result, :isError)).to eq(false)
+
+      missing = rpc(server, 'tools/call', { name: 'greet', arguments: {} })
+      expect(missing.dig(:result, :isError)).to eq(true)
+      expect(missing.dig(:result, :content, 0, :text)).to match(/Missing required arguments: name/)
+    end
+
+    it 'emits the same clean schema via the Query-path list_tools (L5)' do
+      schema = server.list_tools.first[:inputSchema]
+      expect(schema[:properties].keys).to eq([:name])
+      expect(schema[:required]).to eq(['name'])
+      expect(schema[:additionalProperties]).to eq(false)
+    end
+
+    it 'emits annotations and _meta through handle_json tools/list' do
+      tool = ClaudeAgentSDK.create_tool('annotated', 'A', {}) { |_| { content: [] } }
+      tool.annotations = { maxResultSizeChars: 100 }
+      tool.meta = { 'anthropic/maxResultSizeChars': 100 }
+      server2 = described_class.new(name: 'demo2', tools: [tool])
+
+      tools = rpc(server2, 'tools/list').dig(:result, :tools)
+      expect(tools[0][:annotations]).to eq({ maxResultSizeChars: 100 })
+      expect(tools[0][:_meta]).to eq({ 'anthropic/maxResultSizeChars': 100 })
+    end
+
+    it 'raises lazily (as -32603) for a malformed prebuilt schema instead of silent garbage' do
+      bad_tool = ClaudeAgentSDK.create_tool(
+        'bad', 'B', { type: :object, properties: { name: :string } }
+      ) { |_| { content: [] } }
+      server3 = described_class.new(name: 'demo3', tools: [bad_tool])
+
+      res = rpc(server3, 'tools/list')
+      expect(res[:error]).not_to be_nil
+    end
+  end
+
   describe '#handle_json' do
     it 'exposes correct schema via MCP tools/list for string-keyed schemas' do
       tool = ClaudeAgentSDK::SdkMcpTool.new(
