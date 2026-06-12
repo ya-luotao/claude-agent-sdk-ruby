@@ -41,12 +41,12 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(payload.dig(:message, :content)).to eq('hello')
   end
 
-  it 'streams an initial Enumerator prompt without closing stdin' do
-    writes = []
-    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true)
-    allow(transport).to receive(:write) { |data| writes << data }
-
+  it 'streams an initial Enumerator prompt in the background via Query#stream_input' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
     query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+    streamed = nil
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+    allow(query_handler).to receive(:stream_input) { |stream| streamed = stream.to_a }
     allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
     allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
 
@@ -55,7 +55,25 @@ RSpec.describe ClaudeAgentSDK::Client do
     client = described_class.new
     client.connect(stream)
 
-    expect(writes).to eq(["{\"type\":\"user\"}\n", "{\"type\":\"user\"}\n"])
+    # Items reach stream_input unchanged (it owns serialization — Hashes are
+    # JSON-generated there, fixing the old to_s/inspect bug).
+    expect(streamed).to eq(['{"type":"user"}', '{"type":"user"}'])
+  end
+
+  it 'serializes Hash stream messages as JSON via stream_input (not Ruby inspect)' do
+    writes = []
+    transport = mock_transport
+    allow(transport).to receive(:write) { |data| writes << data }
+    query = ClaudeAgentSDK::Query.new(transport: transport, is_streaming_mode: true)
+
+    Async do |task|
+      task.with_timeout(2.0) do
+        query.stream_input([{ type: 'user', message: { role: 'user', content: 'hi' } }])
+      end
+    end.wait
+
+    payload = JSON.parse(writes.first, symbolize_names: true)
+    expect(payload[:type]).to eq('user')
   end
 
   it 'auto-configures permission prompt tool when using can_use_tool' do
@@ -549,6 +567,8 @@ RSpec.describe ClaudeAgentSDK::Client do
 
       transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil, close: nil)
       query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+      allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+      allow(query_handler).to receive(:stream_input, &:to_a)
       allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
       allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
 

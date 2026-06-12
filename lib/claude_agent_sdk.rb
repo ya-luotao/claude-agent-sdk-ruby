@@ -556,7 +556,13 @@ module ClaudeAgentSDK
     # Client always uses streaming mode for bidirectional communication. If you
     # pass a String, it will be sent as an initial user message after the
     # connection is established. If you pass an Enumerator, it should yield
-    # JSONL messages (e.g., from ClaudeAgentSDK::Streaming.user_message).
+    # JSONL messages (e.g., from ClaudeAgentSDK::Streaming.user_message);
+    # the stream is consumed in the BACKGROUND (connect returns immediately)
+    # and stdin closes when it is exhausted, so the stream is the session's
+    # input — a later #query after exhaustion will fail. Enumerator code runs
+    # on the reactor: use a producer Thread + Thread::Queue for blocking
+    # reads (Queue#pop is scheduler-aware). Stream errors are reported via
+    # Observer#on_error and logged, not raised out of connect.
     #
     # @param prompt [String, Enumerator, nil] Initial prompt or message stream
     def connect(prompt = nil)
@@ -598,9 +604,10 @@ module ClaudeAgentSDK
         connect_inner(configured_options, prompt)
       rescue Exception => e # rubocop:disable Lint/RescueException
         # Pre-handshake failures (@connected still false) are notified here;
-        # post-handshake prompt-send failures were already notified by the
-        # instrumented #query / enumerator branch — the gate keeps on_error
-        # exactly-once. No on_close follows for pre-handshake failures
+        # post-handshake String-prompt send failures were already notified by
+        # the instrumented #query — the gate keeps on_error exactly-once.
+        # (The enumerator branch streams in the background and cannot raise
+        # out of connect.) No on_close follows for pre-handshake failures
         # (disconnect gates it on @connected): the session never opened.
         notify_error(e) if e.is_a?(StandardError) && !@connected
         # Tear down the partial connect, but never let a cleanup failure (e.g. a
@@ -868,17 +875,29 @@ module ClaudeAgentSDK
       when String
         query(prompt)
       else
-        begin
-          prompt.each do |message_json|
-            if (text = ClaudeAgentSDK.extract_user_prompt_text(message_json))
-              ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text)
-            end
-            writeln(message_json.to_s)
-          end
-        rescue StandardError => e
-          notify_error(e)
-          raise
-        end
+        # Stream in the background, exactly like query()'s Enumerator path
+        # (Python client.py: query.spawn_task(query.stream_input(prompt))).
+        # The old inline `prompt.each` blocked connect until the stream was
+        # exhausted — an interactive stream that waits for a response before
+        # yielding deadlocked connect — and serialized Hash messages with
+        # to_s (Ruby inspect, not JSON). stream_input JSON-generates Hashes
+        # and is tracked on the Query so close() stops it. Stream errors are
+        # notified to observers once, then swallowed-with-warn by
+        # stream_input (Python parity) — they no longer abort connect.
+        observed = ClaudeAgentSDK.observing_prompt_stream(prompt, @resolved_observers)
+        notifying = error_notifying_stream(observed)
+        @query_handler.spawn_task { @query_handler.stream_input(notifying) }
+      end
+    end
+
+    # Wrap a stream so a raising user enumerator fires on_error exactly once
+    # before stream_input's swallow-with-warn handling takes over.
+    def error_notifying_stream(stream)
+      Enumerator.new do |yielder|
+        stream.each { |message| yielder << message }
+      rescue StandardError => e
+        notify_error(e)
+        raise
       end
     end
 

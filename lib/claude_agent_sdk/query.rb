@@ -1011,7 +1011,11 @@ module ClaudeAgentSDK
       @transport.end_input
     end
 
-    # Stream input messages to transport
+    # Stream input messages to transport. NOTE: iteration runs on the
+    # reactor (the deliberate FiberBoundary carve-out — see
+    # fiber_boundary.rb): scheduler-aware blocking (Thread::Queue#pop,
+    # sleep, socket IO) parks only this task; CPU-bound or scheduler-opaque
+    # work in the enumerator must be moved to a producer Thread by the user.
     def stream_input(stream)
       wrote_message = false
       stream.each do |message|
