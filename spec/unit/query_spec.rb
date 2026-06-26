@@ -582,8 +582,14 @@ RSpec.describe ClaudeAgentSDK::Query do
       wrong_type = dispatch(server, { id: 7, method: 'tools/call',
                                       params: { name: 'typed', arguments: { n: 'NaN' } } })
       expect(wrong_type.dig(:result, :isError)).to eq(true)
-      # Distinguish TYPE validation from the required-presence check.
-      expect(wrong_type.dig(:result, :content, 0, :text)).to match(/did not match the following type: integer/)
+      # Distinguish TYPE validation from the required-presence check. The mcp
+      # gem's exact wording drifts across versions (e.g. 0.7's "did not match
+      # the following type: integer" vs newer "value at `/n` is not an
+      # integer"), so assert on the stable `integer` type token and the absence
+      # of the missing-required phrasing rather than the full version-specific
+      # message — the SDK pins `mcp` only as `>= 0.6, < 1` and ships no lockfile.
+      expect(wrong_type.dig(:result, :content, 0, :text)).to match(/integer/i)
+      expect(wrong_type.dig(:result, :content, 0, :text)).not_to match(/Missing required/i)
       expect(invoked).to be(false) # handler never ran for invalid args
 
       ok = dispatch(server, { id: 8, method: 'tools/call', params: { name: 'typed', arguments: { n: 3 } } })
