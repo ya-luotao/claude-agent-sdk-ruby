@@ -51,7 +51,7 @@ module ClaudeAgentSDK
       raise MessageParseError.new("Missing content in user message", data: data) unless content
 
       if content.is_a?(Array)
-        content_blocks = content.map { |block| parse_content_block(block) }
+        content_blocks = parse_content_blocks(content, data)
         UserMessage.new(content: content_blocks, uuid: uuid, parent_tool_use_id: parent_tool_use_id,
                         tool_use_result: tool_use_result)
       else
@@ -63,8 +63,9 @@ module ClaudeAgentSDK
     def self.parse_assistant_message(data)
       content = data.dig(:message, :content)
       raise MessageParseError.new("Missing content in assistant message", data: data) unless content
+      raise MessageParseError.new("Invalid assistant content (expected Array, got #{content.class})", data: data) unless content.is_a?(Array)
 
-      content_blocks = content.map { |block| parse_content_block(block) }
+      content_blocks = parse_content_blocks(content, data)
       AssistantMessage.new(
         content: content_blocks,
         model: data.dig(:message, :model),
@@ -100,8 +101,25 @@ module ClaudeAgentSDK
     }.freeze
 
     def self.parse_system_message(data)
+      return parse_task_updated_message(data) if data[:subtype] == 'task_updated'
+
       klass = SYSTEM_MESSAGE_CLASSES[data[:subtype]] || SystemMessage
       klass.new(data)
+    end
+
+    # task_updated carries the changed `status` inside `patch`, not at the top
+    # level, so the generic attribute mapping can't populate it — parse it
+    # explicitly. Parsed defensively: a lifecycle event must never raise, the
+    # patch may be absent or non-Hash (falls back to {}), and uuid/session_id
+    # may be missing. The full patch is preserved on `#patch` for callers that
+    # need more than the status.
+    def self.parse_task_updated_message(data)
+      patch = data[:patch]
+      patch = {} unless patch.is_a?(Hash)
+      message = TaskUpdatedMessage.new(data)
+      message.patch = patch
+      message.status = patch[:status].nil? ? patch['status'] : patch[:status]
+      message
     end
 
     def self.parse_result_message(data)
@@ -130,6 +148,18 @@ module ClaudeAgentSDK
 
     def self.parse_prompt_suggestion_message(data)
       PromptSuggestionMessage.new(data)
+    end
+
+    # Maps a content Array to typed blocks, guarding each element. A non-Hash
+    # block (e.g. a bare String or nil from a malformed CLI message) raises a
+    # descriptive MessageParseError carrying the full message rather than an
+    # opaque TypeError/NoMethodError from `block[:type]` deep in parsing.
+    def self.parse_content_blocks(content, data)
+      content.map do |block|
+        raise MessageParseError.new("Invalid content block (expected Hash, got #{block.class})", data: data) unless block.is_a?(Hash)
+
+        parse_content_block(block)
+      end
     end
 
     # Accepts blocks with either symbol or string keys — live CLI messages

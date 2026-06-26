@@ -70,6 +70,13 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.content[1].data[:source][:media_type]).to eq('application/pdf')
       end
 
+      it 'raises MessageParseError (not a raw TypeError) on a non-Hash content block' do
+        data = { type: 'user', message: { content: ['oops'] } }
+
+        expect { described_class.parse(data) }
+          .to raise_error(ClaudeAgentSDK::MessageParseError, /Invalid content block \(expected Hash, got String\)/)
+      end
+
       it 'includes parent_tool_use_id if present' do
         data = {
           type: 'user',
@@ -214,6 +221,20 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg).to be_a(ClaudeAgentSDK::AssistantMessage)
         expect(msg.usage).to be_nil
       end
+
+      it 'raises MessageParseError (not a raw NoMethodError) on string content' do
+        data = { type: 'assistant', message: { model: 'm', content: 'hi' } }
+
+        expect { described_class.parse(data) }
+          .to raise_error(ClaudeAgentSDK::MessageParseError, /Invalid assistant content \(expected Array, got String\)/)
+      end
+
+      it 'raises MessageParseError (not a raw TypeError) on a non-Hash content block' do
+        data = { type: 'assistant', message: { model: 'm', content: ['oops'] } }
+
+        expect { described_class.parse(data) }
+          .to raise_error(ClaudeAgentSDK::MessageParseError, /Invalid content block \(expected Hash, got String\)/)
+      end
     end
 
     context 'system messages' do
@@ -314,6 +335,109 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.usage).to eq({ total_tokens: 1000, tool_uses: 5, duration_ms: 5000 })
       end
 
+      it 'parses task_updated with a terminal patch.status as TaskUpdatedMessage' do
+        data = {
+          type: 'system',
+          subtype: 'task_updated',
+          task_id: 'task-abc',
+          patch: { status: 'completed', end_time: 1_780_405_729_183 },
+          uuid: 'uuid-4',
+          session_id: 'session-1'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::TaskUpdatedMessage)
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.task_id).to eq('task-abc')
+        expect(msg.patch).to eq({ status: 'completed', end_time: 1_780_405_729_183 })
+        expect(msg.status).to eq('completed')
+        expect(msg.uuid).to eq('uuid-4')
+        expect(msg.session_id).to eq('session-1')
+        expect(msg.subtype).to eq('task_updated')
+        expect(ClaudeAgentSDK::TERMINAL_TASK_STATUSES).to include(msg.status)
+      end
+
+      it 'parses task_updated with only task_id and patch (no uuid/session_id)' do
+        data = {
+          type: 'system',
+          subtype: 'task_updated',
+          task_id: 'b1m21w89v',
+          patch: { status: 'completed', end_time: 1_780_405_729_183 }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::TaskUpdatedMessage)
+        expect(msg.task_id).to eq('b1m21w89v')
+        expect(msg.status).to eq('completed')
+        expect(msg.uuid).to be_nil
+        expect(msg.session_id).to be_nil
+      end
+
+      %w[pending running paused].each do |status|
+        it "parses non-terminal task_updated status #{status.inspect} as not terminal" do
+          data = { type: 'system', subtype: 'task_updated', task_id: 'task-abc', patch: { status: status } }
+
+          msg = described_class.parse(data)
+          expect(msg).to be_a(ClaudeAgentSDK::TaskUpdatedMessage)
+          expect(msg.status).to eq(status)
+          expect(ClaudeAgentSDK::TASK_UPDATED_STATUSES).to include(status)
+          expect(ClaudeAgentSDK::TERMINAL_TASK_STATUSES).not_to include(status)
+        end
+      end
+
+      %w[completed failed killed].each do |status|
+        it "surfaces terminal task_updated status #{status.inspect} as terminal" do
+          data = { type: 'system', subtype: 'task_updated', task_id: 'task-abc', patch: { status: status } }
+
+          msg = described_class.parse(data)
+          expect(msg.status).to eq(status)
+          expect(ClaudeAgentSDK::TERMINAL_TASK_STATUSES).to include(status)
+        end
+      end
+
+      it 'treats a TaskStop-killed task (status="killed") as terminal' do
+        # In some kill paths no task_notification is emitted, so this
+        # task_updated patch is the only terminal signal.
+        data = {
+          type: 'system',
+          subtype: 'task_updated',
+          task_id: 'bs2r8eew4',
+          patch: { status: 'killed', end_time: 1_780_405_729_183 }
+        }
+
+        msg = described_class.parse(data)
+        expect(msg.status).to eq('killed')
+        expect(ClaudeAgentSDK::TERMINAL_TASK_STATUSES).to include('killed')
+      end
+
+      it 'parses task_updated with no patch as an empty patch and nil status' do
+        data = { type: 'system', subtype: 'task_updated', task_id: 'task-abc' }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::TaskUpdatedMessage)
+        expect(msg.patch).to eq({})
+        expect(msg.status).to be_nil
+      end
+
+      it 'preserves a patch lacking status verbatim with nil status' do
+        data = { type: 'system', subtype: 'task_updated', task_id: 'task-abc', patch: { end_time: 1_780_405_729_183 } }
+
+        msg = described_class.parse(data)
+        expect(msg.patch).to eq({ end_time: 1_780_405_729_183 })
+        expect(msg.status).to be_nil
+      end
+
+      ['completed', ['completed'], 42, nil].each do |patch|
+        it "never raises on a non-Hash patch (#{patch.inspect}); falls back to {}" do
+          data = { type: 'system', subtype: 'task_updated', task_id: 'task-abc', patch: patch }
+
+          msg = described_class.parse(data)
+          expect(msg).to be_a(ClaudeAgentSDK::TaskUpdatedMessage)
+          expect(msg.patch).to eq({})
+          expect(msg.status).to be_nil
+        end
+      end
+
       it 'parses init as InitMessage with all fields' do
         data = {
           type: 'system',
@@ -396,6 +520,9 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         msg = described_class.parse(data)
         expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
         expect(msg).not_to be_a(ClaudeAgentSDK::TaskStartedMessage)
+        expect(msg).not_to be_a(ClaudeAgentSDK::TaskProgressMessage)
+        expect(msg).not_to be_a(ClaudeAgentSDK::TaskNotificationMessage)
+        expect(msg).not_to be_a(ClaudeAgentSDK::TaskUpdatedMessage)
         expect(msg.subtype).to eq('future_subtype')
       end
     end
