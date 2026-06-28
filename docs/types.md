@@ -48,11 +48,11 @@ end
 
 # Typed subclasses (all inherit from SystemMessage, so is_a?(SystemMessage) still works)
 class TaskStartedMessage < SystemMessage
-  attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type
+  attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type, :workflow_name, :prompt
 end
 
 class TaskProgressMessage < SystemMessage
-  attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name
+  attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name, :summary
 end
 
 class TaskNotificationMessage < SystemMessage

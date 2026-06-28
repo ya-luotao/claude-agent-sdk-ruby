@@ -112,13 +112,15 @@ module ClaudeAgentSDK
     # explicitly. Parsed defensively: a lifecycle event must never raise, the
     # patch may be absent or non-Hash (falls back to {}), and uuid/session_id
     # may be missing. The full patch is preserved on `#patch` for callers that
-    # need more than the status.
+    # need more than the status. `data` (and thus `patch`) is always symbol-keyed
+    # here — `parse` rejects any message lacking a `:type` symbol key, so a
+    # string-keyed hash never reaches this method.
     def self.parse_task_updated_message(data)
       patch = data[:patch]
       patch = {} unless patch.is_a?(Hash)
       message = TaskUpdatedMessage.new(data)
       message.patch = patch
-      message.status = patch[:status].nil? ? patch['status'] : patch[:status]
+      message.status = patch[:status]
       message
     end
 
