@@ -472,6 +472,37 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::TaskUpdatedMessage do
+      it 'is a SystemMessage subclass and derives status from the patch' do
+        msg = described_class.new(
+          subtype: 'task_updated', data: {},
+          task_id: 'task-abc', patch: { status: 'running', end_time: 123 },
+          uuid: 'uuid_1', session_id: 'sess_1'
+        )
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.task_id).to eq('task-abc')
+        expect(msg.patch).to eq({ status: 'running', end_time: 123 })
+        expect(msg.status).to eq('running')
+        expect(msg.uuid).to eq('uuid_1')
+        expect(msg.session_id).to eq('sess_1')
+      end
+
+      it "defaults task_id to '' and patch to {} with nil status when absent" do
+        msg = described_class.new
+
+        expect(msg.task_id).to eq('')
+        expect(msg.patch).to eq({})
+        expect(msg.status).to be_nil
+      end
+
+      it 'falls back to {} for a non-Hash patch' do
+        msg = described_class.new(task_id: 't', patch: 'oops')
+
+        expect(msg.patch).to eq({})
+        expect(msg.status).to be_nil
+      end
+    end
+
     describe ClaudeAgentSDK::ResultMessage do
       it 'stores result information' do
         msg = described_class.new(

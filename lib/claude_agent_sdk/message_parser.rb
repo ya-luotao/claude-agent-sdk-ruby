@@ -97,31 +97,19 @@ module ClaudeAgentSDK
       'elicitation_complete' => ElicitationCompleteMessage,
       'task_started' => TaskStartedMessage,
       'task_progress' => TaskProgressMessage,
-      'task_notification' => TaskNotificationMessage
+      'task_notification' => TaskNotificationMessage,
+      # task_updated carries `status` inside `patch` (not at the top level) and
+      # defaults task_id to "" — it derives those defensively in its own
+      # constructor (see TaskUpdatedMessage), so it dispatches through the table
+      # like every other system subtype. `data` is always symbol-keyed here:
+      # `parse` rejects any message lacking a `:type` symbol key, so a
+      # string-keyed hash never reaches these classes.
+      'task_updated' => TaskUpdatedMessage
     }.freeze
 
     def self.parse_system_message(data)
-      return parse_task_updated_message(data) if data[:subtype] == 'task_updated'
-
       klass = SYSTEM_MESSAGE_CLASSES[data[:subtype]] || SystemMessage
       klass.new(data)
-    end
-
-    # task_updated carries the changed `status` inside `patch`, not at the top
-    # level, so the generic attribute mapping can't populate it — parse it
-    # explicitly. Parsed defensively: a lifecycle event must never raise, the
-    # patch may be absent or non-Hash (falls back to {}), and uuid/session_id
-    # may be missing. The full patch is preserved on `#patch` for callers that
-    # need more than the status. `data` (and thus `patch`) is always symbol-keyed
-    # here — `parse` rejects any message lacking a `:type` symbol key, so a
-    # string-keyed hash never reaches this method.
-    def self.parse_task_updated_message(data)
-      patch = data[:patch]
-      patch = {} unless patch.is_a?(Hash)
-      message = TaskUpdatedMessage.new(data)
-      message.patch = patch
-      message.status = patch[:status]
-      message
     end
 
     def self.parse_result_message(data)

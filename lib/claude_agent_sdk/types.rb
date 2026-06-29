@@ -390,10 +390,21 @@ module ClaudeAgentSDK
   # notification is sometimes suppressed. Consumers tracking active task IDs
   # should clear them on a terminal status from *either* message.
   #
-  # `status` is derived from patch["status"] (not a top-level field), so this
-  # message is parsed explicitly rather than via the generic attribute mapping.
+  # Parsed defensively in the constructor — a lifecycle event must never raise:
+  # `status` is derived from patch["status"] (not a top-level field); a non-Hash
+  # or absent patch falls back to {}; and `task_id` defaults to "" (never nil,
+  # matching the Python SDK) so consumers can rely on it always being a String.
+  # The full patch is preserved on `#patch` for callers that need more than the
+  # status.
   class TaskUpdatedMessage < SystemMessage
     attr_accessor :task_id, :patch, :status, :uuid, :session_id
+
+    def initialize(attributes = {})
+      super
+      @task_id ||= ''
+      @patch = {} unless @patch.is_a?(Hash)
+      @status = @patch[:status]
+    end
   end
 
   # Result message with cost and usage information

@@ -373,6 +373,15 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.session_id).to be_nil
       end
 
+      it "defaults task_id to '' when absent (parity: never nil for this lifecycle message)" do
+        data = { type: 'system', subtype: 'task_updated', patch: { status: 'killed' } }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::TaskUpdatedMessage)
+        expect(msg.task_id).to eq('')
+        expect(msg.status).to eq('killed')
+      end
+
       %w[pending running paused].each do |status|
         it "parses non-terminal task_updated status #{status.inspect} as not terminal" do
           data = { type: 'system', subtype: 'task_updated', task_id: 'task-abc', patch: { status: status } }
