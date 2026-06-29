@@ -395,13 +395,40 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       expect(tools[0][:_meta]).to eq({ 'anthropic/maxResultSizeChars': 100 })
     end
 
-    it 'falls back to a permissive schema (with a warning) for draft4-incompatible schemas' do
+    it 'keeps a draft4-incompatible-but-modern schema callable' do
       # Valid modern JSON Schema that draft4's metaschema rejects (numeric
-      # exclusiveMinimum) — Python accepts it; the tool must keep working
-      # instead of being permanently uncallable.
+      # exclusiveMinimum) — Python accepts it. Depending on the installed mcp
+      # gem the schema is either accepted natively (mcp >= 0.22 validates it) or
+      # rejected by the draft4 metaschema (older mcp, the SDK falls back to a
+      # permissive schema with a warning). Either way the tool must keep working
+      # instead of being permanently uncallable; that invariant is what this
+      # test pins, independent of which mcp version is resolved (no lockfile).
       tool = ClaudeAgentSDK.create_tool(
         'count', 'Count',
         { type: 'object', properties: { n: { type: 'integer', exclusiveMinimum: 0 } }, required: ['n'] }
+      ) { |args| { content: [{ type: 'text', text: "n=#{args[:n]}" }] } }
+      server3 = described_class.new(name: 'demo3', tools: [tool])
+
+      res = rpc(server3, 'tools/call', { name: 'count', arguments: { n: 3 } })
+      expect(res.dig(:result, :content, 0, :text)).to eq('n=3')
+      expect(res.dig(:result, :isError)).to eq(false)
+    end
+
+    it 'warns and disables validation when the mcp gem rejects a tool schema' do
+      # Deterministic coverage of the fallback path, decoupled from which schemas
+      # a given mcp version's metaschema happens to reject: simulate the gem
+      # raising ArgumentError on the tool's real schema (non-empty properties),
+      # while still letting the permissive fallback ({} properties) build.
+      allow(MCP::Tool::InputSchema).to receive(:new).and_wrap_original do |orig, schema|
+        props = schema[:properties] || schema['properties']
+        raise ArgumentError, 'simulated draft4 incompatibility' if props && !props.empty?
+
+        orig.call(schema)
+      end
+
+      tool = ClaudeAgentSDK.create_tool(
+        'count', 'Count',
+        { type: 'object', properties: { n: { type: 'integer' } }, required: ['n'] }
       ) { |args| { content: [{ type: 'text', text: "n=#{args[:n]}" }] } }
       server3 = described_class.new(name: 'demo3', tools: [tool])
 

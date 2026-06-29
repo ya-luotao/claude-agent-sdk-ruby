@@ -42,21 +42,29 @@ System message with metadata. Task lifecycle events are typed subclasses.
 
 ```ruby
 class SystemMessage
-  attr_accessor :subtype,  # String ('init', 'task_started', 'task_progress', 'task_notification', etc.)
+  attr_accessor :subtype,  # String ('init', 'task_started', 'task_progress', 'task_notification', 'task_updated', etc.)
                 :data      # Hash
 end
 
 # Typed subclasses (all inherit from SystemMessage, so is_a?(SystemMessage) still works)
 class TaskStartedMessage < SystemMessage
-  attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type
+  attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type, :workflow_name, :prompt
 end
 
 class TaskProgressMessage < SystemMessage
-  attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name
+  attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name, :summary
 end
 
 class TaskNotificationMessage < SystemMessage
   attr_accessor :task_id, :status, :output_file, :summary, :uuid, :session_id, :tool_use_id, :usage
+end
+
+# Background task lifecycle state change. `status` is derived from patch["status"].
+# A terminal task can arrive *only* as a TaskUpdatedMessage (no TaskNotificationMessage) —
+# e.g. a TaskStop-killed task reports status "killed" here. Clear tracked task IDs on a
+# terminal status (see TERMINAL_TASK_STATUSES) from *either* message.
+class TaskUpdatedMessage < SystemMessage
+  attr_accessor :task_id, :patch, :status, :uuid, :session_id
 end
 ```
 
@@ -183,5 +191,7 @@ end
 | `HOOK_EVENTS` | Available hook events |
 | `ASSISTANT_MESSAGE_ERRORS` | Possible error types in AssistantMessage |
 | `TASK_NOTIFICATION_STATUSES` | Task lifecycle notification statuses (`completed`, `failed`, `stopped`) |
+| `TASK_UPDATED_STATUSES` | `task_updated` patch statuses (`pending`, `running`, `paused`, `completed`, `failed`, `killed`) |
+| `TERMINAL_TASK_STATUSES` | Statuses meaning a task has finished — spans both vocabularies (`completed`, `failed`, `stopped`, `killed`); clear active-task tracking on any of these |
 | `MCP_SERVER_CONNECTION_STATUSES` | MCP server connection states (`connected`, `failed`, `needs-auth`, `pending`, `disabled`) |
 | `EFFORT_LEVELS` | Effort levels (`low`, `medium`, `high`, `xhigh`, `max`) |

@@ -333,6 +333,19 @@ module ClaudeAgentSDK
   # Task lifecycle notification statuses
   TASK_NOTIFICATION_STATUSES = %w[completed failed stopped].freeze
 
+  # Possible status values reported inside a `task_updated` patch.
+  # pending/running/paused are non-terminal; completed/failed/killed are
+  # terminal. Note: task_updated reports the raw "killed"; the CLI maps that to
+  # "stopped" only when it emits a task_notification.
+  TASK_UPDATED_STATUSES = %w[pending running paused completed failed killed].freeze
+
+  # Task statuses that mean the task has finished and should be cleared from any
+  # "active task" tracking. Spans both lifecycle vocabularies: task_notification
+  # reports "stopped" (the CLI's mapped form of a killed task) while task_updated
+  # reports the raw "killed". Treat the status of a TaskNotificationMessage and a
+  # TaskUpdatedMessage the same way.
+  TERMINAL_TASK_STATUSES = %w[completed failed stopped killed].freeze
+
   # Typed usage data for task progress and notifications
   class TaskUsage < Type
     attr_accessor :total_tokens, :tool_uses, :duration_ms
@@ -356,9 +369,42 @@ module ClaudeAgentSDK
     attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name, :summary
   end
 
-  # Task notification system message (task completed/failed/stopped)
+  # Task notification system message (task completed/failed/stopped).
+  #
+  # Note: not every terminal task emits this message. Background tasks may
+  # instead report completion only via a TaskUpdatedMessage whose patch["status"]
+  # is terminal (see TERMINAL_TASK_STATUSES). Consumers tracking active task IDs
+  # should clear them on a terminal status from *either* message.
   class TaskNotificationMessage < SystemMessage
     attr_accessor :task_id, :status, :output_file, :summary, :uuid, :session_id, :tool_use_id, :usage
+  end
+
+  # Task updated system message (background task lifecycle state change).
+  #
+  # The CLI emits system/task_updated events as a task moves through its
+  # lifecycle. `patch` carries the changed fields (e.g. status, end_time); when
+  # patch["status"] is terminal (see TERMINAL_TASK_STATUSES) the task has
+  # finished. A background task's terminal state can arrive *only* as a
+  # TaskUpdatedMessage with no accompanying TaskNotificationMessage — e.g. a task
+  # stopped via TaskStop reports status "killed" here and the matching
+  # notification is sometimes suppressed. Consumers tracking active task IDs
+  # should clear them on a terminal status from *either* message.
+  #
+  # Parsed defensively in the constructor — a lifecycle event must never raise:
+  # `status` is derived from patch["status"] (not a top-level field); a non-Hash
+  # or absent patch falls back to {}; and `task_id` defaults to "" (never nil,
+  # matching the Python SDK) so consumers can rely on it always being a String.
+  # The full patch is preserved on `#patch` for callers that need more than the
+  # status.
+  class TaskUpdatedMessage < SystemMessage
+    attr_accessor :task_id, :patch, :status, :uuid, :session_id
+
+    def initialize(attributes = {})
+      super
+      @task_id ||= ''
+      @patch = {} unless @patch.is_a?(Hash)
+      @status = @patch[:status]
+    end
   end
 
   # Result message with cost and usage information

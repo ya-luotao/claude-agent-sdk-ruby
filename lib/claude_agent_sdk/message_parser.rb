@@ -51,7 +51,7 @@ module ClaudeAgentSDK
       raise MessageParseError.new("Missing content in user message", data: data) unless content
 
       if content.is_a?(Array)
-        content_blocks = content.map { |block| parse_content_block(block) }
+        content_blocks = parse_content_blocks(content, data)
         UserMessage.new(content: content_blocks, uuid: uuid, parent_tool_use_id: parent_tool_use_id,
                         tool_use_result: tool_use_result)
       else
@@ -63,8 +63,9 @@ module ClaudeAgentSDK
     def self.parse_assistant_message(data)
       content = data.dig(:message, :content)
       raise MessageParseError.new("Missing content in assistant message", data: data) unless content
+      raise MessageParseError.new("Invalid assistant content (expected Array, got #{content.class})", data: data) unless content.is_a?(Array)
 
-      content_blocks = content.map { |block| parse_content_block(block) }
+      content_blocks = parse_content_blocks(content, data)
       AssistantMessage.new(
         content: content_blocks,
         model: data.dig(:message, :model),
@@ -96,7 +97,14 @@ module ClaudeAgentSDK
       'elicitation_complete' => ElicitationCompleteMessage,
       'task_started' => TaskStartedMessage,
       'task_progress' => TaskProgressMessage,
-      'task_notification' => TaskNotificationMessage
+      'task_notification' => TaskNotificationMessage,
+      # task_updated carries `status` inside `patch` (not at the top level) and
+      # defaults task_id to "" — it derives those defensively in its own
+      # constructor (see TaskUpdatedMessage), so it dispatches through the table
+      # like every other system subtype. `data` is always symbol-keyed here:
+      # `parse` rejects any message lacking a `:type` symbol key, so a
+      # string-keyed hash never reaches these classes.
+      'task_updated' => TaskUpdatedMessage
     }.freeze
 
     def self.parse_system_message(data)
@@ -130,6 +138,18 @@ module ClaudeAgentSDK
 
     def self.parse_prompt_suggestion_message(data)
       PromptSuggestionMessage.new(data)
+    end
+
+    # Maps a content Array to typed blocks, guarding each element. A non-Hash
+    # block (e.g. a bare String or nil from a malformed CLI message) raises a
+    # descriptive MessageParseError carrying the full message rather than an
+    # opaque TypeError/NoMethodError from `block[:type]` deep in parsing.
+    def self.parse_content_blocks(content, data)
+      content.map do |block|
+        raise MessageParseError.new("Invalid content block (expected Hash, got #{block.class})", data: data) unless block.is_a?(Hash)
+
+        parse_content_block(block)
+      end
     end
 
     # Accepts blocks with either symbol or string keys — live CLI messages
