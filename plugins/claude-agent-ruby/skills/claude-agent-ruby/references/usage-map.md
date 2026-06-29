@@ -187,6 +187,8 @@ ClaudeAgentSDK.query(prompt: "Do something", options: options) do |msg|
     puts "Task #{msg.task_id} progress (#{msg.summary})"
   when ClaudeAgentSDK::TaskNotificationMessage
     puts "Task #{msg.task_id} #{msg.status}: #{msg.summary}"
+  when ClaudeAgentSDK::TaskUpdatedMessage
+    puts "Task #{msg.task_id} updated: #{msg.status}" if msg.status
   when ClaudeAgentSDK::ToolProgressMessage
     puts "Tool #{msg.tool_name} running (#{msg.elapsed_time_seconds}s)"
   when ClaudeAgentSDK::HookStartedMessage

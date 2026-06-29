@@ -1,6 +1,6 @@
 ---
 name: claude-agent-ruby
-description: Implement or modify Ruby code using the claude-agent-sdk gem. Covers query() one-shot calls, Client-based interactive sessions, streaming input, all 27 hook events, permission callbacks, SDK MCP servers, structured output, bare mode, full sandbox settings (network + filesystem), all 25 message types (including tool_progress, auth_status, prompt_suggestion, hook lifecycle, compact_boundary, session_state_changed, mirror_error), session browsing/mutations, SessionStore transcript mirroring to external storage (S3/Redis/Postgres) with store-backed resume, subagents, file checkpointing, Rails integration, and custom transports. Use this skill whenever the user mentions claude-agent-sdk, Claude Agent Ruby, building AI agents in Ruby, or integrating Claude Code into a Ruby/Rails application.
+description: Implement or modify Ruby code using the claude-agent-sdk gem. Covers query() one-shot calls, Client-based interactive sessions, streaming input, all 27 hook events, permission callbacks, SDK MCP servers, structured output, bare mode, full sandbox settings (network + filesystem), all 26 message types (including tool_progress, auth_status, prompt_suggestion, hook lifecycle, compact_boundary, session_state_changed, mirror_error, task_updated), session browsing/mutations, SessionStore transcript mirroring to external storage (S3/Redis/Postgres) with store-backed resume, subagents, file checkpointing, Rails integration, and custom transports. Use this skill whenever the user mentions claude-agent-sdk, Claude Agent Ruby, building AI agents in Ruby, or integrating Claude Code into a Ruby/Rails application.
 ---
 
 # Claude Agent Ruby SDK
@@ -17,12 +17,12 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
 ## Implementation Checklist
 - Confirm prerequisites (Ruby 3.2+, Node.js, Claude Code CLI).
 - Build `ClaudeAgentSDK::ClaudeAgentOptions` and pass it to `query` or `Client.new`.
-- Handle messages by type — the SDK has **25 typed message classes**:
+- Handle messages by type — the SDK has **26 typed message classes**:
   - Core: `AssistantMessage`, `UserMessage`, `ResultMessage`, `StreamEvent`, `RateLimitEvent`
   - System init: `InitMessage` (session start / /clear — carries uuid, session_id, tools, model, cwd, agents, betas, claude_code_version, permission_mode, slash_commands, output_style, skills, plugins, fast_mode_state)
   - Compaction: `CompactBoundaryMessage` (uuid, session_id, compact_metadata with pre_tokens, trigger, preserved_segment)
   - Status: `StatusMessage` (compacting status, permission mode changes)
-  - Tasks: `TaskStartedMessage` (+ workflow_name, prompt), `TaskProgressMessage` (+ summary), `TaskNotificationMessage`
+  - Tasks: `TaskStartedMessage` (+ workflow_name, prompt), `TaskProgressMessage` (+ summary), `TaskNotificationMessage`, `TaskUpdatedMessage` (lifecycle state change; `status` derived from `patch['status']`, `task_id` always a String — clear active-task tracking when `status` is in `TERMINAL_TASK_STATUSES`)
   - Hooks: `HookStartedMessage`, `HookProgressMessage`, `HookResponseMessage`
   - Sessions: `SessionStateChangedMessage` (idle/running/requires_action)
   - Tools: `ToolProgressMessage` (elapsed_time_seconds per tool), `ToolUseSummaryMessage`

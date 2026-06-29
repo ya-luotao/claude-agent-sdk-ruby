@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-06-29
+
 ### Added
 - `TaskUpdatedMessage` — typed `system`/`task_updated` lifecycle events (Python SDK 0.2.101 / #1016 parity). A background task's terminal state can arrive *only* as a `task_updated` patch with no accompanying `TaskNotificationMessage` (e.g. a `TaskStop`-killed task reports `status: 'killed'` here), so consumers tracking active task IDs no longer hang waiting for a notification that never comes. `status` is derived from `patch['status']` (parsed defensively — a non-Hash/absent patch falls back to `{}`, `task_id` defaults to `''` so it is never nil, and parsing never raises). New `TASK_UPDATED_STATUSES` and `TERMINAL_TASK_STATUSES` constants; the latter spans both lifecycle vocabularies (`task_notification` reports `stopped`, `task_updated` reports the raw `killed`) so a terminal status from *either* message clears active-task tracking.
 
