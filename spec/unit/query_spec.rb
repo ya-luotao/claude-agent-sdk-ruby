@@ -1215,6 +1215,45 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'control request timeouts' do
+    # Covers both await_control_response paths, previously untested:
+    # the reactor path (Async::TimeoutError -> ControlRequestTimeoutError)
+    # and the worker-thread deadline loop used when a control method is
+    # called from a FiberBoundary callback (no reactor on the thread).
+    around do |example|
+      previous = ENV.fetch(ClaudeAgentSDK::Query::CONTROL_REQUEST_TIMEOUT_ENV_VAR, nil)
+      ENV[ClaudeAgentSDK::Query::CONTROL_REQUEST_TIMEOUT_ENV_VAR] = '0.2'
+      example.run
+    ensure
+      if previous
+        ENV[ClaudeAgentSDK::Query::CONTROL_REQUEST_TIMEOUT_ENV_VAR] = previous
+      else
+        ENV.delete(ClaudeAgentSDK::Query::CONTROL_REQUEST_TIMEOUT_ENV_VAR)
+      end
+    end
+
+    let(:query) do
+      described_class.new(transport: instance_double(ClaudeAgentSDK::Transport, write: nil),
+                          is_streaming_mode: true)
+    end
+
+    it 'raises ControlRequestTimeoutError on the reactor when no response arrives' do
+      Async do
+        expect { query.interrupt }
+          .to raise_error(ClaudeAgentSDK::ControlRequestTimeoutError, /interrupt/)
+      end.wait
+    end
+
+    it 'raises ControlRequestTimeoutError on a plain thread when no response arrives' do
+      thread = Thread.new do
+        Thread.current.report_on_exception = false
+        query.interrupt
+      end
+      expect { thread.join }
+        .to raise_error(ClaudeAgentSDK::ControlRequestTimeoutError, /interrupt/)
+    end
+  end
+
   describe 'control request task tracking' do
     it 'does not retain finished tasks for synchronously-handled control requests' do
       # async runs a non-suspending child to completion inside parent.async{},
