@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-03
+
 Design-decision fix batch (Batch C) from the 2026-07-03 full-codebase audit (`AUDIT-2026-07-03.md`, PR #43), plus three teardown-race hardenings from its adversarial review. Minor (not patch) because three fixes change observable behavior for previously-broken flows: a missing settings file with sandbox no longer raises, a raising initial prompt stream no longer notifies observers, and teardown can now preserve (instead of delete) the materialized resume dir.
 
 ### Fixed
