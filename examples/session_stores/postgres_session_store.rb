@@ -42,11 +42,16 @@
 # The empty string is the `subpath` sentinel for the main transcript so the
 # composite primary key is total (Postgres treats NULL as distinct in PKs).
 #
-# Concurrency: the +conn+ must be safe for the SDK's access pattern. The
-# transcript-mirror batcher serializes its flushes and the store-read helpers
-# run sequentially, so a single PG::Connection suffices for typical use. For
-# heavy concurrent use, pass a small wrapper backed by a connection pool
-# (e.g. the `connection_pool` gem) that responds to #exec_params / #exec.
+# Concurrency: pg forbids simultaneous access to one PG::Connection from
+# multiple threads, and the SDK's access pattern DOES cross threads — every
+# mirror append runs on a fresh FiberBoundary worker thread, and an append
+# that exceeds the batcher's send timeout is abandoned in flight while the
+# next drain proceeds, so two calls can overlap even in single-session use.
+# This adapter therefore serializes every DB round-trip through an internal
+# mutex, making a single PG::Connection safe. The mutex also serializes calls
+# through a pool-backed wrapper passed as +conn+; for true parallelism across
+# many concurrent sessions, use one adapter instance (with its own
+# connection) per session instead.
 #
 # JSONB key ordering: entries are stored as `jsonb`, which REORDERS object keys
 # on read-back. This is explicitly allowed by the SessionStore contract — #load
@@ -77,6 +82,12 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
 
     @conn = conn
     @table = table
+    # Serializes all DB round-trips: appends arrive on fresh FiberBoundary
+    # worker threads and can overlap after a batcher send-timeout abandon (see
+    # the Concurrency note above), and pg forbids simultaneous cross-thread
+    # use of one connection. Thread::Mutex is fiber-scheduler-aware, so a
+    # reactor-side caller parks its fiber, not the whole thread.
+    @mutex = Thread::Mutex.new
   end
 
   # Create the table and listing index if absent. Idempotent. Call once at
@@ -84,7 +95,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
   # subpath = '' keeps #list_sessions cheap without indexing every subagent row.
   def create_schema
     # Interpolating @table is safe: validated against IDENT_RE in #initialize.
-    @conn.exec(<<~SQL)
+    db_exec(<<~SQL)
       CREATE TABLE IF NOT EXISTS #{@table} (
         project_key text   NOT NULL,
         session_id  text   NOT NULL,
@@ -112,7 +123,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
     # forked transcript in one call. unnest + WITH ORDINALITY preserves array
     # order, so the bigserial `seq` is assigned in append order and #load's
     # ORDER BY seq replays entries faithfully.
-    @conn.exec_params(
+    db_exec_params(
       <<~SQL,
         INSERT INTO #{@table} (project_key, session_id, subpath, entry, mtime)
         SELECT $1, $2, $3, e::jsonb, $5
@@ -126,7 +137,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
   end
 
   def load(key)
-    result = @conn.exec_params(
+    result = db_exec_params(
       "SELECT entry FROM #{@table} WHERE project_key = $1 AND session_id = $2 AND subpath = $3 ORDER BY seq",
       [key['project_key'], key['session_id'], key['subpath'] || '']
     )
@@ -142,7 +153,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
   end
 
   def list_sessions(project_key)
-    result = @conn.exec_params(
+    result = db_exec_params(
       "SELECT session_id, MAX(mtime) AS mtime FROM #{@table} WHERE project_key = $1 AND subpath = '' GROUP BY session_id",
       [project_key]
     )
@@ -153,7 +164,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
     subpath = key['subpath']
     if subpath && !subpath.empty?
       # Targeted: remove just this subpath's rows.
-      @conn.exec_params(
+      db_exec_params(
         "DELETE FROM #{@table} WHERE project_key = $1 AND session_id = $2 AND subpath = $3",
         [key['project_key'], key['session_id'], subpath]
       )
@@ -161,7 +172,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
     end
 
     # Cascade: main + every subpath under this (project_key, session_id).
-    @conn.exec_params(
+    db_exec_params(
       "DELETE FROM #{@table} WHERE project_key = $1 AND session_id = $2",
       [key['project_key'], key['session_id']]
     )
@@ -169,7 +180,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
   end
 
   def list_subkeys(key)
-    result = @conn.exec_params(
+    result = db_exec_params(
       "SELECT DISTINCT subpath FROM #{@table} WHERE project_key = $1 AND session_id = $2 AND subpath <> ''",
       [key['project_key'], key['session_id']]
     )
@@ -177,6 +188,16 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
   end
 
   private
+
+  # Every DB round-trip funnels through these two, under @mutex (see the
+  # Concurrency note at the top of the file).
+  def db_exec(sql)
+    @mutex.synchronize { @conn.exec(sql) }
+  end
+
+  def db_exec_params(sql, params)
+    @mutex.synchronize { @conn.exec_params(sql, params) }
+  end
 
   # Encode strings as a Postgres array literal for a text[] bind param. Encoded
   # locally (per the array-literal grammar: elements double-quoted, backslash

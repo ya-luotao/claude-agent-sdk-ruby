@@ -77,6 +77,16 @@ module ClaudeAgentSDK
       @closed = false
       @initialization_result = nil
       @transcript_mirror_batcher = nil
+
+      # Cross-thread close marshaling (see #close). Thread::Queue is the one
+      # primitive that is both fiber-scheduler-aware on the reactor side and
+      # thread-safe on the caller side (push -> scheduler#unblock).
+      @close_requests = ::Thread::Queue.new
+      @close_watcher = nil
+      @owning_scheduler = nil
+      # First-caller-wins guard for close_now (see there).
+      @close_mutex = Mutex.new
+      @close_started = false
     end
 
     # Initialize control protocol if in streaming mode
@@ -178,7 +188,24 @@ module ClaudeAgentSDK
       parent = Async::Task.current?
       raise CLIConnectionError, 'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})' unless parent
 
+      @owning_scheduler = Fiber.scheduler
       @task = parent.async { read_messages }
+      # Reactor-side agent for #close calls arriving from foreign threads
+      # (FiberBoundary callbacks, plain user threads): Async::Task#stop needs
+      # the owning thread's Fiber.scheduler, so the off-thread caller hands the
+      # whole close over and waits. Transient: must never keep the reactor
+      # alive, and is stopped automatically when the parent task finishes.
+      # One-shot: after serving a close it is done; a reactor-side close wakes
+      # it via @close_requests.close (pop -> nil) so it exits without serving.
+      @close_watcher = parent.async(transient: true) do
+        if (reply = @close_requests.pop)
+          begin
+            close
+          ensure
+            reply << true
+          end
+        end
+      end
     end
 
     # Spawn a child task that is stopped by #close (mirrors the Python SDK's
@@ -204,6 +231,14 @@ module ClaudeAgentSDK
     # (Client mode with a session_store). nil disables mirroring.
     def set_transcript_mirror_batcher(batcher)
       @transcript_mirror_batcher = batcher
+    end
+
+    # True when the mirror dropped at least one batch (store copy incomplete).
+    # Meaningful after #close, which runs the final flush. Consulted by the
+    # resume-from-store teardown to decide whether the materialized temp dir
+    # holds the only copy of some turns and must be preserved.
+    def mirror_batches_dropped?
+      !!@transcript_mirror_batcher&.batches_dropped?
     end
 
     # Synthesize a `mirror_error` system message and put it on the SDK message
@@ -1152,8 +1187,45 @@ module ClaudeAgentSDK
       end
     end
 
-    # Close the query and transport
+    # Close the query and transport.
+    #
+    # Callable from any thread. Async::Task#stop needs the reactor's
+    # Fiber.scheduler (per-thread), which foreign callers — FiberBoundary
+    # workers running a tool handler / hook that calls client.disconnect, or
+    # plain user threads — don't have; stopping from one raised NoMethodError
+    # and left the read/child tasks running. Such callers hand the close to
+    # the reactor-side watcher (spawned in #start) and wait for it to finish,
+    # so close semantics are identical regardless of the calling thread.
     def close
+      if @close_watcher&.alive? && !Fiber.scheduler.equal?(@owning_scheduler)
+        marshal_close_to_reactor
+      else
+        # Same scheduler (reactor-side caller, including the watcher itself),
+        # or no live watcher: when the reactor is gone its task fibers are
+        # dead, so stopping them no longer touches Fiber.scheduler.
+        close_now
+      end
+    end
+
+    private
+
+    def close_now
+      # First caller wins: a reactor-side close racing a watcher-served
+      # foreign close (or a repeated disconnect) must not re-run teardown
+      # against half-torn-down state — transport.close can suspend mid-reap,
+      # and a second pass would race it. Later callers return immediately;
+      # the SDK's outer teardown ensures (query() / Client#disconnect) close
+      # the transport independently, so nothing is left dangling even if the
+      # first pass failed partway.
+      first_caller = @close_mutex.synchronize do
+        if @close_started
+          false
+        else
+          @close_started = true
+        end
+      end
+      return unless first_caller
+
       @closed = true
       # Wake pending control-request waiters (same shape as the read-loop
       # rescue broadcast): close stops the read task with Async::Stop, which
@@ -1171,10 +1243,43 @@ module ClaudeAgentSDK
       # Stop tracked child tasks (e.g. stream_input) before the read task and
       # transport so a parked input stream can never keep the reactor alive
       # (mirrors Python close() cancelling _child_tasks).
-      @child_tasks.each(&:stop)
-      @child_tasks.clear
-      @task&.stop
+      begin
+        @child_tasks.each(&:stop)
+        @child_tasks.clear
+        @task&.stop
+      rescue NoMethodError, FiberError => e
+        # Schedulerless fallback close (the watcher died unserved) racing
+        # reactor teardown: a task fiber can still be unwinding, and stopping
+        # it needs the owning thread's Fiber.scheduler. The dying reactor
+        # stops its own tasks; the transport close below (plain IO + kill)
+        # still runs. On the reactor itself this is a real bug — re-raise.
+        raise unless Fiber.scheduler.nil?
+
+        warn "Claude SDK: skipped stopping tasks during off-reactor close: #{e.message}"
+      end
       @transport.close
+      # Release a still-parked close watcher: pop returns nil and it exits
+      # without serving. Any foreign-thread close arriving after this point
+      # falls back to a direct close (safe — the fibers are now dead).
+      @close_requests.close
+    end
+
+    # Hand the close to the reactor and wait for completion. Polls watcher
+    # liveness instead of waiting forever: if the reactor shuts down
+    # concurrently (the transient watcher is stopped without serving the
+    # request), no reply will ever arrive — fall back to a direct close,
+    # which is safe once the reactor's fibers are dead.
+    def marshal_close_to_reactor
+      reply = ::Thread::Queue.new
+      @close_requests << reply
+      loop do
+        return if reply.pop(timeout: 0.1)
+        break unless @close_watcher&.alive?
+      end
+      close_now
+    rescue ClosedQueueError
+      # The push raced a reactor-side close_now that closed @close_requests.
+      close_now
     end
   end
 end

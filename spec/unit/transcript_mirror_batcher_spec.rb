@@ -188,4 +188,93 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
       expect(store.load(key).first['uuid']).to eq('z')
     end
   end
+
+  # M4 regression: errors must be reported before the drain releases the lock.
+  # flush/close are barriers — the read loop enqueues its 'end' sentinel right
+  # after the end-of-stream flush returns, so an error reported by a still-
+  # unwinding background drain landed after 'end' and was never delivered.
+  it 'reports on_error before a concurrent flush barrier returns' do
+    slow = Class.new(ClaudeAgentSDK::SessionStore) do
+      # Exceeds send_timeout -> abandoned + reported as a timeout error.
+      def append(_key, _entries) = sleep(0.2)
+      def load(_key) = nil
+    end.new
+
+    errors_at_barrier = nil
+    Async do
+      b = described_class.new(store: slow, projects_dir: projects, on_error: on_error,
+                              send_timeout: 0.05, max_pending_entries: 0, max_pending_bytes: 0)
+      expect do
+        b.enqueue(file_path, [{ 'type' => 'user' }]) # schedules a background eager drain
+        Async::Task.current.sleep(0.01) # let it start: it holds the lock, append in flight
+        b.flush # barrier: must not return before the drain's error is reported
+        errors_at_barrier = errors.length
+      end.to output(/flush failed/).to_stderr
+    end
+    expect(errors_at_barrier).to eq(1)
+  end
+
+  describe '#batches_dropped?' do
+    it 'is false initially and stays false across successful flushes' do
+      Async do
+        b = batcher
+        expect(b.batches_dropped?).to be(false)
+        b.enqueue(file_path, [{ 'type' => 'user' }])
+        b.flush
+        expect(b.batches_dropped?).to be(false)
+      end
+    end
+
+    it 'turns true after a batch exhausts all attempts' do
+      failing = Class.new(ClaudeAgentSDK::SessionStore) do
+        def append(_key, _entries) = raise('always')
+        def load(_key) = nil
+      end.new
+
+      b = nil
+      Async do
+        b = described_class.new(store: failing, projects_dir: projects, on_error: on_error)
+        expect do
+          b.enqueue(file_path, [{ 'type' => 'user' }])
+          b.flush
+        end.to output(/flush failed/).to_stderr
+      end
+      expect(b.batches_dropped?).to be(true)
+    end
+
+    it 'turns true when a frame path cannot be keyed under projects_dir' do
+      Async do
+        b = batcher
+        expect do
+          b.enqueue('/somewhere/else/x.jsonl', [{ 'type' => 'user' }])
+          b.flush
+        end.to output(/dropping mirror frame/).to_stderr
+        expect(b.batches_dropped?).to be(true)
+      end
+    end
+
+    it 'counts a drain cancelled mid-append as dropped (Async::Stop bypasses the rescues)' do
+      # Teardown reads batches_dropped? to decide whether the materialized
+      # resume dir holds the only copy of some turns; a cancelled flush loses
+      # its detached items, so it must count as a drop.
+      slow = Class.new(ClaudeAgentSDK::SessionStore) do
+        # Long plain sleep on the batcher's worker thread; the drain fiber
+        # parks in the thread join, where stop can reach it.
+        def append(_key, _entries) = sleep(3)
+        def load(_key) = nil
+      end.new
+
+      b = nil
+      Async do |task|
+        b = described_class.new(store: slow, projects_dir: projects, on_error: on_error, send_timeout: 10)
+        drainer = task.async do
+          b.enqueue(file_path, [{ 'type' => 'user' }])
+          b.flush
+        end
+        task.sleep(0.05) # flush is now parked inside the append join
+        drainer.stop
+      end
+      expect(b.batches_dropped?).to be(true)
+    end
+  end
 end

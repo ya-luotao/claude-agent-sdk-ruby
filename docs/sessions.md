@@ -152,6 +152,12 @@ during resume materialization, default `60_000`).
 > `.claude/*` still applies (it resolves from `cwd`), and hooks/options passed
 > programmatically via `ClaudeAgentOptions` are unaffected. This matches the
 > Python and TypeScript SDKs.
+>
+> The temp dir is deleted at disconnect — **unless the mirror dropped batches**
+> (adapter failures that exhausted retries, surfaced as `MirrorErrorMessage`):
+> the store copy is then incomplete and the temp dir holds the only copy of the
+> dropped turns, so the SDK scrubs the credential copies, keeps the transcripts,
+> and warns with the preserved path so you can import them into the store.
 
 ### Implementing an adapter
 
