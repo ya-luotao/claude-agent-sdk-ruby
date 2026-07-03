@@ -183,6 +183,21 @@ RSpec.describe ClaudeAgentSDK::Observer do
     it 'handles nil gracefully' do
       expect(ClaudeAgentSDK.resolve_observers(nil)).to eq([])
     end
+
+    it 'warns and skips a Class passed instead of an instance' do
+      # observers: [OTelObserver] (no .new) previously stored the Class as the
+      # observer; every notify raised NoMethodError, which notify_observers
+      # swallows — silent zero instrumentation with zero surfaced errors.
+      resolved = nil
+      expect { resolved = ClaudeAgentSDK.resolve_observers([observer_class]) }
+        .to output(/instance/).to_stderr
+      expect(resolved).to eq([])
+    end
+
+    it 'keeps duck-typed observers implementing any single observer method' do
+      duck = Class.new { def on_message(_msg); end }.new
+      expect(ClaudeAgentSDK.resolve_observers([duck])).to eq([duck])
+    end
   end
 
   describe 'observer wiring in query()' do
