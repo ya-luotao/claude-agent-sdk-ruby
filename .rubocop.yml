@@ -41,3 +41,8 @@ Metrics/BlockLength:
   Exclude:
     - 'spec/**/*'
     - '*.gemspec'
+
+Naming/FileName:
+  Exclude:
+    # Bundler autorequire shim — the dash name IS the point (matches the gem name).
+    - 'lib/claude-agent-sdk.rb'
