@@ -643,3 +643,23 @@ RSpec.describe ClaudeAgentSDK, '.create_sdk_mcp_server' do
     expect(result[:content].first[:text]).to eq('15 + 27 = 42')
   end
 end
+
+RSpec.describe ClaudeAgentSDK, '.extract_sdk_mcp_servers' do
+  it 'extracts live instances from hash and typed sdk configs, ignoring other server types' do
+    server = Object.new
+    servers = described_class.extract_sdk_mcp_servers(
+      hash_sdk: { type: 'sdk', name: 'a', instance: server },
+      # A typed McpSdkServerConfig previously failed the Hash-only guard,
+      # so its in-process server was silently never registered.
+      typed_sdk: ClaudeAgentSDK::McpSdkServerConfig.new(name: 'b', instance: server),
+      http: ClaudeAgentSDK::McpHttpServerConfig.new(url: 'https://example.com/mcp'),
+      stdio: { type: 'stdio', command: 'node' }
+    )
+    expect(servers).to eq(hash_sdk: server, typed_sdk: server)
+  end
+
+  it 'returns an empty hash for non-Hash mcp_servers values' do
+    expect(described_class.extract_sdk_mcp_servers('path/to/config.json')).to eq({})
+    expect(described_class.extract_sdk_mcp_servers(nil)).to eq({})
+  end
+end

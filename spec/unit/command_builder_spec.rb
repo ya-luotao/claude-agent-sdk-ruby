@@ -356,6 +356,30 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       idx = cmd.index('--mcp-config')
       expect(cmd[idx + 1]).not_to include('instance')
     end
+
+    it 'serializes typed server config objects via their wire hash' do
+      # A typed config passed without .to_h previously fell through the
+      # Hash-only handling and JSON.generate stringified it as "#<...>".
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        mcp_servers: {
+          'api' => ClaudeAgentSDK::McpHttpServerConfig.new(url: 'https://example.com/mcp', headers: { 'X-Key' => 'v' })
+        }
+      )
+      cmd = described_class.new('/usr/bin/claude', options).build
+      idx = cmd.index('--mcp-config')
+      parsed = JSON.parse(cmd[idx + 1])
+      expect(parsed['mcpServers']['api']).to eq('type' => 'http', 'url' => 'https://example.com/mcp', 'headers' => { 'X-Key' => 'v' })
+    end
+
+    it 'strips :instance from typed McpSdkServerConfig objects' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        mcp_servers: { 'calc' => ClaudeAgentSDK::McpSdkServerConfig.new(name: 'calc', instance: Object.new) }
+      )
+      cmd = described_class.new('/usr/bin/claude', options).build
+      idx = cmd.index('--mcp-config')
+      parsed = JSON.parse(cmd[idx + 1])
+      expect(parsed['mcpServers']['calc']).to eq('type' => 'sdk', 'name' => 'calc')
+    end
   end
 
   describe 'extra_args' do

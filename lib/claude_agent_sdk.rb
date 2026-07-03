@@ -32,6 +32,21 @@ module ClaudeAgentSDK
     end
   end
 
+  # Internal: pull live SDK MCP server instances out of an mcp_servers Hash.
+  # Accepts both raw Hash configs and typed Mcp*ServerConfig objects — a
+  # McpSdkServerConfig passed without .to_h previously failed the Hash-only
+  # guard, so its in-process server was silently never registered.
+  def self.extract_sdk_mcp_servers(mcp_servers)
+    return {} unless mcp_servers.is_a?(Hash)
+
+    servers = {}
+    mcp_servers.each do |name, config|
+      config = config.to_h if config.is_a?(Type)
+      servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
+    end
+    servers
+  end
+
   # Safely call a method on each observer, suppressing any errors.
   # Each observer is invoked through FiberBoundary so that user code runs
   # on a plain thread (no Fiber scheduler) even when called from inside
@@ -391,12 +406,7 @@ module ClaudeAgentSDK
         transport.connect
 
         # Extract SDK MCP servers
-        sdk_mcp_servers = {}
-        if configured_options.mcp_servers.is_a?(Hash)
-          configured_options.mcp_servers.each do |name, config|
-            sdk_mcp_servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
-          end
-        end
+        sdk_mcp_servers = extract_sdk_mcp_servers(configured_options.mcp_servers)
 
         hooks = nil
         if configured_options.hooks
@@ -903,12 +913,7 @@ module ClaudeAgentSDK
       @transport.connect
 
       # Extract SDK MCP servers
-      sdk_mcp_servers = {}
-      if configured_options.mcp_servers.is_a?(Hash)
-        configured_options.mcp_servers.each do |name, config|
-          sdk_mcp_servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
-        end
-      end
+      sdk_mcp_servers = ClaudeAgentSDK.extract_sdk_mcp_servers(configured_options.mcp_servers)
 
       # Convert hooks to internal format
       hooks = convert_hooks_to_internal_format(configured_options.hooks) if configured_options.hooks
