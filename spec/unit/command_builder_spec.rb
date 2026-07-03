@@ -462,6 +462,64 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       cmd = described_class.new('/usr/bin/claude', options).build
       expect(cmd).to include('--settings', '/path/to/settings.json')
     end
+
+    # Regression (L1): `sandbox: true` — the plausible boolean toggle, which
+    # Python serializes as {"sandbox": true} — crashed with
+    # NoMethodError: undefined method 'empty?' for true.
+    it 'accepts sandbox: true as a boolean toggle' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(sandbox: true)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      idx = cmd.index('--settings')
+      expect(JSON.parse(cmd[idx + 1])).to eq('sandbox' => true)
+    end
+
+    # Python gates on `sandbox is not None`: an explicit false must reach the
+    # CLI so it can override a sandbox enabled in the settings JSON (it was
+    # silently dropped, leaving the sandbox on).
+    it 'forwards an explicit sandbox: false so it can override enabled settings' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        settings: { sandbox: { enabled: true } },
+        sandbox: false
+      )
+      cmd = described_class.new('/usr/bin/claude', options).build
+      idx = cmd.index('--settings')
+      expect(JSON.parse(cmd[idx + 1])).to eq('sandbox' => false)
+    end
+
+    it 'forwards an empty sandbox hash verbatim (Python parity)' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(sandbox: {})
+      cmd = described_class.new('/usr/bin/claude', options).build
+      idx = cmd.index('--settings')
+      expect(JSON.parse(cmd[idx + 1])).to eq('sandbox' => {})
+    end
+
+    it 'omits --settings entirely when sandbox is nil and no settings are given' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).not_to include('--settings')
+    end
+  end
+
+  describe 'output_format' do
+    it 'emits --json-schema for a json_schema output_format' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        output_format: { type: 'json_schema', schema: { 'type' => 'object' } }
+      )
+      cmd = described_class.new('/usr/bin/claude', options).build
+      idx = cmd.index('--json-schema')
+      expect(JSON.parse(cmd[idx + 1])).to eq('type' => 'object')
+    end
+
+    # Regression (L2): a json_schema output_format with a nil/absent schema
+    # emitted `--json-schema null`, which the CLI rejects at spawn. Python
+    # guards `schema is not None`.
+    it 'skips --json-schema when the schema is nil or absent' do
+      [{ type: 'json_schema', schema: nil }, { type: 'json_schema' }].each do |output_format|
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(output_format: output_format)
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).not_to include('--json-schema')
+      end
+    end
   end
 
   describe 'boolean flags' do

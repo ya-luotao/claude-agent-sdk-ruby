@@ -139,6 +139,34 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       head = '{"type":"user","message":{"content":"<command-name>commit</command-name>"}}'
       expect(described_class.extract_first_prompt_from_head(head)).to eq('commit')
     end
+
+    # Regression (M13): the byte pre-filter matches `"type":"user"` nested in
+    # a tool_use input on an assistant line; without a post-parse type
+    # recheck, the assistant's text became the session's first prompt.
+    it 'ignores assistant lines whose tool_use input embeds "type":"user"' do
+      lines = [
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"Assistant reply"},' \
+        '{"type":"tool_use","name":"SendMessage","input":{"payload":"{\"type\":\"user\"}"}}]}}',
+        '{"type":"user","message":{"content":"Real prompt"}}'
+      ].join("\n")
+      expect(described_class.extract_first_prompt_from_head(lines)).to eq('Real prompt')
+    end
+
+    # Regression (M12): Python's shape guards were dropped in the port — one
+    # malformed head line (string message, non-string text, non-Hash entry)
+    # raised NoMethodError/TypeError into read_session_lite's blanket rescue,
+    # silently dropping the WHOLE session from disk listings. Each guard must
+    # skip just the bad line.
+    it 'skips malformed lines instead of dropping the whole session' do
+      lines = [
+        '["type":"user"]',                                                          # invalid JSON → ParserError skip
+        '[{"type":"user"}]',                                                        # non-Hash entry
+        '{"type":"user","message":"bare string with \"type\":\"user\" inside"}',    # non-Hash message
+        '{"type":"user","message":{"content":[{"type":"text","text":42}]}}',        # non-String text
+        '{"type":"user","message":{"content":"Real prompt"}}'
+      ].join("\n")
+      expect(described_class.extract_first_prompt_from_head(lines)).to eq('Real prompt')
+    end
   end
 
   describe '.read_session_lite' do
@@ -167,6 +195,55 @@ RSpec.describe ClaudeAgentSDK::Sessions do
         File.write(file_path, { type: 'user', isSidechain: true, message: { content: 'x' } }.to_json)
 
         expect(described_class.read_session_lite(file_path, '/test')).to be_nil
+      end
+    end
+
+    # Regression (H3): Python's `or` treats "" as falsy but Ruby's || does
+    # not, so a trailing title-clearing entry ({"customTitle":""}) won the
+    # custom_title chain, summary became "", and the presence gate dropped
+    # the ENTIRE session from disk listings. The store path (via
+    # SessionSummary.presence) and Python both fall through to the first
+    # prompt — the two paths must agree.
+    it 'falls through blank customTitle entries instead of dropping the session' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json,
+          { type: 'custom-title', customTitle: '' }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result).not_to be_nil
+        expect(result.summary).to eq('Hello')
+        expect(result.custom_title).to be_nil
+      end
+    end
+
+    it 'treats whitespace-only titles as blank too' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json,
+          { type: 'custom-title', customTitle: '   ' }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result).not_to be_nil
+        expect(result.summary).to eq('Hello')
+      end
+    end
+
+    it 'still prefers a real customTitle over the first prompt' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json,
+          { type: 'custom-title', customTitle: 'My session' }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.summary).to eq('My session')
+        expect(result.custom_title).to eq('My session')
       end
     end
 

@@ -1139,7 +1139,11 @@ module ClaudeAgentSDK
     def receive_messages(&block)
       return enum_for(:receive_messages) unless block
 
-      loop do
+      # NOT Kernel#loop: it rescues StopIteration, so a user block leaking one
+      # (e.g. calling .next on an exhausted Enumerator) would silently end
+      # reception — ResultMessage dropped, the query reported as complete, and
+      # on_error never fired. `while` propagates it like any other error.
+      while true # rubocop:disable Style/InfiniteLoop
         message = @message_queue.dequeue
         break if message[:type] == 'end'
         raise message[:error] if message[:type] == 'error'

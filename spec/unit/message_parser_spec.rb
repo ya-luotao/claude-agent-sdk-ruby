@@ -77,6 +77,15 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
           .to raise_error(ClaudeAgentSDK::MessageParseError, /Invalid content block \(expected Hash, got String\)/)
       end
 
+      # Regression (L5): a non-Hash message field raised a raw TypeError from
+      # message_data[:content] instead of the documented MessageParseError.
+      it 'raises MessageParseError (not a raw TypeError) on a non-Hash message field' do
+        data = { type: 'user', message: 'not a hash' }
+
+        expect { described_class.parse(data) }
+          .to raise_error(ClaudeAgentSDK::MessageParseError, /Invalid message field in user message \(expected Hash, got String\)/)
+      end
+
       it 'includes parent_tool_use_id if present' do
         data = {
           type: 'user',
@@ -234,6 +243,24 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
 
         expect { described_class.parse(data) }
           .to raise_error(ClaudeAgentSDK::MessageParseError, /Invalid content block \(expected Hash, got String\)/)
+      end
+
+      # Regression (L5): a non-Hash message field raised a raw TypeError from
+      # dig instead of the documented MessageParseError.
+      it 'raises MessageParseError (not a raw TypeError) on a non-Hash message field' do
+        data = { type: 'assistant', message: 'not a hash' }
+
+        expect { described_class.parse(data) }
+          .to raise_error(ClaudeAgentSDK::MessageParseError, /Invalid message field in assistant message \(expected Hash, got String\)/)
+      end
+
+      # I1: model is required, like Python — a missing model previously
+      # constructed AssistantMessage(model: nil) silently.
+      it 'raises MessageParseError when model is missing' do
+        data = { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }
+
+        expect { described_class.parse(data) }
+          .to raise_error(ClaudeAgentSDK::MessageParseError, /Missing required field.*model/)
       end
     end
 

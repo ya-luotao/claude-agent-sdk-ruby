@@ -151,7 +151,7 @@ module ClaudeAgentSDK
       end
       return nil if sessions.nil? || sessions.empty?
 
-      sessions.sort_by { |s| -(s['mtime'] || 0) }.each do |cand|
+      sessions.sort_by { |s| -sortable_mtime(s['mtime']) }.each do |cand|
         sid = cand['session_id']
         next unless sid.is_a?(String) && sid.match?(Sessions::UUID_RE)
 
@@ -164,6 +164,22 @@ module ClaudeAgentSDK
         return loaded
       end
       nil
+    end
+
+    # Adapters contractually report mtime as an epoch-ms Numeric (the
+    # conformance suite asserts it), but SQL timestamps naturally arrive as
+    # ISO-8601 Strings through JSON. Unary minus on a String is String#-@
+    # (frozen-string dedup), so String mtimes sorted lexicographically
+    # ASCENDING — --continue silently resumed the OLDEST session — and mixed
+    # Integer/String lists raised a bare ArgumentError. Coerce defensively:
+    # numeric strings and ISO-8601 both order correctly; anything else sorts
+    # last rather than crashing resume.
+    def sortable_mtime(value)
+      case value
+      when Numeric then value
+      when String then Float(value, exception: false) || Sessions.parse_iso_timestamp_ms(value) || 0
+      else 0
+      end
     end
 
     # Run a store call (user code) on a plain thread bounded by timeout_s,
@@ -436,7 +452,7 @@ module ClaudeAgentSDK
       value && (!value.respond_to?(:empty?) || !value.empty?) ? value : nil
     end
 
-    private_class_method :load_candidate, :resolve_continue_candidate, :with_timeout, :write_jsonl,
+    private_class_method :load_candidate, :resolve_continue_candidate, :sortable_mtime, :with_timeout, :write_jsonl,
                          :copy_auth_files, :write_redacted_credentials, :read_keychain_credentials,
                          :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
                          :resolve_dir, :read_file_if_present, :chmod_owner_only, :copy_if_present, :env_value

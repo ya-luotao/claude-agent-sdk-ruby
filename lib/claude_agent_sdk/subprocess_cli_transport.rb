@@ -556,9 +556,14 @@ module ClaudeAgentSDK
       # concurrently and reset it) or already waited on (Errno::ECHILD on
       # double-wait). Both are non-fatal — the message loop just exits.
       returncode = nil
+      termsig = nil
       begin
         status = @process&.value
+        # exitstatus is nil when the child died from a signal (OOM-kill
+        # SIGKILL, SIGSEGV, ...) — that end-of-stream is a TRUNCATED response,
+        # not a clean success. Python surfaces it as a negative returncode.
         returncode = status&.exitstatus
+        termsig = status.termsig if status&.signaled?
       rescue Errno::ECHILD
         # Process was already reaped (e.g., by close()); no exit status to surface.
         returncode = nil
@@ -571,7 +576,7 @@ module ClaudeAgentSDK
       # #close still sees @process (left set here) for its termination logic.
       self.class.deregister_active_process(@process)
 
-      if returncode && returncode != 0
+      if termsig || (returncode && returncode != 0)
         # Wait briefly for stderr thread to finish draining
         @stderr_task&.join(1)
 
@@ -579,8 +584,9 @@ module ClaudeAgentSDK
         stderr_text = 'No stderr output captured' if stderr_text.empty?
 
         @exit_error = ProcessError.new(
-          "Command failed with exit code #{returncode}",
-          exit_code: returncode,
+          termsig ? "Command terminated by signal #{termsig}" : "Command failed with exit code #{returncode}",
+          # Negative-signal exit_code mirrors Python's subprocess returncode.
+          exit_code: termsig ? -termsig : returncode,
           stderr: stderr_text
         )
         raise @exit_error

@@ -1586,6 +1586,15 @@ module ClaudeAgentSDK
 
     def dup_with(**changes)
       new_options = self.dup
+      # A shallow #dup shares nested containers, so mutating a derived copy
+      # (e.g. `variant.allowed_tools << 'Bash'`) would bleed into the base and
+      # every sibling — including the security-relevant allow/deny lists.
+      # Deep-dup Hash/Array containers only; non-container values (procs,
+      # SDK MCP server instances, store adapters) must keep their identity.
+      new_options.instance_variables.each do |ivar|
+        value = new_options.instance_variable_get(ivar)
+        new_options.instance_variable_set(ivar, deep_dup_containers(value)) if value.is_a?(Hash) || value.is_a?(Array)
+      end
       changes.each { |key, value| new_options[key] = value }
       new_options
     end
@@ -1687,10 +1696,20 @@ module ClaudeAgentSDK
 
     # Recurse ONLY into Hash/Array; leaves keep object identity (observer
     # factories, callbacks, SDK MCP server instances must not be duped).
+    # Rebuild via dup.clear (never Hash#to_h / Array#map) to preserve
+    # container SUBCLASSES: to_h flattens e.g. Rails'
+    # HashWithIndifferentAccess into a plain Hash, silently breaking symbol
+    # lookups on the copy (config[:type] == 'sdk' → nil).
     def deep_dup_containers(value)
       case value
-      when Hash then value.to_h { |k, v| [k, deep_dup_containers(v)] }
-      when Array then value.map { |v| deep_dup_containers(v) }
+      when Hash
+        copy = value.dup.clear
+        value.each { |k, v| copy[k] = deep_dup_containers(v) }
+        copy
+      when Array
+        copy = value.dup.clear
+        value.each { |v| copy << deep_dup_containers(v) }
+        copy
       else value
       end
     end

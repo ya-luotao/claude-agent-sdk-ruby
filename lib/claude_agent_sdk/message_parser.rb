@@ -46,6 +46,9 @@ module ClaudeAgentSDK
       tool_use_result = data[:tool_use_result]
       message_data = data[:message]
       raise MessageParseError.new("Missing message field in user message", data: data) unless message_data
+      # A non-Hash message (malformed CLI output) raised a raw TypeError from
+      # message_data[:content] instead of the documented MessageParseError.
+      raise MessageParseError.new("Invalid message field in user message (expected Hash, got #{message_data.class})", data: data) unless message_data.is_a?(Hash)
 
       content = message_data[:content]
       raise MessageParseError.new("Missing content in user message", data: data) unless content
@@ -61,19 +64,27 @@ module ClaudeAgentSDK
     end
 
     def self.parse_assistant_message(data)
-      content = data.dig(:message, :content)
+      message_data = data[:message]
+      # A non-Hash message (malformed CLI output) raised a raw TypeError from
+      # dig instead of the documented MessageParseError.
+      raise MessageParseError.new("Invalid message field in assistant message (expected Hash, got #{message_data.class})", data: data) unless message_data.is_a?(Hash)
+
+      content = message_data[:content]
       raise MessageParseError.new("Missing content in assistant message", data: data) unless content
       raise MessageParseError.new("Invalid assistant content (expected Array, got #{content.class})", data: data) unless content.is_a?(Array)
 
       content_blocks = parse_content_blocks(content, data)
       AssistantMessage.new(
         content: content_blocks,
-        model: data.dig(:message, :model),
+        # model is required, like Python — fetch raises KeyError when absent,
+        # which parse's rescue wraps into MessageParseError, instead of
+        # silently constructing model: nil.
+        model: message_data.fetch(:model),
         parent_tool_use_id: data[:parent_tool_use_id],
         error: data[:error], # authentication_failed, billing_error, rate_limit, invalid_request, server_error, unknown
-        usage: data.dig(:message, :usage),
-        message_id: data.dig(:message, :id),
-        stop_reason: data.dig(:message, :stop_reason),
+        usage: message_data[:usage],
+        message_id: message_data[:id],
+        stop_reason: message_data[:stop_reason],
         session_id: data[:session_id],
         uuid: data[:uuid]
       )

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Behavioral fix batch (Batch B) from the 2026-07-03 full-codebase audit (`AUDIT-2026-07-03.md`). Every fix aligns code with a documented contract or Python SDK behavior and changes behavior only for inputs that previously produced wrong results, hangs, or crashes.
+
+### Fixed
+- A CLI process killed by a signal (OOM-kill SIGKILL, SIGSEGV, ...) now raises `ProcessError` ("Command terminated by signal N", `exit_code: -N` — Python returncode parity) instead of reporting a **truncated** response as clean end-of-stream success.
+- A trailing title-clearing entry (`{"customTitle":""}`, or whitespace-only) no longer silently drops the whole session from `list_sessions`/`get_session_info` disk listings: blank values now fall through the summary/title fallback chains exactly like the SessionStore path and Python (`or` semantics).
+- `continue_conversation: true` with a SessionStore adapter that reports mtimes as Strings (the natural SQL-timestamp-through-JSON shape) no longer silently resumes the **oldest** session: String mtimes (ISO-8601 or numeric) are coerced and ordered chronologically, and mixed Integer/String lists no longer raise a bare `ArgumentError`. The conformance suite already pins the epoch-ms Numeric contract.
+- One malformed line in a transcript head (non-Hash entry, string `message`, non-string `text`) no longer drops the whole session from disk listings — the guards ported from Python skip just the bad line. An assistant line whose tool_use input embeds `"type":"user"` can no longer donate its text as the session's first prompt.
+- A user message block that leaks `StopIteration` (e.g. `.next` on an exhausted Enumerator) no longer silently ends message reception mid-turn — previously the `ResultMessage` was dropped and `receive_response`/`query()` returned as if the turn had completed; the error now propagates.
+- Top-level `query()` now validates the prompt like `Client#query` and fails fast at the call site: a bare Hash (which would stream `[key, value]` garbage to the CLI) and non-String/non-`#each` prompts (which hung forever) raise `ArgumentError`.
+- One-shot `query()` now sends `exclude_dynamic_sections` from a preset system prompt in the initialize request (it was silently dropped; `Client` and Python both send it).
+- `ClaudeAgentOptions#dup_with` now deep-duplicates nested containers: mutating a derived variant (`variant.allowed_tools << 'Bash'`) no longer bleeds into the base options and every sibling variant — including the security-relevant allow/deny lists. Leaf objects (callbacks, SDK MCP server instances, store adapters) keep identity, mirroring `Configuration#default_options`. Container deep-dup (both here and in `Configuration#default_options` merging) now also preserves Hash/Array subclasses — a Rails `HashWithIndifferentAccess` config no longer flattens into a plain Hash whose symbol lookups silently return nil.
+- Sandbox gating in command building now matches Python's `sandbox is not None`: `sandbox: true` (the boolean toggle) no longer crashes with `NoMethodError: undefined method 'empty?' for true`, and an explicit `sandbox: false` / `{}` is forwarded to the CLI instead of silently dropped — so `sandbox: false` can actually override a sandbox enabled in the settings JSON.
+- `output_format: { type: 'json_schema' }` with a nil/absent schema no longer emits `--json-schema null` (which the CLI rejects at spawn); the flag is skipped, matching Python's `schema is not None` guard.
+- A non-Hash `message` field in a user/assistant CLI message now raises the documented `MessageParseError` instead of a raw `TypeError`.
+- Assistant messages missing `message.model` now raise `MessageParseError` (Python parity) instead of silently constructing `AssistantMessage(model: nil)`.
+
 ## [0.19.1] - 2026-07-03
 
 Zero-risk fix batch from the 2026-07-03 full-codebase audit (`AUDIT-2026-07-03.md`, PR #41).

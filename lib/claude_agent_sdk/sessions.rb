@@ -236,6 +236,19 @@ module ClaudeAgentSDK
       str
     end
 
+    # Python's `x or None` for the summary/title fallback chains: Ruby's ||
+    # treats "" as truthy, so a CLI title-clearing entry ({"customTitle":""})
+    # would win over a real first prompt and then fail the summary presence
+    # check — silently dropping the whole session from disk listings (the
+    # store path, SessionSummary.presence, already falls through correctly).
+    # Whitespace-only counts as blank because the final gate strips.
+    def presence(val)
+      return nil if val.nil?
+      return nil if val.is_a?(String) && val.strip.empty?
+
+      val
+    end
+
     # Extract the first meaningful user prompt from the head of a JSONL file
     def extract_first_prompt_from_head(head)
       command_fallback = nil
@@ -247,16 +260,8 @@ module ClaudeAgentSDK
         next if line.include?('"isCompactSummary":true') || line.include?('"isCompactSummary": true')
 
         entry = JSON.parse(line, symbolize_names: false)
-        content = entry.dig('message', 'content')
-        next unless content
-
-        texts = if content.is_a?(String)
-                  [content]
-                elsif content.is_a?(Array)
-                  content.filter_map { |block| block['text'] if block.is_a?(Hash) && block['type'] == 'text' }
-                else
-                  next
-                end
+        texts = user_entry_texts(entry)
+        next unless texts
 
         texts.each do |text|
           text = text.gsub(/\n+/, ' ').strip
@@ -276,6 +281,29 @@ module ClaudeAgentSDK
       end
 
       command_fallback || ''
+    end
+
+    # Text blocks of a genuine user entry, or nil when the line should be
+    # skipped. Shape guards ported from Python: the byte pre-filter can match
+    # `"type":"user"` nested inside a tool_use input on an assistant line, so
+    # the parsed type is rechecked; and a malformed head line (non-Hash entry,
+    # string `message`, non-string `text`) must skip just that line rather
+    # than blow up into read_session_lite's blanket rescue and silently drop
+    # the whole session from disk listings.
+    def user_entry_texts(entry)
+      return nil unless entry.is_a?(Hash) && entry['type'] == 'user'
+
+      message = entry['message']
+      return nil unless message.is_a?(Hash)
+
+      content = message['content']
+      if content.is_a?(String)
+        [content]
+      elsif content.is_a?(Array)
+        content.filter_map do |block|
+          block['text'] if block.is_a?(Hash) && block['type'] == 'text' && block['text'].is_a?(String)
+        end
+      end
     end
 
     # Read a single session file with lite (head/tail) strategy
@@ -311,15 +339,17 @@ module ClaudeAgentSDK
     def build_session_info(file_path, head, tail, stat, project_path)
       # User-set title (customTitle) wins over AI-generated title (aiTitle).
       # Head fallback covers short sessions where the title entry may not be in tail.
-      custom_title = extract_json_string_field(tail, 'customTitle', last: true) ||
-                     extract_json_string_field(head, 'customTitle', last: true) ||
-                     extract_json_string_field(tail, 'aiTitle', last: true) ||
-                     extract_json_string_field(head, 'aiTitle', last: true)
+      # Each candidate passes through presence so a blank value (e.g. a
+      # trailing title-clearing entry) falls through instead of short-circuiting.
+      custom_title = presence(extract_json_string_field(tail, 'customTitle', last: true)) ||
+                     presence(extract_json_string_field(head, 'customTitle', last: true)) ||
+                     presence(extract_json_string_field(tail, 'aiTitle', last: true)) ||
+                     presence(extract_json_string_field(head, 'aiTitle', last: true))
       first_prompt = extract_first_prompt_from_head(head)
       # lastPrompt tail entry shows what the user was most recently doing.
       summary = custom_title ||
-                extract_json_string_field(tail, 'lastPrompt', last: true) ||
-                extract_json_string_field(tail, 'summary', last: true) ||
+                presence(extract_json_string_field(tail, 'lastPrompt', last: true)) ||
+                presence(extract_json_string_field(tail, 'summary', last: true)) ||
                 first_prompt
       return nil if summary.nil? || summary.strip.empty?
 
@@ -1235,7 +1265,7 @@ module ClaudeAgentSDK
                          :find_session_file, :stat_candidate, :resolve_subagents_dir,
                          :collect_agent_files, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
-                         :filter_visible_messages, :read_head_tail, :build_session_info,
+                         :filter_visible_messages, :read_head_tail, :build_session_info, :presence, :user_entry_texts,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
                          :derive_info_from_entries, :mtime_from_entries, :apply_sort_limit_offset,
                          :filter_transcript_entries, :entries_to_messages,
