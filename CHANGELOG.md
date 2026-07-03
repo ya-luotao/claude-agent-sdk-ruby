@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Final batch (Batch D) from the 2026-07-03 full-codebase audit, closing it out: tests/docs/examples plus the three recorded split-verdict findings (P1-P3).
+## [0.22.0] - 2026-07-03
+
+Final batch (Batch D) from the 2026-07-03 full-codebase audit, closing it out: tests/docs/examples plus the three recorded split-verdict findings (P1-P3). Minor because the conformance suite gained a contract (an adapter that passed 0.21.0 can now fail contract 16) and new API surface (`check_uuid_dedupe:`).
 
 ### Fixed
 - OTel observer: the next turn's prompt is no longer dropped from the new trace after an interrupted turn or `/clear` (a superseding init with no ResultMessage) — prompts arriving while the current trace already has its input are buffered for the next trace instead of being latched out; a prompt queued mid-turn now labels its own trace too.
