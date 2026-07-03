@@ -3,6 +3,7 @@
 require 'spec_helper'
 require 'tmpdir'
 require 'json'
+require 'timeout'
 
 RSpec.describe ClaudeAgentSDK::SessionMutations do
   let(:session_id) { '550e8400-e29b-41d4-a716-446655440000' }
@@ -269,6 +270,26 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
         expect do
           described_class.fork_session(session_id: session_id, directory: tmpdir)
         end.not_to raise_error
+      end
+    end
+
+    it 'terminates on a progress-entry parentUuid cycle instead of hanging' do
+      # resolve_parent_uuid walks the chain skipping progress entries; without
+      # a visited set, a cycle among progress entries (corrupt/malformed
+      # transcript) spun forever — every other chain walker guards this.
+      Dir.mktmpdir do |tmpdir|
+        content = build_session_content([
+                                          { 'type' => 'progress', 'uuid' => 'p1', 'parentUuid' => 'p2' },
+                                          { 'type' => 'progress', 'uuid' => 'p2', 'parentUuid' => 'p1' },
+                                          { 'type' => 'user', 'uuid' => msg1_uuid, 'parentUuid' => 'p1',
+                                            'message' => { 'content' => 'hello' } }
+                                        ])
+        setup_session(tmpdir, content)
+
+        result = Timeout.timeout(5) do
+          described_class.fork_session(session_id: session_id, directory: tmpdir)
+        end
+        expect(result.session_id).to match(ClaudeAgentSDK::Sessions::UUID_RE)
       end
     end
 

@@ -523,9 +523,13 @@ module ClaudeAgentSDK
       JSON.generate(forked)
     end
 
-    # Walk up parentUuid chain skipping progress entries.
+    # Walk up parentUuid chain skipping progress entries. The visited set
+    # guards against parentUuid cycles among progress entries (corrupt
+    # transcripts) like every other chain walker — an unguarded walk spun
+    # forever and hung both fork paths.
     def resolve_parent_uuid(parent_id, by_uuid, uuid_mapping)
-      while parent_id
+      visited = Set.new
+      while parent_id && visited.add?(parent_id)
         parent = by_uuid[parent_id]
         break unless parent
         return uuid_mapping[parent_id] if parent['type'] != 'progress'
