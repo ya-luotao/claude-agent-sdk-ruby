@@ -1215,6 +1215,69 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'control request timeouts' do
+    # Covers both await_control_response paths, previously untested:
+    # the reactor path (Async::TimeoutError -> ControlRequestTimeoutError)
+    # and the worker-thread deadline loop used when a control method is
+    # called from a FiberBoundary callback (no reactor on the thread).
+    around do |example|
+      previous = ENV.fetch(ClaudeAgentSDK::Query::CONTROL_REQUEST_TIMEOUT_ENV_VAR, nil)
+      ENV[ClaudeAgentSDK::Query::CONTROL_REQUEST_TIMEOUT_ENV_VAR] = '0.2'
+      example.run
+    ensure
+      if previous
+        ENV[ClaudeAgentSDK::Query::CONTROL_REQUEST_TIMEOUT_ENV_VAR] = previous
+      else
+        ENV.delete(ClaudeAgentSDK::Query::CONTROL_REQUEST_TIMEOUT_ENV_VAR)
+      end
+    end
+
+    let(:query) do
+      described_class.new(transport: instance_double(ClaudeAgentSDK::Transport, write: nil),
+                          is_streaming_mode: true)
+    end
+
+    it 'raises ControlRequestTimeoutError on the reactor when no response arrives' do
+      Async do
+        expect { query.interrupt }
+          .to raise_error(ClaudeAgentSDK::ControlRequestTimeoutError, /interrupt/)
+      end.wait
+    end
+
+    it 'raises ControlRequestTimeoutError on a plain thread when no response arrives' do
+      thread = Thread.new do
+        Thread.current.report_on_exception = false
+        query.interrupt
+      end
+      expect { thread.join }
+        .to raise_error(ClaudeAgentSDK::ControlRequestTimeoutError, /interrupt/)
+    end
+  end
+
+  describe 'control request task tracking' do
+    it 'does not retain finished tasks for synchronously-handled control requests' do
+      # async runs a non-suspending child to completion inside parent.async{},
+      # so the handler's ensure-delete fired BEFORE the read loop registered
+      # the task — every synchronously-handled request (MCP metadata,
+      # unsupported subtypes) leaked a finished Async::Task into the map.
+      messages = [
+        { type: 'control_request', request_id: 'req_sync_1', request: { subtype: 'not_a_real_subtype' } },
+        { type: 'control_request', request_id: 'req_sync_2', request: { subtype: 'not_a_real_subtype' } }
+      ]
+      transport = Class.new do
+        def initialize(messages) = (@messages = messages)
+        def read_messages(&block) = @messages.each(&block)
+        def write(_str) = nil
+        def close = nil
+      end.new(messages)
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      Async { query.send(:read_messages) }.wait
+
+      expect(query.instance_variable_get(:@inflight_control_request_tasks)).to be_empty
+    end
+  end
+
   describe 'transcript mirror wiring' do
     # Minimal transport that replays a fixed list of frames through read_messages.
     def fake_transport(messages)

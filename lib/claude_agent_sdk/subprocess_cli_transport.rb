@@ -494,6 +494,13 @@ module ClaudeAgentSDK
         # an oversized line was fully allocated BEFORE the 1MB cap could
         # fire — unbounded memory on hostile/buggy stdout.
         @stdout.each_line("\n", @max_buffer_size + 1) do |line|
+          # stdout is UTF-8-tagged but the CLI can emit invalid bytes (echoed
+          # binary/latin-1 output). strip/lstrip below raise on invalid
+          # encoding, which would abort the whole stream and drop buffered
+          # valid frames — scrub the one bad line instead (the version-probe
+          # path guards the same way).
+          line = line.scrub unless line.valid_encoding?
+
           # Position-aware whitespace handling: a chunk of an over-limit line
           # must keep its interior whitespace — a blanket per-chunk strip
           # deleted spaces inside JSON strings straddling the chunk boundary

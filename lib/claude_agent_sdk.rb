@@ -23,13 +23,43 @@ require 'securerandom'
 
 # Claude Agent SDK for Ruby
 module ClaudeAgentSDK
+  # The duck-typed observer surface probed by resolve_observers — implementing
+  # any one of these counts as an observer (see Observer's no-op defaults).
+  OBSERVER_INTERFACE = %i[on_user_prompt on_message on_error on_close].freeze
+
   # Resolve observers array: callables (Proc/lambda) are invoked to produce
   # a fresh instance per query/session (thread-safe); plain objects are used as-is.
   # Array() guards against nil (e.g., when observers: nil is passed explicitly).
+  # Anything implementing none of the observer methods is warned about and
+  # skipped — most commonly a Class passed instead of an instance, which
+  # previously produced silent zero instrumentation (every notify raised
+  # NoMethodError, swallowed by notify_observers' error containment).
   def self.resolve_observers(observers)
-    Array(observers).map do |obs|
-      obs.respond_to?(:call) ? obs.call : obs
+    Array(observers).filter_map do |obs|
+      resolved = obs.respond_to?(:call) ? obs.call : obs
+      if OBSERVER_INTERFACE.none? { |m| resolved.respond_to?(m) }
+        label = resolved.is_a?(Module) ? resolved : resolved.class
+        hint = resolved.is_a?(Module) ? " — pass an instance (#{resolved}.new) or a factory lambda" : ''
+        warn "ClaudeAgentSDK: ignoring observer #{label}: it implements none of #{OBSERVER_INTERFACE.join('/')}#{hint}"
+        next nil
+      end
+      resolved
     end
+  end
+
+  # Internal: pull live SDK MCP server instances out of an mcp_servers Hash.
+  # Accepts both raw Hash configs and typed Mcp*ServerConfig objects — a
+  # McpSdkServerConfig passed without .to_h previously failed the Hash-only
+  # guard, so its in-process server was silently never registered.
+  def self.extract_sdk_mcp_servers(mcp_servers)
+    return {} unless mcp_servers.is_a?(Hash)
+
+    servers = {}
+    mcp_servers.each do |name, config|
+      config = config.to_h if config.is_a?(Type)
+      servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
+    end
+    servers
   end
 
   # Safely call a method on each observer, suppressing any errors.
@@ -391,12 +421,7 @@ module ClaudeAgentSDK
         transport.connect
 
         # Extract SDK MCP servers
-        sdk_mcp_servers = {}
-        if configured_options.mcp_servers.is_a?(Hash)
-          configured_options.mcp_servers.each do |name, config|
-            sdk_mcp_servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
-          end
-        end
+        sdk_mcp_servers = extract_sdk_mcp_servers(configured_options.mcp_servers)
 
         hooks = nil
         if configured_options.hooks
@@ -903,12 +928,7 @@ module ClaudeAgentSDK
       @transport.connect
 
       # Extract SDK MCP servers
-      sdk_mcp_servers = {}
-      if configured_options.mcp_servers.is_a?(Hash)
-        configured_options.mcp_servers.each do |name, config|
-          sdk_mcp_servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
-        end
-      end
+      sdk_mcp_servers = ClaudeAgentSDK.extract_sdk_mcp_servers(configured_options.mcp_servers)
 
       # Convert hooks to internal format
       hooks = convert_hooks_to_internal_format(configured_options.hooks) if configured_options.hooks

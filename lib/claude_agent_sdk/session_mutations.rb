@@ -280,11 +280,17 @@ module ClaudeAgentSDK
       nil
     end
 
+    # A candidate counts only when it exists AND is non-empty — a 0-byte stub
+    # in one project dir must not stop the search when the real transcript
+    # lives under another (worktree) project dir. Mirrors the read path
+    # (Sessions.stat_candidate) and the append path (try_append).
     def try_project_dir(file_name, project_dir)
       return nil unless project_dir
 
       candidate = File.join(project_dir, file_name)
-      File.exist?(candidate) ? [candidate, project_dir] : nil
+      File.size(candidate).positive? ? [candidate, project_dir] : nil
+    rescue SystemCallError
+      nil
     end
 
     def find_in_all_projects(file_name)
@@ -295,8 +301,8 @@ module ClaudeAgentSDK
         pd = File.join(projects_dir, child)
         next unless File.directory?(pd)
 
-        candidate = File.join(pd, file_name)
-        return [candidate, pd] if File.exist?(candidate)
+        result = try_project_dir(file_name, pd)
+        return result if result
       end
       nil
     end
@@ -523,9 +529,13 @@ module ClaudeAgentSDK
       JSON.generate(forked)
     end
 
-    # Walk up parentUuid chain skipping progress entries.
+    # Walk up parentUuid chain skipping progress entries. The visited set
+    # guards against parentUuid cycles among progress entries (corrupt
+    # transcripts) like every other chain walker — an unguarded walk spun
+    # forever and hung both fork paths.
     def resolve_parent_uuid(parent_id, by_uuid, uuid_mapping)
-      while parent_id
+      visited = Set.new
+      while parent_id && visited.add?(parent_id)
         parent = by_uuid[parent_id]
         break unless parent
         return uuid_mapping[parent_id] if parent['type'] != 'progress'

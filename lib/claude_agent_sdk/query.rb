@@ -256,7 +256,11 @@ module ClaudeAgentSDK
               @inflight_control_request_tasks.delete(request_id) if request_id
             end
           end
-          @inflight_control_request_tasks[request_id] = handler_task if request_id
+          # A handler that never suspends (MCP metadata, unsupported-subtype
+          # error path) already ran to completion inside the async{} above —
+          # its ensure-delete fired before this insert, so registering it here
+          # would leak a finished task in the map forever.
+          @inflight_control_request_tasks[request_id] = handler_task if request_id && !handler_task.finished?
         when 'control_cancel_request'
           request_id = message[:request_id] || message[:requestId]
           task = request_id ? @inflight_control_request_tasks[request_id] : nil

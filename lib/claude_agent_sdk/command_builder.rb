@@ -306,6 +306,9 @@ module ClaudeAgentSDK
       if @options.mcp_servers.is_a?(Hash)
         servers_for_cli = {}
         @options.mcp_servers.each do |name, config|
+          # Typed Mcp*ServerConfig objects serialize via their wire hash —
+          # without this they'd JSON-stringify as "#<...>" via to_s.
+          config = config.to_h if config.is_a?(Type)
           servers_for_cli[name] = if config.is_a?(Hash) && config[:type] == "sdk"
                                     config.except(:instance)
                                   else
