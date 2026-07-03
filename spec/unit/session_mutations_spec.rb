@@ -231,6 +231,46 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
     end
   end
 
+  describe 'zero-byte stub fall-through' do
+    let(:user_uuid) { '44444444-4444-4444-4444-444444444444' }
+
+    # A 0-byte <sid>.jsonl stub in the primary project dir must not stop the
+    # file search when the real transcript lives under a worktree's project
+    # dir — the read path (Sessions.stat_candidate) and the append path
+    # already skip stubs. The mutation locator accepted them: delete_session
+    # removed the stub while the real data survived, and fork_session raised
+    # 'has no messages to fork' though a forkable transcript existed.
+    it 'forks and deletes the worktree transcript instead of stopping at a 0-byte stub' do
+      Dir.mktmpdir do |tmpdir|
+        main_path = File.join(tmpdir, 'main')
+        wt_path = File.join(tmpdir, 'wt')
+        FileUtils.mkdir_p(main_path)
+        FileUtils.mkdir_p(wt_path)
+        main_real = File.realpath(main_path).unicode_normalize(:nfc)
+        wt_real = File.realpath(wt_path).unicode_normalize(:nfc)
+        config = File.join(tmpdir, 'config')
+        main_proj = File.join(config, 'projects', ClaudeAgentSDK::Sessions.sanitize_path(main_real))
+        wt_proj = File.join(config, 'projects', ClaudeAgentSDK::Sessions.sanitize_path(wt_real))
+        FileUtils.mkdir_p(main_proj)
+        FileUtils.mkdir_p(wt_proj)
+        stub_file = File.join(main_proj, "#{session_id}.jsonl")
+        real_file = File.join(wt_proj, "#{session_id}.jsonl")
+        File.write(stub_file, '')
+        File.write(real_file,
+                   "{\"type\":\"user\",\"uuid\":\"#{user_uuid}\",\"parentUuid\":null,\"message\":{\"content\":\"hello\"}}\n")
+        allow(ClaudeAgentSDK::Sessions).to receive(:config_dir).and_return(config)
+        allow(ClaudeAgentSDK::Sessions).to receive(:detect_worktrees).and_return([wt_real])
+
+        fork = described_class.fork_session(session_id: session_id, directory: main_path)
+        expect(File.exist?(File.join(wt_proj, "#{fork.session_id}.jsonl"))).to be true
+
+        described_class.delete_session(session_id: session_id, directory: main_path)
+        expect(File.exist?(real_file)).to be false
+        expect(File.exist?(stub_file)).to be true
+      end
+    end
+  end
+
   describe '.fork_session' do
     let(:msg1_uuid) { '11111111-1111-1111-1111-111111111111' }
     let(:msg2_uuid) { '22222222-2222-2222-2222-222222222222' }

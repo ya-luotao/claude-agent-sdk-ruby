@@ -280,11 +280,17 @@ module ClaudeAgentSDK
       nil
     end
 
+    # A candidate counts only when it exists AND is non-empty — a 0-byte stub
+    # in one project dir must not stop the search when the real transcript
+    # lives under another (worktree) project dir. Mirrors the read path
+    # (Sessions.stat_candidate) and the append path (try_append).
     def try_project_dir(file_name, project_dir)
       return nil unless project_dir
 
       candidate = File.join(project_dir, file_name)
-      File.exist?(candidate) ? [candidate, project_dir] : nil
+      File.size(candidate).positive? ? [candidate, project_dir] : nil
+    rescue SystemCallError
+      nil
     end
 
     def find_in_all_projects(file_name)
@@ -295,8 +301,8 @@ module ClaudeAgentSDK
         pd = File.join(projects_dir, child)
         next unless File.directory?(pd)
 
-        candidate = File.join(pd, file_name)
-        return [candidate, pd] if File.exist?(candidate)
+        result = try_project_dir(file_name, pd)
+        return result if result
       end
       nil
     end
