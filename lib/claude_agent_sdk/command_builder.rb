@@ -156,8 +156,13 @@ module ClaudeAgentSDK
       cmd.push("--resume-session-at", @options.resume_session_at.to_s)
     end
 
+    # Sandbox gating is `!nil?` throughout — Python's `sandbox is not None`.
+    # Booleans and {} are forwarded verbatim: an explicit `sandbox: false`
+    # must reach the CLI so it can override a sandbox enabled in the
+    # settings JSON (`sandbox: true`, the boolean toggle, used to crash on
+    # true.empty?; false and {} were silently dropped).
     def append_settings(cmd)
-      return unless @options.settings || @options.sandbox
+      return unless @options.settings || !@options.sandbox.nil?
 
       settings_hash = {}
       settings_is_path = false
@@ -167,11 +172,11 @@ module ClaudeAgentSDK
           begin
             settings_hash = JSON.parse(@options.settings)
           rescue JSON::ParserError
-            if @options.sandbox
-              settings_hash = load_settings_file(@options.settings)
-            else
+            if @options.sandbox.nil?
               settings_is_path = true
               cmd.push("--settings", @options.settings)
+            else
+              settings_hash = load_settings_file(@options.settings)
             end
           end
         elsif @options.settings.is_a?(Hash)
@@ -179,11 +184,8 @@ module ClaudeAgentSDK
         end
       end
 
-      if !settings_is_path && @options.sandbox
-        sandbox_hash = @options.sandbox.is_a?(SandboxSettings) ? @options.sandbox.to_h : @options.sandbox
-        # `sandbox: true` is the plausible boolean toggle (Python emits
-        # {"sandbox": true}); true has no #empty? and used to crash here.
-        settings_hash[:sandbox] = sandbox_hash if sandbox_hash == true || !sandbox_hash.empty?
+      if !settings_is_path && !@options.sandbox.nil?
+        settings_hash[:sandbox] = @options.sandbox.is_a?(SandboxSettings) ? @options.sandbox.to_h : @options.sandbox
       end
 
       cmd.push("--settings", JSON.generate(settings_hash)) if !settings_is_path && !settings_hash.empty?

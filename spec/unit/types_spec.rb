@@ -808,6 +808,30 @@ RSpec.describe ClaudeAgentSDK do
         expect(variant.can_use_tool).to be(callback)
       end
 
+      # Rebuilding via Hash#to_h flattened Hash subclasses — e.g. Rails'
+      # HashWithIndifferentAccess — into plain Hashes, so symbol lookups on
+      # the copy (config[:type] == 'sdk') silently returned nil and the
+      # in-process MCP server was never registered.
+      it 'preserves Hash subclasses through dup_with (indifferent-access configs)' do
+        indifferent = Class.new(Hash) do
+          def [](key) = super(key.to_s)
+
+          def []=(key, value)
+            super(key.to_s, value)
+          end
+        end
+        config = indifferent.new
+        config[:type] = 'sdk'
+        base = described_class.new(mcp_servers: { 'calc' => config })
+        variant = base.dup_with(max_turns: 2)
+
+        copied = variant.mcp_servers['calc']
+        expect(copied).to be_a(indifferent)
+        expect(copied[:type]).to eq('sdk') # symbol lookup must survive the copy
+        copied[:extra] = 'x'
+        expect(config.key?('extra')).to be(false) # and it is still a deep copy
+      end
+
       it 'raises ArgumentError for unknown keys at construction' do
         expect { described_class.new(modle: 'claude-opus-4') }
           .to raise_error(ArgumentError, /unknown ClaudeAgentOptions option:.*modle/)

@@ -472,6 +472,32 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       idx = cmd.index('--settings')
       expect(JSON.parse(cmd[idx + 1])).to eq('sandbox' => true)
     end
+
+    # Python gates on `sandbox is not None`: an explicit false must reach the
+    # CLI so it can override a sandbox enabled in the settings JSON (it was
+    # silently dropped, leaving the sandbox on).
+    it 'forwards an explicit sandbox: false so it can override enabled settings' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        settings: { sandbox: { enabled: true } },
+        sandbox: false
+      )
+      cmd = described_class.new('/usr/bin/claude', options).build
+      idx = cmd.index('--settings')
+      expect(JSON.parse(cmd[idx + 1])).to eq('sandbox' => false)
+    end
+
+    it 'forwards an empty sandbox hash verbatim (Python parity)' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(sandbox: {})
+      cmd = described_class.new('/usr/bin/claude', options).build
+      idx = cmd.index('--settings')
+      expect(JSON.parse(cmd[idx + 1])).to eq('sandbox' => {})
+    end
+
+    it 'omits --settings entirely when sandbox is nil and no settings are given' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).not_to include('--settings')
+    end
   end
 
   describe 'output_format' do

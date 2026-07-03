@@ -1696,10 +1696,20 @@ module ClaudeAgentSDK
 
     # Recurse ONLY into Hash/Array; leaves keep object identity (observer
     # factories, callbacks, SDK MCP server instances must not be duped).
+    # Rebuild via dup.clear (never Hash#to_h / Array#map) to preserve
+    # container SUBCLASSES: to_h flattens e.g. Rails'
+    # HashWithIndifferentAccess into a plain Hash, silently breaking symbol
+    # lookups on the copy (config[:type] == 'sdk' → nil).
     def deep_dup_containers(value)
       case value
-      when Hash then value.to_h { |k, v| [k, deep_dup_containers(v)] }
-      when Array then value.map { |v| deep_dup_containers(v) }
+      when Hash
+        copy = value.dup.clear
+        value.each { |k, v| copy[k] = deep_dup_containers(v) }
+        copy
+      when Array
+        copy = value.dup.clear
+        value.each { |v| copy << deep_dup_containers(v) }
+        copy
       else value
       end
     end
