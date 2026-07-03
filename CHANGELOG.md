@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Behavioral fix batch (Batch B) from the 2026-07-03 full-codebase audit (`AUDIT-2026-07-03.md`). Every fix aligns code with a documented contract or Python SDK behavior and changes behavior only for inputs that previously produced wrong results, hangs, or crashes.
+## [0.20.0] - 2026-07-03
+
+Behavioral fix batch (Batch B) from the 2026-07-03 full-codebase audit (`AUDIT-2026-07-03.md`, PR #42). Every fix aligns code with a documented contract or Python SDK behavior and changes behavior only for inputs that previously produced wrong results, hangs, or crashes. Minor (not patch) because two fixes raise where the SDK previously reported success: a signal-killed CLI now raises `ProcessError`, and assistant messages without `message.model` now raise `MessageParseError`.
 
 ### Fixed
 - A CLI process killed by a signal (OOM-kill SIGKILL, SIGSEGV, ...) now raises `ProcessError` ("Command terminated by signal N", `exit_code: -N` — Python returncode parity) instead of reporting a **truncated** response as clean end-of-stream success.
