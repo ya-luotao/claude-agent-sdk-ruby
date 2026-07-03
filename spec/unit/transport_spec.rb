@@ -3,102 +3,9 @@
 require 'spec_helper'
 
 RSpec.describe ClaudeAgentSDK::Transport do
-  # Create a test implementation
-  let(:test_transport_class) do
-    Class.new(described_class) do
-      attr_accessor :connected, :messages, :written_data
-
-      def initialize
-        @connected = false
-        @messages = []
-        @written_data = []
-      end
-
-      def connect
-        @connected = true
-      end
-
-      def write(data)
-        @written_data << data
-      end
-
-      def read_messages(&block)
-        @messages.each { |msg| block.call(msg) }
-      end
-
-      def close
-        @connected = false
-      end
-
-      def ready?
-        @connected
-      end
-
-      def end_input
-        # No-op for test
-      end
-    end
-  end
-
-  let(:transport) { test_transport_class.new }
-
-  describe 'interface requirements' do
-    it 'requires connect to be implemented' do
-      expect(transport).to respond_to(:connect)
-    end
-
-    it 'requires write to be implemented' do
-      expect(transport).to respond_to(:write)
-    end
-
-    it 'requires read_messages to be implemented' do
-      expect(transport).to respond_to(:read_messages)
-    end
-
-    it 'requires close to be implemented' do
-      expect(transport).to respond_to(:close)
-    end
-
-    it 'requires ready? to be implemented' do
-      expect(transport).to respond_to(:ready?)
-    end
-
-    it 'requires end_input to be implemented' do
-      expect(transport).to respond_to(:end_input)
-    end
-  end
-
-  describe 'test implementation' do
-    it 'connects successfully' do
-      expect(transport.ready?).to eq(false)
-      transport.connect
-      expect(transport.ready?).to eq(true)
-    end
-
-    it 'writes data' do
-      transport.write('test data')
-      expect(transport.written_data).to eq(['test data'])
-    end
-
-    it 'reads messages with block' do
-      transport.messages = [{ type: 'test1' }, { type: 'test2' }]
-
-      received = []
-      transport.read_messages { |msg| received << msg }
-
-      expect(received).to eq([{ type: 'test1' }, { type: 'test2' }])
-    end
-
-    it 'closes successfully' do
-      transport.connect
-      expect(transport.ready?).to eq(true)
-
-      transport.close
-      expect(transport.ready?).to eq(false)
-    end
-  end
-
-  describe 'abstract class behavior' do
+  # The abstract base pins the six-method transport contract: every method is a
+  # stub that raises NotImplementedError until a concrete subclass overrides it.
+  describe 'abstract base class' do
     let(:abstract_transport) { described_class.new }
 
     it 'raises NotImplementedError for connect' do
@@ -129,6 +36,24 @@ RSpec.describe ClaudeAgentSDK::Transport do
     it 'raises NotImplementedError for end_input' do
       expect { abstract_transport.end_input }
         .to raise_error(NotImplementedError, /implement #end_input/)
+    end
+  end
+
+  # The shipped transport must satisfy the same contract. These assertions bite
+  # if lib/ regresses: dropping an override would make a live transport inherit
+  # the abstract stub and raise NotImplementedError mid-session.
+  describe 'SubprocessCLITransport conformance' do
+    let(:concrete_class) { ClaudeAgentSDK::SubprocessCLITransport }
+
+    it 'subclasses the abstract Transport' do
+      expect(concrete_class.ancestors).to include(described_class)
+    end
+
+    %i[connect write read_messages close ready? end_input].each do |method_name|
+      it "overrides ##{method_name} rather than inheriting the abstract stub" do
+        owner = concrete_class.instance_method(method_name).owner
+        expect(owner).to eq(concrete_class)
+      end
     end
   end
 end

@@ -35,7 +35,7 @@ ClaudeAgentSDK.query(prompt: "Create a profile for a software engineer", options
 end
 ```
 
-See [examples/structured_output_example.rb](../examples/structured_output_example.rb).
+See [examples/structured_output_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/structured_output_example.rb).
 
 ## Thinking Configuration
 
@@ -91,7 +91,7 @@ ClaudeAgentSDK.query(prompt: "Explain recursion", options: options) do |message|
 end
 ```
 
-See [examples/budget_control_example.rb](../examples/budget_control_example.rb).
+See [examples/budget_control_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/budget_control_example.rb).
 
 ## Fallback Model
 
@@ -102,7 +102,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
-See [examples/fallback_model_example.rb](../examples/fallback_model_example.rb).
+See [examples/fallback_model_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/fallback_model_example.rb).
 
 ## Beta Features
 
@@ -155,7 +155,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
-See [examples/sandbox_example.rb](../examples/sandbox_example.rb).
+See [examples/sandbox_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/sandbox_example.rb).
 
 ## Bare Mode
 
@@ -186,7 +186,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 **What still works:** skills (via `/skill-name`), explicit `--add-dir` CLAUDE.md, `--settings`, `--mcp-config`, `--agents`, `--plugin-dir`, API key from `ANTHROPIC_API_KEY` env var.
 
-See [examples/bare_mode_example.rb](../examples/bare_mode_example.rb).
+See [examples/bare_mode_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/bare_mode_example.rb).
 
 ## File Checkpointing & Rewind
 

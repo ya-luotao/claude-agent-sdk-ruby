@@ -50,16 +50,32 @@ module ClaudeAgentSDK
         @root_span = nil
         @root_context = nil
         @tool_spans = {} # tool_use_id => span
-        @first_user_input = nil # capture first user prompt for trace input
+        @first_user_input = nil # first user prompt of the current trace
+        @pending_prompt = nil # prompt that belongs to the NEXT trace (see on_user_prompt)
         @last_assistant_text = nil # capture last assistant text for trace output
       end
 
       def on_user_prompt(prompt)
-        return if @first_user_input # only capture the first prompt
+        text = prompt.to_s
+        return if text.empty?
 
-        @first_user_input = prompt.to_s
-        # If root span already exists, set immediately; otherwise start_trace will apply it
-        @root_span&.set_attribute('input.value', truncate(@first_user_input)) unless @first_user_input.empty?
+        if @root_span.nil?
+          # Pre-init: buffered for the trace start_trace is about to open.
+          # First prompt wins as the trace input.
+          @first_user_input ||= text
+        elsif @first_user_input.nil?
+          # Open trace with no input yet (init arrived before the prompt).
+          @first_user_input = text
+          @root_span.set_attribute('input.value', truncate(text))
+        else
+          # The open trace already has its input, so this prompt belongs to
+          # the NEXT trace: either the current turn was interrupted (/clear —
+          # a superseding init follows with no ResultMessage) or the user
+          # queued the next turn mid-stream (its init follows the current
+          # ResultMessage). A first-prompt-forever latch here dropped these
+          # prompts from the new trace entirely.
+          @pending_prompt ||= text
+        end
       end
 
       def on_message(message)
@@ -96,6 +112,10 @@ module ClaudeAgentSDK
       def on_close
         finish_open_spans
         reset_session_buffers
+        # Unlike the per-trace buffers, the pending next-trace prompt survives
+        # end_trace/supersede resets by design — but the session is over now,
+        # and a reused observer must not leak it into the next session.
+        @pending_prompt = nil
       end
 
       private
@@ -112,6 +132,11 @@ module ClaudeAgentSDK
         superseding = !@root_span.nil?
         finish_open_spans
         reset_session_buffers if superseding
+        # A prompt that arrived while the previous trace already had its input
+        # was buffered for THIS trace; it wins over a younger post-end prompt
+        # because it came first chronologically.
+        @first_user_input = @pending_prompt if @pending_prompt
+        @pending_prompt = nil
 
         attrs = {
           # gen_ai semantic conventions (recognized by Langfuse, Datadog, etc.)

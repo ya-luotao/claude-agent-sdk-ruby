@@ -198,6 +198,21 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       end
     end
 
+    # L9: sidechain classification must read the TOP-LEVEL key (like the
+    # store fold) — a nested "isSidechain":true inside a structured field
+    # hid the session from disk listings only.
+    it 'does not classify a session as sidechain from a nested isSidechain field' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path,
+                   { type: 'user', meta: { isSidechain: true }, message: { content: 'Hello' } }.to_json)
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result).not_to be_nil
+        expect(result.summary).to eq('Hello')
+      end
+    end
+
     # Regression (H3): Python's `or` treats "" as falsy but Ruby's || does
     # not, so a trailing title-clearing entry ({"customTitle":""}) won the
     # custom_title chain, summary became "", and the presence gate dropped

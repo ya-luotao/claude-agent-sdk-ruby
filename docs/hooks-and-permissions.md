@@ -19,7 +19,7 @@ All hook input objects include common fields like `session_id`, `transcript_path
 - `SubagentStart` → `SubagentStartHookInput` (`agent_id`, `agent_type`)
 - `PermissionRequest` → `PermissionRequestHookInput` (`tool_name`, `tool_input`, `permission_suggestions`)
 
-All 27 hook events have typed input classes. See [`ClaudeAgentSDK::HOOK_EVENTS`](../lib/claude_agent_sdk/types.rb) and [examples/lifecycle_hooks_example.rb](../examples/lifecycle_hooks_example.rb).
+All 27 hook events have typed input classes. See [`ClaudeAgentSDK::HOOK_EVENTS`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types.rb) and [examples/lifecycle_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
 
 ### Example: Blocking Dangerous Commands
 
@@ -67,7 +67,7 @@ Async do
 end.wait
 ```
 
-See [examples/hooks_example.rb](../examples/hooks_example.rb), [examples/advanced_hooks_example.rb](../examples/advanced_hooks_example.rb), and [examples/lifecycle_hooks_example.rb](../examples/lifecycle_hooks_example.rb).
+See [examples/hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/hooks_example.rb), [examples/advanced_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/advanced_hooks_example.rb), and [examples/lifecycle_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
 
 ## Permission Callbacks
 
@@ -107,4 +107,4 @@ Async do
 end.wait
 ```
 
-See [examples/permission_callback_example.rb](../examples/permission_callback_example.rb).
+See [examples/permission_callback_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/permission_callback_example.rb).

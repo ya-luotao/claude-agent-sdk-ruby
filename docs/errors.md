@@ -18,7 +18,7 @@ ClaudeAgentSDK.query(prompt: "Hello") do |message|
 end
 ```
 
-See [examples/error_handling_example.rb](../examples/error_handling_example.rb).
+See [examples/error_handling_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/error_handling_example.rb).
 
 ## Exception Handling
 
@@ -92,4 +92,4 @@ end
 | `CLIJSONDecodeError` | JSON parsing issues |
 | `MessageParseError` | Message parsing issues |
 
-See [lib/claude_agent_sdk/errors.rb](../lib/claude_agent_sdk/errors.rb) for all error types.
+See [lib/claude_agent_sdk/errors.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/errors.rb) for all error types.

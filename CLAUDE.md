@@ -15,7 +15,7 @@ bundle install                              # Install dependencies
 bundle exec rspec                           # Run all unit tests (integration tests excluded by default)
 bundle exec rspec spec/unit/types_spec.rb   # Run a single spec file
 bundle exec rspec spec/unit/types_spec.rb:42  # Run a single test by line number
-RUN_INTEGRATION=1 bundle exec rspec         # Include integration tests (requires Claude Code CLI)
+RUN_INTEGRATION=1 bundle exec rspec         # Run the real-CLI integration suite too (self-skips if `claude` CLI or ANTHROPIC_API_KEY is absent)
 bundle exec rubocop                         # Run linter
 bundle exec rake                            # Run default task (spec + rubocop)
 bundle exec rake build                      # Build the gem

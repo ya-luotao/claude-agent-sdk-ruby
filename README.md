@@ -1,6 +1,6 @@
 # Claude Agent SDK for Ruby
 
-![Claude Agent SDK for Ruby banner](assets/claude-agent-sdk-ruby-banner.png)
+![Claude Agent SDK for Ruby banner](https://raw.githubusercontent.com/ya-luotao/claude-agent-sdk-ruby/main/assets/claude-agent-sdk-ruby-banner.png)
 
 [![Gem Version](https://badge.fury.io/rb/claude-agent-sdk.svg?icon=si%3Arubygems)](https://badge.fury.io/rb/claude-agent-sdk)
 
@@ -144,7 +144,7 @@ ClaudeAgentSDK.query(prompt: stream) do |message|
 end
 ```
 
-See [examples/streaming_input_example.rb](examples/streaming_input_example.rb) and [examples/quick_start.rb](examples/quick_start.rb).
+See [examples/streaming_input_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/streaming_input_example.rb) and [examples/quick_start.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/quick_start.rb).
 
 ## `Client` — Bidirectional Sessions
 
@@ -220,49 +220,49 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 | Example | Description |
 |---------|-------------|
-| [quick_start.rb](examples/quick_start.rb) | Basic `query()` usage with options |
-| [client_example.rb](examples/client_example.rb) | Interactive Client usage |
-| [message_types_example.rb](examples/message_types_example.rb) | Handling all 24 SDK message types |
-| [streaming_input_example.rb](examples/streaming_input_example.rb) | Streaming input for multi-turn conversations |
-| [session_resumption_example.rb](examples/session_resumption_example.rb) | Multi-turn conversations with session persistence |
-| [structured_output_example.rb](examples/structured_output_example.rb) | JSON schema structured output |
-| [error_handling_example.rb](examples/error_handling_example.rb) | Error handling with `AssistantMessage.error` |
-| [bare_mode_example.rb](examples/bare_mode_example.rb) | Minimal startup with `bare: true` |
-| [sandbox_example.rb](examples/sandbox_example.rb) | Full sandbox settings (network, filesystem, violations) |
+| [quick_start.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/quick_start.rb) | Basic `query()` usage with options |
+| [client_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/client_example.rb) | Interactive Client usage |
+| [message_types_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/message_types_example.rb) | Handling all 24 SDK message types |
+| [streaming_input_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/streaming_input_example.rb) | Streaming input for multi-turn conversations |
+| [session_resumption_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/session_resumption_example.rb) | Multi-turn conversations with session persistence |
+| [structured_output_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/structured_output_example.rb) | JSON schema structured output |
+| [error_handling_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/error_handling_example.rb) | Error handling with `AssistantMessage.error` |
+| [bare_mode_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/bare_mode_example.rb) | Minimal startup with `bare: true` |
+| [sandbox_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/sandbox_example.rb) | Full sandbox settings (network, filesystem, violations) |
 
 ### MCP Servers
 
 | Example | Description |
 |---------|-------------|
-| [mcp_calculator.rb](examples/mcp_calculator.rb) | Custom tools with SDK MCP servers |
-| [mcp_resources_prompts_example.rb](examples/mcp_resources_prompts_example.rb) | MCP resources and prompts |
-| [http_mcp_server_example.rb](examples/http_mcp_server_example.rb) | HTTP/SSE MCP server configuration |
+| [mcp_calculator.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/mcp_calculator.rb) | Custom tools with SDK MCP servers |
+| [mcp_resources_prompts_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/mcp_resources_prompts_example.rb) | MCP resources and prompts |
+| [http_mcp_server_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/http_mcp_server_example.rb) | HTTP/SSE MCP server configuration |
 
 ### Hooks & Permissions
 
 | Example | Description |
 |---------|-------------|
-| [hooks_example.rb](examples/hooks_example.rb) | Using hooks to control tool execution |
-| [advanced_hooks_example.rb](examples/advanced_hooks_example.rb) | Typed hook inputs/outputs |
-| [lifecycle_hooks_example.rb](examples/lifecycle_hooks_example.rb) | All 27 hook events |
-| [permission_callback_example.rb](examples/permission_callback_example.rb) | Dynamic tool permission control |
+| [hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/hooks_example.rb) | Using hooks to control tool execution |
+| [advanced_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/advanced_hooks_example.rb) | Typed hook inputs/outputs |
+| [lifecycle_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb) | All 27 hook events |
+| [permission_callback_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/permission_callback_example.rb) | Dynamic tool permission control |
 
 ### Advanced
 
 | Example | Description |
 |---------|-------------|
-| [budget_control_example.rb](examples/budget_control_example.rb) | Budget control with `max_budget_usd` |
-| [fallback_model_example.rb](examples/fallback_model_example.rb) | Fallback model configuration |
-| [extended_thinking_example.rb](examples/extended_thinking_example.rb) | Extended thinking |
-| [e2b_transport_example.rb](examples/e2b_transport_example.rb) | Custom transport running CLI in an E2B microVM |
+| [budget_control_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/budget_control_example.rb) | Budget control with `max_budget_usd` |
+| [fallback_model_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/fallback_model_example.rb) | Fallback model configuration |
+| [extended_thinking_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/extended_thinking_example.rb) | Extended thinking |
+| [e2b_transport_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/e2b_transport_example.rb) | Custom transport running CLI in an E2B microVM |
 
 ### Observability & Rails
 
 | Example | Description |
 |---------|-------------|
-| [otel_langfuse_example.rb](examples/otel_langfuse_example.rb) | OpenTelemetry tracing with Langfuse backend |
-| [rails_actioncable_example.rb](examples/rails_actioncable_example.rb) | ActionCable streaming to frontend |
-| [rails_background_job_example.rb](examples/rails_background_job_example.rb) | Background jobs with session resumption |
+| [otel_langfuse_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/otel_langfuse_example.rb) | OpenTelemetry tracing with Langfuse backend |
+| [rails_actioncable_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/rails_actioncable_example.rb) | ActionCable streaming to frontend |
+| [rails_background_job_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/rails_background_job_example.rb) | Background jobs with session resumption |
 
 ## Available Tools
 

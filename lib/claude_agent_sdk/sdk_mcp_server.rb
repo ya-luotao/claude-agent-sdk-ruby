@@ -25,16 +25,23 @@ module ClaudeAgentSDK
   end
 
   # A prebuilt JSON Schema is detected by type == 'object' (String or Symbol)
-  # AND a Hash properties value. Deliberately stricter than Python's rule:
-  # Ruby's simple-schema idiom uses Symbols as type VALUES, so
+  # with properties either ABSENT or a Hash. Properties-present-but-not-Hash
+  # falls through to the simple idiom, which uses Symbols as type VALUES —
   # { type: :string, properties: :string } is a legal simple schema with
-  # params literally named type/properties.
+  # params literally named type/properties. Propertyless object schemas
+  # ({ type: 'object', additionalProperties: ... } / oneOf / empty-object
+  # accept-anything forms) previously fell into the simple branch and were
+  # mangled into nonsense parameter lists ("additionalProperties" as a
+  # required string param). A $ref-only schema without type: 'object' remains
+  # indistinguishable from a params hash — declare the type alongside $ref.
   def self.prebuilt_json_schema?(schema)
     return false unless schema.is_a?(Hash)
 
     type_val = schema[:type] || schema['type']
-    props_val = schema[:properties] || schema['properties']
-    (type_val.is_a?(String) || type_val.is_a?(Symbol)) && type_val.to_s == 'object' && props_val.is_a?(Hash)
+    return false unless (type_val.is_a?(String) || type_val.is_a?(Symbol)) && type_val.to_s == 'object'
+    return true unless schema.key?(:properties) || schema.key?('properties')
+
+    (schema[:properties] || schema['properties']).is_a?(Hash)
   end
 
   # Single source of truth for tool input schemas: prebuilt schemas are

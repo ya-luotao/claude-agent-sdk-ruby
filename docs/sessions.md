@@ -172,7 +172,7 @@ ClaudeAgentSDK::Testing.run_session_store_conformance(-> { MyStore.new(...) })
 ```
 
 Copy-in reference adapters for **S3, Redis, and Postgres** live in
-[`examples/session_stores/`](../examples/session_stores/README.md), each with a
+[`examples/session_stores/`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/session_stores/README.md), each with a
 production checklist.
 
 ### Store-backed helpers

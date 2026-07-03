@@ -147,4 +147,4 @@ end
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [MyObserver.new])
 ```
 
-See [examples/otel_langfuse_example.rb](../examples/otel_langfuse_example.rb) for a complete multi-tool example.
+See [examples/otel_langfuse_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/otel_langfuse_example.rb) for a complete multi-tool example.

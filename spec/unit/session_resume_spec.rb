@@ -234,6 +234,47 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       end
     end
 
+    # Improvement 8: with a summary sidecar available, --continue skips
+    # sidechain candidates without downloading their full transcripts
+    # (previously O(sum of transcript sizes) when the newest keys were
+    # sidechains — common, since subagents finish last).
+    it 'for continue_conversation skips sidechain candidates without loading them (summary fast path)' do
+      main_sid = SecureRandom.uuid
+      side_sid = SecureRandom.uuid
+      store.append({ 'project_key' => project_key, 'session_id' => main_sid }, [entry('main')])
+      sleep 0.002
+      store.append({ 'project_key' => project_key, 'session_id' => side_sid }, [entry('side', 'isSidechain' => true)])
+
+      loads = []
+      counting = Class.new(ClaudeAgentSDK::SessionStore) do
+        def initialize(inner, loads)
+          super()
+          @inner = inner
+          @loads = loads
+        end
+
+        def append(key, entries) = @inner.append(key, entries)
+        def list_sessions(project_key) = @inner.list_sessions(project_key)
+        def list_session_summaries(project_key) = @inner.list_session_summaries(project_key)
+        def list_subkeys(key) = @inner.list_subkeys(key)
+
+        def load(key)
+          @loads << key['session_id']
+          @inner.load(key)
+        end
+      end.new(store, loads)
+
+      mat = described_class.materialize_resume_session(
+        ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: counting, continue_conversation: true, cwd: cwd)
+      )
+      begin
+        expect(mat.resume_session_id).to eq(main_sid)
+        expect(loads).not_to include(side_sid) # skipped via the sidecar, not via a full load
+      ensure
+        mat&.cleanup
+      end
+    end
+
     # Regression (H4): the contract says mtime is an epoch-ms Numeric, but a
     # SQL-timestamp-through-JSON adapter naturally returns ISO-8601 Strings.
     # Unary minus on a String is String#-@ (frozen dedup), so String mtimes

@@ -56,6 +56,22 @@ RSpec.describe 'ClaudeAgentSDK.import_session_to_store' do
     expect(store.list_sessions(project_key).map { |s| s['session_id'] }).to eq([sid])
   end
 
+  # P2: a truncated trailing line is an ordinary interrupted-CLI artifact;
+  # every read path tolerates it, so an import must not abort mid-way with a
+  # raw JSON::ParserError leaving a partial store import behind.
+  it 'skips an unparseable trailing line with a warning instead of aborting mid-import' do
+    FileUtils.mkdir_p(project_dir)
+    File.write(File.join(project_dir, "#{sid}.jsonl"),
+               "#{jsonl_line('one')}\n#{jsonl_line('two')}\n{\"type\":\"user\",\"uuid\":\"trunc")
+
+    expect do
+      ClaudeAgentSDK.import_session_to_store(session_id: sid, session_store: store, directory: cwd)
+    end.to output(/skipped unparseable line 3/).to_stderr
+
+    entries = store.load('project_key' => project_key, 'session_id' => sid)
+    expect(entries.map { |e| e['message']['content'] }).to eq(%w[one two])
+  end
+
   it 'batches appends by batch_size' do
     write_main_transcript
     calls = []

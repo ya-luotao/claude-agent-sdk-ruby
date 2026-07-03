@@ -193,7 +193,7 @@ end
 Then every `ClaudeAgentSDK.query` and `Client` session automatically gets traced — no per-call wiring needed. The lambda factory ensures each request gets its own observer with isolated span state, safe for concurrent Puma/Sidekiq workers.
 
 See:
-- [examples/rails_actioncable_example.rb](../examples/rails_actioncable_example.rb)
-- [examples/rails_background_job_example.rb](../examples/rails_background_job_example.rb)
-- [examples/session_resumption_example.rb](../examples/session_resumption_example.rb)
-- [examples/http_mcp_server_example.rb](../examples/http_mcp_server_example.rb)
+- [examples/rails_actioncable_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/rails_actioncable_example.rb)
+- [examples/rails_background_job_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/rails_background_job_example.rb)
+- [examples/session_resumption_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/session_resumption_example.rb)
+- [examples/http_mcp_server_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/http_mcp_server_example.rb)
