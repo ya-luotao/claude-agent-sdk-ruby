@@ -84,6 +84,9 @@ module ClaudeAgentSDK
       @close_requests = ::Thread::Queue.new
       @close_watcher = nil
       @owning_scheduler = nil
+      # First-caller-wins guard for close_now (see there).
+      @close_mutex = Mutex.new
+      @close_started = false
     end
 
     # Initialize control protocol if in streaming mode
@@ -1207,6 +1210,22 @@ module ClaudeAgentSDK
     private
 
     def close_now
+      # First caller wins: a reactor-side close racing a watcher-served
+      # foreign close (or a repeated disconnect) must not re-run teardown
+      # against half-torn-down state — transport.close can suspend mid-reap,
+      # and a second pass would race it. Later callers return immediately;
+      # the SDK's outer teardown ensures (query() / Client#disconnect) close
+      # the transport independently, so nothing is left dangling even if the
+      # first pass failed partway.
+      first_caller = @close_mutex.synchronize do
+        if @close_started
+          false
+        else
+          @close_started = true
+        end
+      end
+      return unless first_caller
+
       @closed = true
       # Wake pending control-request waiters (same shape as the read-loop
       # rescue broadcast): close stops the read task with Async::Stop, which
@@ -1224,9 +1243,20 @@ module ClaudeAgentSDK
       # Stop tracked child tasks (e.g. stream_input) before the read task and
       # transport so a parked input stream can never keep the reactor alive
       # (mirrors Python close() cancelling _child_tasks).
-      @child_tasks.each(&:stop)
-      @child_tasks.clear
-      @task&.stop
+      begin
+        @child_tasks.each(&:stop)
+        @child_tasks.clear
+        @task&.stop
+      rescue NoMethodError, FiberError => e
+        # Schedulerless fallback close (the watcher died unserved) racing
+        # reactor teardown: a task fiber can still be unwinding, and stopping
+        # it needs the owning thread's Fiber.scheduler. The dying reactor
+        # stops its own tasks; the transport close below (plain IO + kill)
+        # still runs. On the reactor itself this is a real bug — re-raise.
+        raise unless Fiber.scheduler.nil?
+
+        warn "Claude SDK: skipped stopping tasks during off-reactor close: #{e.message}"
+      end
       @transport.close
       # Release a still-parked close watcher: pop returns nil and it exits
       # without serving. Any foreign-thread close arriving after this point

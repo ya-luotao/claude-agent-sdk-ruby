@@ -1452,5 +1452,19 @@ RSpec.describe ClaudeAgentSDK::Query do
 
       expect(transport.closed).to be true
     end
+
+    it 'is idempotent: only the first close performs teardown' do
+      closes = 0
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+      allow(transport).to receive(:close) { closes += 1 }
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      Async do
+        query.close
+        query.close
+      end.wait
+
+      expect(closes).to eq(1)
+    end
   end
 end

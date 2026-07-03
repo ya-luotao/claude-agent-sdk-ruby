@@ -124,35 +124,47 @@ module ClaudeAgentSDK
       @pending_bytes = 0
 
       errors = []
-      @lock.acquire do
-        # Emptiness is checked INSIDE the lock (matching the Python batcher):
-        # an empty #flush/#close still serializes behind any in-flight or
-        # queued drain, so they are true barriers — at result-yield and at
-        # teardown the store really is up to date, and Query#close can't stop
-        # the read task while a detached batch is still being appended.
-        next if items.empty?
+      # Cancellation (Async::Stop — not a StandardError) delivered while
+      # waiting on the lock or inside the append's thread join loses the
+      # detached items without either rescue firing. Teardown would then read
+      # batches_dropped? as false and delete a materialized resume dir holding
+      # the only copy of these entries — count the batch as dropped unless the
+      # flush path ran to completion (do_flush counts its own failures).
+      accounted = items.empty?
+      begin
+        @lock.acquire do
+          # Emptiness is checked INSIDE the lock (matching the Python batcher):
+          # an empty #flush/#close still serializes behind any in-flight or
+          # queued drain, so they are true barriers — at result-yield and at
+          # teardown the store really is up to date, and Query#close can't stop
+          # the read task while a detached batch is still being appended.
+          next if items.empty?
 
-        begin
-          do_flush(items, errors)
-        rescue StandardError => e
-          # do_flush already guards each append; this guards any remaining path
-          # so the "never raises" contract holds against future regressions.
-          @dropped_batches += 1
-          warn "Claude SDK: TranscriptMirrorBatcher drain failed: #{e.message}"
-        end
+          begin
+            do_flush(items, errors)
+          rescue StandardError => e
+            # do_flush already guards each append; this guards any remaining path
+            # so the "never raises" contract holds against future regressions.
+            @dropped_batches += 1
+            warn "Claude SDK: TranscriptMirrorBatcher drain failed: #{e.message}"
+          end
+          accounted = true
 
-        # Report errors BEFORE releasing the lock: flush/close are barriers, so
-        # a caller observing flush completion must also observe the error
-        # report. Reporting after release let an in-flight eager drain enqueue
-        # its MirrorErrorMessage after the read loop's 'end' sentinel — past
-        # the point where consumers stop dequeuing, i.e. never delivered. The
-        # production on_error (Query#report_mirror_error) is a non-blocking
-        # queue push, so holding the lock across it costs nothing.
-        errors.each do |key, message|
-          @on_error.call(key, message)
-        rescue StandardError => e
-          warn "Claude SDK: TranscriptMirrorBatcher on_error callback raised: #{e.message}"
+          # Report errors BEFORE releasing the lock: flush/close are barriers, so
+          # a caller observing flush completion must also observe the error
+          # report. Reporting after release let an in-flight eager drain enqueue
+          # its MirrorErrorMessage after the read loop's 'end' sentinel — past
+          # the point where consumers stop dequeuing, i.e. never delivered. The
+          # production on_error (Query#report_mirror_error) is a non-blocking
+          # queue push, so holding the lock across it costs nothing.
+          errors.each do |key, message|
+            @on_error.call(key, message)
+          rescue StandardError => e
+            warn "Claude SDK: TranscriptMirrorBatcher on_error callback raised: #{e.message}"
+          end
         end
+      ensure
+        @dropped_batches += 1 unless accounted
       end
     end
 

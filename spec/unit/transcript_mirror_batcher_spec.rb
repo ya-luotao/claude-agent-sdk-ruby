@@ -252,5 +252,29 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
         expect(b.batches_dropped?).to be(true)
       end
     end
+
+    it 'counts a drain cancelled mid-append as dropped (Async::Stop bypasses the rescues)' do
+      # Teardown reads batches_dropped? to decide whether the materialized
+      # resume dir holds the only copy of some turns; a cancelled flush loses
+      # its detached items, so it must count as a drop.
+      slow = Class.new(ClaudeAgentSDK::SessionStore) do
+        # Long plain sleep on the batcher's worker thread; the drain fiber
+        # parks in the thread join, where stop can reach it.
+        def append(_key, _entries) = sleep(3)
+        def load(_key) = nil
+      end.new
+
+      b = nil
+      Async do |task|
+        b = described_class.new(store: slow, projects_dir: projects, on_error: on_error, send_timeout: 10)
+        drainer = task.async do
+          b.enqueue(file_path, [{ 'type' => 'user' }])
+          b.flush
+        end
+        task.sleep(0.05) # flush is now parked inside the append join
+        drainer.stop
+      end
+      expect(b.batches_dropped?).to be(true)
+    end
   end
 end
