@@ -964,6 +964,43 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
   end
 
+  describe '#read_messages — invalid UTF-8 robustness' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+
+    def wire_stdout(text)
+      fake_process = instance_double(Process::Waiter, value: instance_double(Process::Status, exitstatus: 0))
+      transport.instance_variable_set(:@stdout, StringIO.new(text))
+      transport.instance_variable_set(:@process, fake_process)
+    end
+
+    # Regression: stdout is UTF-8-tagged, so a single line carrying invalid
+    # bytes made line.strip raise Encoding::CompatibilityError, aborting the
+    # stream and dropping every already-buffered valid frame (including a
+    # trailing result). The version-probe path already scrubbed; the read
+    # loop must too.
+    it 'survives a stray line with invalid UTF-8 bytes and keeps delivering later frames' do
+      wire_stdout(
+        "{\"type\":\"system\",\"subtype\":\"init\"}\n" \
+        "stray \xFF binary noise\n" \
+        "{\"type\":\"result\",\"subtype\":\"success\"}\n"
+      )
+      messages = []
+      transport.read_messages { |m| messages << m }
+
+      expect(messages.map { |m| m[:type] }).to eq(%w[system result])
+    end
+
+    it 'scrubs invalid bytes inside a JSON frame instead of raising mid-stream' do
+      wire_stdout("{\"type\":\"system\",\"note\":\"caf\xE9\"}\n")
+      messages = []
+      transport.read_messages { |m| messages << m }
+
+      expect(messages.length).to eq(1)
+      expect(messages.first[:note]).to start_with('caf')
+    end
+  end
+
   describe '#write — close-while-writing does not deadlock' do
     let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
     let(:transport) { described_class.new('hi', options) }
