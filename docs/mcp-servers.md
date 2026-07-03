@@ -150,4 +150,4 @@ server = ClaudeAgentSDK.create_sdk_mcp_server(
 )
 ```
 
-See [examples/mcp_calculator.rb](../examples/mcp_calculator.rb) and [examples/mcp_resources_prompts_example.rb](../examples/mcp_resources_prompts_example.rb) for complete examples.
+See [examples/mcp_calculator.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/mcp_calculator.rb) and [examples/mcp_resources_prompts_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/mcp_resources_prompts_example.rb) for complete examples.

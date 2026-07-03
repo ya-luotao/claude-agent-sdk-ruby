@@ -168,9 +168,15 @@ module ClaudeAgentSDK
       end
       return nil if sessions.nil? || sessions.empty?
 
+      sidechain_flags = sidechain_flags_from_summaries(store, project_key, timeout_s)
+
       sessions.sort_by { |s| -sortable_mtime(s['mtime']) }.each do |cand|
         sid = cand['session_id']
         next unless sid.is_a?(String) && sid.match?(Sessions::UUID_RE)
+        # Skip known sidechains without downloading their transcript: the
+        # newest keys are often sidechains, and full-loading each one made
+        # --continue O(sum of transcript sizes) instead of O(candidates).
+        next if sidechain_flags&.fetch(sid, false)
 
         loaded = load_candidate(store, project_key, sid, timeout_s)
         next if loaded.nil?
@@ -180,6 +186,26 @@ module ClaudeAgentSDK
 
         return loaded
       end
+      nil
+    end
+
+    # session_id => true for sessions the summary sidecar marks as sidechains;
+    # nil when the store doesn't implement list_session_summaries or the call
+    # fails (callers then fall back to checking each full load). The per-load
+    # isSidechain check above stays even on the summary path: a missing or
+    # stale sidecar row costs one extra load, never a wrong resume.
+    def sidechain_flags_from_summaries(store, project_key, timeout_s)
+      return nil unless SessionStore.implements?(store, :list_session_summaries)
+
+      rows = with_timeout(timeout_s, 'SessionStore#list_session_summaries') do
+        store.list_session_summaries(project_key)
+      end
+      Array(rows).each_with_object({}) do |row, acc|
+        sid = row.is_a?(Hash) ? row['session_id'] : nil
+        acc[sid] = row.dig('data', 'is_sidechain') == true if sid
+      end
+    # NotImplementedError is a ScriptError that with_timeout does not wrap.
+    rescue StandardError, NotImplementedError
       nil
     end
 

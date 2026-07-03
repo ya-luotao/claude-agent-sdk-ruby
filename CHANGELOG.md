@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Final batch (Batch D) from the 2026-07-03 full-codebase audit, closing it out: tests/docs/examples plus the three recorded split-verdict findings (P1-P3).
+
+### Fixed
+- OTel observer: the next turn's prompt is no longer dropped from the new trace after an interrupted turn or `/clear` (a superseding init with no ResultMessage) — prompts arriving while the current trace already has its input are buffered for the next trace instead of being latched out; a prompt queued mid-turn now labels its own trace too.
+- Disk session listings no longer misclassify a session as a sidechain from a nested `"isSidechain":true` inside a structured field: the first line is parsed and the top-level key checked (same as the store fold), with the substring heuristic kept only for window-truncated first lines.
+- SDK MCP servers: propertyless object schemas (`{ type: 'object', additionalProperties: ... }`, `oneOf`, accept-anything forms) now pass through intact instead of being mangled into nonsense parameter lists ("additionalProperties" advertised as a required string param).
+- `import_session_to_store` skips an unparseable trailing line with a warning (an ordinary interrupted-CLI artifact every read path already tolerates) instead of aborting mid-import with a raw `JSON::ParserError` and leaving a partial store import behind.
+- Redis reference adapter: the delete cascade now WATCHes the subkey set, so a concurrent eager-mode append can no longer orphan a freshly-created subagent list forever; both the Redis and Postgres reference adapters stamp mtimes through a monotonic guard (like S3) so a backward clock step can't misdirect `--continue`.
+- Redis example spec no longer FLUSHDBs whatever `SESSION_STORE_REDIS_URL` points at — it uses a random key prefix per run with prefix-scoped cleanup, like the Postgres spec.
+
+### Added
+- Conformance suite contract 16: `list_sessions` must return exactly one row per session under multiple appends (the naive one-row-per-append implementation previously passed every contract, then showed N duplicate sessions in pickers). Contract 4 now also asserts `append([])` cannot create a phantom key. New opt-in `check_uuid_dedupe:` flag asserts the advisory retried-batch uuid-dedupe recommendation.
+- `--continue` with a store that implements `list_session_summaries` skips sidechain candidates via the summary sidecar instead of downloading every candidate's full transcript.
+
+### Changed
+- `RUN_INTEGRATION=1` now actually runs the real-CLI integration suite (the old tautological placeholder suite is gone; `RUN_REAL_INTEGRATION` remains as an alias). The real suite still self-skips without a `claude` CLI or `ANTHROPIC_API_KEY`.
+- Packaged docs/README now link to examples and repo files via absolute GitHub URLs — the relative links were dead in installed gems and on rubydoc.info (examples/ and assets/ are not packaged).
+
 ## [0.21.0] - 2026-07-03
 
 Design-decision fix batch (Batch C) from the 2026-07-03 full-codebase audit (`AUDIT-2026-07-03.md`, PR #43), plus three teardown-race hardenings from its adversarial review. Minor (not patch) because three fixes change observable behavior for previously-broken flows: a missing settings file with sandbox no longer raises, a raising initial prompt stream no longer notifies observers, and teardown can now preserve (instead of delete) the materialized resume dir.

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'securerandom'
 require 'claude_agent_sdk/testing/session_store_conformance'
 
 # Gated live spec: runs only when the `redis` gem is installed (optional
@@ -29,26 +30,40 @@ end
 
 RSpec.describe 'RedisSessionStore', if: REDIS_AVAILABLE do
   let(:client) { Redis.new(url: ENV.fetch('SESSION_STORE_REDIS_URL')) }
+  let(:prefixes) { [] }
 
-  before { client.flushdb }
   after do
-    client.flushdb
+    # Never FLUSHDB: SESSION_STORE_REDIS_URL may point at shared infrastructure
+    # (the README invites it), so wiping the DB would destroy unrelated keys.
+    # Delete only the keys under prefixes this run created.
+    prefixes.each { |p| delete_namespace(p) }
     client.close
+  end
+
+  # Fresh, isolated key namespace per make_store call so conformance contracts
+  # don't leak state into one another (mirrors the Postgres spec's per-call
+  # random table).
+  def fresh_store
+    prefix = "cst_test_#{SecureRandom.hex(6)}"
+    prefixes << prefix
+    RedisSessionStore.new(client: client, prefix: prefix)
+  end
+
+  # SCAN + UNLINK every key the adapter wrote under this prefix (adapter keys are
+  # always "<prefix>:<...>"). Cursor-based and prefix-scoped, so it never touches
+  # keys outside this run's namespace.
+  def delete_namespace(prefix)
+    client.scan_each(match: "#{prefix}:*").each_slice(512) { |batch| client.unlink(*batch) }
   end
 
   it 'passes the full SessionStore conformance suite' do
     expect do
-      ClaudeAgentSDK::Testing.run_session_store_conformance(
-        lambda {
-          client.flushdb
-          RedisSessionStore.new(client: client, prefix: 'transcripts')
-        }
-      )
+      ClaudeAgentSDK::Testing.run_session_store_conformance(-> { fresh_store })
     end.not_to raise_error
   end
 
   it 'round-trips append/load and indexes the session' do
-    s = RedisSessionStore.new(client: client, prefix: 't')
+    s = fresh_store
     key = { 'project_key' => 'pk', 'session_id' => 'sid' }
     s.append(key, [{ 'type' => 'user', 'uuid' => 'a' }, { 'type' => 'assistant', 'uuid' => 'b' }])
     expect(s.load(key)).to eq([{ 'type' => 'user', 'uuid' => 'a' }, { 'type' => 'assistant', 'uuid' => 'b' }])
@@ -59,7 +74,7 @@ RSpec.describe 'RedisSessionStore', if: REDIS_AVAILABLE do
   end
 
   it 'cascades delete to subpath lists and the session index' do
-    s = RedisSessionStore.new(client: client, prefix: 't')
+    s = fresh_store
     main = { 'project_key' => 'pk', 'session_id' => 'sid' }
     sub  = { 'project_key' => 'pk', 'session_id' => 'sid', 'subpath' => 'subagents/agent-1' }
     s.append(main, [{ 'type' => 'user', 'uuid' => 'm' }])

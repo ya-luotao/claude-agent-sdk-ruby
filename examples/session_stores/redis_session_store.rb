@@ -62,6 +62,10 @@ class RedisSessionStore < ClaudeAgentSDK::SessionStore
     # Non-empty prefix always ends in exactly one ':'; empty stays empty so keys
     # never start with a stray separator.
     @prefix = prefix.empty? ? '' : "#{prefix.sub(/:+\z/, '')}:"
+    # Monotonic mtime state (see #next_mtime); mutex because appends arrive on
+    # multiple FiberBoundary worker threads.
+    @last_mtime = 0
+    @mutex = Mutex.new
   end
 
   def append(key, entries)
@@ -75,7 +79,7 @@ class RedisSessionStore < ClaudeAgentSDK::SessionStore
       else
         # Only main-transcript appends bump the session index — matches
         # InMemorySessionStore.list_sessions's "no subpath" filter.
-        pipe.zadd(sessions_key(key['project_key']), now_ms, key['session_id'])
+        pipe.zadd(sessions_key(key['project_key']), next_mtime, key['session_id'])
       end
     end
     nil
@@ -114,13 +118,24 @@ class RedisSessionStore < ClaudeAgentSDK::SessionStore
     end
 
     # Cascade: main list + every subpath list + subkey set + session-index entry.
+    # WATCH the subkey set so a concurrent eager-mode append that adds a new
+    # subpath between the SMEMBERS read and EXEC aborts the transaction (EXEC
+    # returns nil); retry until the snapshot is consistent. Without WATCH the
+    # freshly-created subagent list would be orphaned forever — the README
+    # recommends noeviction, so orphans never expire. delete runs at
+    # end-of-session, so a racing append (and thus a retry) is rare.
     sk_key = subkeys_key(key)
-    subpaths = @client.smembers(sk_key)
-    to_delete = [entry_key(key), sk_key]
-    to_delete.concat(subpaths.map { |sp| entry_key(key.merge('subpath' => sp)) })
-    @client.multi do |pipe|
-      pipe.del(*to_delete)
-      pipe.zrem(sessions_key(key['project_key']), key['session_id'])
+    loop do
+      committed = @client.watch(sk_key) do
+        subpaths = @client.smembers(sk_key)
+        to_delete = [entry_key(key), sk_key]
+        to_delete.concat(subpaths.map { |sp| entry_key(key.merge('subpath' => sp)) })
+        @client.multi do |pipe|
+          pipe.del(*to_delete)
+          pipe.zrem(sessions_key(key['project_key']), key['session_id'])
+        end
+      end
+      break unless committed.nil?
     end
     nil
   end
@@ -149,7 +164,16 @@ class RedisSessionStore < ClaudeAgentSDK::SessionStore
     "#{@prefix}#{project_key}:#{SESSIONS}"
   end
 
-  def now_ms
-    (Time.now.to_f * 1000).to_i
+  # Monotonically increasing epoch-ms for the session-index score. Mirrors the
+  # S3 adapter's guard (and the SDK's own store): a backward wall-clock step
+  # must not lower a session's score below an earlier append's, which would
+  # reorder #list_sessions and misdirect --continue's "most recent" pick.
+  # Mutex-guarded since appends run on multiple FiberBoundary worker threads.
+  def next_mtime
+    @mutex.synchronize do
+      now_ms = (Time.now.to_f * 1000).to_i
+      now_ms = @last_mtime + 1 if now_ms <= @last_mtime
+      @last_mtime = now_ms
+    end
   end
 end

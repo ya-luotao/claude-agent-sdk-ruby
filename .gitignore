@@ -59,3 +59,6 @@ Gemfile.lock
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Skill-eval workspaces (local residue, not part of the shipped skill)
+.claude/skills/*-workspace/

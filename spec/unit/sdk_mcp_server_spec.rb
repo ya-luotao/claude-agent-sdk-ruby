@@ -159,6 +159,47 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       expect(schema[:properties]).to have_key(:properties)
       expect(schema[:properties][:type][:type]).to eq('string')
     end
+
+    # P1: object schemas WITHOUT a properties key (accept-anything /
+    # additionalProperties / oneOf forms) fell into the simple-schema branch
+    # and were mangled into nonsense parameter lists ("additionalProperties"
+    # advertised as a required string param).
+    it 'passes through a propertyless object schema with additionalProperties intact' do
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'accept_anything',
+        description: 'Takes arbitrary JSON',
+        input_schema: { type: 'object', additionalProperties: true },
+        handler: ->(_) { {} }
+      )
+      server = described_class.new(name: 'test', tools: [tool])
+
+      schema = server.list_tools.first[:inputSchema]
+      expect(schema[:type]).to eq('object')
+      expect(schema[:additionalProperties]).to eq(true)
+      expect(schema).not_to have_key(:required)
+      expect(schema[:properties]).to be_nil
+    end
+
+    it 'passes through a propertyless object schema with oneOf intact' do
+      tool = ClaudeAgentSDK::SdkMcpTool.new(
+        name: 'poly',
+        description: 'One of two shapes',
+        input_schema: {
+          type: 'object',
+          oneOf: [
+            { properties: { a: { type: 'string' } }, required: ['a'] },
+            { properties: { b: { type: 'integer' } }, required: ['b'] }
+          ]
+        },
+        handler: ->(_) { {} }
+      )
+      server = described_class.new(name: 'test', tools: [tool])
+
+      schema = server.list_tools.first[:inputSchema]
+      expect(schema[:type]).to eq('object')
+      expect(schema[:oneOf].length).to eq(2)
+      expect(schema[:properties]).to be_nil
+    end
   end
 
   describe '#call_tool' do

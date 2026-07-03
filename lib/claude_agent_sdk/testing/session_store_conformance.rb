@@ -13,10 +13,13 @@ module ClaudeAgentSDK
 
     module_function
 
-    # Assert the 15 SessionStore behavioral contracts against an adapter.
+    # Assert the 16 SessionStore behavioral contracts against an adapter.
     #
     # Contracts 1-14 mirror the Python SDK's run_session_store_conformance.
-    # Contract 15 is a Ruby SDK extension locking empty-subpath delete
+    # Contract 16 (Ruby extension) locks one-row-per-session `list_sessions`
+    # under multiple appends — the naive one-row-per-append implementation
+    # passed every other contract and then showed N duplicate sessions in
+    # pickers. Contract 15 is a Ruby SDK extension locking empty-subpath delete
     # coherence ('' == no subpath, the same addressing append/load already
     # use in every implementation in both SDKs); it runs only for stores
     # implementing #delete, and skip_optional: %w[delete] excludes the
@@ -38,7 +41,15 @@ module ClaudeAgentSDK
     # @param skip_optional [Array<String>] optional method names to skip.
     #   Contracts for an optional method are also skipped automatically when the
     #   store does not override it.
-    def run_session_store_conformance(make_store, skip_optional: [])
+    # @param check_uuid_dedupe [Boolean] additionally assert the ADVISORY
+    #   uuid-dedupe recommendation: re-appending a batch that overlaps a prior
+    #   write (exactly what the mirror batcher's retry can produce) must not
+    #   duplicate entries sharing a uuid. The SessionStore contract phrases
+    #   this as a "should" and the shipped reference adapters deliberately
+    #   skip it (duplicates largely self-heal through last-wins summary folds,
+    #   though resumed transcripts can still show repeated turns), so this
+    #   defaults to off. Turn it on if your adapter dedupes.
+    def run_session_store_conformance(make_store, skip_optional: [], check_uuid_dedupe: false)
       skip_optional = skip_optional.map(&:to_s)
       invalid = skip_optional - OPTIONAL_METHODS
       raise ConformanceError, "unknown optional methods in skip_optional: #{invalid}" unless invalid.empty?
@@ -56,6 +67,7 @@ module ClaudeAgentSDK
       check_list_session_summaries(fresh, has_list_sessions, has_delete) if has_list_summaries
       check_delete(fresh, has_list_subkeys, has_list_sessions) if has_delete
       check_list_subkeys(fresh) if has_list_subkeys
+      check_uuid_dedupe_contract(fresh) if check_uuid_dedupe
       nil
     end
 
@@ -86,11 +98,21 @@ module ClaudeAgentSDK
                  entry('uuid' => 'm', 'n' => 3), entry('uuid' => 'b', 'n' => 4)],
                 'multiple appends must preserve call order')
 
-      # 4. append([]) is a no-op.
+      # 4. append([]) is a no-op — including on a never-written key, which
+      # must NOT come into existence (a phantom key surfaces as an empty
+      # session in listings; documented on InMemorySessionStore, previously
+      # never asserted).
       store = fresh.call
       store.append(key, [entry('uuid' => 'a', 'n' => 1)])
       store.append(key, [])
       assert_eq(store.load(key), [entry('uuid' => 'a', 'n' => 1)], 'append([]) must be a no-op')
+      phantom = { 'project_key' => key['project_key'], 'session_id' => 'phantom' }
+      store.append(phantom, [])
+      assert(store.load(phantom).nil?, 'append([]) to an unwritten key must not create it')
+      if has_list_sessions
+        listed = store.list_sessions(key['project_key']).map { |s| s['session_id'] }
+        assert(!listed.include?('phantom'), 'append([]) must not surface a phantom session in list_sessions')
+      end
 
       # 5. subpath keys are stored independently of main.
       store = fresh.call
@@ -134,6 +156,16 @@ module ClaudeAgentSDK
                    [entry('n' => 1)])
       assert_eq(store.list_sessions('proj').map { |s| s['session_id'] }, ['main'],
                 'list_sessions must exclude subagent subpaths')
+
+      # 16. one row per session regardless of how many appends built it. A
+      # one-row-per-append implementation passed every other contract (the
+      # multi-append guard existed only for list_session_summaries) and then
+      # showed N duplicate sessions in pickers.
+      store = fresh.call
+      multi = { 'project_key' => 'proj', 'session_id' => 'multi' }
+      3.times { |i| store.append(multi, [entry('uuid' => "u#{i}", 'n' => i)]) }
+      assert_eq(store.list_sessions('proj').map { |s| s['session_id'] }, ['multi'],
+                'list_sessions must return exactly one row per session after multiple appends')
     end
 
     # -- Optional: list_session_summaries ----------------------------------
@@ -259,6 +291,19 @@ module ClaudeAgentSDK
                 'list_subkeys of an unknown session must be empty')
     end
 
+    # -- Opt-in: uuid dedupe (advisory) --------------------------------------
+
+    # A retried mirror batch can overlap a prior write (timeout abandons the
+    # in-flight append, which may still land). Adapters that opt in promise
+    # load reflects each uuid once, in first-seen order.
+    def check_uuid_dedupe_contract(fresh)
+      store = fresh.call
+      store.append(key, [entry('uuid' => 'r1', 'n' => 1), entry('uuid' => 'r2', 'n' => 2)])
+      store.append(key, [entry('uuid' => 'r2', 'n' => 2), entry('uuid' => 'r3', 'n' => 3)]) # retry overlap
+      assert_eq(store.load(key).map { |e| e['uuid'] }, %w[r1 r2 r3],
+                'a retried batch overlapping a prior write must dedupe by entry uuid')
+    end
+
     # -- helpers -----------------------------------------------------------
 
     def key
@@ -303,7 +348,7 @@ module ClaudeAgentSDK
     end
 
     private_class_method :check_append_and_load, :check_list_sessions, :check_list_session_summaries,
-                         :check_delete, :check_list_subkeys, :key, :entry, :epoch_ms?, :optional?,
-                         :summaries_by_id, :assert, :assert_eq
+                         :check_delete, :check_list_subkeys, :check_uuid_dedupe_contract, :key, :entry,
+                         :epoch_ms?, :optional?, :summaries_by_id, :assert, :assert_eq
   end
 end

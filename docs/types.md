@@ -1,6 +1,6 @@
 # Types Reference
 
-See [lib/claude_agent_sdk/types.rb](../lib/claude_agent_sdk/types.rb) for complete type definitions.
+See [lib/claude_agent_sdk/types.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types.rb) for complete type definitions.
 
 ## Message Types
 

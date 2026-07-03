@@ -10,6 +10,84 @@ RSpec.describe ClaudeAgentSDK::InMemorySessionStore do
     end.not_to raise_error
   end
 
+  describe 'conformance suite coverage' do
+    # M18: the naive one-row-per-append list_sessions previously passed all
+    # contracts (only list_session_summaries was guarded against it) and then
+    # showed N duplicate sessions in pickers.
+    it 'contract 16 catches a one-row-per-append list_sessions' do
+      naive = Class.new(described_class) do
+        def append(key, entries)
+          super
+          return if entries.nil? || entries.empty?
+          return if key['subpath'] && !key['subpath'].empty?
+
+          (@append_log ||= []) << { 'project_key' => key['project_key'], 'session_id' => key['session_id'] }
+        end
+
+        def list_sessions(project_key)
+          mtimes = super.to_h { |r| [r['session_id'], r['mtime']] }
+          (@append_log || []).filter_map do |k|
+            next unless k['project_key'] == project_key
+
+            { 'session_id' => k['session_id'], 'mtime' => mtimes[k['session_id']] }
+          end
+        end
+      end
+
+      expect do
+        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { naive.new })
+      end.to raise_error(ClaudeAgentSDK::Testing::ConformanceError, /one row per session after multiple appends/)
+    end
+
+    # Improvement 2: append([]) must not create a phantom key (documented on
+    # InMemorySessionStore, previously never asserted).
+    it 'contract 4 catches a store that creates phantom keys on append([])' do
+      phantomizing = Class.new(described_class) do
+        def append(key, entries)
+          if (entries || []).empty?
+            (@phantoms ||= []) << key
+            return
+          end
+          super
+        end
+
+        def list_sessions(project_key)
+          super + (@phantoms || []).select { |k| k['project_key'] == project_key }
+                                   .map { |k| { 'session_id' => k['session_id'], 'mtime' => 2**41 } }
+        end
+      end
+
+      expect do
+        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { phantomizing.new })
+      end.to raise_error(ClaudeAgentSDK::Testing::ConformanceError, /phantom session/)
+    end
+
+    # P3: the uuid-dedupe recommendation is advisory ("should"), so it is
+    # opt-in — off by default (the reference adapters deliberately skip it).
+    it 'check_uuid_dedupe is off by default and flags a non-deduping store when enabled' do
+      expect do
+        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { described_class.new })
+      end.not_to raise_error
+
+      expect do
+        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { described_class.new }, check_uuid_dedupe: true)
+      end.to raise_error(ClaudeAgentSDK::Testing::ConformanceError, /dedupe by entry uuid/)
+    end
+
+    it 'check_uuid_dedupe passes for a deduping adapter' do
+      deduping = Class.new(described_class) do
+        def append(key, entries)
+          existing = (load(key) || []).filter_map { |e| e['uuid'] }
+          super(key, entries.reject { |e| e['uuid'] && existing.include?(e['uuid']) })
+        end
+      end
+
+      expect do
+        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { deduping.new }, check_uuid_dedupe: true)
+      end.not_to raise_error
+    end
+  end
+
   describe 'test helpers' do
     let(:store) { described_class.new }
     let(:key) { { 'project_key' => 'proj', 'session_id' => 'sess' } }

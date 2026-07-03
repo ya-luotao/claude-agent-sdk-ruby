@@ -88,6 +88,8 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
     # use of one connection. Thread::Mutex is fiber-scheduler-aware, so a
     # reactor-side caller parks its fiber, not the whole thread.
     @mutex = Thread::Mutex.new
+    # Monotonic mtime state (see #next_mtime), guarded by @mutex.
+    @last_mtime = 0
   end
 
   # Create the table and listing index if absent. Idempotent. Call once at
@@ -115,7 +117,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
     return if entries.nil? || entries.empty?
 
     subpath = key['subpath'] || ''
-    mtime = (Time.now.to_f * 1000).to_i
+    mtime = next_mtime
     # Single round-trip INSERT with a FIXED five bind params regardless of batch
     # size (matching the Python reference's unnest): a multi-row VALUES list at
     # 5 params per entry would hit Postgres's 65,535 bind-parameter protocol
@@ -188,6 +190,19 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
   end
 
   private
+
+  # Monotonically increasing epoch-ms for the row's mtime. Mirrors the S3/Redis
+  # adapters (and the SDK's own store): a backward wall-clock step must not
+  # stamp a lower mtime than an earlier append's, which would let #list_sessions
+  # (MAX(mtime) per session) misrank sessions and misdirect --continue. Shares
+  # @mutex, which already serializes every DB round-trip.
+  def next_mtime
+    @mutex.synchronize do
+      now_ms = (Time.now.to_f * 1000).to_i
+      now_ms = @last_mtime + 1 if now_ms <= @last_mtime
+      @last_mtime = now_ms
+    end
+  end
 
   # Every DB round-trip funnels through these two, under @mutex (see the
   # Concurrency note at the top of the file).

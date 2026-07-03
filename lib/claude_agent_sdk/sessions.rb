@@ -373,12 +373,24 @@ module ClaudeAgentSDK
       head, tail = read_head_tail(file_path, stat.size)
 
       # Check first line for sidechain
-      first_line = head.lines.first || ''
-      return nil if first_line.include?('"isSidechain":true') || first_line.include?('"isSidechain": true')
+      return nil if sidechain_first_line?(head.lines.first || '')
 
       build_session_info(file_path, head, tail, stat, project_path)
     rescue StandardError
       nil
+    end
+
+    # Sidechain classification parses the first line and reads the top-level
+    # key — the same key the store fold reads (`entry['isSidechain'] == true`).
+    # The old raw substring scan also matched "isSidechain":true nested inside
+    # a structured field, hiding the session from disk listings only. A first
+    # line truncated by the read window can't be shape-checked and keeps the
+    # substring heuristic.
+    def sidechain_first_line?(line)
+      entry = JSON.parse(line)
+      entry.is_a?(Hash) && entry['isSidechain'] == true
+    rescue StandardError
+      line.include?('"isSidechain":true') || line.include?('"isSidechain": true')
     end
 
     def read_head_tail(file_path, size)
@@ -974,11 +986,23 @@ module ClaudeAgentSDK
       # encoding: transcripts are UTF-8 regardless of locale; without it a
       # LANG=C process raises Encoding::InvalidByteSequenceError on the first
       # multibyte line, aborting the import mid-way (Python pins utf-8 here).
-      File.foreach(file_path, encoding: 'UTF-8') do |line|
+      File.foreach(file_path, encoding: 'UTF-8').with_index(1) do |line, lineno|
         line = line.chomp
         next if line.empty?
 
-        batch << JSON.parse(line)
+        begin
+          entry = JSON.parse(line)
+        rescue JSON::ParserError
+          # A truncated trailing line is an ordinary interrupted-CLI artifact;
+          # every read path tolerates it (parse_jsonl_entries skips bad
+          # lines), and raising here aborted mid-import, leaving a partial
+          # store import behind. Skip the line, but say so — import is an
+          # explicit user operation.
+          warn "Claude SDK: import_session_to_store skipped unparseable line #{lineno} of #{file_path}"
+          next
+        end
+
+        batch << entry
         nbytes += line.bytesize
         next unless batch.length >= batch_size || nbytes >= TranscriptMirrorBatcher::MAX_PENDING_BYTES
 

@@ -635,14 +635,39 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       expect(session_spans.last.finished).to be(false)
     end
 
-    it 'resets the prompt buffer when an init supersedes an interrupted turn' do
+    # L6: the first-prompt-forever latch dropped the next turn's prompt when
+    # an init superseded an interrupted turn (/clear): the latch was still
+    # held by the old prompt when the new one arrived, and the buffers were
+    # only reset afterwards, at the new init.
+    it 'labels the new trace with the new prompt when an init supersedes an interrupted turn' do
       observer.on_user_prompt('First prompt')
       observer.on_message(init_message)
       # turn interrupted: next init arrives with no ResultMessage and no on_close
       observer.on_user_prompt('Second prompt') # dropped by the latch pre-fix
       observer.on_message(init_message)
 
-      expect(session_spans.last.attributes['input.value']).not_to eq('First prompt')
+      expect(session_spans.last.attributes['input.value']).to eq('Second prompt')
+    end
+
+    it 'labels the next trace with a prompt queued mid-turn (before the ResultMessage)' do
+      observer.on_user_prompt('Turn one')
+      observer.on_message(init_message)
+      observer.on_user_prompt('Turn two, queued early') # sent while turn one still streams
+      observer.on_message(result_message)
+      observer.on_message(init_message) # turn two begins
+
+      expect(session_spans.last.attributes['input.value']).to eq('Turn two, queued early')
+    end
+
+    it 'does not leak a pending prompt across on_close into a new session' do
+      observer.on_user_prompt('First prompt')
+      observer.on_message(init_message)
+      observer.on_user_prompt('Interrupted leftover')
+      observer.on_close
+
+      observer.on_message(init_message)
+
+      expect(session_spans.last.attributes['input.value']).to be_nil
     end
 
     it 'finishes open tool spans from the superseded trace' do

@@ -3,9 +3,12 @@
 require 'spec_helper'
 require 'async'
 
-RSpec.describe 'Real Claude CLI Integration', :integration, :real_integration do
+RSpec.describe 'Real Claude CLI Integration', :integration do
+  # Gated by RUN_INTEGRATION (see spec_helper.rb). These spawn the real `claude`
+  # CLI and make live, budget-capped API calls, so they self-skip when the CLI is
+  # not on PATH or no ANTHROPIC_API_KEY is set — RUN_INTEGRATION=1 stays green on
+  # a machine without the CLI or credentials.
   before do
-    skip 'Set RUN_REAL_INTEGRATION=1 to run real CLI integration tests' unless ENV['RUN_REAL_INTEGRATION'] == '1'
     skip 'Claude CLI is not available on PATH' unless system('command -v claude >/dev/null 2>&1')
     skip 'ANTHROPIC_API_KEY is required for real CLI integration tests' if ENV['ANTHROPIC_API_KEY'].to_s.empty?
   end
