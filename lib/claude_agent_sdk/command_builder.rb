@@ -181,7 +181,9 @@ module ClaudeAgentSDK
 
       if !settings_is_path && @options.sandbox
         sandbox_hash = @options.sandbox.is_a?(SandboxSettings) ? @options.sandbox.to_h : @options.sandbox
-        settings_hash[:sandbox] = sandbox_hash unless sandbox_hash.empty?
+        # `sandbox: true` is the plausible boolean toggle (Python emits
+        # {"sandbox": true}); true has no #empty? and used to crash here.
+        settings_hash[:sandbox] = sandbox_hash if sandbox_hash == true || !sandbox_hash.empty?
       end
 
       cmd.push("--settings", JSON.generate(settings_hash)) if !settings_is_path && !settings_hash.empty?
@@ -292,6 +294,11 @@ module ClaudeAgentSDK
                else
                  @options.output_format
                end
+      # A json_schema output_format with a nil/absent schema must skip the
+      # flag — `--json-schema null` is rejected by the CLI (Python guards
+      # `schema is not None`).
+      return if schema.nil?
+
       schema_json = schema.is_a?(String) ? schema : JSON.generate(schema)
       cmd.push("--json-schema", schema_json)
     end

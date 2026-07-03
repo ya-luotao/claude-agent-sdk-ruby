@@ -35,6 +35,37 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe '#receive_messages' do
+    it 'delivers queued messages until the end sentinel' do
+      query = described_class.new(transport: mock_transport, is_streaming_mode: true)
+      queue = query.instance_variable_get(:@message_queue)
+      queue.enqueue({ type: 'assistant' })
+      queue.enqueue({ type: 'result' })
+      queue.enqueue({ type: 'end' })
+
+      seen = []
+      Async { query.receive_messages { |m| seen << m[:type] } }.wait
+      expect(seen).to eq(%w[assistant result])
+    end
+
+    # Regression (M5): Kernel#loop rescues StopIteration, so a user block
+    # leaking one (e.g. .next on an exhausted Enumerator) silently ended
+    # reception — the ResultMessage was dropped and receive_response/query()
+    # returned as if the turn completed. It must propagate like any error.
+    it 'propagates StopIteration raised by the user block instead of faking completion' do
+      query = described_class.new(transport: mock_transport, is_streaming_mode: true)
+      queue = query.instance_variable_get(:@message_queue)
+      queue.enqueue({ type: 'assistant' })
+      queue.enqueue({ type: 'end' })
+
+      Async do
+        expect do
+          query.receive_messages { |_m| [].each.next } # exhausted Enumerator → StopIteration
+        end.to raise_error(StopIteration)
+      end.wait
+    end
+  end
+
   describe '#wait_for_result_and_end_input' do
     # The control protocol writes hook/permission/SDK-MCP replies to stdin,
     # so stdin must stay open for the whole first turn — no timeout (mirrors

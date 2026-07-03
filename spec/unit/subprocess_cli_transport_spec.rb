@@ -465,7 +465,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       oversized = "{\"type\":\"x\",\"data\":\"#{'a' * 8192}\"}\n"
       stdout = spy.new(StringIO.new(oversized))
-      status = instance_double(Process::Status, exitstatus: 0)
+      status = instance_double(Process::Status, exitstatus: 0, signaled?: false)
       waiter = instance_double(Process::Waiter, alive?: false, value: status)
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', max_buffer_size: 1024)
       transport = described_class.new('hi', options)
@@ -488,7 +488,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       # LEADING whitespace is part of the message (position-aware handling
       # must not strip it into invalid JSON).
       lines = %({"type":"assistant",\n  "data":"with  interior  spaces"}\n)
-      status = instance_double(Process::Status, exitstatus: 0)
+      status = instance_double(Process::Status, exitstatus: 0, signaled?: false)
       waiter = instance_double(Process::Waiter, alive?: false, value: status)
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude')
       transport = described_class.new('hi', options)
@@ -516,7 +516,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       line = "#{prefix}#{pad}#{' ' * 30}tail\"}\n"
       expect(line.bytesize).to be_between(max + 2, max + 40)
 
-      status = instance_double(Process::Status, exitstatus: 0)
+      status = instance_double(Process::Status, exitstatus: 0, signaled?: false)
       waiter = instance_double(Process::Waiter, alive?: false, value: status)
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', max_buffer_size: max)
       transport = described_class.new('hi', options)
@@ -953,7 +953,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         "stray warning line\n" \
         "{\"type\":\"result\",\"subtype\":\"success\"}\n"
       )
-      fake_process = instance_double(Process::Waiter, value: instance_double(Process::Status, exitstatus: 0))
+      fake_process = instance_double(Process::Waiter, value: instance_double(Process::Status, exitstatus: 0, signaled?: false))
       transport.instance_variable_set(:@stdout, stdout)
       transport.instance_variable_set(:@process, fake_process)
 
@@ -969,7 +969,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     let(:transport) { described_class.new('hi', options) }
 
     def wire_stdout(text)
-      fake_process = instance_double(Process::Waiter, value: instance_double(Process::Status, exitstatus: 0))
+      fake_process = instance_double(Process::Waiter, value: instance_double(Process::Status, exitstatus: 0, signaled?: false))
       transport.instance_variable_set(:@stdout, StringIO.new(text))
       transport.instance_variable_set(:@process, fake_process)
     end
@@ -998,6 +998,43 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       expect(messages.length).to eq(1)
       expect(messages.first[:note]).to start_with('caf')
+    end
+  end
+
+  describe '#read_messages — signal-terminated CLI (H2)' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+
+    def wire(stdout_text, status)
+      fake_process = instance_double(Process::Waiter, value: status)
+      transport.instance_variable_set(:@stdout, StringIO.new(stdout_text))
+      transport.instance_variable_set(:@process, fake_process)
+    end
+
+    # Regression: exitstatus is nil for a signal death (OOM-kill SIGKILL,
+    # SIGSEGV, ...), so `returncode && returncode != 0` was false and the
+    # consumer saw a normal end-of-stream — a TRUNCATED response reported as
+    # clean success. Python raises with a negative returncode.
+    it 'raises ProcessError with the signal number instead of reporting clean success' do
+      wire("{\"type\":\"system\",\"subtype\":\"init\"}\n",
+           instance_double(Process::Status, exitstatus: nil, signaled?: true, termsig: 9))
+
+      messages = []
+      expect { transport.read_messages { |m| messages << m } }
+        .to raise_error(ClaudeAgentSDK::ProcessError) do |e|
+          expect(e.message).to include('terminated by signal 9')
+          expect(e.exit_code).to eq(-9) # Python subprocess returncode parity
+        end
+      expect(messages.map { |m| m[:type] }).to eq(['system']) # buffered frames still delivered first
+    end
+
+    it 'still treats a clean exit 0 as success' do
+      wire("{\"type\":\"result\",\"subtype\":\"success\"}\n",
+           instance_double(Process::Status, exitstatus: 0, signaled?: false))
+
+      messages = []
+      expect { transport.read_messages { |m| messages << m } }.not_to raise_error
+      expect(messages.length).to eq(1)
     end
   end
 
@@ -1131,7 +1168,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       # read_messages drains stdout to EOF, then reaps via @process.value; the
       # reaped child must drop out of the registry even though #close is never
       # called (e.g. a Client abandoned without #disconnect).
-      status = instance_double(Process::Status, exitstatus: 0)
+      status = instance_double(Process::Status, exitstatus: 0, signaled?: false)
       waiter = instance_double(Process::Waiter, value: status, alive?: false)
       stdout = StringIO.new(%({"type":"system","subtype":"init"}\n))
       allow(transport).to receive(:check_claude_version)
@@ -1190,7 +1227,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
     it 'reads multibyte CLI output through a C-locale-tagged pipe' do
       stdout_r, stdout_w, stderr_r, stderr_w = c_locale_pipes
-      status = instance_double(Process::Status, exitstatus: 0)
+      status = instance_double(Process::Status, exitstatus: 0, signaled?: false)
       waiter = instance_double(Process::Waiter, alive?: false, value: status)
       transport = connect_with_pipes(stdout_r, stderr_r, waiter)
 
@@ -1210,7 +1247,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
     it 'surfaces multibyte stderr in ProcessError' do
       stdout_r, stdout_w, stderr_r, stderr_w = c_locale_pipes
-      status = instance_double(Process::Status, exitstatus: 1)
+      status = instance_double(Process::Status, exitstatus: 1, signaled?: false)
       waiter = instance_double(Process::Waiter, alive?: false, value: status)
       transport = connect_with_pipes(stdout_r, stderr_r, waiter)
 

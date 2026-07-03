@@ -62,6 +62,23 @@ module ClaudeAgentSDK
     servers
   end
 
+  # Internal: pull exclude_dynamic_sections out of a preset system prompt for
+  # the initialize request (older CLIs ignore unknown initialize fields).
+  # Shared by Client#connect and the one-shot query() path.
+  def self.extract_exclude_dynamic_sections(system_prompt)
+    if system_prompt.is_a?(SystemPromptPreset)
+      eds = system_prompt.exclude_dynamic_sections
+      return eds if [true, false].include?(eds)
+    elsif system_prompt.is_a?(Hash)
+      type = system_prompt[:type] || system_prompt['type']
+      if type == 'preset'
+        eds = system_prompt.fetch(:exclude_dynamic_sections) { system_prompt['exclude_dynamic_sections'] }
+        return eds if [true, false].include?(eds)
+      end
+    end
+    nil
+  end
+
   # Safely call a method on each observer, suppressing any errors.
   # Each observer is invoked through FiberBoundary so that user code runs
   # on a plain thread (no Fiber scheduler) even when called from inside
@@ -371,6 +388,13 @@ module ClaudeAgentSDK
   #     puts message
   #   end
   def self.query(prompt:, options: nil, transport: nil, &block)
+    # Validate BEFORE the block-less enum_for return so a bad prompt fails at
+    # the call site, not on first iteration. Mirrors Client#query: a bare Hash
+    # responds to #each and would stream [key, value] pairs' to_s garbage to
+    # the CLI; nil/Integer would hang forever waiting for input.
+    raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)' if prompt.is_a?(Hash)
+    raise ArgumentError, "prompt must be a String or respond to #each (got #{prompt.class})" unless prompt.is_a?(String) || prompt.respond_to?(:each)
+
     return enum_for(:query, prompt: prompt, options: options, transport: transport) unless block
 
     options ||= ClaudeAgentOptions.new
@@ -451,6 +475,7 @@ module ClaudeAgentSDK
           hooks: hooks,
           agents: configured_options.agents,
           sdk_mcp_servers: sdk_mcp_servers,
+          exclude_dynamic_sections: ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt),
           skills: configured_options.skills
         )
 
@@ -935,7 +960,7 @@ module ClaudeAgentSDK
 
       # Extract exclude_dynamic_sections from preset system prompt for the
       # initialize request (older CLIs ignore unknown initialize fields)
-      exclude_dynamic_sections = extract_exclude_dynamic_sections(configured_options.system_prompt)
+      exclude_dynamic_sections = ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt)
 
       # Create Query handler
       @query_handler = Query.new(
@@ -1056,20 +1081,6 @@ module ClaudeAgentSDK
         end
       end
       internal_hooks
-    end
-
-    def extract_exclude_dynamic_sections(system_prompt)
-      if system_prompt.is_a?(SystemPromptPreset)
-        eds = system_prompt.exclude_dynamic_sections
-        return eds if [true, false].include?(eds)
-      elsif system_prompt.is_a?(Hash)
-        type = system_prompt[:type] || system_prompt['type']
-        if type == 'preset'
-          eds = system_prompt.fetch(:exclude_dynamic_sections) { system_prompt['exclude_dynamic_sections'] }
-          return eds if [true, false].include?(eds)
-        end
-      end
-      nil
     end
 
     def writeln(string)

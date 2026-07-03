@@ -331,4 +331,61 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       described_class.query(prompt: 'hello', options: options) { |_message| nil }
     end.to raise_error(ArgumentError, /can_use_tool callback requires streaming mode/)
   end
+
+  # Regression (M6): Client#query validated the prompt but query() did not —
+  # a bare Hash responds to #each and streamed [key, value].to_s garbage to
+  # the CLI; nil/Integer hung forever waiting for stdin.
+  describe 'prompt validation' do
+    it 'rejects a bare Hash prompt' do
+      expect do
+        described_class.query(prompt: { type: 'user' }) { |_m| nil }
+      end.to raise_error(ArgumentError, /got Hash/)
+    end
+
+    it 'rejects prompts that are neither String nor each-able' do
+      expect do
+        described_class.query(prompt: 42) { |_m| nil }
+      end.to raise_error(ArgumentError, /must be a String or respond to #each \(got Integer\)/)
+    end
+
+    it 'fails fast at the call site even without a block (before enum_for defers)' do
+      expect { described_class.query(prompt: nil) }
+        .to raise_error(ArgumentError, /got NilClass/)
+    end
+  end
+
+  # Regression (M7): query() built its Query handler without the
+  # exclude_dynamic_sections kwarg, so excludeDynamicSections never reached
+  # the initialize request — Client and Python both send it.
+  it 'passes exclude_dynamic_sections from a preset system prompt to the control protocol' do
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+      system_prompt: { type: 'preset', preset: 'claude_code', exclude_dynamic_sections: true }
+    )
+
+    captured_query_args = nil
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+    allow(transport).to receive(:write)
+
+    query_handler = instance_double(
+      ClaudeAgentSDK::Query,
+      start: true,
+      initialize_protocol: nil,
+      wait_for_result_and_end_input: nil,
+      close: nil
+    )
+    allow(query_handler).to receive(:receive_messages)
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+      captured_query_args = kwargs
+      query_handler
+    end
+
+    Async do
+      described_class.query(prompt: 'hello', options: options) { |_message| nil }
+    end.wait
+
+    expect(captured_query_args[:exclude_dynamic_sections]).to be(true)
+  end
 end

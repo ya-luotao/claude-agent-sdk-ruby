@@ -234,6 +234,49 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       end
     end
 
+    # Regression (H4): the contract says mtime is an epoch-ms Numeric, but a
+    # SQL-timestamp-through-JSON adapter naturally returns ISO-8601 Strings.
+    # Unary minus on a String is String#-@ (frozen dedup), so String mtimes
+    # sorted lexicographically ASCENDING and --continue silently resumed the
+    # OLDEST session; mixed Integer/String lists raised a bare ArgumentError.
+    it 'for continue_conversation orders String mtimes chronologically (ISO-8601 and numeric strings)' do
+      old_sid = SecureRandom.uuid
+      new_sid = SecureRandom.uuid
+      mid_sid = SecureRandom.uuid
+      store.append({ 'project_key' => project_key, 'session_id' => old_sid }, [entry('old')])
+      store.append({ 'project_key' => project_key, 'session_id' => new_sid }, [entry('new')])
+      store.append({ 'project_key' => project_key, 'session_id' => mid_sid }, [entry('mid')])
+
+      string_mtime_store = Class.new(ClaudeAgentSDK::SessionStore) do
+        def initialize(inner, mtimes)
+          super()
+          @inner = inner
+          @mtimes = mtimes
+        end
+
+        def append(key, entries) = @inner.append(key, entries)
+        def load(key) = @inner.load(key)
+        def list_subkeys(key) = @inner.list_subkeys(key)
+
+        def list_sessions(project_key)
+          @inner.list_sessions(project_key).map { |s| s.merge('mtime' => @mtimes.fetch(s['session_id'])) }
+        end
+      end.new(store, {
+                old_sid => '2024-01-01T00:00:00Z',
+                new_sid => '2024-06-01T00:00:00Z',
+                mid_sid => (Time.utc(2024, 3, 1).to_f * 1000).to_i # mixed types must not raise
+              })
+
+      mat = described_class.materialize_resume_session(
+        ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: string_mtime_store, continue_conversation: true, cwd: cwd)
+      )
+      begin
+        expect(mat.resume_session_id).to eq(new_sid)
+      ensure
+        mat&.cleanup
+      end
+    end
+
     it 'enforces load_timeout_ms even without an Async reactor (hung adapter raises)' do
       slow = Class.new(ClaudeAgentSDK::SessionStore) do
         def append(_key, _entries); end

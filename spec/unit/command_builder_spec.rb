@@ -462,6 +462,38 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       cmd = described_class.new('/usr/bin/claude', options).build
       expect(cmd).to include('--settings', '/path/to/settings.json')
     end
+
+    # Regression (L1): `sandbox: true` — the plausible boolean toggle, which
+    # Python serializes as {"sandbox": true} — crashed with
+    # NoMethodError: undefined method 'empty?' for true.
+    it 'accepts sandbox: true as a boolean toggle' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(sandbox: true)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      idx = cmd.index('--settings')
+      expect(JSON.parse(cmd[idx + 1])).to eq('sandbox' => true)
+    end
+  end
+
+  describe 'output_format' do
+    it 'emits --json-schema for a json_schema output_format' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        output_format: { type: 'json_schema', schema: { 'type' => 'object' } }
+      )
+      cmd = described_class.new('/usr/bin/claude', options).build
+      idx = cmd.index('--json-schema')
+      expect(JSON.parse(cmd[idx + 1])).to eq('type' => 'object')
+    end
+
+    # Regression (L2): a json_schema output_format with a nil/absent schema
+    # emitted `--json-schema null`, which the CLI rejects at spawn. Python
+    # guards `schema is not None`.
+    it 'skips --json-schema when the schema is nil or absent' do
+      [{ type: 'json_schema', schema: nil }, { type: 'json_schema' }].each do |output_format|
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(output_format: output_format)
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).not_to include('--json-schema')
+      end
+    end
   end
 
   describe 'boolean flags' do

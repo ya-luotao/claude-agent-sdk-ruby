@@ -776,6 +776,38 @@ RSpec.describe ClaudeAgentSDK do
         expect(new_options.model).to eq('claude-opus-4')
       end
 
+      # Regression (M8): dup_with was a shallow copy, so mutating a derived
+      # variant's nested containers (`variant.allowed_tools << 'Bash'`) bled
+      # into the base and every sibling — including the security-relevant
+      # allow/deny lists — contradicting the documented immutable-style updates.
+      it 'deep-dups nested containers so mutating a variant cannot touch the base' do
+        base = described_class.new(allowed_tools: ['Read'], env: { 'A' => '1' }, add_dirs: ['/x'])
+        variant = base.dup_with(model: 'claude-opus-4')
+
+        variant.allowed_tools << 'Bash'
+        variant.disallowed_tools << 'WebFetch'
+        variant.env['B'] = '2'
+        variant.add_dirs << '/y'
+
+        expect(base.allowed_tools).to eq(['Read'])
+        expect(base.disallowed_tools).to eq([])
+        expect(base.env).to eq({ 'A' => '1' })
+        expect(base.add_dirs).to eq(['/x'])
+      end
+
+      it 'preserves non-container object identity across dup_with (server instances, callables)' do
+        server = Object.new
+        callback = ->(_tool, _input, _context) {}
+        base = described_class.new(
+          mcp_servers: { calc: { type: 'sdk', instance: server } },
+          can_use_tool: callback
+        )
+        variant = base.dup_with(max_turns: 2)
+
+        expect(variant.mcp_servers[:calc][:instance]).to be(server)
+        expect(variant.can_use_tool).to be(callback)
+      end
+
       it 'raises ArgumentError for unknown keys at construction' do
         expect { described_class.new(modle: 'claude-opus-4') }
           .to raise_error(ArgumentError, /unknown ClaudeAgentOptions option:.*modle/)
@@ -2240,6 +2272,7 @@ RSpec.describe ClaudeAgentSDK do
         data = {
           type: 'assistant',
           message: {
+            model: 'claude-sonnet-5',
             content: [{ type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { q: 'x' } }]
           }
         }
@@ -2252,6 +2285,7 @@ RSpec.describe ClaudeAgentSDK do
         data = {
           type: 'assistant',
           message: {
+            model: 'claude-sonnet-5',
             content: [{ type: 'advisor_tool_result', tool_use_id: 'srv_1',
                         content: { type: 'advisor_result', advice: 'x' } }]
           }
