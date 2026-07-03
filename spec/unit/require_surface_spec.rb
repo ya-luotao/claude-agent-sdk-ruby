@@ -20,4 +20,15 @@ RSpec.describe 'require surface' do
     _out, err, status = run_ruby("require 'claude-agent-sdk'; exit(ClaudeAgentSDK.respond_to?(:query) ? 0 : 1)")
     expect(status.exitstatus).to eq(0), "expected `require 'claude-agent-sdk'` to load the SDK: #{err}"
   end
+
+  it 'loads the SDK core via the documented instrumentation entry point' do
+    # docs/rails.md's initializer and OTelObserver's own @example use
+    # `require 'claude_agent_sdk/instrumentation'` as their only require;
+    # it must pull in the core (configure, ClaudeAgentOptions, ...) too.
+    code = "require 'claude_agent_sdk/instrumentation'; " \
+           "ClaudeAgentSDK.configure { |c| c.default_options = {} }; " \
+           'exit(defined?(ClaudeAgentSDK::ClaudeAgentOptions) ? 0 : 1)'
+    _out, err, status = run_ruby(code)
+    expect(status.exitstatus).to eq(0), "instrumentation entry point must load the SDK core: #{err}"
+  end
 end
