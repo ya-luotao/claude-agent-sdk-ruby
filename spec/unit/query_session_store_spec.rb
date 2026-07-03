@@ -33,7 +33,7 @@ RSpec.describe 'ClaudeAgentSDK.query with session_store' do
       instance_double(
         ClaudeAgentSDK::Query,
         start: nil, initialize_protocol: nil, wait_for_result_and_end_input: nil,
-        receive_messages: nil, close: nil
+        receive_messages: nil, close: nil, mirror_batches_dropped?: false
       )
     end
 
@@ -69,6 +69,22 @@ RSpec.describe 'ClaudeAgentSDK.query with session_store' do
 
       expect(ClaudeAgentSDK::SessionResume).to have_received(:materialize_resume_session)
       expect(materialized).to have_received(:cleanup) # temp dir removed in the ensure block
+    end
+
+    # M16: a dropped mirror batch means the store copy is incomplete and the
+    # materialized temp dir holds the only copy of those turns — preserve it
+    # (scrubbed of credentials) instead of deleting it.
+    it 'preserves the materialized temp dir instead of deleting it when the mirror dropped batches' do
+      allow(query_handler).to receive_messages(set_transcript_mirror_batcher: nil, mirror_batches_dropped?: true)
+      materialized = instance_double(ClaudeAgentSDK::MaterializedResume, cleanup: nil, preserve_transcripts: nil)
+      allow(ClaudeAgentSDK::SessionResume).to receive(:materialize_resume_session).and_return(materialized)
+      allow(ClaudeAgentSDK::SessionResume).to receive(:apply_materialized_options) { |opts, _m| opts }
+
+      opts = ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: SecureRandom.uuid)
+      ClaudeAgentSDK.query(prompt: 'hi', options: opts) { nil }
+
+      expect(materialized).to have_received(:preserve_transcripts)
+      expect(materialized).not_to have_received(:cleanup)
     end
 
     it 'cleans up a materialized resume even when query handler close raises' do

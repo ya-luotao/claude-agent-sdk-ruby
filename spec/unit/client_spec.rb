@@ -663,4 +663,75 @@ RSpec.describe ClaudeAgentSDK::Client do
       expect(prompt_observer.prompts).to eq(['streamed question'])
     end
   end
+
+  # L7: input-stream errors are swallowed by streaming input (warn only,
+  # Python parity) and observers are NOT notified — the documented
+  # Observer#on_error contract. connect used to wrap the initial prompt in a
+  # notifying enumerator, firing on_error for an error that didn't surface
+  # (and marking a still-live OTel trace as failed); query() never did.
+  describe 'initial prompt stream errors and observers' do
+    it 'does not notify on_error for a raising initial Enumerator prompt' do
+      errors = []
+      observer = Class.new do
+        include ClaudeAgentSDK::Observer
+
+        def initialize(sink) = (@sink = sink)
+        def on_error(error) = @sink << error
+      end.new(errors)
+
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil, close: nil)
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil)
+      allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+      allow(query_handler).to receive(:stream_input) do |stream|
+        # Emulate the real stream_input's swallow-with-warn handling.
+        stream.each { |_m| nil }
+      rescue StandardError
+        nil
+      end
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      failing = Enumerator.new do |y|
+        y << { type: 'user', message: { role: 'user', content: 'hi' } }
+        raise 'stream boom'
+      end
+
+      client = described_class.new(options: ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer]))
+      expect { client.connect(failing) }.not_to raise_error
+      expect(errors).to be_empty
+    end
+  end
+
+  # M16: a dropped mirror batch means the store copy is incomplete and the
+  # materialized temp dir holds the only copy of those turns — disconnect must
+  # preserve it (scrubbed of credentials) instead of deleting it.
+  describe '#disconnect with a materialized resume' do
+    def client_with(handler, materialized)
+      client = described_class.new
+      client.instance_variable_set(:@query_handler, handler)
+      client.instance_variable_set(:@materialized, materialized)
+      client
+    end
+
+    it 'preserves the temp dir when the mirror dropped batches' do
+      handler = instance_double(ClaudeAgentSDK::Query, close: nil, mirror_batches_dropped?: true)
+      materialized = instance_double(ClaudeAgentSDK::MaterializedResume, cleanup: nil, preserve_transcripts: nil)
+
+      client_with(handler, materialized).disconnect
+
+      expect(handler).to have_received(:close)
+      expect(materialized).to have_received(:preserve_transcripts)
+      expect(materialized).not_to have_received(:cleanup)
+    end
+
+    it 'cleans up the temp dir when no batches were dropped' do
+      handler = instance_double(ClaudeAgentSDK::Query, close: nil, mirror_batches_dropped?: false)
+      materialized = instance_double(ClaudeAgentSDK::MaterializedResume, cleanup: nil, preserve_transcripts: nil)
+
+      client_with(handler, materialized).disconnect
+
+      expect(materialized).to have_received(:cleanup)
+      expect(materialized).not_to have_received(:preserve_transcripts)
+    end
+  end
 end

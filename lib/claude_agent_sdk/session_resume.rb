@@ -28,6 +28,23 @@ module ClaudeAgentSDK
     def cleanup
       SessionResume.rmtree_with_retry(@config_dir)
     end
+
+    # Teardown when the transcript mirror dropped batches: the CLI's
+    # authoritative transcript lives in this temp dir, and the store copy is
+    # missing the dropped turns — deleting the dir would permanently lose
+    # them. Keep the transcripts (projects/), remove the redacted credential
+    # copies, and tell the user where the data is so they can import it into
+    # the store manually. Never raises.
+    def preserve_transcripts
+      ['.credentials.json', '.claude.json'].each do |name|
+        FileUtils.rm_f(File.join(@config_dir, name))
+      end
+      warn "Claude SDK: transcript mirror dropped batches; the session store copy is incomplete. " \
+           "Preserving the session transcript under #{File.join(@config_dir, 'projects')} instead of " \
+           'deleting it — import it into your session store, then remove the directory.'
+    rescue StandardError => e
+      warn "Claude SDK: failed to scrub preserved transcript dir #{@config_dir}: #{e.message}"
+    end
   end
 
   # Materialize a SessionStore-backed resume into a temp CLAUDE_CONFIG_DIR.

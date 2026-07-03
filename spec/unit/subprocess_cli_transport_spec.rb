@@ -345,7 +345,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       end
     end
 
-    it 'raises when settings file path does not exist and sandbox is enabled' do
+    # L3: a missing settings file with sandbox set warns and continues with
+    # sandbox-only settings (Python parity: logger.warning + empty settings
+    # object) instead of raising CLIConnectionError.
+    it 'warns and continues with sandbox-only settings when the settings file path does not exist' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         cli_path: '/usr/bin/claude',
         settings: '/nonexistent/path/settings.json',
@@ -353,7 +356,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       )
 
       transport = described_class.new('hi', options)
-      expect { transport.build_command }.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Settings file not found/)
+      cmd = nil
+      expect { cmd = transport.build_command }.to output(/Settings file not found/).to_stderr
+      settings_json = cmd[cmd.index('--settings') + 1]
+      expect(JSON.parse(settings_json)['sandbox']).to include('enabled' => true)
     end
 
     it 'passes --system-prompt-file for SystemPromptFile objects' do

@@ -555,8 +555,13 @@ module ClaudeAgentSDK
         ensure
           # Remove the materialized resume temp dir (which holds a redacted
           # .credentials.json copy) AFTER the subprocess has exited, even when
-          # close itself raises.
-          materialized&.cleanup
+          # close itself raises — unless the mirror dropped batches: the store
+          # copy is then incomplete and the temp dir holds the only copy of
+          # the dropped turns, so it is preserved (scrubbed of credentials)
+          # with a warning instead of deleted.
+          if materialized
+            query_handler&.mirror_batches_dropped? ? materialized.preserve_transcripts : materialized.cleanup
+          end
         end
       end
     end.wait
@@ -909,6 +914,10 @@ module ClaudeAgentSDK
       # state, and removes the materialized temp dir (which holds a redacted
       # .credentials.json copy) — so disconnect can never leave the client
       # half-open or leak the temp dir. The original error still propagates.
+      # Keep a handle on the query handler past the nil-out below: whether the
+      # mirror dropped batches is only final AFTER #close ran its last flush,
+      # and the materialized-dir decision at the bottom needs to ask it.
+      query_handler = @query_handler
       begin
         @query_handler&.close
       ensure
@@ -918,9 +927,17 @@ module ClaudeAgentSDK
         ensure
           @transport = nil
           @connected = false
-          # Remove the materialized resume temp dir AFTER the subprocess exited.
+          # Remove the materialized resume temp dir AFTER the subprocess
+          # exited — unless the mirror dropped batches: the store copy is then
+          # incomplete and the temp dir holds the only copy of the dropped
+          # turns, so it is preserved (scrubbed of credentials) with a warning
+          # instead of deleted.
           if @materialized
-            @materialized.cleanup
+            if query_handler&.mirror_batches_dropped?
+              @materialized.preserve_transcripts
+            else
+              @materialized.cleanup
+            end
             @materialized = nil
           end
         end
@@ -997,22 +1014,13 @@ module ClaudeAgentSDK
         # yielding deadlocked connect — and serialized Hash messages with
         # to_s (Ruby inspect, not JSON). stream_input JSON-generates Hashes
         # and is tracked on the Query so close() stops it. Stream errors are
-        # notified to observers once, then swallowed-with-warn by
-        # stream_input (Python parity) — they no longer abort connect.
+        # swallowed-with-warn by stream_input (Python parity) — they don't
+        # abort connect, and observers are NOT notified (the documented
+        # Observer#on_error contract; notifying a swallowed error would mark
+        # a still-live OTel trace as failed). Same behavior as query()'s
+        # streaming path.
         observed = ClaudeAgentSDK.observing_prompt_stream(prompt, @resolved_observers)
-        notifying = error_notifying_stream(observed)
-        @query_handler.spawn_task { @query_handler.stream_input(notifying) }
-      end
-    end
-
-    # Wrap a stream so a raising user enumerator fires on_error exactly once
-    # before stream_input's swallow-with-warn handling takes over.
-    def error_notifying_stream(stream)
-      Enumerator.new do |yielder|
-        stream.each { |message| yielder << message }
-      rescue StandardError => e
-        notify_error(e)
-        raise
+        @query_handler.spawn_task { @query_handler.stream_input(observed) }
       end
     end
 

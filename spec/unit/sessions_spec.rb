@@ -233,6 +233,63 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       end
     end
 
+    # Regression (M14): the tail byte-scan also matched summary/customTitle/
+    # lastPrompt keys nested inside tool_use inputs (subagent/teammate tool
+    # arguments carry unescaped `"summary":"..."`), reporting tool-argument
+    # text as the session summary/title — diverging from the store fold,
+    # which reads only top-level keys. Matches are now verified against the
+    # top level of their containing line.
+    it 'ignores summary/customTitle keys nested inside tool_use inputs' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json,
+          { type: 'summary', summary: 'true summary' }.to_json,
+          { type: 'assistant', uuid: 'a1',
+            message: { content: [{ type: 'tool_use', name: 'SendMessage',
+                                   input: { summary: 'nested tool-arg summary',
+                                            customTitle: 'nested title',
+                                            lastPrompt: 'nested prompt' } }] } }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.summary).to eq('true summary')
+        expect(result.custom_title).to be_nil
+      end
+    end
+
+    it 'falls through to the first prompt when the only key matches are nested' do
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        File.write(file_path, [
+          { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json,
+          { type: 'assistant', uuid: 'a1',
+            message: { content: [{ type: 'tool_use', name: 'SendMessage',
+                                   input: { summary: 'nested tool-arg summary' } }] } }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.summary).to eq('Hello')
+      end
+    end
+
+    it 'keeps the raw-scan value for a line truncated at the tail window edge' do
+      stub_const('ClaudeAgentSDK::Sessions::LITE_READ_BUF_SIZE', 64)
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        # The summary entry is longer than the window, so the tail window
+        # starts mid-line: the containing line can't be parsed, and the match
+        # keeps its raw-scan value instead of being discarded.
+        File.write(file_path, [
+          { type: 'user', uuid: 'u1', message: { content: 'Hello' } }.to_json,
+          { pad: 'A' * 100, type: 'summary', summary: 'tail summary' }.to_json
+        ].join("\n"))
+
+        result = described_class.read_session_lite(file_path, '/test')
+        expect(result.summary).to eq('tail summary')
+      end
+    end
+
     it 'still prefers a real customTitle over the first prompt' do
       Dir.mktmpdir do |dir|
         file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')

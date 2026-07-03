@@ -341,4 +341,26 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       expect(client.instance_variable_get(:@materialized)).to be_nil
     end
   end
+
+  # M16: when the mirror dropped batches, the materialized temp dir holds the
+  # only copy of those turns (the store copy is incomplete) — teardown must
+  # not delete it. It keeps the transcripts but scrubs the credential copies.
+  describe 'MaterializedResume#preserve_transcripts' do
+    it 'removes credential copies, keeps transcripts, warns, and never rmtrees' do
+      Dir.mktmpdir do |dir|
+        transcript = File.join(dir, 'projects', 'pk', 'sid.jsonl')
+        FileUtils.mkdir_p(File.dirname(transcript))
+        File.write(transcript, "{}\n")
+        File.write(File.join(dir, '.credentials.json'), '{}')
+        File.write(File.join(dir, '.claude.json'), '{}')
+
+        materialized = ClaudeAgentSDK::MaterializedResume.new(config_dir: dir, resume_session_id: 'sid')
+        expect { materialized.preserve_transcripts }.to output(/[Pp]reserving/).to_stderr
+
+        expect(File).not_to exist(File.join(dir, '.credentials.json'))
+        expect(File).not_to exist(File.join(dir, '.claude.json'))
+        expect(File).to exist(transcript)
+      end
+    end
+  end
 end

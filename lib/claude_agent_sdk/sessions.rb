@@ -213,6 +213,65 @@ module ClaudeAgentSDK
       result
     end
 
+    # Byte-scan for `"key":"` like extract_json_string_field, but verify each
+    # match by JSON-parsing its containing line and reading the key at the TOP
+    # LEVEL of the entry. The raw scan also matches keys nested inside
+    # tool_use inputs (real transcripts carry unescaped `"summary":"..."` in
+    # subagent/teammate tool arguments), which made the disk path report
+    # tool-argument text as the session summary/title while the store fold —
+    # which reads only top-level keys — disagreed. A line that doesn't parse
+    # (truncated at the head/tail window edge) keeps the raw-scan value: its
+    # top-level shape can't be checked, and dropping it would regress the
+    # common case of a true entry cut by the 64KB window.
+    def extract_top_level_string_field(text, key, last: false)
+      positions = field_match_positions(text, key)
+      positions.reverse! if last
+      parsed_lines = {}
+      positions.each do |idx, value_start|
+        line_start = (text.rindex("\n", idx) || -1) + 1
+        entry = parsed_lines.fetch(line_start) do
+          parsed_lines[line_start] = parse_containing_line(text, line_start, idx)
+        end
+        if entry
+          value = entry[key]
+          return value if value.is_a?(String)
+
+          next # parseable line without a top-level string value: nested/false match
+        end
+        value = extract_json_string_value(text, value_start)
+        return unescape_json_string(value) if value
+      end
+      nil
+    end
+
+    # Match positions of both compact and spaced `"key":` patterns, sorted by
+    # position so first/last selection is by document order (the pattern-major
+    # order of extract_json_string_field is wrong when spacings mix).
+    def field_match_positions(text, key)
+      positions = []
+      ["\"#{key}\":\"", "\"#{key}\": \""].each do |pattern|
+        pos = 0
+        while (idx = text.index(pattern, pos))
+          value_start = idx + pattern.length
+          positions << [idx, value_start]
+          pos = value_start
+        end
+      end
+      positions.sort_by!(&:first)
+      positions
+    end
+
+    # Parse the JSONL line containing byte offset +idx+. Returns the entry
+    # Hash, {} for parseable non-Hash lines (a match inside one is nested by
+    # definition), or nil when the line doesn't parse (window truncation).
+    def parse_containing_line(text, line_start, idx)
+      line_end = text.index("\n", idx) || text.length
+      entry = JSON.parse(text[line_start...line_end])
+      entry.is_a?(Hash) ? entry : {}
+    rescue StandardError
+      nil
+    end
+
     # Extract string value starting at pos (handles escapes)
     def extract_json_string_value(text, start)
       pos = start
@@ -341,15 +400,19 @@ module ClaudeAgentSDK
       # Head fallback covers short sessions where the title entry may not be in tail.
       # Each candidate passes through presence so a blank value (e.g. a
       # trailing title-clearing entry) falls through instead of short-circuiting.
-      custom_title = presence(extract_json_string_field(tail, 'customTitle', last: true)) ||
-                     presence(extract_json_string_field(head, 'customTitle', last: true)) ||
-                     presence(extract_json_string_field(tail, 'aiTitle', last: true)) ||
-                     presence(extract_json_string_field(head, 'aiTitle', last: true))
+      # Summary-chain fields use the top-level-verified scan: a raw byte scan
+      # also matches these keys nested inside tool_use inputs, reporting tool
+      # arguments as the session title/summary (and diverging from the store
+      # fold, which reads top-level keys only).
+      custom_title = presence(extract_top_level_string_field(tail, 'customTitle', last: true)) ||
+                     presence(extract_top_level_string_field(head, 'customTitle', last: true)) ||
+                     presence(extract_top_level_string_field(tail, 'aiTitle', last: true)) ||
+                     presence(extract_top_level_string_field(head, 'aiTitle', last: true))
       first_prompt = extract_first_prompt_from_head(head)
       # lastPrompt tail entry shows what the user was most recently doing.
       summary = custom_title ||
-                presence(extract_json_string_field(tail, 'lastPrompt', last: true)) ||
-                presence(extract_json_string_field(tail, 'summary', last: true)) ||
+                presence(extract_top_level_string_field(tail, 'lastPrompt', last: true)) ||
+                presence(extract_top_level_string_field(tail, 'summary', last: true)) ||
                 first_prompt
       return nil if summary.nil? || summary.strip.empty?
 

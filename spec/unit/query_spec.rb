@@ -1359,4 +1359,98 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(types).not_to include('transcript_mirror')
     end
   end
+
+  # M2 regression: a tool handler / hook / permission callback runs on a
+  # FiberBoundary worker thread; calling client.disconnect from one lands in
+  # Query#close on a thread with no Fiber.scheduler. Async::Task#stop then
+  # raised NoMethodError (nil.raise) and left the read/child tasks running.
+  # Close now marshals itself onto the reactor via the close watcher.
+  describe '#close from a foreign thread' do
+    # Transport that parks read_messages like a live CLI with no traffic.
+    # Thread::Queue#pop parks the reactor fiber; #close releases it.
+    def parked_transport
+      Class.new do
+        attr_reader :closed
+
+        def initialize
+          @queue = Thread::Queue.new
+          @closed = false
+        end
+
+        def read_messages(&block)
+          while (msg = @queue.pop)
+            block.call(msg)
+          end
+        end
+
+        def write(_str) = nil
+        def end_input = nil
+
+        def close
+          @closed = true
+          @queue.close
+        end
+      end.new
+    end
+
+    it 'closes cleanly with live parked tasks and lets the reactor exit' do
+      transport = parked_transport
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+      thread_error = nil
+
+      Async do
+        query.start
+        # Park an input stream like an interactive streaming session waiting
+        # for its next message.
+        endless = Enumerator.new do |y|
+          y << { type: 'user', message: { role: 'user', content: 'hi' }, session_id: '' }
+          sleep
+        end
+        query.spawn_task { query.stream_input(endless) }
+        sleep 0.01 # let the read loop and stream park
+
+        Thread.new do
+          query.close
+        rescue StandardError => e
+          thread_error = e
+        end.join
+      end.wait # the enclosing reactor exiting proves no task was left running
+
+      expect(thread_error).to be_nil
+      expect(transport.closed).to be true
+    end
+
+    it 'falls back to a direct close after the reactor has exited (fibers dead)' do
+      transport = parked_transport
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      Async do
+        query.start
+        sleep 0.01
+        transport.close # ends the read loop; reactor exits on its own
+      end.wait
+
+      thread_error = nil
+      Thread.new do
+        query.close
+      rescue StandardError => e
+        thread_error = e
+      end.join
+
+      expect(thread_error).to be_nil
+    end
+
+    it 'close on the reactor still works and releases the watcher' do
+      transport = parked_transport
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      Async do
+        query.start
+        sleep 0.01
+        query.close
+      end.wait # exits only if the transient watcher was released too
+
+      expect(transport.closed).to be true
+    end
+  end
 end

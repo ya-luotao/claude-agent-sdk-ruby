@@ -376,7 +376,14 @@ module ClaudeAgentSDK
     end
 
     def load_settings_file(path)
-      raise CLIConnectionError, "Settings file not found: #{path}" unless File.file?(path)
+      # Missing file: warn and continue with sandbox-only settings (Python
+      # parity: logger.warning("Settings file not found: ...") and an empty
+      # settings object). Raising here turned a misconfiguration the CLI
+      # tolerates into a hard connect failure.
+      unless File.file?(path)
+        warn "Claude SDK: Settings file not found: #{path}"
+        return {}
+      end
 
       JSON.parse(File.read(path))
     end

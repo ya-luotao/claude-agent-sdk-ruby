@@ -55,10 +55,22 @@ module ClaudeAgentSDK
       @pending = []
       @pending_entries = 0
       @pending_bytes = 0
+      # Batches that exhausted retries (or could not be keyed) and never
+      # reached the store. Written only under @lock; read cross-thread by
+      # #batches_dropped? (a plain Integer read is safe under the GVL).
+      @dropped_batches = 0
       # Fiber-aware lock: the critical section blocks on SessionStore#append
       # (a thread hop), so a Thread::Mutex would deadlock the reactor. The
       # semaphore serializes drains so append ordering matches enqueue order.
       @lock = Async::Semaphore.new(1)
+    end
+
+    # True when at least one batch of entries never reached the store — the
+    # mirror copy is incomplete. Consulted at teardown by the resume-from-store
+    # cleanup so the materialized temp dir (which then holds the only copy of
+    # the dropped turns) is preserved instead of deleted.
+    def batches_dropped?
+      @dropped_batches.positive?
     end
 
     # Buffer a frame; schedule an eager background flush if thresholds are
@@ -120,19 +132,27 @@ module ClaudeAgentSDK
         # the read task while a detached batch is still being appended.
         next if items.empty?
 
-        do_flush(items, errors)
-      rescue StandardError => e
-        # do_flush already guards each append; this guards any remaining path
-        # so the "never raises" contract holds against future regressions.
-        warn "Claude SDK: TranscriptMirrorBatcher drain failed: #{e.message}"
-      end
+        begin
+          do_flush(items, errors)
+        rescue StandardError => e
+          # do_flush already guards each append; this guards any remaining path
+          # so the "never raises" contract holds against future regressions.
+          @dropped_batches += 1
+          warn "Claude SDK: TranscriptMirrorBatcher drain failed: #{e.message}"
+        end
 
-      # Report errors after releasing the lock so a slow on_error callback can't
-      # block subsequent drains (which only need the lock for append ordering).
-      errors.each do |key, message|
-        @on_error.call(key, message)
-      rescue StandardError => e
-        warn "Claude SDK: TranscriptMirrorBatcher on_error callback raised: #{e.message}"
+        # Report errors BEFORE releasing the lock: flush/close are barriers, so
+        # a caller observing flush completion must also observe the error
+        # report. Reporting after release let an in-flight eager drain enqueue
+        # its MirrorErrorMessage after the read loop's 'end' sentinel — past
+        # the point where consumers stop dequeuing, i.e. never delivered. The
+        # production on_error (Query#report_mirror_error) is a non-blocking
+        # queue push, so holding the lock across it costs nothing.
+        errors.each do |key, message|
+          @on_error.call(key, message)
+        rescue StandardError => e
+          warn "Claude SDK: TranscriptMirrorBatcher on_error callback raised: #{e.message}"
+        end
       end
     end
 
@@ -149,6 +169,7 @@ module ClaudeAgentSDK
 
         key = SessionStores.file_path_to_session_key(file_path, @projects_dir)
         if key.nil?
+          @dropped_batches += 1
           warn "Claude SDK: [SessionStore] dropping mirror frame: filePath #{file_path} is not under " \
                "#{@projects_dir} -- subprocess CLAUDE_CONFIG_DIR likely differs from parent (custom env / container?)"
           next
@@ -180,8 +201,11 @@ module ClaudeAgentSDK
         end
       end
 
-      errors << [key, last_err.to_s] unless succeeded
-      warn "Claude SDK: TranscriptMirrorBatcher flush failed for #{file_path}: #{last_err}" unless succeeded
+      return if succeeded
+
+      @dropped_batches += 1
+      errors << [key, last_err.to_s]
+      warn "Claude SDK: TranscriptMirrorBatcher flush failed for #{file_path}: #{last_err}"
     end
 
     # Run SessionStore#append (user code) on a plain thread via FiberBoundary,
