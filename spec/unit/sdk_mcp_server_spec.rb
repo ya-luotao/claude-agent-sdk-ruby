@@ -642,6 +642,20 @@ RSpec.describe ClaudeAgentSDK, '.create_sdk_mcp_server' do
     result = server.call_tool('add', { a: 15, b: 27 })
     expect(result[:content].first[:text]).to eq('15 + 27 = 42')
   end
+
+  it 'makes a Symbol-named tool callable by its string wire name' do
+    # tools/call arrives from the CLI with the name as a JSON String; a
+    # Symbol name stored verbatim was advertised in tools/list but missed
+    # the gem's name-keyed lookup — 'Tool not found' on every invocation.
+    tool = described_class.create_tool(:greet, 'Greet', { who: :string }) do |args|
+      { content: [{ type: 'text', text: "hi #{args[:who]}" }] }
+    end
+    server = described_class.create_sdk_mcp_server(name: 'greeter', tools: [tool])[:instance]
+
+    expect(server.list_tools.first[:name]).to eq('greet')
+    result = server.call_tool('greet', { who: 'ruby' })
+    expect(result[:content].first[:text]).to eq('hi ruby')
+  end
 end
 
 RSpec.describe ClaudeAgentSDK, '.extract_sdk_mcp_servers' do

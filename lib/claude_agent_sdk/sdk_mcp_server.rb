@@ -470,6 +470,11 @@ module ClaudeAgentSDK
       resolved_meta = { 'anthropic/maxResultSizeChars' => max_chars } if max_chars
     end
 
+    # tools/call arrives from the CLI with the name as a JSON String; the mcp
+    # gem keys its lookup on the value stored here, so a Symbol name would be
+    # advertised in tools/list yet miss on every invocation ('Tool not found').
+    name = name.to_s if name.is_a?(Symbol)
+
     SdkMcpTool.new(
       name: name,
       description: description,
