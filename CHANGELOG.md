@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-07-03
+
+Zero-risk fix batch from the 2026-07-03 full-codebase audit (`AUDIT-2026-07-03.md`, PR #41).
+
+### Added
+- `lib/claude-agent-sdk.rb` require shim: `Bundler.require` now loads the SDK in default Rails/Bundler apps. Previously Bundler tried `claude-agent-sdk` and `claude/agent/sdk`, silently swallowed both LoadErrors, and left `ClaudeAgentSDK` undefined until a confusing `NameError` at first use.
+
+### Fixed
+- `require 'claude_agent_sdk/instrumentation'` now loads the SDK core, so the documented Rails observability initializer (and `OTelObserver`'s own `@example`) works as the only require.
+- Typed `McpStdioServerConfig` / `McpSSEServerConfig` / `McpHttpServerConfig` / `McpSdkServerConfig` objects passed directly in `mcp_servers` (without `.to_h`) now serialize to their wire hash instead of a `#<...>` string the CLI cannot parse — and `McpSdkServerConfig` instances now actually register their in-process server, so its tools connect.
+- `create_tool` with a Symbol name produced a tool that was advertised in `tools/list` but failed every invocation with 'Tool not found'; names are now coerced to String.
+- One stdout line carrying invalid UTF-8 bytes no longer aborts the whole message stream (which dropped all buffered valid frames, including a trailing `result`); the bad line is scrubbed, matching the version-probe path.
+- `fork_session` no longer hangs forever on a transcript with a `parentUuid` cycle among progress entries.
+- `fork_session` / `delete_session` no longer stop at a 0-byte transcript stub: they fall through to the worktree project dir holding the real transcript, mirroring the read path. A session whose *only* copy is a 0-byte stub now raises `Errno::ENOENT`, consistent with the read paths that already hide it.
+- Long-lived `Client`s using SDK MCP servers no longer leak one finished internal task per synchronously-handled control request (MCP metadata requests, unsupported subtypes).
+- An observer implementing none of the observer interface — most commonly a Class passed instead of an instance (`observers: [OTelObserver]`) — is now warned about and skipped instead of producing silent zero instrumentation.
+
+### Changed
+- The gem packages git-tracked files only (previously a working-tree glob, which shipped stray untracked files under `lib/`/`docs/` in locally built gems). `gem build` from a tree with tracked-but-deleted files now fails fast instead of silently packaging whatever was on disk.
+
 ## [0.19.0] - 2026-06-29
 
 ### Added
