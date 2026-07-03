@@ -20,8 +20,17 @@ Gem::Specification.new do |spec|
   spec.metadata['documentation_uri'] = 'https://rubydoc.info/gems/claude-agent-sdk'
   spec.metadata['allowed_push_host'] = 'https://rubygems.org'
 
-  # Specify which files should be added to the gem when it is released.
-  spec.files = Dir['lib/**/*', 'docs/**/*', 'README.md', 'LICENSE', 'CHANGELOG.md']
+  # Ship only git-tracked files: a working-tree Dir glob would package any
+  # stray/untracked files under lib/ or docs/ present at build time (a stray
+  # lib/*.rb even becomes requireable code in the released gem). Fall back to
+  # the glob when git is unavailable (e.g. building from a source tarball).
+  tracked = begin
+    IO.popen(%w[git ls-files -z lib docs README.md LICENSE CHANGELOG.md],
+             chdir: __dir__, err: File::NULL, &:read).split("\x0")
+  rescue SystemCallError
+    []
+  end
+  spec.files = tracked.empty? ? Dir['lib/**/*', 'docs/**/*', 'README.md', 'LICENSE', 'CHANGELOG.md'] : tracked
   spec.require_paths = ['lib']
 
   # Runtime dependencies
