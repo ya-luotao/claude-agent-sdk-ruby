@@ -571,6 +571,26 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
     end
   end
 
+  describe 'advisor model' do
+    it 'passes --advisor with the configured model' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(advisor_model: 'opus')
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--advisor', 'opus')
+    end
+
+    it 'passes a full model ID verbatim alongside --model' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(model: 'claude-haiku-4-5', advisor_model: 'claude-opus-4-8')
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--model', 'claude-haiku-4-5')
+      expect(cmd).to include('--advisor', 'claude-opus-4-8')
+    end
+
+    it 'omits --advisor by default' do
+      cmd = described_class.new('/usr/bin/claude', ClaudeAgentSDK::ClaudeAgentOptions.new).build
+      expect(cmd).not_to include('--advisor')
+    end
+  end
+
   describe 'mutually exclusive session flags' do
     it 'raises ArgumentError when both continue_conversation and resume are set' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(

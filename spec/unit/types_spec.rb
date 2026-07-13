@@ -705,6 +705,7 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.max_budget_usd).to be_nil
         expect(options.max_thinking_tokens).to be_nil
         expect(options.fallback_model).to be_nil
+        expect(options.advisor_model).to be_nil
         expect(options.plugins).to be_nil
         expect(options.debug_stderr).to be_nil
         expect(options.session_store).to be_nil
@@ -756,6 +757,7 @@ RSpec.describe ClaudeAgentSDK do
           max_budget_usd: 10.0,
           max_thinking_tokens: 5000,
           fallback_model: 'claude-haiku-3',
+          advisor_model: 'opus',
           plugins: [plugin],
           debug_stderr: '/tmp/debug.log'
         )
@@ -764,6 +766,7 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.max_budget_usd).to eq(10.0)
         expect(options.max_thinking_tokens).to eq(5000)
         expect(options.fallback_model).to eq('claude-haiku-3')
+        expect(options.advisor_model).to eq('opus')
         expect(options.plugins).to eq([plugin])
         expect(options.debug_stderr).to eq('/tmp/debug.log')
       end

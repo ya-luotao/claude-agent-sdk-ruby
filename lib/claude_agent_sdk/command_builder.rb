@@ -124,6 +124,10 @@ module ClaudeAgentSDK
     def append_model(cmd)
       cmd.push("--model", @options.model) if @options.model
       cmd.push("--fallback-model", @options.fallback_model) if @options.fallback_model
+      # Server-side advisor tool (experimental, Anthropic API only). The CLI
+      # validates the main-model/advisor pairing; pairing rules are
+      # CLI-version-dependent, so the SDK passes the value through verbatim.
+      cmd.push("--advisor", @options.advisor_model) if @options.advisor_model
     end
 
     def append_permission(cmd)

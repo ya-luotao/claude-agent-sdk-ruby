@@ -207,7 +207,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 | Topic | Reference |
 |-------|-----------|
-| Structured output, thinking config, budget, fallback model, beta features, sandbox, bare mode, file checkpointing | [docs/configuration.md](docs/configuration.md) |
+| Structured output, thinking config, budget, fallback model, advisor model, beta features, sandbox, bare mode, file checkpointing | [docs/configuration.md](docs/configuration.md) |
 | Session listing, reading, renaming, tagging, deleting, forking, resume-at-message | [docs/sessions.md](docs/sessions.md) |
 | OpenTelemetry tracing, Langfuse setup, custom observers | [docs/observability.md](docs/observability.md) |
 | Rails integration (fiber safety, ActionCable, sessions, jobs, HTTP MCP, observability initializer) | [docs/rails.md](docs/rails.md) |
@@ -253,6 +253,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 |---------|-------------|
 | [budget_control_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/budget_control_example.rb) | Budget control with `max_budget_usd` |
 | [fallback_model_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/fallback_model_example.rb) | Fallback model configuration |
+| [advisor_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/advisor_example.rb) | Server-side advisor tool (`advisor_model`) |
 | [extended_thinking_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/extended_thinking_example.rb) | Extended thinking |
 | [e2b_transport_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/e2b_transport_example.rb) | Custom transport running CLI in an E2B microVM |
 
