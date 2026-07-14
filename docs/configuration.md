@@ -104,6 +104,41 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 See [examples/fallback_model_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/fallback_model_example.rb).
 
+## Advisor Model
+
+Pair the main model with a stronger advisor model that Claude consults at key
+decision points (before committing to an approach, when stuck on a recurring
+error, before declaring a task done). The advisor runs server-side and
+receives the full conversation.
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  model: 'haiku',
+  advisor_model: 'opus'  # alias or full model ID, e.g. 'claude-opus-4-8'
+)
+```
+
+Advisor consultations surface in `AssistantMessage` content as
+`ServerToolUseBlock` (name `'advisor'`) and `ServerToolResultBlock`
+(`advisor_tool_result`) blocks.
+
+Notes:
+
+- Experimental; requires the Anthropic API (not available on Bedrock, Google
+  Cloud's Agent Platform, or Microsoft Foundry). Requires Claude Code CLI with
+  advisor support (v2.1.x).
+- The CLI validates the pairing — the advisor must be at least as capable as
+  the main model (e.g. a Haiku main accepts an Opus advisor; the reverse is
+  rejected). Pairing rules are CLI-version-dependent, so the SDK passes the
+  value through without validating it.
+- Advisor calls are billed at the advisor model's rates in addition to the
+  main model's usage.
+- `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` (settable via `options.env`) disables
+  the advisor tool entirely; a configured `advisor_model` is then ignored.
+
+See [examples/advisor_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/advisor_example.rb) and the
+[advisor documentation](https://code.claude.com/docs/en/advisor).
+
 ## Beta Features
 
 ```ruby
