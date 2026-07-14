@@ -25,6 +25,7 @@ Notes:
 - `system_prompt`: Set an overall instruction as a string, use `ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: '...', exclude_dynamic_sections: true)` to extend a preset (with optional cross-user caching), or use `ClaudeAgentSDK::SystemPromptFile.new(path: '/path/to/prompt.txt')` to load from a file.
 - `model`: Select the model.
 - `fallback_model`: Use when the primary model is unavailable.
+- `advisor_model`: Pair the main model with a stronger advisor model consulted at decision points (server-side advisor tool; alias like `'opus'` or full model ID). Anthropic API only; the CLI validates the main/advisor pairing. Consultations appear as `ServerToolUseBlock` (name `'advisor'`) / `ServerToolResultBlock` content.
 - `max_turns`: Cap the number of turns.
 - `max_budget_usd`: Cap total spend (USD).
 - `task_budget`: API-side token budget — `ClaudeAgentSDK::TaskBudget.new(total: 50000)` or `{ total: 50000 }`. The model paces tool use and wraps up before the limit.

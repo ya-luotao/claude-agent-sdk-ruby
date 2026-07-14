@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-14
+
+### Added
+- `ClaudeAgentOptions.advisor_model` enables Claude Code's experimental server-side [advisor tool](https://code.claude.com/docs/en/advisor) (`--advisor` CLI flag): the main model consults a stronger advisor model at key decision points. Accepts a model alias (`'opus'`) or full model ID. Anthropic API only; the CLI validates the main-model/advisor pairing, so invalid pairings surface as `ProcessError`. Consultations appear in `AssistantMessage` content as `ServerToolUseBlock` (name `'advisor'`) and `ServerToolResultBlock` blocks, which the SDK already parsed. See `examples/advisor_example.rb` and the new "Advisor Model" section in `docs/configuration.md`.
+
 ## [0.22.0] - 2026-07-03
 
 Final batch (Batch D) from the 2026-07-03 full-codebase audit, closing it out: tests/docs/examples plus the three recorded split-verdict findings (P1-P3). Minor because the conformance suite gained a contract (an adapter that passed 0.21.0 can now fail contract 16) and new API surface (`check_uuid_dedupe:`).
