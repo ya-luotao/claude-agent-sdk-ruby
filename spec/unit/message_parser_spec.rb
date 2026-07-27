@@ -971,6 +971,37 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.uuid).to eq('result_uuid')
         expect(msg.fast_mode_state).to eq('on')
       end
+
+      it 'parses terminal_reason' do
+        data = {
+          type: 'result',
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'test',
+          terminal_reason: 'aborted_streaming'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg.terminal_reason).to eq('aborted_streaming')
+      end
+
+      it 'leaves terminal_reason nil when the CLI does not report one' do
+        data = {
+          type: 'result',
+          subtype: 'success',
+          duration_ms: 1000,
+          duration_api_ms: 800,
+          is_error: false,
+          num_turns: 1,
+          session_id: 'test'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg.terminal_reason).to be_nil
+      end
     end
 
     context 'init message fast_mode_state' do

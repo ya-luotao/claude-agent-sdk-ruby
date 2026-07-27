@@ -328,6 +328,66 @@ module ClaudeAgentSDK
       @ready = false
       return unless @process
 
+      process = @process
+      process_teardown_complete = false
+      begin
+        teardown_process
+        process_teardown_complete = true
+      ensure
+        # The graceful escalation in teardown_process suspends (task sleep,
+        # thread join), so a cancellation (Async::Stop) delivered mid-close
+        # used to skip TERM/KILL entirely and leak a live CLI child until
+        # interpreter exit (the at_exit reaper fires only then, TERM only).
+        # Nothing here may suspend: a synchronous TERM plus a plain
+        # background thread for the KILL escalation. On this path the
+        # process deliberately STAYS in the at_exit registry as a second
+        # safety net; the normal path deregisters in teardown_process.
+        force_terminate_in_background(process) unless process_teardown_complete
+
+        # Snapshot-then-nil BEFORE the best-effort pipe close below: once the
+        # references are cleared, even a close that somehow failed leaves the
+        # IOs unreachable from this (still-referenced) transport, so GC can
+        # finalize them — "wait for GC" alone would never fire while the
+        # transport keeps pointing at them, and with @process nil a repeat
+        # #close returns immediately, so a cancelled close used to leak the
+        # pipe descriptors for the life of the object.
+        #
+        # @stdin is cleared WITHOUT its mutex (taking it could suspend
+        # mid-cancellation): the ivar swap is atomic, and #write takes its
+        # snapshot under the mutex, so a concurrent writer sees either nil
+        # (raises not-ready — @ready is already false) or the old IO, whose
+        # in-flight write then fails with IOError and is converted to
+        # CLIConnectionError — the documented shutdown behavior either way.
+        stdin_io = @stdin
+        stdout_io = @stdout
+        stderr_io = @stderr
+        @process = nil
+        @stdin = nil
+        @stdout = nil
+        @stderr = nil
+        @stderr_task = nil
+        @exit_error = nil
+
+        unless process_teardown_complete
+          # Cancellation can land before teardown_process reached the pipe
+          # closes. stdout/stderr are read ends (close never blocks); stdin's
+          # implicit flush is a no-op in practice because #write flushes
+          # after every write. Best-effort: an IO that is already closed or
+          # fails to close is left to GC, which the nil-ing above enables.
+          [stdin_io, stdout_io, stderr_io].each do |io|
+            io&.close
+          rescue StandardError
+            nil
+          end
+        end
+      end
+    end
+
+    # Pre-existing #close body: stop the stderr drain, close pipes, wait for
+    # graceful exit after stdin EOF, escalate TERM → KILL on timeout. Runs on
+    # the reactor and suspends at several points; #close's ensure covers the
+    # cancellation-abandoned case.
+    def teardown_process
       cleanup_errors = []
 
       # Kill stderr thread
@@ -404,12 +464,34 @@ module ClaudeAgentSDK
       end
 
       self.class.deregister_active_process(@process)
-      @process = nil
-      @stdout = nil
-      # @stdin already nilled under the mutex above.
-      @stderr = nil
-      @stderr_task = nil
-      @exit_error = nil
+    end
+
+    # Last-resort termination when #close was interrupted before the graceful
+    # escalation finished. Contains no suspension points, so it is safe
+    # inside an ensure during fiber cancellation: synchronous SIGTERM now,
+    # then a plain (non-reactor) thread escalates to SIGKILL after a grace
+    # period. Open3's Process::Waiter thread keeps reaping, so no zombie is
+    # left either way. The alive? guard also makes the delayed KILL
+    # pid-reuse-safe: while the waiter thread reports alive (not yet reaped),
+    # the pid cannot have been recycled.
+    def force_terminate_in_background(process, grace_seconds: 2)
+      return unless process&.alive?
+
+      pid = process.pid
+      begin
+        Process.kill('TERM', pid)
+      rescue StandardError
+        return # ESRCH: already gone; EPERM: not ours to signal
+      end
+
+      Thread.new do
+        sleep grace_seconds
+        begin
+          Process.kill('KILL', pid) if process.alive?
+        rescue StandardError
+          nil # died inside the grace window
+        end
+      end
     end
 
     # Wait for the spawned process to exit, up to +timeout_seconds+. Polls

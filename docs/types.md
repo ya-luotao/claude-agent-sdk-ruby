@@ -74,19 +74,40 @@ Final result message with cost and usage information.
 
 ```ruby
 class ResultMessage
-  attr_accessor :subtype,           # String
-                :duration_ms,       # Integer
-                :duration_api_ms,   # Integer
-                :is_error,          # Boolean
-                :num_turns,         # Integer
-                :session_id,        # String
-                :stop_reason,       # String | nil ('end_turn', 'max_tokens', 'stop_sequence')
-                :total_cost_usd,    # Float | nil
-                :usage,             # Hash | nil
-                :result,            # String | nil (final text result)
-                :structured_output  # Hash | nil (when using output_format)
+  attr_accessor :subtype,            # String
+                :duration_ms,        # Integer
+                :duration_api_ms,    # Integer
+                :is_error,           # Boolean
+                :num_turns,          # Integer
+                :session_id,         # String
+                :stop_reason,        # String | nil ('end_turn', 'max_tokens', 'stop_sequence')
+                :total_cost_usd,     # Float | nil
+                :usage,              # Hash | nil
+                :result,             # String | nil (final text result)
+                :structured_output,  # Hash | nil (when using output_format)
+                :model_usage,        # Hash | nil — { model_name => usage Hash } (see below)
+                :permission_denials, # Array | nil
+                :errors,             # Array<String> | nil (present on error subtypes)
+                :uuid,               # String | nil
+                :fast_mode_state,    # String | nil ('off', 'cooldown', 'on')
+                :api_error_status,   # Integer | nil (HTTP status on api_error subtype)
+                :terminal_reason     # String | nil (see below)
 end
 ```
+
+`terminal_reason` says why the query loop ended (`"completed"`, `"max_turns"`,
+`"aborted_streaming"`, ...). `"aborted_streaming"` / `"aborted_tools"` mean the
+turn was cancelled via `Client#interrupt`. `nil` when the CLI did not report
+one (older CLIs, or a result that bypassed the query loop such as a local
+slash command).
+
+`model_usage` values are passed through verbatim from the CLI, so their keys
+are camelCase (the TypeScript/Python SDKs' `ModelUsage` shape): `inputTokens`,
+`outputTokens`, `cacheReadInputTokens`, `cacheCreationInputTokens`,
+`webSearchRequests`, `costUSD`, `contextWindow`, `maxOutputTokens`, plus
+optional `canonicalModel` (canonical id used for the pricing lookup, which can
+differ from the raw model-string key for provider-specific ids/aliases) and
+`provider` (`'firstParty'`, `'bedrock'`, `'vertex'`, ...).
 
 ## Content Block Types
 
