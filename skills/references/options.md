@@ -52,6 +52,7 @@ Use `can_use_tool:` to control tool execution from Ruby.
 Important constraints:
 - Use `can_use_tool` only with `ClaudeAgentSDK::Client` (streaming mode); it is not supported by `ClaudeAgentSDK.query`.
 - Do not use `can_use_tool` together with `permission_prompt_tool_name`.
+- The callback only runs when the permission ladder lands on "ask": `permission_mode: 'bypassPermissions'` or an `allowed_tools` entry that allows a whole tool (`'Read'`, `'Read()'`, `'Read(*)'`, or the bare `Skill` implied by `skills: 'all'`) auto-approves first and the callback never fires for it. The SDK warns to stderr when it can see this shadowing.
 
 ## Hooks
 

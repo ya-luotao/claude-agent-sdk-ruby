@@ -34,7 +34,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
   - Unknown message types return `nil` (forward-compatible)
 - Handle content blocks: `TextBlock`, `ThinkingBlock`, `ToolUseBlock`, `ToolResultBlock`, `UnknownBlock`
 - `AssistantMessage` carries: `content`, `model`, `parent_tool_use_id`, `error`, `usage`, `message_id` (API message ID), `stop_reason`, `session_id`, `uuid` (transcript UUID)
-- `ResultMessage` carries: `stop_reason`, `model_usage` (per-model breakdown), `permission_denials`, `errors` (on error subtypes), `uuid`, `fast_mode_state`
+- `ResultMessage` carries: `stop_reason`, `model_usage` (per-model breakdown), `permission_denials`, `errors` (on error subtypes), `uuid`, `fast_mode_state`, `terminal_reason` (why the query loop ended; `aborted_streaming`/`aborted_tools` mean interrupted)
 - Use `output_format` for JSON schema structured output
 - Use `thinking:` with `ThinkingConfigAdaptive`, `ThinkingConfigEnabled(budget_tokens:)`, or `ThinkingConfigDisabled`. Use `effort:` for effort level.
 

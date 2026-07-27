@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-27
+
 Parity batch with the Python SDK v0.2.111–v0.2.128 (everything substantive in that span; the rest is bundled-CLI version bumps, which don't apply to this gem).
 
 ### Fixed
