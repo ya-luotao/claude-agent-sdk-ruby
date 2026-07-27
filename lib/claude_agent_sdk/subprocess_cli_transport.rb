@@ -343,15 +343,43 @@ module ClaudeAgentSDK
         # process deliberately STAYS in the at_exit registry as a second
         # safety net; the normal path deregisters in teardown_process.
         force_terminate_in_background(process) unless process_teardown_complete
+
+        # Snapshot-then-nil BEFORE the best-effort pipe close below: once the
+        # references are cleared, even a close that somehow failed leaves the
+        # IOs unreachable from this (still-referenced) transport, so GC can
+        # finalize them — "wait for GC" alone would never fire while the
+        # transport keeps pointing at them, and with @process nil a repeat
+        # #close returns immediately, so a cancelled close used to leak the
+        # pipe descriptors for the life of the object.
+        #
+        # @stdin is cleared WITHOUT its mutex (taking it could suspend
+        # mid-cancellation): the ivar swap is atomic, and #write takes its
+        # snapshot under the mutex, so a concurrent writer sees either nil
+        # (raises not-ready — @ready is already false) or the old IO, whose
+        # in-flight write then fails with IOError and is converted to
+        # CLIConnectionError — the documented shutdown behavior either way.
+        stdin_io = @stdin
+        stdout_io = @stdout
+        stderr_io = @stderr
         @process = nil
+        @stdin = nil
         @stdout = nil
-        # @stdin is nilled under its mutex on the normal path; deliberately
-        # not touched here because taking the mutex could suspend
-        # mid-cancellation. A leftover IO is closed by GC; writers are
-        # already fenced by @ready = false.
         @stderr = nil
         @stderr_task = nil
         @exit_error = nil
+
+        unless process_teardown_complete
+          # Cancellation can land before teardown_process reached the pipe
+          # closes. stdout/stderr are read ends (close never blocks); stdin's
+          # implicit flush is a no-op in practice because #write flushes
+          # after every write. Best-effort: an IO that is already closed or
+          # fails to close is left to GC, which the nil-ing above enables.
+          [stdin_io, stdout_io, stderr_io].each do |io|
+            io&.close
+          rescue StandardError
+            nil
+          end
+        end
       end
     end
 

@@ -39,9 +39,22 @@ module ClaudeAgentSDK
       # Each distinct message is emitted once per process (mirrors Python's
       # default UserWarning filter), so an app constructing a client per
       # request does not repeat the same warning on every connect.
+      #
+      # Best-effort by design: this runs inside query()/Client#connect, and
+      # an advisory warning must never break an otherwise valid session — a
+      # daemonized process with a closed or broken $stderr would otherwise
+      # turn the warn into an IOError out of connect. The message stays in
+      # the dedupe set either way (retrying against a broken sink is
+      # pointless and would violate once-per-process).
       def emit(message)
         first = @mutex.synchronize { @emitted.add?(message) }
-        warn "Claude SDK: #{message}" if first
+        return unless first
+
+        begin
+          warn "Claude SDK: #{message}"
+        rescue StandardError
+          nil
+        end
       end
 
       def can_use_tool_shadowed_message(options)

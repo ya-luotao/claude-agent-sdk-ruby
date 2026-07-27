@@ -77,4 +77,24 @@ RSpec.describe ClaudeAgentSDK::OptionWarnings do
     expect(second).to be_empty
     expect(other).to include('Grep')
   end
+
+  it 'never raises when the stderr sink is broken (advisory must not break connect)' do
+    broken = Object.new
+    def broken.write(*)
+      raise IOError, 'closed stream'
+    end
+
+    options = options_with(allowed_tools: ['Read'])
+    original = $stderr
+    $stderr = broken
+    begin
+      expect { described_class.warn_if_can_use_tool_shadowed(options) }.not_to raise_error
+    ensure
+      $stderr = original
+    end
+
+    # The failed emission still counts for the once-per-process dedupe:
+    # retrying against a broken sink is pointless.
+    expect(warning_for(options)).to be_empty
+  end
 end

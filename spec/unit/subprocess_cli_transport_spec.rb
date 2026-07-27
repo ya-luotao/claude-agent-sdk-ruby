@@ -1208,8 +1208,11 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     it 'still TERMs the child when cancellation interrupts the graceful teardown' do
       waiter = instance_double(Process::Waiter, pid: 4242, alive?: true)
       transport = bare_transport
+      stdin_io = StringIO.new
+      stdout_io = StringIO.new
+      stderr_io = StringIO.new
       allow(transport).to receive(:check_claude_version)
-      allow(Open3).to receive(:popen3).and_return([StringIO.new, StringIO.new, StringIO.new, waiter])
+      allow(Open3).to receive(:popen3).and_return([stdin_io, stdout_io, stderr_io, waiter])
       transport.connect
 
       # Async::Stop at any of teardown's suspension points (task sleep,
@@ -1226,6 +1229,16 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       # stays as a second safety net.
       expect(described_class.active_processes).to include(waiter)
       expect(transport.instance_variable_get(:@process)).to be_nil
+
+      # The pipes must not leak either: with @process nil a repeat #close
+      # returns immediately, and the transport object itself may live on, so
+      # the ensure has to both close the IOs and drop the references.
+      expect(stdin_io).to be_closed
+      expect(stdout_io).to be_closed
+      expect(stderr_io).to be_closed
+      expect(transport.instance_variable_get(:@stdin)).to be_nil
+      expect(transport.instance_variable_get(:@stdout)).to be_nil
+      expect(transport.instance_variable_get(:@stderr)).to be_nil
     end
 
     it 'escalates to KILL from a background thread when the child survives TERM' do
