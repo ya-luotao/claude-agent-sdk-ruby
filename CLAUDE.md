@@ -1,24 +1,13 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
 Unofficial, community-maintained Ruby SDK for Claude Agent (gem: `claude-agent-sdk`). Wraps the Claude Code CLI as a subprocess, communicating via stream-JSON over stdin/stdout. Requires Ruby 3.2+ and Claude Code CLI 2.0.0+.
 
-Runtime dependencies: `async` (~2.0) for concurrency, `mcp` (>= 0.6, < 1) for MCP protocol compliance.
-
 ## Common Commands
 
 ```bash
-bundle install                              # Install dependencies
-bundle exec rspec                           # Run all unit tests (integration tests excluded by default)
-bundle exec rspec spec/unit/types_spec.rb   # Run a single spec file
-bundle exec rspec spec/unit/types_spec.rb:42  # Run a single test by line number
 RUN_INTEGRATION=1 bundle exec rspec         # Run the real-CLI integration suite too (self-skips if `claude` CLI or ANTHROPIC_API_KEY is absent)
-bundle exec rubocop                         # Run linter
-bundle exec rake                            # Run default task (spec + rubocop)
-bundle exec rake build                      # Build the gem
 ```
 
 ## Architecture
@@ -108,11 +97,9 @@ Optional adapter for mirroring session transcripts to external storage (the subp
 
 ## Key Conventions
 
-- All source in `lib/claude_agent_sdk/`, entry point is `lib/claude_agent_sdk.rb`
 - Types use plain Ruby classes with `attr_accessor` and keyword args (no Struct/Data)
 - Hook inputs are typed classes inheriting from `BaseHookInput`; hook outputs use `to_h` for serialization with camelCase keys for CLI compatibility
 - `ClaudeAgentOptions` is the central config object (~30 fields); uses `dup_with` for immutable-style updates
 - `to_h` methods on config types convert Ruby snake_case to CLI camelCase (e.g., `auto_allow_bash_if_sandboxed` → `autoAllowBashIfSandboxed`)
-- RuboCop config: max line length 181 (set in `.rubocop_todo.yml`), max method length 30 (large core files like `query.rb`/`types.rb` excluded), Style/Documentation disabled
 - Tests use `expect` syntax only (no `should`), `disable_monkey_patching!` enabled
 - Test helpers in `spec/support/test_helpers.rb` provide `sample_*` message fixtures and `mock_transport`
