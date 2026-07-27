@@ -397,7 +397,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       transport = described_class.new('hi', options)
       cmd = transport.build_command
 
-      expect(cmd).to include('--session-id', '550e8400-e29b-41d4-a716-446655440000')
+      expect(cmd).to include('--session-id=550e8400-e29b-41d4-a716-446655440000')
     end
 
     it 'passes --task-budget from TaskBudget object' do
@@ -1197,6 +1197,76 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect { subclass.register_active_process(waiter) }.not_to raise_error
       expect(subclass.active_processes).to equal(described_class.active_processes)
       expect(described_class.active_processes).to include(waiter)
+    end
+  end
+
+  describe '#close — cancellation safety (Python #1082 parity)' do
+    def bare_transport
+      described_class.new('hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+    end
+
+    it 'still TERMs the child when cancellation interrupts the graceful teardown' do
+      waiter = instance_double(Process::Waiter, pid: 4242, alive?: true)
+      transport = bare_transport
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3).and_return([StringIO.new, StringIO.new, StringIO.new, waiter])
+      transport.connect
+
+      # Async::Stop at any of teardown's suspension points (task sleep,
+      # thread join) abandons the TERM -> KILL escalation; the ensure must
+      # still terminate the child. Capture every signal so the delayed KILL
+      # thread can never reach the real Process.kill after the example.
+      signals = Queue.new
+      allow(Process).to receive(:kill) { |sig, pid| signals << [sig, pid] }
+      allow(transport).to receive(:teardown_process).and_raise(Async::Stop)
+
+      expect { transport.close }.to raise_error(Async::Stop)
+      expect(signals.pop).to eq(['TERM', 4242])
+      # Deliberately NOT deregistered on this path — the at_exit reaper
+      # stays as a second safety net.
+      expect(described_class.active_processes).to include(waiter)
+      expect(transport.instance_variable_get(:@process)).to be_nil
+    end
+
+    it 'escalates to KILL from a background thread when the child survives TERM' do
+      waiter = instance_double(Process::Waiter, pid: 4243, alive?: true)
+      signals = Queue.new
+      allow(Process).to receive(:kill) { |sig, pid| signals << [sig, pid] }
+
+      thread = bare_transport.force_terminate_in_background(waiter, grace_seconds: 0.01)
+
+      expect(signals.pop).to eq(['TERM', 4243])
+      thread.join
+      expect(signals.pop).to eq(['KILL', 4243])
+    end
+
+    it 'skips the delayed KILL when the child dies inside the grace window' do
+      alive = true
+      waiter = instance_double(Process::Waiter, pid: 4244)
+      allow(waiter).to receive(:alive?) { alive }
+      signals = Queue.new
+      allow(Process).to receive(:kill) { |sig, pid| signals << [sig, pid] }
+
+      thread = bare_transport.force_terminate_in_background(waiter, grace_seconds: 0.05)
+      expect(signals.pop).to eq(['TERM', 4244])
+
+      alive = false
+      thread.join
+      expect(signals).to be_empty
+    end
+
+    it 'is a no-op for a nil or already-dead process' do
+      expect(Process).not_to receive(:kill)
+      transport = bare_transport
+      expect(transport.force_terminate_in_background(nil)).to be_nil
+      expect(transport.force_terminate_in_background(instance_double(Process::Waiter, alive?: false))).to be_nil
+    end
+
+    it 'gives up without spawning the KILL thread when TERM itself raises' do
+      waiter = instance_double(Process::Waiter, pid: 4245, alive?: true)
+      allow(Process).to receive(:kill).with('TERM', 4245).and_raise(Errno::ESRCH)
+
+      expect(bare_transport.force_terminate_in_background(waiter)).to be_nil
     end
   end
   describe '#connect — pipe encoding (locale independence)' do

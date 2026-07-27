@@ -213,16 +213,33 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       expect(cmd).to include('--continue')
     end
 
-    it 'passes --resume with session id' do
+    it 'passes --resume as a single =-joined token' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(resume: 'abc-123')
       cmd = described_class.new('/usr/bin/claude', options).build
-      expect(cmd).to include('--resume', 'abc-123')
+      expect(cmd).to include('--resume=abc-123')
     end
 
-    it 'passes --session-id' do
+    it 'passes --session-id as a single =-joined token' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(session_id: 'sess-xyz')
       cmd = described_class.new('/usr/bin/claude', options).build
-      expect(cmd).to include('--session-id', 'sess-xyz')
+      expect(cmd).to include('--session-id=sess-xyz')
+    end
+
+    # The CLI's `--resume [value]` takes an OPTIONAL value, so a two-token
+    # form would let a dash-leading untrusted value (e.g. a session id from a
+    # request) parse as an independent CLI flag instead of the resume value.
+    it 'binds a dash-leading resume value to the flag instead of leaking it as its own argv flag' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(resume: '--dangerously-skip-permissions')
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--resume=--dangerously-skip-permissions')
+      expect(cmd).not_to include('--dangerously-skip-permissions')
+    end
+
+    it 'binds a dash-leading session_id value to the flag' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(session_id: '--print')
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--session-id=--print')
+      expect(cmd).not_to include('--print')
     end
 
     describe '--resume-session-at' do
@@ -234,14 +251,14 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
           resume_session_at: message_uuid
         )
         cmd = described_class.new('/usr/bin/claude', options).build
-        expect(cmd).to include('--resume', 'sess-source')
-        expect(cmd).to include('--resume-session-at', message_uuid)
+        expect(cmd).to include('--resume=sess-source')
+        expect(cmd).to include("--resume-session-at=#{message_uuid}")
       end
 
       it 'omits --resume-session-at when not set' do
         options = ClaudeAgentSDK::ClaudeAgentOptions.new(resume: 'sess-source')
         cmd = described_class.new('/usr/bin/claude', options).build
-        expect(cmd).not_to include('--resume-session-at')
+        expect(cmd.grep(/\A--resume-session-at/)).to be_empty
       end
 
       it 'raises ArgumentError when used without resume' do
@@ -259,7 +276,7 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
           resume_session_at: :"#{message_uuid}"
         )
         cmd = described_class.new('/usr/bin/claude', options).build
-        expect(cmd).to include('--resume-session-at', message_uuid)
+        expect(cmd).to include("--resume-session-at=#{message_uuid}")
       end
     end
   end
@@ -415,6 +432,19 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       )
       expect { described_class.new('/usr/bin/claude', options).build }
         .to raise_error(ArgumentError, /Invalid extra_args flag name/)
+    end
+
+    it 'binds a dash-leading value via = so it cannot parse as a separate flag' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(extra_args: { 'log-level' => '--verbose-output' })
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--log-level=--verbose-output')
+      expect(cmd).not_to include('--verbose-output')
+    end
+
+    it 'binds a non-String dash-leading value via = after stringifying' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(extra_args: { 'offset' => -5 })
+      cmd = described_class.new('/usr/bin/claude', options).build
+      expect(cmd).to include('--offset=-5')
     end
   end
 
@@ -610,7 +640,7 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
     it 'allows resume alone' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(resume: 'session-id')
       cmd = described_class.new('/usr/bin/claude', options).build
-      expect(cmd).to include('--resume', 'session-id')
+      expect(cmd).to include('--resume=session-id')
     end
   end
 

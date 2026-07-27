@@ -142,9 +142,14 @@ module ClaudeAgentSDK
       raise ArgumentError, "continue_conversation and resume are mutually exclusive" if @options.continue_conversation && @options.resume
 
       cmd.push("--continue") if @options.continue_conversation
-      cmd.push("--resume", @options.resume) if @options.resume
+      # =-joined single tokens: the CLI declares `--resume [value]` with an
+      # OPTIONAL value, so in the two-token form a dash-leading value is not
+      # bound to the flag and parses as an independent CLI flag — letting an
+      # untrusted value (e.g. a session id from a request) inject arbitrary
+      # flags. The equals form always binds the value to its flag.
+      cmd.push("--resume=#{@options.resume}") if @options.resume
       append_resume_session_at(cmd)
-      cmd.push("--session-id", @options.session_id) if @options.session_id
+      cmd.push("--session-id=#{@options.session_id}") if @options.session_id
     end
 
     # `--resume-session-at <message-uuid>` truncates the resumed conversation
@@ -157,7 +162,9 @@ module ClaudeAgentSDK
 
       raise ArgumentError, "resume_session_at requires resume to be set" unless @options.resume
 
-      cmd.push("--resume-session-at", @options.resume_session_at.to_s)
+      # Equals form for the same reason as --resume above: never let a
+      # dash-leading value parse as a separate flag.
+      cmd.push("--resume-session-at=#{@options.resume_session_at}")
     end
 
     # Sandbox gating is `!nil?` throughout — Python's `sandbox is not None`.
@@ -373,6 +380,10 @@ module ClaudeAgentSDK
 
         if value.nil?
           cmd.push("--#{flag}")
+        elsif value.to_s.start_with?("-")
+          # A dash-leading value must bind via `=` or the CLI parses it as a
+          # separate flag — same injection class as --resume above.
+          cmd.push("--#{flag}=#{value}")
         else
           cmd.push("--#{flag}", value.to_s)
         end

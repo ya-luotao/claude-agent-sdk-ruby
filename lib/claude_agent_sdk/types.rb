@@ -409,15 +409,31 @@ module ClaudeAgentSDK
 
   # Result message with cost and usage information
   class ResultMessage < Type
+    # model_usage maps model name => per-model usage Hash, passed through
+    # verbatim from the CLI's modelUsage field, so its keys are camelCase
+    # (matches the TypeScript/Python SDKs' ModelUsage shape): inputTokens,
+    # outputTokens, cacheReadInputTokens, cacheCreationInputTokens,
+    # webSearchRequests, costUSD, contextWindow, maxOutputTokens, plus
+    # optional canonicalModel (canonical id used for the pricing lookup —
+    # may differ from the raw model-string key for provider-specific
+    # ids/aliases) and provider ('firstParty', 'bedrock', 'vertex', ...).
+    #
+    # terminal_reason says why the query loop ended ("completed",
+    # "max_turns", "aborted_streaming", ...). "aborted_streaming" /
+    # "aborted_tools" mean the turn was cancelled via Client#interrupt (an
+    # interrupt control request). nil when the CLI did not report one
+    # (older CLI versions, or a result that bypassed the query loop such
+    # as a local slash command).
     attr_accessor :subtype, :duration_ms, :duration_api_ms, :is_error,
                   :num_turns, :session_id, :stop_reason, :total_cost_usd, :usage,
                   :result, :structured_output,
-                  :model_usage,        # Hash of { model_name => usage_data }
+                  :model_usage,        # Hash of { model_name => usage_data }, see above
                   :permission_denials, # Array of { tool_name:, tool_use_id:, tool_input: }
                   :errors,             # Array of error strings (present on error subtypes)
                   :uuid,
                   :fast_mode_state,    # "off", "cooldown", or "on"
-                  :api_error_status    # Integer HTTP status (429, 500, 529) on api_error subtype (CLI 2.1.110+)
+                  :api_error_status,   # Integer HTTP status (429, 500, 529) on api_error subtype (CLI 2.1.110+)
+                  :terminal_reason     # why the query loop ended, see above
 
     attr_reader :deferred_tool_use     # DeferredToolUse, populated when a PreToolUse hook deferred
 

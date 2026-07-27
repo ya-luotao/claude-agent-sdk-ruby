@@ -57,9 +57,14 @@ Async do
     ClaudeAgentSDK::PermissionResultAllow.new
   end
 
-  # Create options with permission callback
+  # Create options with permission callback.
+  #
+  # NOTE: deliberately NO allowed_tools here — an entry that allows a whole
+  # tool (e.g. 'Write') auto-approves it before can_use_tool is consulted,
+  # so the callback above would never fire for it (the SDK warns when it
+  # can see that shadowing). Without allow rules, every tool call falls
+  # through to the callback.
   options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-    allowed_tools: ['Read', 'Write', 'Bash'],
     can_use_tool: permission_callback
   )
 

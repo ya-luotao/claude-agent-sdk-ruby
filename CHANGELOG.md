@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Parity batch with the Python SDK v0.2.111–v0.2.128 (everything substantive in that span; the rest is bundled-CLI version bumps, which don't apply to this gem).
+
+### Fixed
+- **argv flag injection via `resume` / `session_id` / `resume_session_at`** (Python #1123): these values are now passed as single `=`-joined argv tokens (`--resume=<value>`). The CLI declares `--resume [value]` with an *optional* value, so in the old two-token form a dash-leading untrusted value (e.g. a session id taken from a request) was not bound to the flag and parsed as an independent CLI flag — letting it inject e.g. `--dangerously-skip-permissions`. `extra_args` values starting with `-` are likewise emitted in `--flag=value` form (Python #1127); other `extra_args` values keep the two-token form.
+- **Premature stdin close while background tasks are in flight** (Python #1103): a `result` frame ends one *turn*, not the run. The SDK no longer closes stdin on a result while `run_in_background` subagents (task types `local_agent`/`local_workflow`) are still running — previously their SDK-MCP tool calls failed with `"Stream closed"` and their PreToolUse hooks were silently bypassed (deny-gates stopped gating). In-flight tasks are tracked from `task_started` / `task_notification` / terminal `task_updated` lifecycle frames; stdin closes on the first result with none in flight. Background shells/teammates are deliberately not tracked (they may never reach a terminal status, which would withhold the close forever).
+- **Leaked CLI child when a cancellation interrupts `close`** (Python #1082): the graceful TERM→KILL escalation in `SubprocessCLITransport#close` suspends (task sleep, thread join), so `Async::Stop` delivered mid-close abandoned it and left a live `claude` child running until interpreter exit. `close` now guarantees termination from an `ensure` with no suspension points: synchronous SIGTERM immediately, then a plain background thread escalates to SIGKILL after a 2s grace period; on that path the child also deliberately stays in the `at_exit` registry as a second safety net.
+
+### Added
+- `ResultMessage#terminal_reason` (Python #1142): why the query loop ended (`"completed"`, `"max_turns"`, `"aborted_streaming"`, …). `"aborted_streaming"` / `"aborted_tools"` mean the turn was cancelled via `Client#interrupt`. `nil` when the CLI does not report one (older CLIs, or a result that bypassed the query loop such as a local slash command).
+- **Advisory warning when `can_use_tool` is shadowed** (Python #1081): the callback is only consulted when the CLI's permission ladder lands on "ask", so `permission_mode: 'bypassPermissions'` or an `allowed_tools` entry that allows a whole tool (`'Read'`, `'Read()'`, `'Read(*)'` — including the bare `Skill` implied by `skills: 'all'`) silently turns a security callback into dead code. `query()` / `Client#connect` now warn to stderr, once per distinct message per process (`ClaudeAgentSDK::OptionWarnings.reset!` clears the dedupe for tests). Real specifiers (`'Bash(ls:*)'`) and malformed entries don't warn; never raises. The permission-callback docs/example no longer demonstrate the shadowed combination.
+- Documented the `ResultMessage#model_usage` per-model value shape (verbatim CLI camelCase keys, matching the TS/Python `ModelUsage` type), including the new optional `canonicalModel` and `provider` keys (Python #1143 — type-only upstream, so a doc change here).
+
 ## [0.23.0] - 2026-07-14
 
 ### Added

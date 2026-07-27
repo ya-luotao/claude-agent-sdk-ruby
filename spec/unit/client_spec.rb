@@ -96,6 +96,23 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(received_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
   end
 
+  it 'warns on connect when can_use_tool is shadowed by allowed_tools' do
+    ClaudeAgentSDK::OptionWarnings.reset!
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(can_use_tool: callback, allowed_tools: ['Read'])
+    client = described_class.new(options: options)
+
+    expect { client.connect }.to output(/can_use_tool will not be invoked for: Read/).to_stderr
+  ensure
+    ClaudeAgentSDK::OptionWarnings.reset!
+  end
+
   it 'does not mutate global CLAUDE_CODE_ENTRYPOINT' do
     original_entrypoint = ENV['CLAUDE_CODE_ENTRYPOINT']
     ENV.delete('CLAUDE_CODE_ENTRYPOINT')

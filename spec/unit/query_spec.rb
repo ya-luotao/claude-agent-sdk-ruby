@@ -171,6 +171,61 @@ RSpec.describe ClaudeAgentSDK::Query do
       end.wait
     end
 
+    # A result frame ends one turn, not the run (Python #1088/#1103): a
+    # background subagent keeps running past it and still needs stdin for
+    # hook/SDK-MCP control responses, so a result with tasks in flight must
+    # NOT close stdin. The terminal state can arrive as either drain frame,
+    # so both are exercised.
+    %w[task_notification task_updated].each do |drain_subtype|
+      it "keeps stdin open across a result while a task is in flight (drained by #{drain_subtype})" do
+        queue = Async::Queue.new
+        transport, ended = queue_fed_transport(queue)
+        query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+        Async do |task|
+          query.start
+          waiter = task.async { query.wait_for_result_and_end_input }
+
+          queue.enqueue({ type: 'system', subtype: 'task_started', task_id: 'bg-1', task_type: 'local_agent' })
+          queue.enqueue(sample_result_message)
+          task.sleep 0.05
+          expect(ended).to be_empty # result seen, but bg-1 still in flight
+
+          drain = if drain_subtype == 'task_notification'
+                    { type: 'system', subtype: 'task_notification', task_id: 'bg-1', status: 'completed' }
+                  else
+                    { type: 'system', subtype: 'task_updated', task_id: 'bg-1', patch: { status: 'killed' } }
+                  end
+          queue.enqueue(drain)
+          queue.enqueue(sample_result_message)
+          waiter.wait
+          expect(ended).not_to be_empty
+        ensure
+          query.close
+        end.wait
+      end
+    end
+
+    it 'closes stdin on the first result when the started task is not a deferring type' do
+      # A background shell may never reach a terminal status; tracking it
+      # would withhold the close forever (the CLI only exits on stdin EOF).
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+
+        queue.enqueue({ type: 'system', subtype: 'task_started', task_id: 'sh-1', task_type: 'local_shell' })
+        queue.enqueue(sample_result_message)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
     # stream_input teardown: when no complete message ever reached the CLI,
     # no result can ever arrive — waiting on the first-result condition would
     # park query() forever beside an idle CLI (the pre-0.18 60s timeout used
@@ -230,6 +285,60 @@ RSpec.describe ClaudeAgentSDK::Query do
       ensure
         query.close
       end.wait
+    end
+  end
+
+  describe '#track_task_lifecycle' do
+    let(:query) { described_class.new(transport: mock_transport, is_streaming_mode: true) }
+
+    def inflight
+      query.instance_variable_get(:@inflight_tasks)
+    end
+
+    def track(message)
+      query.send(:track_task_lifecycle, message)
+    end
+
+    it 'adds task_started only for deferring task types' do
+      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
+      track({ type: 'system', subtype: 'task_started', task_id: 'w', task_type: 'local_workflow' })
+      track({ type: 'system', subtype: 'task_started', task_id: 's', task_type: 'local_shell' })
+      track({ type: 'system', subtype: 'task_started', task_id: 'n' })
+      expect(inflight.to_a.sort).to eq(%w[a w])
+    end
+
+    it 'ignores frames with a missing or empty task_id' do
+      track({ type: 'system', subtype: 'task_started', task_type: 'local_agent' })
+      track({ type: 'system', subtype: 'task_started', task_id: '', task_type: 'local_agent' })
+      expect(inflight).to be_empty
+    end
+
+    it 'clears on task_notification regardless of status' do
+      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
+      track({ type: 'system', subtype: 'task_notification', task_id: 'a', status: 'failed' })
+      expect(inflight).to be_empty
+    end
+
+    it 'clears on terminal task_updated statuses only' do
+      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
+      track({ type: 'system', subtype: 'task_updated', task_id: 'a', patch: { status: 'running' } })
+      expect(inflight.to_a).to eq(%w[a])
+
+      track({ type: 'system', subtype: 'task_updated', task_id: 'a', patch: { status: 'killed' } })
+      expect(inflight).to be_empty
+    end
+
+    it 'tolerates a non-Hash or absent patch on task_updated' do
+      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
+      track({ type: 'system', subtype: 'task_updated', task_id: 'a', patch: 'completed' })
+      track({ type: 'system', subtype: 'task_updated', task_id: 'a' })
+      expect(inflight.to_a).to eq(%w[a])
+    end
+
+    it 'is a no-op for terminal frames about unknown task ids' do
+      track({ type: 'system', subtype: 'task_notification', task_id: 'ghost', status: 'completed' })
+      track({ type: 'system', subtype: 'task_updated', task_id: 'ghost', patch: { status: 'failed' } })
+      expect(inflight).to be_empty
     end
   end
 

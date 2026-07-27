@@ -18,6 +18,7 @@ require_relative 'claude_agent_sdk/transcript_mirror_batcher'
 require_relative 'claude_agent_sdk/session_resume'
 require_relative 'claude_agent_sdk/session_mutations'
 require_relative 'claude_agent_sdk/fiber_boundary'
+require_relative 'claude_agent_sdk/option_warnings'
 require 'async'
 require 'securerandom'
 
@@ -411,6 +412,10 @@ module ClaudeAgentSDK
       configured_options = options.dup_with(permission_prompt_tool_name: 'stdio')
     end
 
+    # Advisory: warn if other options shadow the can_use_tool callback.
+    # After the ArgumentError validations so invalid configs raise, not warn.
+    OptionWarnings.warn_if_can_use_tool_shadowed(options)
+
     # Fail fast on invalid session_store combinations before spawning the CLI.
     SessionStores.validate_session_store_options(configured_options)
 
@@ -679,6 +684,10 @@ module ClaudeAgentSDK
         # Set permission_prompt_tool_name to stdio for control protocol
         configured_options = @options.dup_with(permission_prompt_tool_name: 'stdio')
       end
+
+      # Advisory: warn if other options shadow the can_use_tool callback.
+      # After the ArgumentError validations so invalid configs raise, not warn.
+      OptionWarnings.warn_if_can_use_tool_shadowed(@options)
 
       # Fail fast on invalid session_store combinations before spawning the CLI.
       # Configuration validation is a usage error, like the ArgumentErrors

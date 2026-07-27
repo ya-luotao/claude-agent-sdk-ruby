@@ -328,6 +328,38 @@ module ClaudeAgentSDK
       @ready = false
       return unless @process
 
+      process = @process
+      process_teardown_complete = false
+      begin
+        teardown_process
+        process_teardown_complete = true
+      ensure
+        # The graceful escalation in teardown_process suspends (task sleep,
+        # thread join), so a cancellation (Async::Stop) delivered mid-close
+        # used to skip TERM/KILL entirely and leak a live CLI child until
+        # interpreter exit (the at_exit reaper fires only then, TERM only).
+        # Nothing here may suspend: a synchronous TERM plus a plain
+        # background thread for the KILL escalation. On this path the
+        # process deliberately STAYS in the at_exit registry as a second
+        # safety net; the normal path deregisters in teardown_process.
+        force_terminate_in_background(process) unless process_teardown_complete
+        @process = nil
+        @stdout = nil
+        # @stdin is nilled under its mutex on the normal path; deliberately
+        # not touched here because taking the mutex could suspend
+        # mid-cancellation. A leftover IO is closed by GC; writers are
+        # already fenced by @ready = false.
+        @stderr = nil
+        @stderr_task = nil
+        @exit_error = nil
+      end
+    end
+
+    # Pre-existing #close body: stop the stderr drain, close pipes, wait for
+    # graceful exit after stdin EOF, escalate TERM → KILL on timeout. Runs on
+    # the reactor and suspends at several points; #close's ensure covers the
+    # cancellation-abandoned case.
+    def teardown_process
       cleanup_errors = []
 
       # Kill stderr thread
@@ -404,12 +436,34 @@ module ClaudeAgentSDK
       end
 
       self.class.deregister_active_process(@process)
-      @process = nil
-      @stdout = nil
-      # @stdin already nilled under the mutex above.
-      @stderr = nil
-      @stderr_task = nil
-      @exit_error = nil
+    end
+
+    # Last-resort termination when #close was interrupted before the graceful
+    # escalation finished. Contains no suspension points, so it is safe
+    # inside an ensure during fiber cancellation: synchronous SIGTERM now,
+    # then a plain (non-reactor) thread escalates to SIGKILL after a grace
+    # period. Open3's Process::Waiter thread keeps reaping, so no zombie is
+    # left either way. The alive? guard also makes the delayed KILL
+    # pid-reuse-safe: while the waiter thread reports alive (not yet reaped),
+    # the pid cannot have been recycled.
+    def force_terminate_in_background(process, grace_seconds: 2)
+      return unless process&.alive?
+
+      pid = process.pid
+      begin
+        Process.kill('TERM', pid)
+      rescue StandardError
+        return # ESRCH: already gone; EPERM: not ours to signal
+      end
+
+      Thread.new do
+        sleep grace_seconds
+        begin
+          Process.kill('KILL', pid) if process.alive?
+        rescue StandardError
+          nil # died inside the grace window
+        end
+      end
     end
 
     # Wait for the spawned process to exit, up to +timeout_seconds+. Polls

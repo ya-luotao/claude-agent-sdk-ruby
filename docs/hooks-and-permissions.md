@@ -95,7 +95,6 @@ Async do
   end
 
   options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-    allowed_tools: ['Read', 'Write', 'Bash'],
     can_use_tool: permission_callback
   )
 
@@ -108,3 +107,25 @@ end.wait
 ```
 
 See [examples/permission_callback_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/permission_callback_example.rb).
+
+### Shadowing: when `can_use_tool` never runs
+
+`can_use_tool` is only consulted when the CLI's permission ladder lands on
+"ask". Anything that auto-approves a tool call earlier means the callback
+never fires for it — a security callback can silently become dead code:
+
+- `permission_mode: 'bypassPermissions'` auto-approves everything (except
+  explicit deny rules), fully shadowing the callback.
+- An `allowed_tools` entry that allows a whole tool — `'Write'`, `'Write()'`,
+  `'Write(*)'`, or the bare `Skill` implied by `skills: 'all'` — shadows the
+  callback for that tool. A real specifier like `'Bash(ls:*)'` only
+  auto-approves matching invocations.
+- Allow rules in settings files shadow the callback the same way, but are not
+  visible to the SDK at construction time.
+
+The SDK emits an advisory warning to stderr from `query()` / `Client#connect`
+when it can see the shadowing (once per distinct message per process). It
+never raises — shadowing can be intentional, e.g. a callback used solely for
+tools outside `allowed_tools`. To gate every tool call including
+auto-approved ones, use a `PreToolUse` hook instead (note that a `PreToolUse`
+hook returning an allow decision also skips this callback).

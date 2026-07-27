@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'set'
 require 'async'
 require 'async/queue'
 require 'async/condition'
@@ -22,6 +23,22 @@ module ClaudeAgentSDK
 
     CONTROL_REQUEST_TIMEOUT_ENV_VAR = 'CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS'
     DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
+
+    # Task types whose completion runs a follow-up turn, and which therefore
+    # may still need the control channel after the turn's result frame.
+    #
+    # Mirrors the set the CLI itself holds a result back for, which is
+    # narrower than its notion of "delegated agent work". The types left out
+    # are left out on purpose:
+    #   - background shells and monitors run indefinitely by design, so
+    #     deferring the close on one withholds it forever rather than briefly;
+    #   - teammates are long-lived too — their status stays running for their
+    #     whole lifetime, so they never settle the ledger;
+    #   - remote agents can be long-running monitors the CLI likewise refuses
+    #     to wait on.
+    # Anything added here must be a type that reliably reaches a terminal
+    # status, or it will hang the query (see #track_task_lifecycle).
+    DEFERRING_TASK_TYPES = %w[local_agent local_workflow].freeze
 
     # Waiter for control responses awaited OFF the reactor — i.e. a control
     # method called from inside a hook/can_use_tool/SDK-MCP callback, which
@@ -68,7 +85,16 @@ module ClaudeAgentSDK
 
       # Message stream
       @message_queue = Async::Queue.new
+      # Set when a run-ending result arrives (a result frame with no tasks in
+      # flight) so the stdin-closing waiter can wake. Named for history — it
+      # once tracked the literal first result.
       @first_result_received = false
+      # Task IDs of started-but-not-finished deferring tasks. A result frame
+      # only ends one turn, not the run: a background task keeps running past
+      # it and still needs stdin for hook/SDK-MCP control responses (Python
+      # #1088/#1103), so a result that arrives while this set is non-empty
+      # must not close stdin.
+      @inflight_tasks = Set.new
       @last_error_result_text = nil
       @first_result_condition = Async::Condition.new
       @task = nil
@@ -307,11 +333,21 @@ module ClaudeAgentSDK
           @transcript_mirror_batcher&.enqueue(message[:filePath] || message[:file_path], message[:entries] || [])
           next
         else
+          # Track task lifecycle frames so results can tell "one turn ended"
+          # apart from "the run is done" (Python #1088/#1103).
+          track_task_lifecycle(message) if message[:type] == 'system'
+
           if message[:type] == 'result'
             # Flush the mirror before signaling/yielding the result so a
             # consumer observing the result sees an up-to-date store for the turn.
             flush_transcript_mirror
-            unless @first_result_received
+            # A result with tasks still in flight ends one turn, not the run:
+            # the tasks may still need hook/SDK-MCP control responses over
+            # stdin, and closing it now silently disables hooks and fails
+            # SDK-MCP calls with "Stream closed". Each deferring task's
+            # completion wakes the parent for a follow-up turn, so a later
+            # result arrives with no tasks in flight and closes stdin then.
+            if @inflight_tasks.empty? && !@first_result_received
               @first_result_received = true
               @first_result_condition.signal
             end
@@ -373,6 +409,50 @@ module ClaudeAgentSDK
         end
         # Always signal end of stream
         @message_queue.enqueue({ type: 'end' })
+      end
+    end
+
+    # Track in-flight tasks from `system` task lifecycle frames.
+    #
+    # `task_started` marks a task in flight; `task_notification` or a
+    # `task_updated` patch with a terminal status clears it. Terminal
+    # completion can arrive as either frame (not every terminal task emits a
+    # notification), so both are handled; Set deletion keeps the pair
+    # idempotent.
+    #
+    # This is a mitigation, not a complete answer to Python #1088. An empty
+    # set means "nothing we know of is running", which is not the same as
+    # "the run is over": a task that settles *before* the turn's result frame
+    # leaves the set empty at that result, so stdin closes even though the
+    # completion may still wake the parent for a continuation turn. What this
+    # does fix is the common ordering, where the task outlives the turn that
+    # spawned it.
+    #
+    # Only delegated agent work is tracked (DEFERRING_TASK_TYPES). A
+    # background *shell* is also reported through these frames, but it may
+    # never reach a terminal status, and the CLI in stream-json mode only
+    # exits on stdin EOF — tracking one would withhold the close forever.
+    #
+    # `background_tasks_changed` is deliberately not consumed, in either
+    # direction: its payload is the live *background* set, while a subagent
+    # is registered in the foreground and only flips to backgrounded later
+    # without a second task_started, so narrowing against the snapshot would
+    # drop an agent that goes on to outlive its turn, and widening from it
+    # could admit an id no later frame ever clears (observer agents suppress
+    # both their start and terminal frames).
+    def track_task_lifecycle(message)
+      task_id = message[:task_id]
+      return if task_id.nil? || task_id.to_s.empty?
+
+      case message[:subtype]
+      when 'task_started'
+        @inflight_tasks.add(task_id) if DEFERRING_TASK_TYPES.include?(message[:task_type])
+      when 'task_notification'
+        @inflight_tasks.delete(task_id)
+      when 'task_updated'
+        patch = message[:patch]
+        status = patch.is_a?(Hash) ? patch[:status] : nil
+        @inflight_tasks.delete(task_id) if TERMINAL_TASK_STATUSES.include?(status)
       end
     end
 
@@ -1104,15 +1184,19 @@ module ClaudeAgentSDK
                            })
     end
 
-    # Wait for the first result before closing stdin when hooks or SDK MCP
+    # Wait for a run-ending result before closing stdin when hooks or SDK MCP
     # servers may still need to exchange control messages with the CLI.
     # The control protocol requires stdin to stay open for the entire turn
     # (hook replies, can_use_tool replies and SDK MCP tool results are all
     # written to stdin), so no timeout is applied — closing stdin mid-turn
     # silently broke hooks/MCP on turns longer than the old 60s bound
-    # (mirrors Python SDK commit c3d96cb). The condition is guaranteed to be
-    # signaled: by the result branch in read_messages, or by its ensure block
-    # when the process exits early.
+    # (mirrors Python SDK commit c3d96cb). A result frame ends one turn, not
+    # necessarily the run: while background tasks are in flight the result
+    # branch withholds the signal (Python #1088/#1103), and each deferring
+    # task's completion wakes the parent for a follow-up turn that ends in
+    # another result. The condition is guaranteed to be signaled: by the
+    # result branch in read_messages once no tasks are in flight, or by its
+    # ensure block when the process exits early.
     def wait_for_result_and_end_input
       if !@first_result_received &&
          ((@sdk_mcp_servers && !@sdk_mcp_servers.empty?) || (@hooks && !@hooks.empty?))
