@@ -61,6 +61,26 @@ module ClaudeAgentSDK
     # in-flight call may still complete).
     class JoinTimeout < StandardError; end
 
+    # Cancellation injected into INLINE user callbacks by timeout
+    # enforcement (hook timeouts under scheduling: :inline). Deliberately
+    # NOT a StandardError: the exception is raised inside user code at a
+    # suspension point, and a callback's ordinary `rescue StandardError`
+    # must not be able to swallow the cancellation and convert an expired
+    # hook into a success (Async::TimeoutError is a StandardError, so it
+    # cannot be injected directly). The SDK translates it back to
+    # Async::TimeoutError once control returns from user code.
+    class InlineCancellation < Exception; end # rubocop:disable Lint/InheritException
+
+    # Fiber-storage key carrying the dispatching session's callback
+    # scheduling mode across the SDK-MCP dispatch path (Query ->
+    # MCP::Server -> dynamic tool class). Fiber storage is per-fiber and
+    # dies with the control-request task, so concurrent sessions with
+    # different modes sharing one SdkMcpServer instance cannot
+    # cross-contaminate — unlike mutating the shared server (last-writer-
+    # wins, persists past close) or a thread-local (the reactor thread is
+    # shared by many fibers).
+    SCHEDULING_KEY = :claude_agent_sdk_callback_scheduling
+
     # Sentinel returned by .invoke_iteration when the user block attempted `break`.
     class Break
       attr_reader :value

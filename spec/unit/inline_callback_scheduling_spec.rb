@@ -195,6 +195,94 @@ RSpec.describe 'Inline callback scheduling' do
       expect(captured_scheduler).not_to be_nil
       expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
     end
+
+    # Inline mode exercises the same-fiber native `break` unwind (no Break
+    # sentinel translation) — the branch the thread-mode break tests in
+    # fiber_boundary_spec.rb never reach.
+    it 'supports break with a value in receive_messages' do
+      stub_transport
+      stub_query_handler_yielding(assistant_hash, result_hash, assistant_hash)
+
+      received = []
+      ret = nil
+      Async do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(callback_scheduling: :inline)
+        client = ClaudeAgentSDK::Client.new(options: options)
+        client.connect
+        begin
+          ret = client.receive_messages do |msg|
+            received << msg.class
+            break :early if msg.is_a?(ClaudeAgentSDK::ResultMessage)
+          end
+        ensure
+          client.disconnect
+        end
+      end.wait
+
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+      expect(ret).to eq(:early)
+    end
+
+    it 'supports a user break before ResultMessage in receive_response' do
+      stub_transport
+      stub_query_handler_yielding(assistant_hash, result_hash)
+
+      received = []
+      Async do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(callback_scheduling: :inline)
+        client = ClaudeAgentSDK::Client.new(options: options)
+        client.connect
+        begin
+          client.receive_response do |msg|
+            received << msg.class
+            break
+          end
+        ensure
+          client.disconnect
+        end
+      end.wait
+
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage])
+    end
+
+    it 'breaks out of a never-terminating stream' do
+      stub_transport
+
+      queue = Async::Queue.new
+      handler = instance_double(
+        ClaudeAgentSDK::Query,
+        start: true, initialize_protocol: nil,
+        wait_for_result_and_end_input: nil, close: nil
+      )
+      allow(handler).to receive(:receive_messages) do |&block|
+        loop { block.call(queue.dequeue) }
+      end
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(handler)
+
+      received = []
+      Async do |task|
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(callback_scheduling: :inline)
+        client = ClaudeAgentSDK::Client.new(options: options)
+        client.connect
+        begin
+          task.async do
+            queue.enqueue(assistant_hash)
+            queue.enqueue(result_hash)
+          end
+
+          task.with_timeout(2.0) do
+            client.receive_messages do |msg|
+              received << msg.class
+              break if msg.is_a?(ClaudeAgentSDK::ResultMessage)
+            end
+          end
+        ensure
+          client.disconnect
+        end
+      end.wait
+
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+    end
   end
 
   describe 'Query callback dispatch' do
@@ -288,21 +376,153 @@ RSpec.describe 'Inline callback scheduling' do
       expect(finished).to be(false)
     end
 
-    it 'injects the scheduling mode into SDK MCP servers' do
+    # A hook that rescues StandardError must not be able to swallow the
+    # timeout cancellation: Async::TimeoutError is a StandardError, so it is
+    # injected as FiberBoundary::InlineCancellation (not a StandardError)
+    # and translated back after control leaves user code. Before the fix an
+    # ordinary rescue converted the expired hook into a success.
+    it 'raises Async::TimeoutError even when the inline hook rescues StandardError' do
+      hook_fn = lambda do |_input, _tool_use_id, _context|
+        begin
+          sleep 5
+        rescue StandardError
+          # swallow-everything hook; must NOT defeat the timeout
+        end
+        {}
+      end
+      hooks = { 'PreToolUse' => [{ matcher: 'Bash', hooks: [hook_fn], timeout: 0.2 }] }
+
+      query = ClaudeAgentSDK::Query.new(
+        transport: transport,
+        is_streaming_mode: true,
+        hooks: hooks,
+        callback_scheduling: :inline
+      )
+      allow(query).to receive(:send_control_request).and_return({})
+      query.initialize_protocol
+
+      callback_id = query.instance_variable_get(:@hook_callbacks).keys.first
+      request_data = { callback_id: callback_id, input: { hook_event_name: 'PreToolUse' }, tool_use_id: 'toolu_1' }
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect do
+        Async { query.send(:handle_hook_callback, request_data) }.wait
+      end.to raise_error(Async::TimeoutError)
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 2
+    end
+
+    # Routed cancellation: a control_cancel_request arriving through the read
+    # loop stops the in-flight handler task; the inline hook is interrupted
+    # at its suspension point (ensure runs), exactly one 'Cancelled' error
+    # response is written, and the in-flight task map is emptied.
+    it 'cancels an in-flight inline hook via control_cancel_request through the read loop' do
+      ensure_ran = false
+      finished = false
+      hook_fn = lambda do |_input, _tool_use_id, _context|
+        sleep 5
+        finished = true
+        {}
+      ensure
+        ensure_ran = true
+      end
+      hooks = { 'PreToolUse' => [{ matcher: 'Bash', hooks: [hook_fn] }] }
+
+      writes = []
+      routed_transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: nil, close: nil)
+      allow(routed_transport).to receive(:write) { |json| writes << JSON.parse(json) }
+
+      query = ClaudeAgentSDK::Query.new(
+        transport: routed_transport,
+        is_streaming_mode: true,
+        hooks: hooks,
+        callback_scheduling: :inline
+      )
+      allow(query).to receive(:send_control_request).and_return({})
+      query.initialize_protocol
+      callback_id = query.instance_variable_get(:@hook_callbacks).keys.first
+
+      allow(routed_transport).to receive(:read_messages) do |&block|
+        block.call(
+          type: 'control_request',
+          request_id: 'req_cancel_probe',
+          request: { subtype: 'hook_callback', callback_id: callback_id,
+                     input: { hook_event_name: 'PreToolUse' }, tool_use_id: 'toolu_1' }
+        )
+        block.call(type: 'control_cancel_request', request_id: 'req_cancel_probe')
+      end
+
+      Async do |task|
+        query.start
+        task.with_timeout(2.0) do
+          sleep 0.01 until ensure_ran && !writes.empty?
+        end
+      ensure
+        query.close
+      end.wait
+
+      expect(ensure_ran).to be(true)
+      expect(finished).to be(false)
+      cancelled = writes.select { |w| w.dig('response', 'error') == 'Cancelled' }
+      expect(cancelled.length).to eq(1)
+      expect(cancelled.first.dig('response', 'request_id')).to eq('req_cancel_probe')
+      expect(query.instance_variable_get(:@inflight_control_request_tasks)).to be_empty
+    end
+
+    it 'passes the session mode to SDK MCP dispatch via fiber storage without mutating the server' do
+      captured = :unset
       tool = ClaudeAgentSDK.create_tool('probe', 'Probe', {}) do |_args|
+        captured = Fiber.scheduler
         { content: [{ type: 'text', text: 'ok' }] }
       end
       server = ClaudeAgentSDK::SdkMcpServer.new(name: 'probe_server', tools: [tool])
-      expect(server.callback_scheduling).to eq(:thread)
 
-      ClaudeAgentSDK::Query.new(
+      query = ClaudeAgentSDK::Query.new(
         transport: transport,
         is_streaming_mode: true,
         sdk_mcp_servers: { 'probe_server' => server },
         callback_scheduling: :inline
       )
 
-      expect(server.callback_scheduling).to eq(:inline)
+      Async do
+        query.send(:handle_sdk_mcp_request, 'probe_server',
+                   { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'probe', arguments: {} } })
+      end.wait
+
+      expect(captured).not_to be_nil
+      expect(server.callback_scheduling).to eq(:thread)
+    end
+
+    # Regression (codex review on PR #48): the mode used to be injected by
+    # mutating the shared server instance — last-writer-wins, so a :thread
+    # session dispatching through a server also used by an :inline session
+    # ran its handlers inline, exposing thread-keyed state on reactor
+    # fibers. Fiber storage keeps concurrent sessions isolated.
+    it 'keeps sessions with different modes isolated on a shared server' do
+      schedulers = []
+      tool = ClaudeAgentSDK.create_tool('probe', 'Probe', {}) do |_args|
+        schedulers << Fiber.scheduler
+        { content: [{ type: 'text', text: 'ok' }] }
+      end
+      server = ClaudeAgentSDK::SdkMcpServer.new(name: 'probe_server', tools: [tool])
+      tools_call = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'probe', arguments: {} } }
+
+      inline_query = ClaudeAgentSDK::Query.new(
+        transport: transport, is_streaming_mode: true,
+        sdk_mcp_servers: { 'probe_server' => server }, callback_scheduling: :inline
+      )
+      thread_query = ClaudeAgentSDK::Query.new(
+        transport: transport, is_streaming_mode: true,
+        sdk_mcp_servers: { 'probe_server' => server }, callback_scheduling: :thread
+      )
+
+      Async do
+        inline_query.send(:handle_sdk_mcp_request, 'probe_server', tools_call)
+        thread_query.send(:handle_sdk_mcp_request, 'probe_server', tools_call)
+      end.wait
+
+      expect(schedulers.length).to eq(2)
+      expect(schedulers[0]).not_to be_nil # inline session sees the reactor
+      expect(schedulers[1]).to be_nil     # thread session still hops
     end
   end
 
