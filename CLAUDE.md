@@ -91,6 +91,8 @@ Optional adapter for mirroring session transcripts to external storage (the subp
 
 `async` installs a Fiber scheduler, but most Ruby libraries (pg, mysql2, ActiveRecord pools) key state on `Thread.current` and are thread-safe, not fiber-safe. `FiberBoundary.invoke` (`lib/claude_agent_sdk/fiber_boundary.rb`) hops every user-supplied callback (tool handlers, hooks, permission callbacks, message blocks, observers) to a plain thread before invoking it. Consequence: the thread hop severs `break`/`return`/`next` from the surrounding method — SDK loops yielding user callbacks must keep loop control outside the invoked block (see `Client#receive_response`; user `break` is bridged via `.invoke_iteration`).
 
+Opt-in `ClaudeAgentOptions#callback_scheduling: :inline` (issue #47) skips the hop and runs callbacks in place on the reactor fiber — for hosts that are fiber-isolated end to end (solid_queue fiber workers with `IsolatedExecutionState.isolation_level = :fiber`). The mode is plumbed per-call (Query kwarg, injected into SdkMcpServer instances at session setup), never via a thread-local. Timeout-bounded store-adapter calls always hop regardless; inline hook timeouts are cooperative (`with_timeout`). Public `ClaudeAgentSDK.offload { }` hops one heavy block manually.
+
 ### Global Configuration
 
 `ClaudeAgentSDK.configure { |c| c.default_options = { ... } }` (`lib/claude_agent_sdk/configuration.rb`) sets defaults merged into every request — the Rails-initializer pattern. Per-call `ClaudeAgentOptions` override the defaults.

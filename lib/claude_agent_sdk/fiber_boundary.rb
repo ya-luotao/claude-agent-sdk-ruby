@@ -24,6 +24,23 @@ module ClaudeAgentSDK
   #
   # No-op when no scheduler is active, so it's cheap to use unconditionally.
   #
+  # OPT-IN INLINE MODE: hosts that are already fiber-isolated (e.g. Rails
+  # apps with `IsolatedExecutionState.isolation_level = :fiber` running
+  # solid_queue fiber workers) can pass `scheduling: :inline` to run
+  # callbacks in place on the reactor fiber instead of hopping. This is the
+  # same code path as the no-scheduler case — semantically the already-
+  # shipped synchronous path, and Python SDK parity (async callbacks run
+  # natively on the event loop there). The mode is plumbed per-call from
+  # `ClaudeAgentOptions#callback_scheduling`, never stored in a
+  # thread-/fiber-local: the reactor thread is shared by many fibers and a
+  # set/reset window across suspension points would leak across sessions.
+  #
+  # A `timeout:` always forces the thread hop regardless of scheduling —
+  # `Thread#join(timeout)` is a hard bound that can abandon a wedged call,
+  # which cooperative `with_timeout` cancellation cannot guarantee. The
+  # store-adapter call sites (TranscriptMirrorBatcher, SessionResume) rely
+  # on this to never stall the reactor on a wedged adapter.
+  #
   # The thread hop severs `break`/`return`/`next` from the surrounding method,
   # so SDK loops yielding user callbacks must keep loop control outside the
   # invoked block (see `Client#receive_response`); user-initiated `break` is
@@ -59,10 +76,15 @@ module ClaudeAgentSDK
     # Returns the block's value. Exceptions propagate to the caller.
     #
     # With +timeout+ (seconds) the thread hop happens unconditionally — even
-    # without a scheduler — so the bound is enforced in plain synchronous code
-    # too; JoinTimeout is raised when it expires.
-    def invoke(timeout: nil, &block)
-      return block.call if timeout.nil? && !Fiber.scheduler
+    # without a scheduler or with `scheduling: :inline` — so the bound is
+    # enforced in plain synchronous code too; JoinTimeout is raised when it
+    # expires.
+    #
+    # With `scheduling: :inline` (and no timeout) the block runs in place on
+    # the current fiber, scheduler or not. The caller opts in via
+    # `ClaudeAgentOptions#callback_scheduling`.
+    def invoke(timeout: nil, scheduling: :thread, &block)
+      return block.call if timeout.nil? && (scheduling == :inline || !Fiber.scheduler)
 
       thread = Thread.new(&block)
       thread.report_on_exception = false
@@ -77,10 +99,10 @@ module ClaudeAgentSDK
     # LocalJumpError(reason: :break) on the worker thread; translate it into
     # a Break sentinel so the SDK loop can break on the calling fiber.
     # Returns Break when the user broke, nil when the block completed.
-    # Without a scheduler the block runs in place and `break` unwinds
-    # natively, never reaching the translation.
-    def invoke_iteration(block, *args)
-      invoke do
+    # Without a scheduler (or with `scheduling: :inline`) the block runs in
+    # place and `break` unwinds natively, never reaching the translation.
+    def invoke_iteration(block, *args, scheduling: :thread)
+      invoke(scheduling: scheduling) do
         block.call(*args)
         nil
       rescue LocalJumpError => e

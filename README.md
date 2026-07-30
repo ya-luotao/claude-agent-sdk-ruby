@@ -210,7 +210,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 | Structured output, thinking config, budget, fallback model, advisor model, beta features, sandbox, bare mode, file checkpointing | [docs/configuration.md](docs/configuration.md) |
 | Session listing, reading, renaming, tagging, deleting, forking, resume-at-message | [docs/sessions.md](docs/sessions.md) |
 | OpenTelemetry tracing, Langfuse setup, custom observers | [docs/observability.md](docs/observability.md) |
-| Rails integration (fiber safety, ActionCable, sessions, jobs, HTTP MCP, observability initializer) | [docs/rails.md](docs/rails.md) |
+| Rails integration (fiber safety, solid_queue fiber workers / `callback_scheduling: :inline`, ActionCable, sessions, jobs, HTTP MCP, observability initializer) | [docs/rails.md](docs/rails.md) |
 | Message, content block, and configuration type reference | [docs/types.md](docs/types.md) |
 | Error handling, exception hierarchy, timeout configuration | [docs/errors.md](docs/errors.md) |
 

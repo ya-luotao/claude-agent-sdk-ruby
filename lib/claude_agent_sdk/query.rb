@@ -63,12 +63,22 @@ module ClaudeAgentSDK
     end
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
-                   exclude_dynamic_sections: nil, skills: nil)
+                   exclude_dynamic_sections: nil, skills: nil, callback_scheduling: :thread)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
       @hooks = hooks || {}
       @sdk_mcp_servers = sdk_mcp_servers || {}
+      @callback_scheduling = callback_scheduling || :thread
+      # SDK MCP servers are constructed by the user long before options
+      # exist, so the scheduling mode is injected here at session setup —
+      # never via a thread-local (the reactor thread is shared by many
+      # fibers; a set/reset window across suspension points would leak
+      # across sessions). Last session to connect wins for a server shared
+      # across sessions; in practice the mode is process-wide.
+      @sdk_mcp_servers.each_value do |server|
+        server.callback_scheduling = @callback_scheduling if server.respond_to?(:callback_scheduling=)
+      end
       @agents = agents
       @exclude_dynamic_sections = exclude_dynamic_sections
       @skills = skills
@@ -564,9 +574,12 @@ module ClaudeAgentSDK
         description: request_data[:description]
       )
 
-      # User-supplied permission callback runs on a plain thread, not the
-      # Async reactor, so AR/PG calls inside it aren't intercepted.
-      response = FiberBoundary.invoke do
+      # User-supplied permission callback runs on a plain thread by default,
+      # so AR/PG calls inside it aren't intercepted by the Fiber scheduler;
+      # with callback_scheduling: :inline it runs in place on this control-
+      # request task, where control_cancel_request (task.stop) can actually
+      # cancel it at suspension points.
+      response = FiberBoundary.invoke(scheduling: @callback_scheduling) do
         @can_use_tool.call(request_data[:tool_name], request_data[:input], context)
       end
 
@@ -602,19 +615,23 @@ module ClaudeAgentSDK
       # Create typed HookContext
       context = HookContext.new(signal: nil)
 
-      # Hop off the Fiber scheduler before invoking user hook code. The
-      # Async-side timeout still wraps the hop; if it fires, .value returns
-      # early with an exception and the worker thread is left to finish on
-      # its own (matches prior best-effort cancellation semantics).
+      # Hop off the Fiber scheduler before invoking user hook code (default
+      # :thread mode). With a timeout, the Async-side with_timeout wraps the
+      # hop; if it fires, .value returns early with an exception and the
+      # worker thread is left to finish on its own (best-effort abandonment).
+      # In :inline mode the callback runs in place, so with_timeout becomes
+      # genuine cooperative cancellation: the hook is interrupted at its next
+      # suspension point and its ensure blocks run (Python parity — anyio
+      # cancels the coroutine). A CPU-stuck inline hook cannot be timed out.
       unless @hook_callback_timeouts[callback_id]
-        hook_output = FiberBoundary.invoke do
+        hook_output = FiberBoundary.invoke(scheduling: @callback_scheduling) do
           callback.call(hook_input, request_data[:tool_use_id], context)
         end
       end
 
       if (timeout = @hook_callback_timeouts[callback_id])
         hook_output = Async::Task.current.with_timeout(timeout) do
-          FiberBoundary.invoke do
+          FiberBoundary.invoke(scheduling: @callback_scheduling) do
             callback.call(hook_input, request_data[:tool_use_id], context)
           end
         end
