@@ -634,13 +634,18 @@ module ClaudeAgentSDK
             # wrapper composes INSIDE with_timeout, and the cancellation
             # passes through it un-swallowed (InlineCancellation is not a
             # StandardError, so a wrapper's ordinary rescue can't eat it).
+            # Fresh per-invocation subclass: rescuing the shared base would
+            # also catch an OUTER timeout's cancellation (e.g. an inline
+            # store call nested inside this hook already uses its own), so
+            # each timeout scope must only consume its own deadline.
             begin
-              Async::Task.current.with_timeout(timeout, FiberBoundary::InlineCancellation) do
+              cancellation = Class.new(FiberBoundary::InlineCancellation)
+              Async::Task.current.with_timeout(timeout, cancellation) do
                 FiberBoundary.invoke(scheduling: :inline, wrapper: @callback_wrapper) do
                   callback.call(hook_input, request_data[:tool_use_id], context)
                 end
               end
-            rescue FiberBoundary::InlineCancellation
+            rescue cancellation
               raise Async::TimeoutError, 'execution expired'
             end
           else

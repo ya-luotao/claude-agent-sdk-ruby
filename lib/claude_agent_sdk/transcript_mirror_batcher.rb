@@ -31,8 +31,10 @@ module ClaudeAgentSDK
   # must be thread-safe per key (see that method's contract). For adapters
   # declaring `callback_scheduling -> :inline` the timed-out call is instead
   # cancelled cooperatively (interrupted at its next suspension point, ensure
-  # runs) — it may then have been HALF-applied, which the same
-  # dedupe-by-entry-uuid recommendation covers.
+  # runs) — the cancellation is definite, so unlike thread mode the timeout
+  # IS retried, and a HALF-applied cancelled append is healed by the retry
+  # re-sending the full batch (the dedupe-by-entry-uuid recommendation
+  # absorbs the overlap).
   class TranscriptMirrorBatcher
     # Eager-flush thresholds (exposed for tests).
     MAX_PENDING_ENTRIES = 500
@@ -210,11 +212,18 @@ module ClaudeAgentSDK
           succeeded = true
           break
         when :timeout
-          # Don't retry on timeout: the in-flight call may still land, so a
-          # retry would launch a concurrent duplicate. Also bounds worst-case
-          # lock hold at ~send_timeout rather than ~3x.
           last_err = err
-          break
+          # Thread mode: don't retry — the abandoned in-flight call may
+          # still land, so a retry would launch a concurrent duplicate; it
+          # also bounds worst-case lock hold at ~send_timeout. Inline mode:
+          # the cooperative cancellation is DEFINITE (the call was
+          # interrupted at a suspension point; nothing remains in flight),
+          # so a timeout is retryable like any other failure — which also
+          # closes the half-applied-append gap: the retry re-sends the full
+          # batch and the adapter's uuid dedupe absorbs the overlap.
+          # Worst-case lock hold grows to ~attempts x send_timeout plus
+          # backoffs, still bounded.
+          break unless @store_scheduling == :inline
         else # :error — retryable
           last_err = err
         end
@@ -229,12 +238,14 @@ module ClaudeAgentSDK
 
     # Run SessionStore#append (user code) on a plain thread via FiberBoundary,
     # bounded by send_timeout (enforced with or without an active reactor).
-    # Returns [:ok, nil] / [:timeout, err] / [:error, err]. On timeout the
-    # worker thread is left running (cancellation is best-effort; the in-flight
-    # call may still land) and not retried. An adapter declaring
-    # `callback_scheduling -> :inline` instead runs in place on the reactor
-    # under a cooperative timeout (interrupted at its next suspension point,
-    # ensure blocks run) — same JoinTimeout contract either way.
+    # Returns [:ok, nil] / [:timeout, err] / [:error, err]. On timeout in
+    # thread mode the worker thread is left running (cancellation is
+    # best-effort; the in-flight call may still land) and not retried. An
+    # adapter declaring `callback_scheduling -> :inline` instead runs in
+    # place on the reactor under a cooperative timeout (interrupted at its
+    # next suspension point, ensure blocks run) — same JoinTimeout contract,
+    # but the definite cancellation makes the timeout retryable (see
+    # append_with_retry).
     def invoke_append(key, entries)
       FiberBoundary.invoke(timeout: @send_timeout, scheduling: @store_scheduling) { @store.append(key, entries) }
       [:ok, nil]

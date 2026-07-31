@@ -90,6 +90,44 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 2
     end
 
+    # Regression (codex review): the inline branch used to rescue the SHARED
+    # InlineCancellation base, so an OUTER timeout's cancellation delivered
+    # while the store call was suspended (nested with_timeout — e.g. a store
+    # call inside a timed inline hook) was consumed by the inner rescue,
+    # mis-attributed to the inner deadline, and the outer deadline was lost.
+    # Each timeout scope now uses a fresh per-invocation subclass and only
+    # consumes its own.
+    it 'lets an outer timeout cancellation pass through an inner inline store timeout scope' do
+      outer_cancel = Class.new(ClaudeAgentSDK::FiberBoundary::InlineCancellation)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      expect do
+        Async do |task|
+          task.with_timeout(0.05, outer_cancel) do
+            ClaudeAgentSDK::FiberBoundary.invoke(timeout: 5, scheduling: :inline) do
+              sleep 10
+            end
+          end
+        end.wait
+      end.to raise_error(outer_cancel)
+
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 2
+    end
+
+    it 'still attributes an inner timeout correctly under a longer outer scope' do
+      outer_cancel = Class.new(ClaudeAgentSDK::FiberBoundary::InlineCancellation)
+
+      expect do
+        Async do |task|
+          task.with_timeout(5, outer_cancel) do
+            ClaudeAgentSDK::FiberBoundary.invoke(timeout: 0.05, scheduling: :inline) do
+              sleep 10
+            end
+          end
+        end.wait
+      end.to raise_error(ClaudeAgentSDK::FiberBoundary::JoinTimeout, /timed out after 0.05s/)
+    end
+
     it 'falls back to the hard thread-hop bound outside a reactor even with scheduling: :inline' do
       inner_thread = nil
       inner_scheduler = :unset
@@ -151,10 +189,10 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
       expect(errors).to be_empty
     end
 
-    # Mirrors the thread-mode 'does not retry on timeout' spec: the
-    # cooperative timeout must surface through the SAME retry/error path —
-    # one attempt, one reported /timed out/ error, batch counted as dropped.
-    it 'surfaces a cooperative timeout through the existing no-retry error path' do
+    # Unlike thread mode (where a timed-out append is abandoned in flight
+    # and must not be retried), an inline cancellation is DEFINITE — so the
+    # timeout is retried like any other failure, up to the attempt cap.
+    it 'retries a cooperative timeout and reports through the existing error path when all attempts expire' do
       attempts = 0
       ensure_ran = false
       store = inline_store_class do |_k, _entries|
@@ -176,11 +214,44 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
         end.to output(/flush failed/).to_stderr
       end.wait
 
-      expect(attempts).to eq(1) # timeout -> not retried
+      expect(attempts).to eq(ClaudeAgentSDK::TranscriptMirrorBatcher::MIRROR_APPEND_MAX_ATTEMPTS)
       expect(ensure_ran).to be(true)
       expect(errors.length).to eq(1)
       expect(errors.first[1]).to match(/timed out/)
       expect(b.batches_dropped?).to be(true)
+    end
+
+    # The retry is what heals a half-applied cancelled append: the full
+    # batch is re-sent and uuid dedupe absorbs the overlap.
+    it 'heals a half-applied cancelled append on the retry' do
+      attempts = 0
+      store = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+        def callback_scheduling = :inline
+      end.new
+      underlying_append = store.method(:append)
+      store.define_singleton_method(:append) do |k, entries|
+        attempts += 1
+        if attempts == 1
+          # First attempt: persist only the first entry, then park until
+          # the cooperative timeout cancels us mid-batch.
+          underlying_append.call(k, entries.take(1))
+          sleep(5)
+        else
+          underlying_append.call(k, entries)
+        end
+      end
+
+      Async do
+        b = ClaudeAgentSDK::TranscriptMirrorBatcher.new(store: store, projects_dir: projects,
+                                                        on_error: on_error, send_timeout: 0.05)
+        b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'u1' }, { 'type' => 'assistant', 'uuid' => 'u2' }])
+        b.flush
+      end.wait
+
+      expect(attempts).to eq(2)
+      expect(errors).to be_empty
+      uuids = store.load(key).map { |e| e['uuid'] }
+      expect(uuids).to include('u1', 'u2')
     end
 
     it 'keeps an undeclared store on a scheduler-free worker thread' do
@@ -215,6 +286,64 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
     end
   end
 
+  describe 'SessionResume materialization with an inline-declared store' do
+    def resume_entry(text)
+      { 'type' => 'user', 'uuid' => SecureRandom.uuid, 'message' => { 'content' => text } }
+    end
+
+    it 'runs store loads on the calling fiber with the scheduler live' do
+      captured = {}
+      sid = SecureRandom.uuid
+      cwd = Dir.mktmpdir
+      store = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+        def callback_scheduling = :inline
+
+        define_method(:load) do |k|
+          captured[:scheduler] = Fiber.scheduler
+          captured[:thread] = Thread.current
+          super(k)
+        end
+      end.new
+      project_key = ClaudeAgentSDK.project_key_for_directory(cwd)
+      store.append({ 'project_key' => project_key, 'session_id' => sid }, [resume_entry('hi')])
+
+      mat = nil
+      begin
+        Async do
+          mat = ClaudeAgentSDK::SessionResume.materialize_resume_session(
+            ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: sid, cwd: cwd)
+          )
+        end.wait
+
+        expect(captured[:scheduler]).not_to be_nil
+        expect(captured[:thread]).to be(Thread.current)
+        expect(mat).not_to be_nil
+      ensure
+        mat&.cleanup
+        FileUtils.remove_entry(cwd) if File.directory?(cwd)
+      end
+    end
+
+    it 'rejects an invalid declaration at materialization entry, before any store IO' do
+      loads = 0
+      cwd = Dir.mktmpdir
+      store = ClaudeAgentSDK::InMemorySessionStore.new
+      def store.callback_scheduling = 42
+      store.define_singleton_method(:load) { |_k| loads += 1 }
+
+      begin
+        expect do
+          ClaudeAgentSDK::SessionResume.materialize_resume_session(
+            ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: SecureRandom.uuid, cwd: cwd)
+          )
+        end.to raise_error(ArgumentError, /callback_scheduling must return one of/)
+        expect(loads).to eq(0)
+      ensure
+        FileUtils.remove_entry(cwd) if File.directory?(cwd)
+      end
+    end
+  end
+
   describe 'conformance kit contract 17' do
     it 'passes for a declaring adapter and for a non-declaring adapter' do
       declaring = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
@@ -235,6 +364,17 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
       expect do
         ClaudeAgentSDK::Testing.run_session_store_conformance(-> { bad.new })
       end.to raise_error(ClaudeAgentSDK::Testing::ConformanceError, /callback_scheduling declaration/)
+    end
+
+    it 'reports a RAISING declarer through ConformanceError, not the raw exception' do
+      exploding = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+        def callback_scheduling
+          raise 'declaration exploded'
+        end
+      end
+      expect do
+        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { exploding.new })
+      end.to raise_error(ClaudeAgentSDK::Testing::ConformanceError, /declaration raised RuntimeError: declaration exploded/)
     end
   end
 end

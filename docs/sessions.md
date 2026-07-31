@@ -192,17 +192,24 @@ end
 ```
 
 Declaring `:inline` means the calls run in place on the reactor fiber under a
-**cooperative** timeout. Two consequences to understand before opting in:
+**cooperative** timeout. Three consequences to understand before opting in:
 
-- **All** blocking inside `append`/`load` must yield to the scheduler.
-  Scheduler-opaque blocking (CPU-bound work, GVL-holding C extensions, native
-  drivers the scheduler can't see) stalls every job on that worker **and** the
-  cooperative timeout cannot fire while it blocks.
+- The declaration covers **every method the SDK invokes on the adapter** —
+  `append`, `load`, `list_sessions`, `list_session_summaries`,
+  `list_subkeys` — not just append/load: resume materialization runs the
+  listing calls inline too. **All** blocking inside all of them must yield to
+  the scheduler. Scheduler-opaque blocking (CPU-bound work, GVL-holding C
+  extensions, native drivers the scheduler can't see) stalls every job on
+  that worker **and** the cooperative timeout cannot fire while it blocks.
 - Cancellation semantics change: a timed-out call is interrupted at its next
   suspension point and its `ensure` blocks run, instead of being abandoned on
-  a thread. The interrupted append may therefore be **half-applied** — the
-  existing "dedupe by `entry['uuid']`" adapter recommendation covers exactly
-  this, since a later retry can overlap the partial write.
+  a thread. The interrupted append may therefore be **half-applied**.
+- Timeout retries: because the cancellation is definite (nothing remains in
+  flight, unlike an abandoned thread), the mirror batcher **retries** inline
+  timeouts like any other failure — the retry re-sends the full batch and
+  heals a half-applied write; the existing "dedupe by `entry['uuid']`"
+  adapter recommendation absorbs the overlap. (Thread-mode timeouts remain
+  non-retried: the abandoned call may still land.)
 
 Anything other than `:thread`/`:inline` raises `ArgumentError` when the
 session is set up; without a reactor the hard thread-hop bound still applies

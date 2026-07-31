@@ -90,6 +90,11 @@ module ClaudeAgentSDK
         SessionStores.store_callback_scheduling(store)
       rescue ArgumentError => e
         assert(false, "callback_scheduling declaration must be :thread or :inline (#{e.message})")
+      rescue StandardError, NotImplementedError => e
+        # A raising declaration is as fatal as a bad value — the SDK probes
+        # it at construction. Report through the harness's documented
+        # ConformanceError instead of leaking the raw exception.
+        assert(false, "callback_scheduling declaration raised #{e.class}: #{e.message}")
       end
     end
 

@@ -33,19 +33,23 @@ module ClaudeAgentSDK
   #   - list_sessions result: [{ 'session_id' => String, 'mtime' => Integer }]
   #   - summary entries: { 'session_id', 'mtime', 'data' } (see SessionSummary)
   #
-  # FIBER-NATIVE ADAPTERS (issue #47 phase 3): an adapter whose #append/#load
-  # IO is entirely Fiber-scheduler-aware may additionally define an optional
+  # FIBER-NATIVE ADAPTERS (issue #47 phase 3): an adapter whose IO is
+  # entirely Fiber-scheduler-aware may additionally define an optional
   # `callback_scheduling` method returning `:inline` (`:thread` = default
   # behavior). The SDK then runs the adapter's timeout-bounded calls in place
   # on the reactor fiber under a cooperative timeout instead of on a
-  # throwaway thread with a hard `Thread#join` bound. Only the adapter author
-  # can make this call — declare :inline ONLY if every blocking operation in
-  # append/load yields to the scheduler; scheduler-opaque blocking stalls
-  # every job on the worker AND escapes the cooperative deadline. A timed-out
-  # inline call is interrupted at its next suspension point (ensure blocks
-  # run) rather than abandoned, so a retried batch may overlap a
-  # HALF-APPLIED write — the dedupe-by-entry-uuid recommendation above
-  # covers this. The method is deliberately NOT defined here: the SDK probes
+  # throwaway thread with a hard `Thread#join` bound. The declaration covers
+  # EVERY method the SDK invokes on the adapter — append, load,
+  # list_sessions, list_session_summaries, list_subkeys — not just
+  # append/load: resume materialization inlines the listing calls too. Only
+  # the adapter author can make this call — declare :inline ONLY if every
+  # blocking operation in every method yields to the scheduler;
+  # scheduler-opaque blocking stalls every job on the worker AND escapes the
+  # cooperative deadline. A timed-out inline call is interrupted at its next
+  # suspension point (ensure blocks run) rather than abandoned; because that
+  # cancellation is definite, the mirror batcher RETRIES inline timeouts, so
+  # a half-applied cancelled append is healed by the retry (the
+  # dedupe-by-entry-uuid recommendation above absorbs the overlap). The method is deliberately NOT defined here: the SDK probes
   # `respond_to?(:callback_scheduling)` (see
   # SessionStores.store_callback_scheduling), so pure duck-typed adapters
   # stay minimal, and an app can opt a third-party fiber-native adapter in

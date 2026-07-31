@@ -185,11 +185,18 @@ module ClaudeAgentSDK
       # Cooperative timeout for inline-declared store adapters: in place on
       # the reactor fiber, cancelled at the next suspension point. The
       # wrapper stays ignored on timeout paths (store adapters are never
-      # wrapped), so `body` is the bare block here.
+      # wrapped), so `body` is the bare block here. The cancellation class
+      # is a fresh per-invocation subclass: rescuing the shared base would
+      # also catch an OUTER timeout's cancellation delivered while this
+      # call is suspended (nested with_timeout — e.g. a store call inside a
+      # timed inline hook), mis-attributing the outer deadline to this call
+      # and letting execution continue past it. An outer cancellation is a
+      # different subclass, so it propagates through untouched.
       if timeout && scheduling == :inline && (task = Async::Task.current?)
+        cancellation = Class.new(InlineCancellation)
         begin
-          return task.with_timeout(timeout, InlineCancellation, &block)
-        rescue InlineCancellation
+          return task.with_timeout(timeout, cancellation, &block)
+        rescue cancellation
           raise JoinTimeout, "timed out after #{timeout}s"
         end
       end
