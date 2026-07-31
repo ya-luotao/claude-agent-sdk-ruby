@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'async'
+
 module ClaudeAgentSDK
   # Internal. Consumers of the SDK should never need this directly.
   #
@@ -38,11 +40,19 @@ module ClaudeAgentSDK
   # it via a scoped, invalidatable fiber-storage entry instead — see
   # SCHEDULING_KEY / SchedulingScope below.
   #
-  # A `timeout:` always forces the thread hop regardless of scheduling —
-  # `Thread#join(timeout)` is a hard bound that can abandon a wedged call,
-  # which cooperative `with_timeout` cancellation cannot guarantee. The
-  # store-adapter call sites (TranscriptMirrorBatcher, SessionResume) rely
-  # on this to never stall the reactor on a wedged adapter.
+  # A `timeout:` forces the thread hop — `Thread#join(timeout)` is a hard
+  # bound that can abandon a wedged call, which cooperative `with_timeout`
+  # cancellation cannot guarantee — unless the caller passes
+  # `scheduling: :inline` inside a reactor, where the bound becomes a
+  # cooperative `with_timeout` cancellation instead (issue #47 phase 3:
+  # fiber-native SessionStore adapters that declare
+  # `callback_scheduling -> :inline`). The store-adapter call sites
+  # (TranscriptMirrorBatcher, SessionResume) default to the thread hop so
+  # an undeclared (possibly scheduler-opaque) adapter can never stall the
+  # reactor; a declared-inline adapter accepts that a scheduler-opaque
+  # blocking call would stall it AND escape the cooperative deadline.
+  # Outside a reactor the hard bound applies even to inline-declared
+  # adapters — the timeout guarantee is never lost.
   #
   # The thread hop severs `break`/`return`/`next` from the surrounding method,
   # so SDK loops yielding user callbacks must keep loop control outside the
@@ -65,8 +75,9 @@ module ClaudeAgentSDK
     class JoinTimeout < StandardError; end
 
     # Cancellation injected into INLINE user callbacks by timeout
-    # enforcement (hook timeouts under scheduling: :inline) — user code
-    # should let it propagate. Deliberately
+    # enforcement (hook timeouts under scheduling: :inline; store-adapter
+    # timeouts for adapters declaring callback_scheduling :inline) — user
+    # code should let it propagate. Deliberately
     # NOT a StandardError: the exception is raised inside user code at a
     # suspension point, and a callback's ordinary `rescue StandardError`
     # must not be able to swallow the cancellation and convert an expired
@@ -133,10 +144,16 @@ module ClaudeAgentSDK
     # Run the given block on a plain thread when a Fiber scheduler is active.
     # Returns the block's value. Exceptions propagate to the caller.
     #
-    # With +timeout+ (seconds) the thread hop happens unconditionally — even
-    # without a scheduler or with `scheduling: :inline` — so the bound is
-    # enforced in plain synchronous code too; JoinTimeout is raised when it
-    # expires.
+    # With +timeout+ (seconds) the thread hop happens regardless of a
+    # scheduler being active, so the bound is enforced in plain synchronous
+    # code too; JoinTimeout is raised when it expires. Exception: with
+    # `scheduling: :inline` INSIDE an Async task, the block instead runs in
+    # place under a cooperative `with_timeout` — the deadline is delivered
+    # as InlineCancellation at the block's next suspension point (its
+    # ensure blocks run; not swallowable by `rescue StandardError`) and
+    # surfaces as the same JoinTimeout, so callers need no changes. When
+    # inline is requested but no Async task is present, the hard
+    # thread-hop bound applies — the timeout guarantee is never lost.
     #
     # With `scheduling: :inline` (and no timeout) the block runs in place on
     # the current fiber, scheduler or not. The caller opts in via
@@ -164,6 +181,18 @@ module ClaudeAgentSDK
     def invoke(timeout: nil, scheduling: :thread, wrapper: nil, &block)
       body = wrapper && timeout.nil? ? -> { wrapper.call(block) } : block
       return body.call if timeout.nil? && (scheduling == :inline || !Fiber.scheduler)
+
+      # Cooperative timeout for inline-declared store adapters: in place on
+      # the reactor fiber, cancelled at the next suspension point. The
+      # wrapper stays ignored on timeout paths (store adapters are never
+      # wrapped), so `body` is the bare block here.
+      if timeout && scheduling == :inline && (task = Async::Task.current?)
+        begin
+          return task.with_timeout(timeout, InlineCancellation, &block)
+        rescue InlineCancellation
+          raise JoinTimeout, "timed out after #{timeout}s"
+        end
+      end
 
       thread = Thread.new(&body)
       thread.report_on_exception = false

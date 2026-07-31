@@ -175,6 +175,40 @@ Copy-in reference adapters for **S3, Redis, and Postgres** live in
 [`examples/session_stores/`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/session_stores/README.md), each with a
 production checklist.
 
+#### Fiber-native adapters
+
+By default the SDK runs every timeout-bounded adapter call (`#append` from the
+mirror batcher, `#load` and friends during resume materialization) on a
+throwaway thread with a hard `Thread#join` timeout, so a wedged adapter can
+never stall the reactor. An adapter whose IO is **entirely
+Fiber-scheduler-aware** (e.g. built on `async`-native clients) can opt out of
+the thread hop by declaring it:
+
+```ruby
+class MyAsyncStore
+  def callback_scheduling = :inline
+  # append/load ...
+end
+```
+
+Declaring `:inline` means the calls run in place on the reactor fiber under a
+**cooperative** timeout. Two consequences to understand before opting in:
+
+- **All** blocking inside `append`/`load` must yield to the scheduler.
+  Scheduler-opaque blocking (CPU-bound work, GVL-holding C extensions, native
+  drivers the scheduler can't see) stalls every job on that worker **and** the
+  cooperative timeout cannot fire while it blocks.
+- Cancellation semantics change: a timed-out call is interrupted at its next
+  suspension point and its `ensure` blocks run, instead of being abandoned on
+  a thread. The interrupted append may therefore be **half-applied** — the
+  existing "dedupe by `entry['uuid']`" adapter recommendation covers exactly
+  this, since a later retry can overlap the partial write.
+
+Anything other than `:thread`/`:inline` raises `ArgumentError` when the
+session is set up; without a reactor the hard thread-hop bound still applies
+even for declared adapters. To opt in a third-party fiber-native adapter you
+don't own: `def store.callback_scheduling = :inline` (singleton method).
+
 ### Store-backed helpers
 
 The browsing/mutation helpers above have store-backed counterparts that take a

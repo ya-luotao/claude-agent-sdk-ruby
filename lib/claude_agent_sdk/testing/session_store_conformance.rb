@@ -13,9 +13,11 @@ module ClaudeAgentSDK
 
     module_function
 
-    # Assert the 16 SessionStore behavioral contracts against an adapter.
+    # Assert the 17 SessionStore behavioral contracts against an adapter.
     #
     # Contracts 1-14 mirror the Python SDK's run_session_store_conformance.
+    # Contract 17 (Ruby extension) validates the optional
+    # `callback_scheduling` fiber-nativeness declaration (:thread/:inline).
     # Contract 16 (Ruby extension) locks one-row-per-session `list_sessions`
     # under multiple appends — the naive one-row-per-append implementation
     # passed every other contract and then showed N duplicate sessions in
@@ -62,6 +64,7 @@ module ClaudeAgentSDK
       has_delete = optional?(probe, 'delete', skip_optional)
       has_list_subkeys = optional?(probe, 'list_subkeys', skip_optional)
 
+      check_callback_scheduling_declaration(fresh)
       check_append_and_load(fresh, has_list_sessions)
       check_list_sessions(fresh) if has_list_sessions
       check_list_session_summaries(fresh, has_list_sessions, has_delete) if has_list_summaries
@@ -69,6 +72,25 @@ module ClaudeAgentSDK
       check_list_subkeys(fresh) if has_list_subkeys
       check_uuid_dedupe_contract(fresh) if check_uuid_dedupe
       nil
+    end
+
+    # -- Optional: callback_scheduling declaration ---------------------------
+
+    # 17. an adapter declaring the optional callback_scheduling method (issue
+    # #47 phase 3: fiber-native adapters) must return :thread or :inline —
+    # the SDK probes it at construction and raises ArgumentError otherwise,
+    # so a bad declaration would fail every session using the store. Runs
+    # first because the SDK probes before any store IO; skipped entirely for
+    # non-declaring adapters (the probe defaults to :thread).
+    def check_callback_scheduling_declaration(fresh)
+      store = fresh.call
+      return unless store.respond_to?(:callback_scheduling)
+
+      begin
+        SessionStores.store_callback_scheduling(store)
+      rescue ArgumentError => e
+        assert(false, "callback_scheduling declaration must be :thread or :inline (#{e.message})")
+      end
     end
 
     # -- Required: append + load -------------------------------------------
@@ -347,8 +369,9 @@ module ClaudeAgentSDK
             "SessionStore conformance failed: #{message}\n  expected: #{expected.inspect}\n  actual:   #{actual.inspect}"
     end
 
-    private_class_method :check_append_and_load, :check_list_sessions, :check_list_session_summaries,
-                         :check_delete, :check_list_subkeys, :check_uuid_dedupe_contract, :key, :entry,
+    private_class_method :check_callback_scheduling_declaration, :check_append_and_load, :check_list_sessions,
+                         :check_list_session_summaries, :check_delete, :check_list_subkeys,
+                         :check_uuid_dedupe_contract, :key, :entry,
                          :epoch_ms?, :optional?, :summaries_by_id, :assert, :assert_eq
   end
 end

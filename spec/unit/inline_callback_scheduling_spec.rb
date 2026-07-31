@@ -62,11 +62,16 @@ RSpec.describe 'Inline callback scheduling' do
       expect(inner_scheduler).not_to be_nil
     end
 
-    it 'still hops to a plain thread when a timeout is given, even with scheduling: :inline' do
+    # Phase 1 asserted that a timeout ALWAYS forces the thread hop; phase 3
+    # (fiber-native store adapters) carved out timeout + scheduling: :inline
+    # inside a reactor, which now runs in place under a cooperative
+    # with_timeout — see session_store_inline_spec.rb. The hard thread-hop
+    # bound still applies whenever the caller does not opt into inline.
+    it 'still hops to a plain thread when a timeout is given with default scheduling' do
       inner_scheduler = :unset
       inner_thread = nil
       Async do
-        ClaudeAgentSDK::FiberBoundary.invoke(timeout: 5, scheduling: :inline) do
+        ClaudeAgentSDK::FiberBoundary.invoke(timeout: 5) do
           inner_scheduler = Fiber.scheduler
           inner_thread = Thread.current
         end

@@ -28,7 +28,11 @@ module ClaudeAgentSDK
   # The semaphore serializes appends, but a #send that exceeds send_timeout is
   # abandoned (its worker thread keeps running) and the next drain proceeds, so
   # two #append calls for the SAME key can briefly overlap. SessionStore#append
-  # must be thread-safe per key (see that method's contract).
+  # must be thread-safe per key (see that method's contract). For adapters
+  # declaring `callback_scheduling -> :inline` the timed-out call is instead
+  # cancelled cooperatively (interrupted at its next suspension point, ensure
+  # runs) — it may then have been HALF-applied, which the same
+  # dedupe-by-entry-uuid recommendation covers.
   class TranscriptMirrorBatcher
     # Eager-flush thresholds (exposed for tests).
     MAX_PENDING_ENTRIES = 500
@@ -50,6 +54,9 @@ module ClaudeAgentSDK
       @projects_dir = projects_dir
       @on_error = on_error
       @send_timeout = send_timeout
+      # Probed ONCE here so an invalid callback_scheduling declaration fails
+      # at construction, not mid-session inside a flush.
+      @store_scheduling = SessionStores.store_callback_scheduling(store)
       @max_pending_entries = max_pending_entries
       @max_pending_bytes = max_pending_bytes
       @pending = []
@@ -224,9 +231,12 @@ module ClaudeAgentSDK
     # bounded by send_timeout (enforced with or without an active reactor).
     # Returns [:ok, nil] / [:timeout, err] / [:error, err]. On timeout the
     # worker thread is left running (cancellation is best-effort; the in-flight
-    # call may still land) and not retried.
+    # call may still land) and not retried. An adapter declaring
+    # `callback_scheduling -> :inline` instead runs in place on the reactor
+    # under a cooperative timeout (interrupted at its next suspension point,
+    # ensure blocks run) — same JoinTimeout contract either way.
     def invoke_append(key, entries)
-      FiberBoundary.invoke(timeout: @send_timeout) { @store.append(key, entries) }
+      FiberBoundary.invoke(timeout: @send_timeout, scheduling: @store_scheduling) { @store.append(key, entries) }
       [:ok, nil]
     rescue FiberBoundary::JoinTimeout
       [:timeout, "append timed out after #{@send_timeout}s"]
