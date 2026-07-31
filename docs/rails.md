@@ -21,6 +21,22 @@ end
 
 The trade-off: because callbacks run on a plain thread rather than inside an `Async::Task`, fiber-specific primitives aren't available to them — `Async::Task.current` will raise "No async task available". If a callback wants cooperative concurrency it should open its own `Async { }` block. In practice, callbacks typically do some Ruby work, call external services, and return — so this rarely matters. If you wrap your own call site in an outer `Async { }` block, the scheduler is visible to your code again; you've opted in, and whatever fiber-safety rules your app uses apply there.
 
+### Rails executor around callbacks: `callback_wrapper`
+
+One consequence of the thread hop: an ActiveRecord connection implicitly checked out inside a callback belongs to that throwaway thread and stays stranded until the pool reaper reclaims it. Rails' own answer to "code running on a thread Rails didn't create" is the executor — and `callback_wrapper` lets you install it around every user-callback dispatch:
+
+```ruby
+ClaudeAgentSDK.configure do |config|
+  config.default_options = {
+    callback_wrapper: ->(invocation) { Rails.application.executor.wrap { invocation.call } }
+  }
+end
+```
+
+The wrapper is a callable receiving a zero-arg `invocation`; it must call it and return its value. It runs on the **same execution context as the callback** — inside the worker thread in `:thread` mode, which is the whole point: `executor.wrap` runs on the thread that touches ActiveRecord, so connections check back in when the callback ends. Exceptions from the callback propagate through the wrapper unchanged (don't rescue them); `ensure`-based wrappers like `executor.wrap` are safe, including around a `break` from a message block. Beyond the executor, this is a generic hook for APM span propagation, `CurrentAttributes`/logging context, etc.
+
+When do you want this vs `callback_scheduling: :inline`? `callback_wrapper` + default `:thread` mode is the right choice for ordinary threaded hosts (Puma, threaded Sidekiq/solid_queue): it fixes connection hygiene without any fiber-isolation precondition. `:inline` is only for hosts that are fiber-isolated end to end (solid_queue fiber workers with `isolation_level = :fiber`); there the wrapper still applies — it simply runs in place on the reactor fiber.
+
 ## Fiber workers (solid_queue) and `callback_scheduling: :inline`
 
 [solid_queue 728](https://github.com/rails/solid_queue/pull/728) added a fiber-based worker mode: workers configured with `fibers: N` run claimed jobs as fibers on one async reactor thread — built for exactly the long-lived, I/O-bound "LLM streaming" jobs this SDK produces. It requires the app to be fiber-isolated end to end:

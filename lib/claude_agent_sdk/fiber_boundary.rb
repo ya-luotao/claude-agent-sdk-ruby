@@ -97,12 +97,16 @@ module ClaudeAgentSDK
     # fall back to the server's own default. Benign race on close vs. a
     # concurrent reader: either value is a defensible mode for a call that
     # straddles the dispatch boundary.
+    # Also carries the session's callback wrapper — the two travel (and are
+    # invalidated) together, so a descendant that outlives the dispatch can
+    # neither run with the session's mode nor with its wrapper.
     # @api private
     class SchedulingScope
-      attr_reader :mode
+      attr_reader :mode, :wrapper
 
-      def initialize(mode)
+      def initialize(mode, wrapper = nil)
         @mode = mode
+        @wrapper = wrapper
         @active = true
       end
 
@@ -137,10 +141,30 @@ module ClaudeAgentSDK
     # With `scheduling: :inline` (and no timeout) the block runs in place on
     # the current fiber, scheduler or not. The caller opts in via
     # `ClaudeAgentOptions#callback_scheduling`.
-    def invoke(timeout: nil, scheduling: :thread, &block)
-      return block.call if timeout.nil? && (scheduling == :inline || !Fiber.scheduler)
+    #
+    # With +wrapper+ (a callable, from `ClaudeAgentOptions#callback_wrapper`)
+    # the executed body becomes `wrapper.call(block)` — composed BEFORE the
+    # thread hop, so the wrapper runs on the same execution context as the
+    # callback: on the worker thread in :thread mode (the whole point —
+    # `Rails.application.executor.wrap` must run on the thread that touches
+    # ActiveRecord), in place on the reactor fiber in :inline mode. The
+    # wrapper must call its argument and return its value; exceptions from
+    # the callback propagate through it unchanged, and exceptions raised by
+    # the wrapper itself are treated exactly like callback exceptions. The
+    # wrapper must not swallow exceptions — in :thread mode `break` surfaces
+    # as LocalJumpError (a StandardError) that must reach invoke_iteration's
+    # translation, and in :inline mode timeout cancellation must reach the
+    # SDK. In inline/no-scheduler mode `break` unwinds natively through the
+    # wrapper's stack, so ensure-based wrappers (executor.wrap) are safe.
+    #
+    # The timeout path deliberately ignores the wrapper: it belongs to the
+    # store-adapter carve-out (TranscriptMirrorBatcher, SessionResume),
+    # which never carries user callbacks.
+    def invoke(timeout: nil, scheduling: :thread, wrapper: nil, &block)
+      body = wrapper && timeout.nil? ? -> { wrapper.call(block) } : block
+      return body.call if timeout.nil? && (scheduling == :inline || !Fiber.scheduler)
 
-      thread = Thread.new(&block)
+      thread = Thread.new(&body)
       thread.report_on_exception = false
       return thread.value if timeout.nil?
       raise JoinTimeout, "timed out after #{timeout}s" unless thread.join(timeout)
@@ -155,9 +179,15 @@ module ClaudeAgentSDK
     # Returns Break when the user broke, nil when the block completed.
     # Without a scheduler (or with `scheduling: :inline`) the block runs in
     # place and `break` unwinds natively, never reaching the translation.
-    def invoke_iteration(block, *args, scheduling: :thread)
+    # A +wrapper+ wraps only the args-applied user call — the
+    # LocalJumpError -> Break translation stays OUTSIDE the wrapper, so the
+    # user's `break` still terminates the wrapped invocation from the
+    # wrapper's point of view (ensure-based wrappers run their cleanup).
+    def invoke_iteration(block, *args, scheduling: :thread, wrapper: nil)
+      invocation = -> { block.call(*args) }
+      body = wrapper ? -> { wrapper.call(invocation) } : invocation
       invoke(scheduling: scheduling) do
-        block.call(*args)
+        body.call
         nil
       rescue LocalJumpError => e
         raise unless e.reason == :break

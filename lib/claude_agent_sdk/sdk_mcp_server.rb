@@ -90,6 +90,13 @@ module ClaudeAgentSDK
     # so modes cannot cross-contaminate or persist past a session.
     attr_accessor :callback_scheduling
 
+    # Default callback wrapper for DIRECT invocations of this server
+    # (call_tool / read_resource / get_prompt outside a session). When a
+    # session dispatches to this server, the session's own wrapper arrives
+    # via fiber storage instead (see #effective_callback_wrapper) — same
+    # never-mutate-the-shared-server rule as callback_scheduling.
+    attr_accessor :callback_wrapper
+
     # Internal — public only so the dynamic tool classes can reach it. The
     # scheduling mode for the current invocation: the dispatching session's
     # mode (a live SchedulingScope in fiber storage, set by Query around
@@ -103,6 +110,17 @@ module ClaudeAgentSDK
       scope&.active? ? scope.mode : @callback_scheduling
     end
 
+    # Internal — the callback wrapper for the current invocation: the
+    # dispatching session's wrapper when a live scope is present, else this
+    # server's own default. Closed-scope fallback matches
+    # #effective_callback_scheduling exactly — a descendant fiber outliving
+    # the dispatch falls back to the server's own default.
+    # @api private
+    def effective_callback_wrapper
+      scope = Fiber[FiberBoundary::SCHEDULING_KEY]
+      scope&.active? ? scope.wrapper : @callback_wrapper
+    end
+
     def initialize(name:, version: '1.0.0', tools: [], resources: [], prompts: [])
       @name = name
       @version = version
@@ -110,6 +128,7 @@ module ClaudeAgentSDK
       @resources = resources
       @prompts = prompts
       @callback_scheduling = :thread
+      @callback_wrapper = nil
 
       # Create dynamic Tool classes from tool definitions
       tool_classes = create_tool_classes(tools)
@@ -197,7 +216,9 @@ module ClaudeAgentSDK
       # Call the tool's handler on a plain thread (default) so the async
       # gem's Fiber scheduler is not visible to user code (which may hit
       # AR/PG); in :inline mode it runs in place on the reactor fiber.
-      result = FiberBoundary.invoke(scheduling: effective_callback_scheduling) { tool.handler.call(arguments) }
+      result = FiberBoundary.invoke(scheduling: effective_callback_scheduling, wrapper: effective_callback_wrapper) do
+        tool.handler.call(arguments)
+      end
 
       # Guard before flexible_fetch: it raises on non-Hash inputs.
       content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "content", "content") : nil
@@ -232,7 +253,9 @@ module ClaudeAgentSDK
       # Hop off the Fiber scheduler before invoking user code — same reason
       # as `call_tool` above: reader blocks may touch Thread.current-keyed
       # libraries (ActiveRecord, pg, ...) and must run on a plain thread.
-      content = FiberBoundary.invoke(scheduling: effective_callback_scheduling) { resource.reader.call }
+      content = FiberBoundary.invoke(scheduling: effective_callback_scheduling, wrapper: effective_callback_wrapper) do
+        resource.reader.call
+      end
 
       # Ensure content has the expected format (symbol or string keys; guard
       # before flexible_fetch — it raises on non-Hash inputs)
@@ -264,7 +287,9 @@ module ClaudeAgentSDK
 
       # Hop off the Fiber scheduler before invoking user code — same reason
       # as `call_tool` above.
-      result = FiberBoundary.invoke(scheduling: effective_callback_scheduling) { prompt.generator.call(arguments) }
+      result = FiberBoundary.invoke(scheduling: effective_callback_scheduling, wrapper: effective_callback_wrapper) do
+        prompt.generator.call(arguments)
+      end
 
       # Ensure result has the expected format (symbol or string keys)
       messages = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "messages", "messages") : nil
@@ -365,7 +390,10 @@ module ClaudeAgentSDK
               # Filter out server_context and pass remaining args to handler.
               # Hop to a plain thread (default) so user handlers don't see
               # the Fiber scheduler; :inline runs in place on the reactor.
-              result = FiberBoundary.invoke(scheduling: @sdk_server.effective_callback_scheduling) do
+              result = FiberBoundary.invoke(
+                scheduling: @sdk_server.effective_callback_scheduling,
+                wrapper: @sdk_server.effective_callback_wrapper
+              ) do
                 @tool_def.handler.call(args)
               end
 
