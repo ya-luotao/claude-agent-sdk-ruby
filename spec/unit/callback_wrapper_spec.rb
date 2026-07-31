@@ -612,4 +612,120 @@ RSpec.describe 'Callback wrapper' do
                            ])
     end
   end
+
+  # Regression (codex review on the phase-2 branch): resolving mode and
+  # wrapper through two separate accessors decided scope liveness twice — a
+  # scope closing between the reads (dispatch ensure racing a descendant
+  # reader) yielded a torn pair: session :inline mode with the server's
+  # direct-call wrapper. effective_callback_dispatch decides liveness once
+  # and returns the pair atomically.
+  describe 'SdkMcpServer#effective_callback_dispatch' do
+    # A scope whose active? flips to false after the first liveness check —
+    # deterministically forcing the mid-resolution closure the race needs.
+    def flipping_scope(mode, wrapper)
+      scope = ClaudeAgentSDK::FiberBoundary::SchedulingScope.new(mode, wrapper)
+      checks = 0
+      scope.define_singleton_method(:active?) do
+        checks += 1
+        checks == 1
+      end
+      scope
+    end
+
+    it 'never returns a torn session/server mix when the scope closes mid-resolution' do
+      session_wrapper = passthrough_wrapper
+      server_wrapper = passthrough_wrapper
+      server = ClaudeAgentSDK::SdkMcpServer.new(name: 'probe_server')
+      server.callback_scheduling = :thread
+      server.callback_wrapper = server_wrapper
+
+      Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY] = flipping_scope(:inline, session_wrapper)
+      begin
+        scheduling, wrapper = server.effective_callback_dispatch
+      ensure
+        Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY] = nil
+      end
+
+      # One liveness decision: the scope was live when consulted, so BOTH
+      # halves are the session's. Before the fix this returned
+      # [:inline, server_wrapper].
+      expect(scheduling).to eq(:inline)
+      expect(wrapper).to be(session_wrapper)
+    end
+
+    it 'returns both server defaults for a closed scope' do
+      server = ClaudeAgentSDK::SdkMcpServer.new(name: 'probe_server')
+      server.callback_scheduling = :inline
+      server_wrapper = passthrough_wrapper
+      server.callback_wrapper = server_wrapper
+
+      scope = ClaudeAgentSDK::FiberBoundary::SchedulingScope.new(:thread, passthrough_wrapper)
+      scope.close
+      Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY] = scope
+      begin
+        scheduling, wrapper = server.effective_callback_dispatch
+      ensure
+        Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY] = nil
+      end
+
+      expect(scheduling).to eq(:inline)
+      expect(wrapper).to be(server_wrapper)
+    end
+  end
+
+  # Regression (codex review): a user's `break` is normal loop control. The
+  # Break translation now lives INSIDE the invocation handed to the
+  # wrapper, so a conforming rescue/report/re-raise wrapper observes a
+  # clean return — never a LocalJumpError it could falsely report, and a
+  # swallowing wrapper cannot lose the break.
+  describe 'break visibility to wrappers (:thread mode)' do
+    it 'does not expose break as an exception to a rescue/report/re-raise wrapper' do
+      observed = []
+      reporting_wrapper = lambda do |invocation|
+        invocation.call
+      rescue StandardError => e
+        observed << e
+        raise
+      end
+
+      stub_transport
+      stub_query_handler_yielding(assistant_hash, result_hash, assistant_hash)
+
+      received = []
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        callback_scheduling: :thread, callback_wrapper: reporting_wrapper
+      )
+      ret = ClaudeAgentSDK.query(prompt: 'hi', options: options) do |msg|
+        received << msg.class
+        break :stopped if msg.is_a?(ClaudeAgentSDK::ResultMessage)
+      end
+
+      expect(observed).to be_empty
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+      expect(ret).to eq(:stopped)
+    end
+
+    it 'preserves break through a wrapper that swallows StandardError' do
+      swallowing_wrapper = lambda do |invocation|
+        invocation.call
+      rescue StandardError
+        nil # a misbehaving wrapper; break must survive it anyway
+      end
+
+      stub_transport
+      stub_query_handler_yielding(assistant_hash, result_hash, assistant_hash)
+
+      received = []
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        callback_scheduling: :thread, callback_wrapper: swallowing_wrapper
+      )
+      ret = ClaudeAgentSDK.query(prompt: 'hi', options: options) do |msg|
+        received << msg.class
+        break :stopped if msg.is_a?(ClaudeAgentSDK::ResultMessage)
+      end
+
+      expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+      expect(ret).to eq(:stopped)
+    end
+  end
 end

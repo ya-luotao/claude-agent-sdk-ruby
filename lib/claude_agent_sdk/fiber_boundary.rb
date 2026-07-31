@@ -151,10 +151,11 @@ module ClaudeAgentSDK
     # wrapper must call its argument and return its value; exceptions from
     # the callback propagate through it unchanged, and exceptions raised by
     # the wrapper itself are treated exactly like callback exceptions. The
-    # wrapper must not swallow exceptions — in :thread mode `break` surfaces
-    # as LocalJumpError (a StandardError) that must reach invoke_iteration's
-    # translation, and in :inline mode timeout cancellation must reach the
-    # SDK. In inline/no-scheduler mode `break` unwinds natively through the
+    # wrapper must not swallow exceptions and must return
+    # the invocation's value — a user's `break` in a message block reaches
+    # the wrapper as a clean return (invoke_iteration translates it BEFORE
+    # the wrapper sees it), never as an exception a rescue/report wrapper
+    # could falsely flag. In inline/no-scheduler mode `break` unwinds natively through the
     # wrapper's stack, so ensure-based wrappers (executor.wrap) are safe.
     #
     # The timeout path deliberately ignores the wrapper: it belongs to the
@@ -179,21 +180,24 @@ module ClaudeAgentSDK
     # Returns Break when the user broke, nil when the block completed.
     # Without a scheduler (or with `scheduling: :inline`) the block runs in
     # place and `break` unwinds natively, never reaching the translation.
-    # A +wrapper+ wraps only the args-applied user call — the
-    # LocalJumpError -> Break translation stays OUTSIDE the wrapper, so the
-    # user's `break` still terminates the wrapped invocation from the
-    # wrapper's point of view (ensure-based wrappers run their cleanup).
+    # The LocalJumpError -> Break translation lives INSIDE the invocation
+    # handed to the +wrapper+: a user's `break` is normal loop control, not
+    # an error, so a conforming rescue/report/re-raise wrapper must observe
+    # a clean return (the Break sentinel as the invocation's value), never
+    # a LocalJumpError it could falsely report or swallow. In inline /
+    # no-scheduler mode `break` unwinds natively through the wrapper's
+    # stack instead (ensure-based wrappers still run their cleanup).
     def invoke_iteration(block, *args, scheduling: :thread, wrapper: nil)
-      invocation = -> { block.call(*args) }
-      body = wrapper ? -> { wrapper.call(invocation) } : invocation
-      invoke(scheduling: scheduling) do
-        body.call
+      invocation = lambda do
+        block.call(*args)
         nil
       rescue LocalJumpError => e
         raise unless e.reason == :break
 
         Break.new(e.exit_value)
       end
+      body = wrapper ? -> { wrapper.call(invocation) } : invocation
+      invoke(scheduling: scheduling) { body.call }
     end
   end
 end
