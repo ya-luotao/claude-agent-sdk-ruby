@@ -629,25 +629,21 @@ module ClaudeAgentSDK
             # Async::TimeoutError is a StandardError — a hook's ordinary
             # `rescue StandardError` would swallow the cancellation and
             # convert the expired hook into a success (or keep running past
-            # the deadline). Inject a non-StandardError cancellation
-            # instead, translated back once control leaves user code so the
-            # outward contract (Async::TimeoutError) is unchanged. The
-            # wrapper composes INSIDE with_timeout, and the cancellation
+            # the deadline). FiberBoundary.with_cooperative_timeout injects
+            # a non-StandardError cancellation instead (fresh subclass per
+            # scope — the nested-scope rationale lives on the helper),
+            # translated back once control leaves user code so the outward
+            # contract (Async::TimeoutError) is unchanged. The wrapper
+            # composes INSIDE the timeout scope, and the cancellation
             # passes through it un-swallowed (InlineCancellation is not a
             # StandardError, so a wrapper's ordinary rescue can't eat it).
-            # Fresh per-invocation subclass: rescuing the shared base would
-            # also catch an OUTER timeout's cancellation (e.g. an inline
-            # store call nested inside this hook already uses its own), so
-            # each timeout scope must only consume its own deadline.
-            begin
-              cancellation = Class.new(FiberBoundary::InlineCancellation)
-              Async::Task.current.with_timeout(timeout, cancellation) do
-                FiberBoundary.invoke(scheduling: :inline, wrapper: @callback_wrapper) do
-                  callback.call(hook_input, request_data[:tool_use_id], context)
-                end
+            FiberBoundary.with_cooperative_timeout(
+              Async::Task.current, timeout,
+              on_timeout: -> { Async::TimeoutError.new('execution expired') }
+            ) do
+              FiberBoundary.invoke(scheduling: :inline, wrapper: @callback_wrapper) do
+                callback.call(hook_input, request_data[:tool_use_id], context)
               end
-            rescue cancellation
-              raise Async::TimeoutError, 'execution expired'
             end
           else
             Async::Task.current.with_timeout(timeout) do
