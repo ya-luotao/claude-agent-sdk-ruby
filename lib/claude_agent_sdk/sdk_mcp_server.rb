@@ -127,7 +127,7 @@ module ClaudeAgentSDK
     # Internal — public only so the dynamic tool classes can reach it. The
     # (scheduling mode, wrapper) pair for the current invocation, resolved
     # from ONE liveness decision: the dispatching session's pair when a
-    # live SchedulingScope is in fiber storage (set by Query around the
+    # live CallbackDispatchScope is in fiber storage (set by Query around the
     # dispatch), else this server's own defaults. The pair MUST be resolved
     # together — deciding `active?` once per accessor lets the scope close
     # between the two reads (the dispatch's ensure runs concurrently with a
@@ -138,7 +138,7 @@ module ClaudeAgentSDK
     # @api private
     # @return [Array(Symbol, #call)] `[scheduling, wrapper]`
     def effective_callback_dispatch
-      scope = Fiber[FiberBoundary::SCHEDULING_KEY]
+      scope = Fiber[FiberBoundary::DISPATCH_KEY]
       if scope&.active?
         [scope.mode, scope.wrapper]
       else

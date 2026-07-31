@@ -688,7 +688,7 @@ RSpec.describe 'Callback wrapper' do
     # A scope whose active? flips to false after the first liveness check —
     # deterministically forcing the mid-resolution closure the race needs.
     def flipping_scope(mode, wrapper)
-      scope = ClaudeAgentSDK::FiberBoundary::SchedulingScope.new(mode, wrapper)
+      scope = ClaudeAgentSDK::FiberBoundary::CallbackDispatchScope.new(mode, wrapper)
       checks = 0
       scope.define_singleton_method(:active?) do
         checks += 1
@@ -704,11 +704,11 @@ RSpec.describe 'Callback wrapper' do
       server.callback_scheduling = :thread
       server.callback_wrapper = server_wrapper
 
-      Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY] = flipping_scope(:inline, session_wrapper)
+      Fiber[ClaudeAgentSDK::FiberBoundary::DISPATCH_KEY] = flipping_scope(:inline, session_wrapper)
       begin
         scheduling, wrapper = server.effective_callback_dispatch
       ensure
-        Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY] = nil
+        Fiber[ClaudeAgentSDK::FiberBoundary::DISPATCH_KEY] = nil
       end
 
       # One liveness decision: the scope was live when consulted, so BOTH
@@ -724,13 +724,13 @@ RSpec.describe 'Callback wrapper' do
       server_wrapper = passthrough_wrapper
       server.callback_wrapper = server_wrapper
 
-      scope = ClaudeAgentSDK::FiberBoundary::SchedulingScope.new(:thread, passthrough_wrapper)
+      scope = ClaudeAgentSDK::FiberBoundary::CallbackDispatchScope.new(:thread, passthrough_wrapper)
       scope.close
-      Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY] = scope
+      Fiber[ClaudeAgentSDK::FiberBoundary::DISPATCH_KEY] = scope
       begin
         scheduling, wrapper = server.effective_callback_dispatch
       ensure
-        Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY] = nil
+        Fiber[ClaudeAgentSDK::FiberBoundary::DISPATCH_KEY] = nil
       end
 
       expect(scheduling).to eq(:inline)
