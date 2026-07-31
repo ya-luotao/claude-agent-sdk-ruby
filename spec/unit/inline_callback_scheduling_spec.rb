@@ -524,6 +524,29 @@ RSpec.describe 'Inline callback scheduling' do
       expect(schedulers[0]).not_to be_nil # inline session sees the reactor
       expect(schedulers[1]).to be_nil     # thread session still hops
     end
+
+    # Regression (CI seed 62610): dispatch used to leave the mode in fiber
+    # storage. A dispatch running on a long-lived fiber (a test's main
+    # fiber; any synchronous no-reactor call) stamped that fiber forever,
+    # and since child fibers inherit a copy of their creator's storage,
+    # every later fiber inherited the stale mode — silently overriding
+    # other servers' own callback_scheduling defaults process-wide.
+    it 'restores fiber storage after dispatch instead of stamping the fiber' do
+      tool = ClaudeAgentSDK.create_tool('probe', 'Probe', {}) do |_args|
+        { content: [{ type: 'text', text: 'ok' }] }
+      end
+      server = ClaudeAgentSDK::SdkMcpServer.new(name: 'probe_server', tools: [tool])
+      query = ClaudeAgentSDK::Query.new(
+        transport: transport, is_streaming_mode: true,
+        sdk_mcp_servers: { 'probe_server' => server }, callback_scheduling: :thread
+      )
+
+      # Synchronous dispatch on the current (long-lived) fiber, no reactor.
+      query.send(:handle_sdk_mcp_request, 'probe_server',
+                 { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'probe', arguments: {} } })
+
+      expect(Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY]).to be_nil
+    end
   end
 
   describe 'SDK MCP handlers with an inline server' do

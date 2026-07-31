@@ -73,12 +73,15 @@ module ClaudeAgentSDK
 
     # Fiber-storage key carrying the dispatching session's callback
     # scheduling mode across the SDK-MCP dispatch path (Query ->
-    # MCP::Server -> dynamic tool class). Fiber storage is per-fiber and
-    # dies with the control-request task, so concurrent sessions with
-    # different modes sharing one SdkMcpServer instance cannot
-    # cross-contaminate — unlike mutating the shared server (last-writer-
-    # wins, persists past close) or a thread-local (the reactor thread is
-    # shared by many fibers).
+    # MCP::Server -> dynamic tool class). Fiber storage is per-fiber, so
+    # concurrent sessions with different modes sharing one SdkMcpServer
+    # instance cannot cross-contaminate — unlike mutating the shared
+    # server (last-writer-wins, persists past close) or a thread-local
+    # (the reactor thread is shared by many fibers). Set around each
+    # dispatch and RESTORED afterwards (never left behind): child fibers
+    # inherit a copy of their creator's storage, so a stale value on a
+    # long-lived fiber would silently leak into every fiber created from
+    # it later.
     SCHEDULING_KEY = :claude_agent_sdk_callback_scheduling
 
     # Sentinel returned by .invoke_iteration when the user block attempted `break`.

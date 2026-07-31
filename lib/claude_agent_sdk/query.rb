@@ -996,11 +996,16 @@ module ClaudeAgentSDK
     def handle_sdk_mcp_request(server_name, message)
       # Carry this session's scheduling mode across the dispatch into the
       # (possibly session-shared) SdkMcpServer via fiber storage — set on
-      # this control-request task's fiber, read back by the server's
-      # handlers at invoke time (see SdkMcpServer#effective_callback_
-      # scheduling). Scoped to this fiber and gone when the task ends, so
-      # concurrent sessions with different modes sharing one server
-      # instance cannot cross-contaminate and nothing persists past close.
+      # the dispatching fiber, read back by the server's handlers at invoke
+      # time (see SdkMcpServer#effective_callback_scheduling). Fiber
+      # storage is per-fiber, so concurrent sessions cannot see each
+      # other's value even across suspension points. RESTORED in the
+      # ensure below: child fibers inherit a copy of their creator's
+      # storage at creation, so a value left behind on a long-lived fiber
+      # (the reactor root, a test's main fiber) would be inherited by every
+      # fiber created from it later and silently override other servers'
+      # own defaults.
+      previous_scheduling = Fiber[FiberBoundary::SCHEDULING_KEY]
       Fiber[FiberBoundary::SCHEDULING_KEY] = @callback_scheduling
 
       # Convert server_name to symbol if needed for hash lookup
@@ -1051,6 +1056,8 @@ module ClaudeAgentSDK
         id: message[:id],
         error: { code: -32603, message: e.message }
       }
+    ensure
+      Fiber[FiberBoundary::SCHEDULING_KEY] = previous_scheduling
     end
 
     def handle_mcp_initialize(server, message)
