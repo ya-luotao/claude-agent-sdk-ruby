@@ -38,7 +38,7 @@ module ClaudeAgentSDK
   # suspension points would leak across sessions). The one path a call
   # argument cannot cross (SDK-MCP dispatch through the mcp gem) carries
   # it via a scoped, invalidatable fiber-storage entry instead — see
-  # SCHEDULING_KEY / SchedulingScope below.
+  # DISPATCH_KEY / CallbackDispatchScope below.
   #
   # A `timeout:` forces the thread hop — `Thread#join(timeout)` is a hard
   # bound that can abandon a wedged call, which cooperative `with_timeout`
@@ -88,16 +88,16 @@ module ClaudeAgentSDK
     class InlineCancellation < Exception; end # rubocop:disable Lint/InheritException
 
     # Fiber-storage key carrying the dispatching session's callback
-    # scheduling mode across the SDK-MCP dispatch path (Query ->
-    # MCP::Server -> dynamic tool class). Fiber storage is per-fiber, so
+    # dispatch pair (scheduling mode + wrapper) across the SDK-MCP dispatch
+    # path (Query -> MCP::Server -> dynamic tool class). Fiber storage is per-fiber, so
     # concurrent sessions with different modes sharing one SdkMcpServer
     # instance cannot cross-contaminate — unlike mutating the shared
     # server (last-writer-wins, persists past close) or a thread-local
     # (the reactor thread is shared by many fibers).
     # @api private
-    SCHEDULING_KEY = :claude_agent_sdk_callback_scheduling
+    DISPATCH_KEY = :claude_agent_sdk_callback_dispatch
 
-    # The value stored under SCHEDULING_KEY: a
+    # The value stored under DISPATCH_KEY: a
     # closable carrier rather than a bare symbol. Fiber-storage inheritance
     # copies the storage HASH but shares value REFERENCES, so every fiber
     # (and thread) created during a dispatch inherits this same object.
@@ -112,7 +112,7 @@ module ClaudeAgentSDK
     # invalidated) together, so a descendant that outlives the dispatch can
     # neither run with the session's mode nor with its wrapper.
     # @api private
-    class SchedulingScope
+    class CallbackDispatchScope
       attr_reader :mode, :wrapper
 
       def initialize(mode, wrapper = nil)
