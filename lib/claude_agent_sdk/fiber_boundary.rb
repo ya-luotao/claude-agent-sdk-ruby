@@ -190,21 +190,13 @@ module ClaudeAgentSDK
       return body.call if timeout.nil? && (scheduling == :inline || !Fiber.scheduler)
 
       # Cooperative timeout for inline-declared store adapters: in place on
-      # the reactor fiber, cancelled at the next suspension point. The
-      # cancellation class is a fresh per-invocation subclass: rescuing the
-      # shared base would also catch an OUTER timeout's cancellation
-      # delivered while this call is suspended (nested with_timeout — e.g. a
-      # store call inside a timed inline hook), mis-attributing the outer
-      # deadline to this call and letting execution continue past it. An
-      # outer cancellation is a different subclass, so it propagates through
-      # untouched.
+      # the reactor fiber, cancelled at the next suspension point (delivery
+      # and translation mechanics live in .with_cooperative_timeout). The
+      # wrapper is already composed into `body`, so it sits inside the
+      # timeout scope.
       if timeout && scheduling == :inline && (task = Async::Task.current?)
-        cancellation = Class.new(InlineCancellation)
-        begin
-          return task.with_timeout(timeout, cancellation) { body.call }
-        rescue cancellation
-          raise JoinTimeout, "timed out after #{timeout}s"
-        end
+        expired = -> { JoinTimeout.new("timed out after #{timeout}s") }
+        return with_cooperative_timeout(task, timeout, on_timeout: expired) { body.call }
       end
 
       thread = Thread.new(&body)
@@ -213,6 +205,36 @@ module ClaudeAgentSDK
       raise JoinTimeout, "timed out after #{timeout}s" unless thread.join(timeout)
 
       thread.value
+    end
+
+    # Run +block+ on +task+ bounded by a cooperative +timeout+: the deadline
+    # is delivered INSIDE user code as an InlineCancellation at the block's
+    # next suspension point (ensure blocks run; a callback's ordinary
+    # `rescue StandardError` cannot swallow it), then translated into the
+    # exception built by +on_timeout+ (a zero-arg callable) once control has
+    # returned from user code — each call site keeps its own outward
+    # contract (JoinTimeout on the store-adapter path in .invoke,
+    # Async::TimeoutError on the inline hook path in Query).
+    #
+    # The cancellation class is a fresh per-invocation subclass: rescuing
+    # the shared base would also catch an OUTER timeout's cancellation
+    # delivered while this call is suspended (nested with_timeout — e.g. an
+    # inline store call nested inside a timed inline hook), mis-attributing
+    # the outer deadline to this call and letting execution continue past
+    # it. An outer cancellation is a different subclass, so it propagates
+    # through untouched.
+    #
+    # Wrapper composition is the caller's choice — +block+ runs verbatim
+    # inside the timeout scope (.invoke composes the callback wrapper into
+    # its body beforehand; the hook path composes it inside the block).
+    # @api private
+    def with_cooperative_timeout(task, timeout, on_timeout:, &block)
+      cancellation = Class.new(InlineCancellation)
+      begin
+        task.with_timeout(timeout, cancellation, &block)
+      rescue cancellation
+        raise on_timeout.call
+      end
     end
 
     # Invoke a user-supplied iteration block across the boundary. The thread
