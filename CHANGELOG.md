@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-07-31
+
 ### Added
 - **Fiber-native SessionStore adapters** (#47 phase 3): an adapter whose IO is entirely Fiber-scheduler-aware can declare it by defining an optional `callback_scheduling` method returning `:inline`. Every timeout-bounded store call the SDK makes (mirror-batcher appends; resume-materialization loads **and** the listing methods `list_sessions` / `list_session_summaries` / `list_subkeys`) then runs in place on the reactor fiber under a **cooperative** timeout — interrupted at the next suspension point with `ensure` blocks running — instead of on a throwaway thread with a hard `Thread#join` bound. The outward exception contract is unchanged (`FiberBoundary::JoinTimeout`); undeclared adapters are byte-for-byte untouched, and outside a reactor the hard bound still applies even for declared adapters. Cancellation reaches only the adapter's own fiber (offloaded work may still land afterwards), so timed-out appends are not retried in either mode and may remain permanently half-applied in the store — the drop is surfaced (`MirrorErrorMessage`, `batches_dropped?`) and the local transcript remains the source of truth. Invalid or raising declarations fail fast (`ArgumentError` at construction; conformance contract 17). Apps can opt a third-party fiber-native adapter in via `def store.callback_scheduling = :inline`.
 
