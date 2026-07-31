@@ -51,7 +51,7 @@ With `:inline`, every user callback — message blocks, hooks, permission callba
 - Hook timeouts become **cooperative**: a timed-out inline hook is cancelled at its next suspension point (its `ensure` blocks run), instead of being abandoned on a worker thread. A CPU-stuck hook cannot be timed out.
 - The CLI's cancellation of an in-flight callback (e.g. permission prompt superseded) can now actually interrupt it at a suspension point.
 
-The one real risk: **scheduler-opaque blocking stalls the whole reactor.** CPU-bound work or a GVL-holding C extension inside an inline callback blocks every job on that worker, not just yours. Move such pieces onto a thread explicitly:
+The one real risk: **scheduler-opaque blocking stalls the whole reactor.** CPU-bound work or a GVL-holding C extension inside an inline callback blocks every job on that worker, not just yours. Blocking that releases the GVL and pure-Ruby CPU work can be moved onto a thread explicitly:
 
 ```ruby
 tool = ClaudeAgentSDK.create_tool('lookup', 'Query legacy DB', { id: String }) do |args|

@@ -64,27 +64,29 @@ module ClaudeAgentSDK
     # in-flight call may still complete).
     class JoinTimeout < StandardError; end
 
-    # Internal (@api private). Cancellation injected into INLINE user
-    # callbacks by timeout enforcement (hook timeouts under
-    # scheduling: :inline) — user code should let it propagate. Deliberately
+    # Cancellation injected into INLINE user callbacks by timeout
+    # enforcement (hook timeouts under scheduling: :inline) — user code
+    # should let it propagate. Deliberately
     # NOT a StandardError: the exception is raised inside user code at a
     # suspension point, and a callback's ordinary `rescue StandardError`
     # must not be able to swallow the cancellation and convert an expired
     # hook into a success (Async::TimeoutError is a StandardError, so it
     # cannot be injected directly). The SDK translates it back to
     # Async::TimeoutError once control returns from user code.
+    # @api private
     class InlineCancellation < Exception; end # rubocop:disable Lint/InheritException
 
-    # Internal (@api private). Fiber-storage key carrying the dispatching
-    # session's callback scheduling mode across the SDK-MCP dispatch path
-    # (Query -> MCP::Server -> dynamic tool class). Fiber storage is
-    # per-fiber, so concurrent sessions with different modes sharing one
-    # SdkMcpServer instance cannot cross-contaminate — unlike mutating the
-    # shared server (last-writer-wins, persists past close) or a
-    # thread-local (the reactor thread is shared by many fibers).
+    # Fiber-storage key carrying the dispatching session's callback
+    # scheduling mode across the SDK-MCP dispatch path (Query ->
+    # MCP::Server -> dynamic tool class). Fiber storage is per-fiber, so
+    # concurrent sessions with different modes sharing one SdkMcpServer
+    # instance cannot cross-contaminate — unlike mutating the shared
+    # server (last-writer-wins, persists past close) or a thread-local
+    # (the reactor thread is shared by many fibers).
+    # @api private
     SCHEDULING_KEY = :claude_agent_sdk_callback_scheduling
 
-    # Internal (@api private). The value stored under SCHEDULING_KEY: a
+    # The value stored under SCHEDULING_KEY: a
     # closable carrier rather than a bare symbol. Fiber-storage inheritance
     # copies the storage HASH but shares value REFERENCES, so every fiber
     # (and thread) created during a dispatch inherits this same object.
@@ -95,6 +97,7 @@ module ClaudeAgentSDK
     # fall back to the server's own default. Benign race on close vs. a
     # concurrent reader: either value is a defensible mode for a call that
     # straddles the dispatch boundary.
+    # @api private
     class SchedulingScope
       attr_reader :mode
 
