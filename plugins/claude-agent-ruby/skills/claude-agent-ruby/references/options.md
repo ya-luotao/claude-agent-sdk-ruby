@@ -115,6 +115,7 @@ client = ClaudeAgentSDK::Client.new(
 
 - `betas`: Enable CLI beta features (`--betas`).
 - `include_hook_events`: Emit hook lifecycle events (`HookStartedMessage` / `HookProgressMessage` / `HookResponseMessage`) into the message stream (`--include-hook-events`).
+- `callback_scheduling`: where user callbacks (message blocks, hooks, permission callbacks, SDK MCP handlers, observers) run when the SDK is hosted inside an Async reactor. `:thread` (default) hops each callback to a plain thread so thread-keyed libraries (ActiveRecord, pg) behave as usual; `:inline` runs callbacks in place on the reactor fiber — only for hosts that are fiber-isolated end to end (solid_queue fiber workers with `IsolatedExecutionState.isolation_level = :fiber`). In `:inline` mode hook timeouts cancel cooperatively, and CPU-bound / scheduler-opaque work should be wrapped in `ClaudeAgentSDK.offload { }` (no help for GVL-holding C extensions). See docs/rails.md "Fiber workers".
 
 ## Session browsing and mutation (top-level SDK functions)
 
