@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-31
+
 ### Changed
 - **`callback_wrapper` now composes around timeout-bounded SessionStore adapter dispatch** (mirror-batcher appends and every resume-materialization store call), inside the timeout bound — on the worker thread in the default thread-hop mode, inside the cooperative timeout for inline-declared adapters. A Rails `executor.wrap` wrapper therefore covers an ActiveRecord-backed store adapter too: connections check out and back in per call instead of stranding on the throwaway thread. The bound itself is unchanged (`JoinTimeout` semantics, no-retry-on-timeout); a wrapper-raised error is treated like a store error (retryable on the batcher path). Previously the timeout path silently ignored the wrapper.
 
