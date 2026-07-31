@@ -290,9 +290,11 @@ module ClaudeAgentSDK
     attr_accessor :uuid, :session_id, :content
   end
 
-  # Emitted when a session_store mirror batch exhausts its retries and is
-  # dropped. The local-disk transcript is still durable; this is the consumer's
-  # only signal that the external store missed a batch (at-most-once delivery).
+  # Emitted when a session_store mirror batch fails terminally and is
+  # dropped — timeouts immediately (never retried), other failures after up
+  # to three attempts. The local-disk transcript is still durable; this is
+  # the consumer's only signal that the external store missed a batch
+  # (at-most-once delivery).
   class MirrorErrorMessage < SystemMessage
     attr_accessor :uuid, :session_id, :error, :key
   end

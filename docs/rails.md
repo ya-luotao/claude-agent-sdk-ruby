@@ -80,7 +80,7 @@ end
 
 Preconditions, spelled out: `:inline` is only correct when the process satisfies the same requirements as solid_queue's fiber workers — `isolation_level = :fiber`, Rails 7.2+ for AR, and no thread-keyed libraries used inside callbacks without a fiber-aware wrapper. The SDK warns once if it detects `:inline` under `isolation_level == :thread`. Everything else (Puma request threads, threaded Sidekiq/solid_queue workers) should stay on the default `callback_scheduling: :thread`.
 
-Note that `SessionStore` adapter calls (`#append` / `#load`) intentionally stay on threads even in `:inline` mode — their timeouts are hard bounds (`Thread#join`) so a wedged store adapter can never stall the reactor.
+Note that `SessionStore` adapter calls (`#append` / `#load`) stay on threads by default even in `:inline` mode — their timeouts are hard bounds (`Thread#join`) so a wedged store adapter can never stall the reactor. The exception is an adapter that declares itself fiber-native via an optional `callback_scheduling` method returning `:inline` (see "Fiber-native adapters" in [docs/sessions.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/sessions.md)); its calls then run on the reactor under a cooperative timeout.
 
 ## ActionCable Streaming
 

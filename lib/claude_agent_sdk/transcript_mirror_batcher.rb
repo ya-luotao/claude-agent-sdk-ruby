@@ -28,7 +28,14 @@ module ClaudeAgentSDK
   # The semaphore serializes appends, but a #send that exceeds send_timeout is
   # abandoned (its worker thread keeps running) and the next drain proceeds, so
   # two #append calls for the SAME key can briefly overlap. SessionStore#append
-  # must be thread-safe per key (see that method's contract).
+  # must be thread-safe per key (see that method's contract). For adapters
+  # declaring `callback_scheduling -> :inline` the timed-out call is instead
+  # cancelled cooperatively (interrupted at its next suspension point, ensure
+  # runs) — but only on the adapter's own fiber; work the adapter offloaded
+  # may still land, so timeouts are not retried in either mode and the
+  # cancelled append may remain permanently HALF-applied in the store. The
+  # drop is surfaced (MirrorErrorMessage, batches_dropped?); the local
+  # transcript remains the source of truth.
   class TranscriptMirrorBatcher
     # Eager-flush thresholds (exposed for tests).
     MAX_PENDING_ENTRIES = 500
@@ -50,6 +57,9 @@ module ClaudeAgentSDK
       @projects_dir = projects_dir
       @on_error = on_error
       @send_timeout = send_timeout
+      # Probed ONCE here so an invalid callback_scheduling declaration fails
+      # at construction, not mid-session inside a flush.
+      @store_scheduling = SessionStores.store_callback_scheduling(store)
       @max_pending_entries = max_pending_entries
       @max_pending_bytes = max_pending_bytes
       @pending = []
@@ -203,9 +213,18 @@ module ClaudeAgentSDK
           succeeded = true
           break
         when :timeout
-          # Don't retry on timeout: the in-flight call may still land, so a
-          # retry would launch a concurrent duplicate. Also bounds worst-case
-          # lock hold at ~send_timeout rather than ~3x.
+          # Don't retry on timeout — in EITHER mode. Thread mode: the
+          # abandoned in-flight call may still land, so a retry would launch
+          # a concurrent duplicate. Inline mode: cooperative cancellation
+          # interrupts only the adapter's own fiber — work the adapter
+          # itself offloaded (descendant tasks, an already-issued remote
+          # write) may still land after the cancellation, so a retry races
+          # it exactly like the thread case (adversarially demonstrated in
+          # review: a dedupe-conforming adapter still persisted duplicates).
+          # Uniform no-retry also bounds worst-case lock hold at
+          # ~send_timeout. The dropped batch is surfaced (MirrorErrorMessage,
+          # batches_dropped?) and the local transcript remains the source of
+          # truth.
           last_err = err
           break
         else # :error — retryable
@@ -222,11 +241,16 @@ module ClaudeAgentSDK
 
     # Run SessionStore#append (user code) on a plain thread via FiberBoundary,
     # bounded by send_timeout (enforced with or without an active reactor).
-    # Returns [:ok, nil] / [:timeout, err] / [:error, err]. On timeout the
-    # worker thread is left running (cancellation is best-effort; the in-flight
-    # call may still land) and not retried.
+    # Returns [:ok, nil] / [:timeout, err] / [:error, err]. On timeout in
+    # thread mode the worker thread is left running (cancellation is
+    # best-effort; the in-flight call may still land) and not retried. An
+    # adapter declaring `callback_scheduling -> :inline` instead runs in
+    # place on the reactor under a cooperative timeout (interrupted at its
+    # next suspension point, ensure blocks run) — same JoinTimeout contract
+    # and same no-retry semantics (see append_with_retry: offloaded work
+    # may outlive the cancellation).
     def invoke_append(key, entries)
-      FiberBoundary.invoke(timeout: @send_timeout) { @store.append(key, entries) }
+      FiberBoundary.invoke(timeout: @send_timeout, scheduling: @store_scheduling) { @store.append(key, entries) }
       [:ok, nil]
     rescue FiberBoundary::JoinTimeout
       [:timeout, "append timed out after #{@send_timeout}s"]

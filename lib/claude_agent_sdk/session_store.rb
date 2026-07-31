@@ -32,6 +32,32 @@ module ClaudeAgentSDK
   #   - entries: raw JSONL transcript objects (opaque pass-through blobs)
   #   - list_sessions result: [{ 'session_id' => String, 'mtime' => Integer }]
   #   - summary entries: { 'session_id', 'mtime', 'data' } (see SessionSummary)
+  #
+  # FIBER-NATIVE ADAPTERS (issue #47 phase 3): an adapter whose IO is
+  # entirely Fiber-scheduler-aware may additionally define an optional
+  # `callback_scheduling` method returning `:inline` (`:thread` = default
+  # behavior). The SDK then runs the adapter's timeout-bounded calls in place
+  # on the reactor fiber under a cooperative timeout instead of on a
+  # throwaway thread with a hard `Thread#join` bound. The declaration covers
+  # EVERY method the SDK invokes on the adapter — append, load,
+  # list_sessions, list_session_summaries, list_subkeys — not just
+  # append/load: resume materialization inlines the listing calls too. Only
+  # the adapter author can make this call — declare :inline ONLY if every
+  # blocking operation in every method yields to the scheduler;
+  # scheduler-opaque blocking stalls every job on the worker AND escapes the
+  # cooperative deadline. A timed-out inline call is interrupted at its next
+  # suspension point (ensure blocks run) rather than abandoned. The
+  # cancellation reaches only the adapter's own fiber — work the adapter
+  # offloaded (descendant tasks, an already-issued remote write) may still
+  # land afterwards — so timed-out appends are NOT retried (same as thread
+  # mode) and a cancelled append may remain permanently half-applied in the
+  # store. The drop is surfaced (MirrorErrorMessage, batches_dropped?) and
+  # the local transcript remains the source of truth; the
+  # dedupe-by-entry-uuid recommendation above stays advisory. The method is deliberately NOT defined here: the SDK probes
+  # `respond_to?(:callback_scheduling)` (see
+  # SessionStores.store_callback_scheduling), so pure duck-typed adapters
+  # stay minimal, and an app can opt a third-party fiber-native adapter in
+  # via a singleton method (`def store.callback_scheduling = :inline`).
   class SessionStore
     # True if +store+ overrides +method+ rather than inheriting the base
     # implementation that raises NotImplementedError. Works for both subclasses
@@ -249,7 +275,30 @@ module ClaudeAgentSDK
 
   # Internal SessionStore support functions (path mapping, option validation).
   module SessionStores
+    STORE_CALLBACK_SCHEDULING_MODES = %i[thread inline].freeze
+
     module_function
+
+    # Where an adapter's timeout-bounded #append/#load calls run: :thread
+    # (default — hard-bounded thread hop) unless the adapter declares
+    # fiber-nativeness via an optional `callback_scheduling` method returning
+    # :inline (String form coerced, matching ClaudeAgentOptions). Probed
+    # respond_to?-style like the rest of the subsystem. Called once at
+    # construction time (batcher initialize, resume-materialization entry)
+    # so an invalid declaration fails fast there, not mid-session.
+    def store_callback_scheduling(store)
+      return :thread unless store.respond_to?(:callback_scheduling)
+
+      value = store.callback_scheduling
+      mode = value.respond_to?(:to_sym) ? value.to_sym : value
+      unless STORE_CALLBACK_SCHEDULING_MODES.include?(mode)
+        raise ArgumentError,
+              'session_store#callback_scheduling must return one of ' \
+              "#{STORE_CALLBACK_SCHEDULING_MODES.map(&:inspect).join(', ')} (got #{value.inspect})"
+      end
+
+      mode
+    end
 
     # Derive a SessionKey from an absolute transcript file path.
     #

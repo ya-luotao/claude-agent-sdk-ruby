@@ -154,7 +154,8 @@ during resume materialization, default `60_000`).
 > Python and TypeScript SDKs.
 >
 > The temp dir is deleted at disconnect — **unless the mirror dropped batches**
-> (adapter failures that exhausted retries, surfaced as `MirrorErrorMessage`):
+> (terminal append failures — timeouts immediately, other failures after up to
+> three attempts — surfaced as `MirrorErrorMessage`):
 > the store copy is then incomplete and the temp dir holds the only copy of the
 > dropped turns, so the SDK scrubs the credential copies, keeps the transcripts,
 > and warns with the preserved path so you can import them into the store.
@@ -174,6 +175,48 @@ ClaudeAgentSDK::Testing.run_session_store_conformance(-> { MyStore.new(...) })
 Copy-in reference adapters for **S3, Redis, and Postgres** live in
 [`examples/session_stores/`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/session_stores/README.md), each with a
 production checklist.
+
+#### Fiber-native adapters
+
+By default the SDK runs every timeout-bounded adapter call (`#append` from the
+mirror batcher, `#load` and friends during resume materialization) on a
+throwaway thread with a hard `Thread#join` timeout, so a wedged adapter can
+never stall the reactor. An adapter whose IO is **entirely
+Fiber-scheduler-aware** (e.g. built on `async`-native clients) can opt out of
+the thread hop by declaring it:
+
+```ruby
+class MyAsyncStore
+  def callback_scheduling = :inline
+  # append/load ...
+end
+```
+
+Declaring `:inline` means the calls run in place on the reactor fiber under a
+**cooperative** timeout. Three consequences to understand before opting in:
+
+- The declaration covers **every method the SDK invokes on the adapter** —
+  `append`, `load`, `list_sessions`, `list_session_summaries`,
+  `list_subkeys` — not just append/load: resume materialization runs the
+  listing calls inline too. **All** blocking inside all of them must yield to
+  the scheduler. Scheduler-opaque blocking (CPU-bound work, GVL-holding C
+  extensions, native drivers the scheduler can't see) stalls every job on
+  that worker **and** the cooperative timeout cannot fire while it blocks.
+- Cancellation semantics change: a timed-out call is interrupted at its next
+  suspension point and its `ensure` blocks run, instead of being abandoned on
+  a thread. The cancellation reaches only the adapter's **own fiber** — work
+  the adapter offloaded (descendant tasks, an already-issued remote write)
+  may still land afterwards. Timed-out appends are therefore **not retried**
+  (same as thread mode; a retry would race that still-landing work), and the
+  interrupted append may remain permanently **half-applied** in the store.
+  The drop is surfaced like every dropped batch — `MirrorErrorMessage` on
+  the stream, `batches_dropped?` on the batcher — and the local transcript
+  remains the source of truth, so nothing is lost from the session itself.
+
+Anything other than `:thread`/`:inline` raises `ArgumentError` when the
+session is set up; without a reactor the hard thread-hop bound still applies
+even for declared adapters. To opt in a third-party fiber-native adapter you
+don't own: `def store.callback_scheduling = :inline` (singleton method).
 
 ### Store-backed helpers
 
