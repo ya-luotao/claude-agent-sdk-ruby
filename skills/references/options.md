@@ -193,11 +193,12 @@ ClaudeAgentSDK.query(
   returning `:inline` — its timeout-bounded store calls (append, load, and
   the listing methods used by resume) then run in place on the reactor fiber
   under a cooperative timeout (interrupted at the next suspension point,
-  `ensure` runs) instead of on a throwaway thread with a hard bound. Inline
-  timeouts are retried (definite cancellation — the retry re-sends the full
-  batch and heals a half-applied append), so dedupe-by-entry-uuid is
-  MANDATORY for declaring adapters (advisory otherwise) and the conformance
-  kit enforces it unconditionally for them. Undeclared adapters are
+  `ensure` runs) instead of on a throwaway thread with a hard bound.
+  Timed-out appends are not retried in either mode (cancellation reaches
+  only the adapter's own fiber — offloaded work may still land, so a retry
+  would race it) and may remain permanently half-applied in the store; the
+  drop is surfaced via `MirrorErrorMessage` / `batches_dropped?` and the
+  local transcript stays the source of truth. Undeclared adapters are
   unchanged; invalid values raise `ArgumentError` at setup; conformance
   contract 17 validates the declaration. See docs/sessions.md "Fiber-native
   adapters".

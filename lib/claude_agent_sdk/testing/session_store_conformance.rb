@@ -51,11 +51,6 @@ module ClaudeAgentSDK
     #   skip it (duplicates largely self-heal through last-wins summary folds,
     #   though resumed transcripts can still show repeated turns), so this
     #   defaults to off. Turn it on if your adapter dedupes.
-    #   EXCEPTION: for adapters declaring `callback_scheduling -> :inline`
-    #   the dedupe contract is MANDATORY and runs regardless of this flag —
-    #   the batcher retries a cooperatively-cancelled (possibly half-applied)
-    #   append by re-sending the full batch, so a non-deduping inline adapter
-    #   would silently duplicate entries.
     def run_session_store_conformance(make_store, skip_optional: [], check_uuid_dedupe: false)
       skip_optional = skip_optional.map(&:to_s)
       invalid = skip_optional - OPTIONAL_METHODS
@@ -69,15 +64,13 @@ module ClaudeAgentSDK
       has_delete = optional?(probe, 'delete', skip_optional)
       has_list_subkeys = optional?(probe, 'list_subkeys', skip_optional)
 
-      inline_declared = check_callback_scheduling_declaration(fresh)
+      check_callback_scheduling_declaration(fresh)
       check_append_and_load(fresh, has_list_sessions)
       check_list_sessions(fresh) if has_list_sessions
       check_list_session_summaries(fresh, has_list_sessions, has_delete) if has_list_summaries
       check_delete(fresh, has_list_subkeys, has_list_sessions) if has_delete
       check_list_subkeys(fresh) if has_list_subkeys
-      # Mandatory for inline-declaring adapters (retry idempotency —
-      # contract 17b), advisory opt-in for everyone else.
-      check_uuid_dedupe_contract(fresh) if check_uuid_dedupe || inline_declared
+      check_uuid_dedupe_contract(fresh) if check_uuid_dedupe
       nil
     end
 
@@ -88,17 +81,13 @@ module ClaudeAgentSDK
     # the SDK probes it at construction and raises ArgumentError otherwise,
     # so a bad declaration would fail every session using the store. Runs
     # first because the SDK probes before any store IO; skipped entirely for
-    # non-declaring adapters (the probe defaults to :thread). Returns true
-    # when the adapter declares :inline — the caller then enforces the
-    # uuid-dedupe contract unconditionally (17b): inline timeouts are
-    # retried with full-batch re-sends, so idempotent append is part of the
-    # fiber-native contract, not advisory.
+    # non-declaring adapters (the probe defaults to :thread).
     def check_callback_scheduling_declaration(fresh)
       store = fresh.call
-      return false unless store.respond_to?(:callback_scheduling)
+      return unless store.respond_to?(:callback_scheduling)
 
       begin
-        SessionStores.store_callback_scheduling(store) == :inline
+        SessionStores.store_callback_scheduling(store)
       rescue ArgumentError => e
         assert(false, "callback_scheduling declaration must be :thread or :inline (#{e.message})")
       rescue StandardError, NotImplementedError => e

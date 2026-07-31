@@ -28,21 +28,6 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
     end
   end
 
-  # A CONFORMING fiber-native adapter: :inline declarers must dedupe by
-  # entry uuid (contract 17b) because inline timeouts are retried with
-  # full-batch re-sends.
-  def deduping_inline_store_class
-    Class.new(ClaudeAgentSDK::InMemorySessionStore) do
-      def callback_scheduling = :inline
-
-      def append(key, entries)
-        seen = Array(load(key)).filter_map { |e| e['uuid'] }
-        fresh = Array(entries).reject { |e| e['uuid'] && seen.include?(e['uuid']) }
-        super(key, fresh)
-      end
-    end
-  end
-
   describe 'FiberBoundary.invoke with timeout + scheduling: :inline' do
     it 'runs in place on the calling fiber with the scheduler live inside a reactor' do
       inner_fiber = nil
@@ -204,10 +189,12 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
       expect(errors).to be_empty
     end
 
-    # Unlike thread mode (where a timed-out append is abandoned in flight
-    # and must not be retried), an inline cancellation is DEFINITE — so the
-    # timeout is retried like any other failure, up to the attempt cap.
-    it 'retries a cooperative timeout and reports through the existing error path when all attempts expire' do
+    # Timeouts are not retried in either mode. Inline cancellation reaches
+    # only the adapter's own fiber — work the adapter offloaded may still
+    # land after it, so a retry would race that work exactly like the
+    # thread-abandonment case (adversarial review demonstrated duplicates
+    # even against a sequentially-deduping adapter).
+    it 'surfaces a cooperative timeout through the existing no-retry error path' do
       attempts = 0
       ensure_ran = false
       store = inline_store_class do |_k, _entries|
@@ -229,45 +216,40 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
         end.to output(/flush failed/).to_stderr
       end.wait
 
-      expect(attempts).to eq(ClaudeAgentSDK::TranscriptMirrorBatcher::MIRROR_APPEND_MAX_ATTEMPTS)
+      expect(attempts).to eq(1) # timeout -> not retried
       expect(ensure_ran).to be(true)
       expect(errors.length).to eq(1)
       expect(errors.first[1]).to match(/timed out/)
       expect(b.batches_dropped?).to be(true)
     end
 
-    # The retry is what heals a half-applied cancelled append: the full
-    # batch is re-sent and uuid dedupe absorbs the overlap.
-    it 'heals a half-applied cancelled append on the retry without duplicating entries' do
-      attempts = 0
-      store = deduping_inline_store_class.new
+    # A cancelled append may remain permanently half-applied in the store.
+    # That is the documented trade: the drop is surfaced (error callback +
+    # batches_dropped?) and the local transcript stays the source of truth.
+    it 'surfaces a permanently half-applied cancelled append as a dropped batch' do
+      store = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+        def callback_scheduling = :inline
+      end.new
       underlying_append = store.method(:append)
       store.define_singleton_method(:append) do |k, entries|
-        attempts += 1
-        if attempts == 1
-          # First attempt: persist only the first entry, then park until
-          # the cooperative timeout cancels us mid-batch.
-          underlying_append.call(k, entries.take(1))
-          sleep(5)
-        else
-          underlying_append.call(k, entries)
-        end
+        # Persist only the first entry, then park until cancelled mid-batch.
+        underlying_append.call(k, entries.take(1))
+        sleep(5)
       end
 
+      b = nil
       Async do
         b = ClaudeAgentSDK::TranscriptMirrorBatcher.new(store: store, projects_dir: projects,
                                                         on_error: on_error, send_timeout: 0.05)
-        b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'u1' }, { 'type' => 'assistant', 'uuid' => 'u2' }])
-        b.flush
+        expect do
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'u1' }, { 'type' => 'assistant', 'uuid' => 'u2' }])
+          b.flush
+        end.to output(/flush failed/).to_stderr
       end.wait
 
-      expect(attempts).to eq(2)
-      expect(errors).to be_empty
-      # Exact equality, not include: the retry re-sends the full batch, and
-      # the mandatory-for-inline uuid dedupe must absorb the overlap — a
-      # duplicated u1 here is the silent-corruption case the contract
-      # forbids.
-      expect(store.load(key).map { |e| e['uuid'] }).to eq(%w[u1 u2])
+      expect(store.load(key).map { |e| e['uuid'] }).to eq(%w[u1]) # half-applied, not retried
+      expect(errors.length).to eq(1)
+      expect(b.batches_dropped?).to be(true)
     end
 
     it 'keeps an undeclared store on a scheduler-free worker thread' do
@@ -361,26 +343,16 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
   end
 
   describe 'conformance kit contract 17' do
-    it 'passes for a deduping declaring adapter and for a non-declaring adapter' do
+    it 'passes for a declaring adapter and for a non-declaring adapter' do
+      declaring = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+        def callback_scheduling = :inline
+      end
       expect do
-        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { deduping_inline_store_class.new })
+        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { declaring.new })
       end.not_to raise_error
       expect do
         ClaudeAgentSDK::Testing.run_session_store_conformance(-> { ClaudeAgentSDK::InMemorySessionStore.new })
       end.not_to raise_error
-    end
-
-    # Contract 17b: uuid dedupe is MANDATORY for :inline declarers (inline
-    # timeouts are retried with full-batch re-sends — a non-deduping inline
-    # adapter silently duplicates the landed part of a half-applied append),
-    # while staying advisory/opt-in for thread-mode adapters.
-    it 'fails a non-deduping :inline declarer on the dedupe contract' do
-      non_deduping = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
-        def callback_scheduling = :inline
-      end
-      expect do
-        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { non_deduping.new })
-      end.to raise_error(ClaudeAgentSDK::Testing::ConformanceError, /dedupe by entry uuid/)
     end
 
     it 'fails for a bad declarer' do

@@ -203,16 +203,14 @@ Declaring `:inline` means the calls run in place on the reactor fiber under a
   that worker **and** the cooperative timeout cannot fire while it blocks.
 - Cancellation semantics change: a timed-out call is interrupted at its next
   suspension point and its `ensure` blocks run, instead of being abandoned on
-  a thread. The interrupted append may therefore be **half-applied**.
-- Timeout retries: because the cancellation is definite (nothing remains in
-  flight, unlike an abandoned thread), the mirror batcher **retries** inline
-  timeouts like any other failure — the retry re-sends the full batch and
-  heals a half-applied write. This makes **dedupe by `entry['uuid']`
-  mandatory** for `:inline` declarers (it stays advisory for thread-mode
-  adapters): without it, the already-landed part of a half-applied append is
-  silently duplicated on retry. The conformance kit enforces this
-  unconditionally for declaring adapters. (Thread-mode timeouts remain
-  non-retried: the abandoned call may still land.)
+  a thread. The cancellation reaches only the adapter's **own fiber** — work
+  the adapter offloaded (descendant tasks, an already-issued remote write)
+  may still land afterwards. Timed-out appends are therefore **not retried**
+  (same as thread mode; a retry would race that still-landing work), and the
+  interrupted append may remain permanently **half-applied** in the store.
+  The drop is surfaced like every dropped batch — `MirrorErrorMessage` on
+  the stream, `batches_dropped?` on the batcher — and the local transcript
+  remains the source of truth, so nothing is lost from the session itself.
 
 Anything other than `:thread`/`:inline` raises `ArgumentError` when the
 session is set up; without a reactor the hard thread-hop bound still applies

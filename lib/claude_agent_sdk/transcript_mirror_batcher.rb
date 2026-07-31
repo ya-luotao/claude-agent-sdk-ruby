@@ -31,10 +31,11 @@ module ClaudeAgentSDK
   # must be thread-safe per key (see that method's contract). For adapters
   # declaring `callback_scheduling -> :inline` the timed-out call is instead
   # cancelled cooperatively (interrupted at its next suspension point, ensure
-  # runs) — the cancellation is definite, so unlike thread mode the timeout
-  # IS retried, and a HALF-applied cancelled append is healed by the retry
-  # re-sending the full batch (the dedupe-by-entry-uuid recommendation
-  # absorbs the overlap).
+  # runs) — but only on the adapter's own fiber; work the adapter offloaded
+  # may still land, so timeouts are not retried in either mode and the
+  # cancelled append may remain permanently HALF-applied in the store. The
+  # drop is surfaced (MirrorErrorMessage, batches_dropped?); the local
+  # transcript remains the source of truth.
   class TranscriptMirrorBatcher
     # Eager-flush thresholds (exposed for tests).
     MAX_PENDING_ENTRIES = 500
@@ -212,18 +213,20 @@ module ClaudeAgentSDK
           succeeded = true
           break
         when :timeout
+          # Don't retry on timeout — in EITHER mode. Thread mode: the
+          # abandoned in-flight call may still land, so a retry would launch
+          # a concurrent duplicate. Inline mode: cooperative cancellation
+          # interrupts only the adapter's own fiber — work the adapter
+          # itself offloaded (descendant tasks, an already-issued remote
+          # write) may still land after the cancellation, so a retry races
+          # it exactly like the thread case (adversarially demonstrated in
+          # review: a dedupe-conforming adapter still persisted duplicates).
+          # Uniform no-retry also bounds worst-case lock hold at
+          # ~send_timeout. The dropped batch is surfaced (MirrorErrorMessage,
+          # batches_dropped?) and the local transcript remains the source of
+          # truth.
           last_err = err
-          # Thread mode: don't retry — the abandoned in-flight call may
-          # still land, so a retry would launch a concurrent duplicate; it
-          # also bounds worst-case lock hold at ~send_timeout. Inline mode:
-          # the cooperative cancellation is DEFINITE (the call was
-          # interrupted at a suspension point; nothing remains in flight),
-          # so a timeout is retryable like any other failure — which also
-          # closes the half-applied-append gap: the retry re-sends the full
-          # batch and the adapter's uuid dedupe absorbs the overlap.
-          # Worst-case lock hold grows to ~attempts x send_timeout plus
-          # backoffs, still bounded.
-          break unless @store_scheduling == :inline
+          break
         else # :error — retryable
           last_err = err
         end
@@ -243,9 +246,9 @@ module ClaudeAgentSDK
     # best-effort; the in-flight call may still land) and not retried. An
     # adapter declaring `callback_scheduling -> :inline` instead runs in
     # place on the reactor under a cooperative timeout (interrupted at its
-    # next suspension point, ensure blocks run) — same JoinTimeout contract,
-    # but the definite cancellation makes the timeout retryable (see
-    # append_with_retry).
+    # next suspension point, ensure blocks run) — same JoinTimeout contract
+    # and same no-retry semantics (see append_with_retry: offloaded work
+    # may outlive the cancellation).
     def invoke_append(key, entries)
       FiberBoundary.invoke(timeout: @send_timeout, scheduling: @store_scheduling) { @store.append(key, entries) }
       [:ok, nil]
