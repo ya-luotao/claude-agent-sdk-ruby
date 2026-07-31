@@ -63,13 +63,14 @@ module ClaudeAgentSDK
     end
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
-                   exclude_dynamic_sections: nil, skills: nil, callback_scheduling: :thread)
+                   exclude_dynamic_sections: nil, skills: nil, callback_scheduling: :thread, callback_wrapper: nil)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
       @hooks = hooks || {}
       @sdk_mcp_servers = sdk_mcp_servers || {}
       @callback_scheduling = callback_scheduling || :thread
+      @callback_wrapper = callback_wrapper
       @agents = agents
       @exclude_dynamic_sections = exclude_dynamic_sections
       @skills = skills
@@ -570,7 +571,7 @@ module ClaudeAgentSDK
       # with callback_scheduling: :inline it runs in place on this control-
       # request task, where control_cancel_request (task.stop) can actually
       # cancel it at suspension points.
-      response = FiberBoundary.invoke(scheduling: @callback_scheduling) do
+      response = FiberBoundary.invoke(scheduling: @callback_scheduling, wrapper: @callback_wrapper) do
         @can_use_tool.call(request_data[:tool_name], request_data[:input], context)
       end
 
@@ -615,7 +616,7 @@ module ClaudeAgentSDK
       # suspension point and its ensure blocks run (Python parity — anyio
       # cancels the coroutine). A CPU-stuck inline hook cannot be timed out.
       unless @hook_callback_timeouts[callback_id]
-        hook_output = FiberBoundary.invoke(scheduling: @callback_scheduling) do
+        hook_output = FiberBoundary.invoke(scheduling: @callback_scheduling, wrapper: @callback_wrapper) do
           callback.call(hook_input, request_data[:tool_use_id], context)
         end
       end
@@ -629,10 +630,13 @@ module ClaudeAgentSDK
             # convert the expired hook into a success (or keep running past
             # the deadline). Inject a non-StandardError cancellation
             # instead, translated back once control leaves user code so the
-            # outward contract (Async::TimeoutError) is unchanged.
+            # outward contract (Async::TimeoutError) is unchanged. The
+            # wrapper composes INSIDE with_timeout, and the cancellation
+            # passes through it un-swallowed (InlineCancellation is not a
+            # StandardError, so a wrapper's ordinary rescue can't eat it).
             begin
               Async::Task.current.with_timeout(timeout, FiberBoundary::InlineCancellation) do
-                FiberBoundary.invoke(scheduling: :inline) do
+                FiberBoundary.invoke(scheduling: :inline, wrapper: @callback_wrapper) do
                   callback.call(hook_input, request_data[:tool_use_id], context)
                 end
               end
@@ -641,7 +645,7 @@ module ClaudeAgentSDK
             end
           else
             Async::Task.current.with_timeout(timeout) do
-              FiberBoundary.invoke do
+              FiberBoundary.invoke(wrapper: @callback_wrapper) do
                 callback.call(hook_input, request_data[:tool_use_id], context)
               end
             end
@@ -994,10 +998,11 @@ module ClaudeAgentSDK
     end
 
     def handle_sdk_mcp_request(server_name, message)
-      # Carry this session's scheduling mode across the dispatch into the
-      # (possibly session-shared) SdkMcpServer via fiber storage — set on
-      # the dispatching fiber, read back by the server's handlers at invoke
-      # time (see SdkMcpServer#effective_callback_scheduling). Fiber
+      # Carry this session's scheduling mode and callback wrapper across the
+      # dispatch into the (possibly session-shared) SdkMcpServer via fiber
+      # storage — set on the dispatching fiber, read back by the server's
+      # handlers at invoke time (see
+      # SdkMcpServer#effective_callback_scheduling / _wrapper). Fiber
       # storage is per-fiber, so concurrent sessions cannot see each
       # other's value even across suspension points. The value is a
       # closable SchedulingScope, closed + restored in the ensure below:
@@ -1008,7 +1013,7 @@ module ClaudeAgentSDK
       # into later direct server calls, and nothing stays stamped on
       # long-lived fibers.
       previous_scheduling = Fiber[FiberBoundary::SCHEDULING_KEY]
-      dispatch_scope = FiberBoundary::SchedulingScope.new(@callback_scheduling)
+      dispatch_scope = FiberBoundary::SchedulingScope.new(@callback_scheduling, @callback_wrapper)
       Fiber[FiberBoundary::SCHEDULING_KEY] = dispatch_scope
 
       # Convert server_name to symbol if needed for hash lookup

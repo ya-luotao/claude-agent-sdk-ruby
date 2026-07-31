@@ -84,9 +84,9 @@ module ClaudeAgentSDK
   # Each observer is invoked through FiberBoundary so that user code runs
   # on a plain thread (no Fiber scheduler) even when called from inside
   # the SDK's Async reactor — or in place when scheduling is :inline.
-  def self.notify_observers(observers, method, *args, scheduling: :thread)
+  def self.notify_observers(observers, method, *args, scheduling: :thread, wrapper: nil)
     observers.each do |obs|
-      FiberBoundary.invoke(scheduling: scheduling) { obs.send(method, *args) }
+      FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) { obs.send(method, *args) }
     rescue StandardError, ScriptError
       # ScriptError too: NotImplementedError < ScriptError (not
       # StandardError), and a stubbed observer must never mask the original
@@ -187,13 +187,13 @@ module ClaudeAgentSDK
   # Wrap a streaming-input enumerable so observers get on_user_prompt for
   # each user message before it is written to stdin. Identity when no
   # observers are configured.
-  def self.observing_prompt_stream(prompt, observers, scheduling: :thread)
+  def self.observing_prompt_stream(prompt, observers, scheduling: :thread, wrapper: nil)
     return prompt if observers.empty?
 
     Enumerator.new do |yielder|
       prompt.each do |message|
         text = extract_user_prompt_text(message)
-        notify_observers(observers, :on_user_prompt, text, scheduling: scheduling) if text
+        notify_observers(observers, :on_user_prompt, text, scheduling: scheduling, wrapper: wrapper) if text
         yielder << message
       end
     end
@@ -461,8 +461,10 @@ module ClaudeAgentSDK
     # Resolve callable observers into fresh instances (thread-safe for global defaults)
     resolved_observers = ClaudeAgentSDK.resolve_observers(configured_options.observers)
 
-    # Where user callbacks run (see ClaudeAgentOptions#callback_scheduling).
+    # Where user callbacks run (see ClaudeAgentOptions#callback_scheduling)
+    # and the middleware wrapped around them (#callback_wrapper).
     callback_scheduling = configured_options.callback_scheduling || :thread
+    callback_wrapper = configured_options.callback_wrapper
     ClaudeAgentSDK.check_inline_isolation(callback_scheduling)
 
     raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)' if transport && !transport.respond_to?(:connect)
@@ -525,7 +527,8 @@ module ClaudeAgentSDK
           sdk_mcp_servers: sdk_mcp_servers,
           exclude_dynamic_sections: ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt),
           skills: configured_options.skills,
-          callback_scheduling: callback_scheduling
+          callback_scheduling: callback_scheduling,
+          callback_wrapper: callback_wrapper
         )
 
         # Mirror transcripts to the session_store, if configured. Installed
@@ -549,7 +552,8 @@ module ClaudeAgentSDK
 
         # Send prompt(s) as user messages, then close stdin
         if prompt.is_a?(String)
-          ClaudeAgentSDK.notify_observers(resolved_observers, :on_user_prompt, prompt, scheduling: callback_scheduling)
+          ClaudeAgentSDK.notify_observers(resolved_observers, :on_user_prompt, prompt,
+                                          scheduling: callback_scheduling, wrapper: callback_wrapper)
           message = {
             type: 'user',
             message: { role: 'user', content: prompt },
@@ -567,7 +571,8 @@ module ClaudeAgentSDK
           # here kept the root reactor alive forever when the read loop died
           # while the user enumerator was still blocked (matches Python's
           # query.spawn_task(query.stream_input(prompt))).
-          observed_prompt = ClaudeAgentSDK.observing_prompt_stream(prompt, resolved_observers, scheduling: callback_scheduling)
+          observed_prompt = ClaudeAgentSDK.observing_prompt_stream(prompt, resolved_observers,
+                                                                   scheduling: callback_scheduling, wrapper: callback_wrapper)
           query_handler.spawn_task { query_handler.stream_input(observed_prompt) }
         end
 
@@ -579,8 +584,10 @@ module ClaudeAgentSDK
           message = MessageParser.parse(data)
           next unless message
 
-          ClaudeAgentSDK.notify_observers(resolved_observers, :on_message, message, scheduling: callback_scheduling)
-          signal = FiberBoundary.invoke_iteration(block, message, scheduling: callback_scheduling)
+          ClaudeAgentSDK.notify_observers(resolved_observers, :on_message, message,
+                                          scheduling: callback_scheduling, wrapper: callback_wrapper)
+          signal = FiberBoundary.invoke_iteration(block, message, scheduling: callback_scheduling,
+                                                                  wrapper: callback_wrapper)
           break signal.value if signal.is_a?(FiberBoundary::Break)
         end
       rescue StandardError => e
@@ -589,10 +596,12 @@ module ClaudeAgentSDK
         # parse errors, and user-block errors. StandardError only: Async::Stop
         # is cancellation, not an error. Bare raise preserves the backtrace;
         # the ensure below still fires on_close after on_error.
-        ClaudeAgentSDK.notify_observers(resolved_observers, :on_error, e, scheduling: callback_scheduling)
+        ClaudeAgentSDK.notify_observers(resolved_observers, :on_error, e,
+                                        scheduling: callback_scheduling, wrapper: callback_wrapper)
         raise
       ensure
-        ClaudeAgentSDK.notify_observers(resolved_observers, :on_close, scheduling: callback_scheduling)
+        ClaudeAgentSDK.notify_observers(resolved_observers, :on_close,
+                                        scheduling: callback_scheduling, wrapper: callback_wrapper)
         # query_handler.close stops the background read task and closes the
         # transport (flushing the mirror batcher first). Fall back to a bare
         # transport close when the handler was never built.
@@ -663,6 +672,7 @@ module ClaudeAgentSDK
     def initialize(options: nil, transport_class: SubprocessCLITransport, transport_args: {})
       @options = options || ClaudeAgentOptions.new
       @callback_scheduling = @options.callback_scheduling || :thread
+      @callback_wrapper = @options.callback_wrapper
       @transport_class = transport_class
       @transport_args = transport_args
       @transport = nil
@@ -799,7 +809,8 @@ module ClaudeAgentSDK
 
       begin
         if prompt.is_a?(String)
-          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, prompt, scheduling: @callback_scheduling)
+          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, prompt,
+                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
           message = {
             type: 'user',
             message: { role: 'user', content: prompt },
@@ -840,8 +851,10 @@ module ClaudeAgentSDK
           message = MessageParser.parse(data)
           next unless message
 
-          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message, scheduling: @callback_scheduling)
-          signal = FiberBoundary.invoke_iteration(block, message, scheduling: @callback_scheduling)
+          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message,
+                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+          signal = FiberBoundary.invoke_iteration(block, message, scheduling: @callback_scheduling,
+                                                                  wrapper: @callback_wrapper)
           break signal.value if signal.is_a?(FiberBoundary::Break)
         end
       rescue StandardError => e
@@ -866,8 +879,10 @@ module ClaudeAgentSDK
           message = MessageParser.parse(data)
           next unless message
 
-          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message, scheduling: @callback_scheduling)
-          signal = FiberBoundary.invoke_iteration(block, message, scheduling: @callback_scheduling)
+          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message,
+                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+          signal = FiberBoundary.invoke_iteration(block, message, scheduling: @callback_scheduling,
+                                                                  wrapper: @callback_wrapper)
           break signal.value if signal.is_a?(FiberBoundary::Break)
           break if message.is_a?(ResultMessage)
         end
@@ -959,7 +974,10 @@ module ClaudeAgentSDK
 
     # Disconnect from Claude
     def disconnect
-      ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close, scheduling: @callback_scheduling) if @connected
+      if @connected
+        ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close,
+                                        scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+      end
       # Tear down whatever exists — robust to a partial/failed connect, where
       # @connected is still false but a transport and/or materialized temp dir
       # were already created. #close on the query handler also closes the
@@ -1046,7 +1064,8 @@ module ClaudeAgentSDK
         agents: configured_options.agents,
         exclude_dynamic_sections: exclude_dynamic_sections,
         skills: configured_options.skills,
-        callback_scheduling: @callback_scheduling
+        callback_scheduling: @callback_scheduling,
+        callback_wrapper: @callback_wrapper
       )
 
       # Mirror transcripts to the session_store, if configured.
@@ -1077,7 +1096,8 @@ module ClaudeAgentSDK
         # Observer#on_error contract; notifying a swallowed error would mark
         # a still-live OTel trace as failed). Same behavior as query()'s
         # streaming path.
-        observed = ClaudeAgentSDK.observing_prompt_stream(prompt, @resolved_observers, scheduling: @callback_scheduling)
+        observed = ClaudeAgentSDK.observing_prompt_stream(prompt, @resolved_observers,
+                                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
         @query_handler.spawn_task { @query_handler.stream_input(observed) }
       end
     end
@@ -1094,12 +1114,14 @@ module ClaudeAgentSDK
         when Hash
           msg = msg.merge(session_id: session_id) unless msg.key?(:session_id) || msg.key?('session_id')
           if (text = ClaudeAgentSDK.extract_user_prompt_text(msg))
-            ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text, scheduling: @callback_scheduling)
+            ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text,
+                                            scheduling: @callback_scheduling, wrapper: @callback_wrapper)
           end
           writeln(JSON.generate(msg))
         when String
           if (text = ClaudeAgentSDK.extract_user_prompt_text(msg))
-            ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text, scheduling: @callback_scheduling)
+            ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text,
+                                            scheduling: @callback_scheduling, wrapper: @callback_wrapper)
           end
           writeln(msg)
         else
@@ -1113,7 +1135,8 @@ module ClaudeAgentSDK
     # Notify observers of an error surfacing to the consumer. `|| []` keeps a
     # mis-scoped call before connect harmless instead of NoMethodError on nil.
     def notify_error(error)
-      ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_error, error, scheduling: @callback_scheduling)
+      ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_error, error,
+                                      scheduling: @callback_scheduling, wrapper: @callback_wrapper)
     end
 
     # Build and install the transcript-mirror batcher on the query handler when

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`ClaudeAgentOptions#callback_wrapper`** (#47 phase 2): optional middleware wrapped around every user-callback dispatch (message blocks, observers, hooks, permission callbacks, SDK MCP handlers). A callable receiving a zero-arg invocation that it must call and return: `callback_wrapper: ->(inv) { Rails.application.executor.wrap { inv.call } }`. The wrapper runs on the same execution context as the callback — inside the worker thread in the default `:thread` mode (so `executor.wrap` checks ActiveRecord connections back in when the callback ends, retiring the stranded-connection workaround without adopting `:inline`), in place on the reactor fiber in `:inline` mode. Exceptions propagate through it unchanged. Also settable per SDK MCP server for direct calls (`server.callback_wrapper=`); session dispatches carry the session's wrapper via the same fiber-storage scope as `callback_scheduling`. See "Rails executor around callbacks" in docs/rails.md.
+
 ## [0.25.0] - 2026-07-31
 
 ### Added

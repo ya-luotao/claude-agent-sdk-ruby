@@ -1576,7 +1576,7 @@ module ClaudeAgentSDK
     attr_reader :bare, :fork_session, :enable_file_checkpointing,
                 :include_partial_messages, :continue_conversation,
                 :include_hook_events, :strict_mcp_config,
-                :callback_scheduling
+                :callback_scheduling, :callback_wrapper
 
     def initialize(attributes = {})
       self.fork_session = false
@@ -1702,6 +1702,24 @@ module ClaudeAgentSDK
       end
 
       @callback_scheduling = mode
+    end
+
+    # Middleware wrapped around EVERY user-callback dispatch (message
+    # blocks, observers, hooks, permission callbacks, SDK MCP handlers).
+    # A callable receiving a zero-arg invocation; it MUST call it and
+    # return its value:
+    #
+    #   callback_wrapper: ->(invocation) { Rails.application.executor.wrap { invocation.call } }
+    #
+    # The wrapper runs on the same execution context as the callback —
+    # inside the worker thread in :thread mode (so executor.wrap checks AR
+    # connections back in when the callback ends), in place on the reactor
+    # fiber in :inline mode. Exceptions propagate through it unchanged; it
+    # must not swallow them. Default nil (no wrapping).
+    def callback_wrapper=(value)
+      raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})" unless value.nil? || value.respond_to?(:call)
+
+      @callback_wrapper = value
     end
 
     private
