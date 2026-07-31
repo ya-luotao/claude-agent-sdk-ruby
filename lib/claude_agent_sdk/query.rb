@@ -63,12 +63,13 @@ module ClaudeAgentSDK
     end
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
-                   exclude_dynamic_sections: nil, skills: nil)
+                   exclude_dynamic_sections: nil, skills: nil, callback_scheduling: :thread)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
       @hooks = hooks || {}
       @sdk_mcp_servers = sdk_mcp_servers || {}
+      @callback_scheduling = callback_scheduling || :thread
       @agents = agents
       @exclude_dynamic_sections = exclude_dynamic_sections
       @skills = skills
@@ -564,9 +565,12 @@ module ClaudeAgentSDK
         description: request_data[:description]
       )
 
-      # User-supplied permission callback runs on a plain thread, not the
-      # Async reactor, so AR/PG calls inside it aren't intercepted.
-      response = FiberBoundary.invoke do
+      # User-supplied permission callback runs on a plain thread by default,
+      # so AR/PG calls inside it aren't intercepted by the Fiber scheduler;
+      # with callback_scheduling: :inline it runs in place on this control-
+      # request task, where control_cancel_request (task.stop) can actually
+      # cancel it at suspension points.
+      response = FiberBoundary.invoke(scheduling: @callback_scheduling) do
         @can_use_tool.call(request_data[:tool_name], request_data[:input], context)
       end
 
@@ -602,22 +606,46 @@ module ClaudeAgentSDK
       # Create typed HookContext
       context = HookContext.new(signal: nil)
 
-      # Hop off the Fiber scheduler before invoking user hook code. The
-      # Async-side timeout still wraps the hop; if it fires, .value returns
-      # early with an exception and the worker thread is left to finish on
-      # its own (matches prior best-effort cancellation semantics).
+      # Hop off the Fiber scheduler before invoking user hook code (default
+      # :thread mode). With a timeout, the Async-side with_timeout wraps the
+      # hop; if it fires, .value returns early with an exception and the
+      # worker thread is left to finish on its own (best-effort abandonment).
+      # In :inline mode the callback runs in place, so with_timeout becomes
+      # genuine cooperative cancellation: the hook is interrupted at its next
+      # suspension point and its ensure blocks run (Python parity — anyio
+      # cancels the coroutine). A CPU-stuck inline hook cannot be timed out.
       unless @hook_callback_timeouts[callback_id]
-        hook_output = FiberBoundary.invoke do
+        hook_output = FiberBoundary.invoke(scheduling: @callback_scheduling) do
           callback.call(hook_input, request_data[:tool_use_id], context)
         end
       end
 
       if (timeout = @hook_callback_timeouts[callback_id])
-        hook_output = Async::Task.current.with_timeout(timeout) do
-          FiberBoundary.invoke do
-            callback.call(hook_input, request_data[:tool_use_id], context)
+        hook_output =
+          if @callback_scheduling == :inline
+            # The timeout exception is raised INSIDE user code here, and
+            # Async::TimeoutError is a StandardError — a hook's ordinary
+            # `rescue StandardError` would swallow the cancellation and
+            # convert the expired hook into a success (or keep running past
+            # the deadline). Inject a non-StandardError cancellation
+            # instead, translated back once control leaves user code so the
+            # outward contract (Async::TimeoutError) is unchanged.
+            begin
+              Async::Task.current.with_timeout(timeout, FiberBoundary::InlineCancellation) do
+                FiberBoundary.invoke(scheduling: :inline) do
+                  callback.call(hook_input, request_data[:tool_use_id], context)
+                end
+              end
+            rescue FiberBoundary::InlineCancellation
+              raise Async::TimeoutError, 'execution expired'
+            end
+          else
+            Async::Task.current.with_timeout(timeout) do
+              FiberBoundary.invoke do
+                callback.call(hook_input, request_data[:tool_use_id], context)
+              end
+            end
           end
-        end
       end
 
       # Convert Ruby-safe field names to CLI-expected names
@@ -966,6 +994,23 @@ module ClaudeAgentSDK
     end
 
     def handle_sdk_mcp_request(server_name, message)
+      # Carry this session's scheduling mode across the dispatch into the
+      # (possibly session-shared) SdkMcpServer via fiber storage — set on
+      # the dispatching fiber, read back by the server's handlers at invoke
+      # time (see SdkMcpServer#effective_callback_scheduling). Fiber
+      # storage is per-fiber, so concurrent sessions cannot see each
+      # other's value even across suspension points. The value is a
+      # closable SchedulingScope, closed + restored in the ensure below:
+      # fibers/threads created during the dispatch inherit the same scope
+      # OBJECT (storage inheritance copies the hash, shares references), so
+      # closing it invalidates the mode for every inheritor at once — a
+      # child task that outlives the dispatch cannot carry the session mode
+      # into later direct server calls, and nothing stays stamped on
+      # long-lived fibers.
+      previous_scheduling = Fiber[FiberBoundary::SCHEDULING_KEY]
+      dispatch_scope = FiberBoundary::SchedulingScope.new(@callback_scheduling)
+      Fiber[FiberBoundary::SCHEDULING_KEY] = dispatch_scope
+
       # Convert server_name to symbol if needed for hash lookup
       server_key = @sdk_mcp_servers.key?(server_name) ? server_name : server_name.to_sym
 
@@ -1014,6 +1059,9 @@ module ClaudeAgentSDK
         id: message[:id],
         error: { code: -32603, message: e.message }
       }
+    ensure
+      dispatch_scope&.close
+      Fiber[FiberBoundary::SCHEDULING_KEY] = previous_scheduling
     end
 
     def handle_mcp_initialize(server, message)

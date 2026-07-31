@@ -1575,7 +1575,8 @@ module ClaudeAgentSDK
                   :session_store, :session_store_flush, :load_timeout_ms
     attr_reader :bare, :fork_session, :enable_file_checkpointing,
                 :include_partial_messages, :continue_conversation,
-                :include_hook_events, :strict_mcp_config
+                :include_hook_events, :strict_mcp_config,
+                :callback_scheduling
 
     def initialize(attributes = {})
       self.fork_session = false
@@ -1598,6 +1599,7 @@ module ClaudeAgentSDK
       self.session_store_flush ||= 'batched'
       # 0 is a valid (immediate) timeout, so only fill in the default for nil.
       self.load_timeout_ms = 60_000 if load_timeout_ms.nil?
+      self.callback_scheduling = :thread if callback_scheduling.nil?
     end
 
     def dup_with(**changes)
@@ -1669,6 +1671,37 @@ module ClaudeAgentSDK
 
     def strict_mcp_config=(value)
       @strict_mcp_config = coerce_boolean(value)
+    end
+
+    CALLBACK_SCHEDULING_MODES = %i[thread inline].freeze
+
+    # Where user callbacks (hooks, can_use_tool, SDK MCP handlers, message
+    # blocks, observers) run when the SDK is hosted inside an Async reactor:
+    #   :thread (default) — each callback hops to a plain thread, so
+    #     thread-keyed libraries (ActiveRecord, pg, ...) behave as usual.
+    #   :inline — callbacks run in place on the reactor fiber. Only for
+    #     hosts that are fiber-isolated end to end (e.g. solid_queue fiber
+    #     workers with IsolatedExecutionState.isolation_level = :fiber).
+    #     Scheduler-opaque blocking (CPU-bound work, GVL-holding C
+    #     extensions) then stalls the whole reactor — wrap GVL-releasing
+    #     blocking and Ruby CPU work in ClaudeAgentSDK.offload { }; work
+    #     that holds the GVL throughout needs a subprocess.
+    # Named after the mechanism, not a safety claim: whether inline is safe
+    # depends on the host satisfying the fiber-isolation precondition.
+    def callback_scheduling=(value)
+      if value.nil?
+        @callback_scheduling = nil
+        return
+      end
+
+      mode = value.respond_to?(:to_sym) ? value.to_sym : value
+      unless CALLBACK_SCHEDULING_MODES.include?(mode)
+        raise ArgumentError,
+              "callback_scheduling must be one of #{CALLBACK_SCHEDULING_MODES.map(&:inspect).join(', ')} " \
+              "(got #{value.inspect})"
+      end
+
+      @callback_scheduling = mode
     end
 
     private

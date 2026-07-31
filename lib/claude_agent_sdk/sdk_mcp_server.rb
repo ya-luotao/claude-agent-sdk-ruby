@@ -81,12 +81,35 @@ module ClaudeAgentSDK
   class SdkMcpServer
     attr_reader :name, :version, :tools, :resources, :prompts, :mcp_server
 
+    # Default for where user handlers run when this server is invoked
+    # DIRECTLY (call_tool / read_resource / get_prompt outside a session):
+    # :thread hops to a plain thread, :inline runs in place. When a session
+    # dispatches to this server, the session's own mode arrives via fiber
+    # storage instead (see #effective_callback_scheduling) — a server
+    # shared by concurrent sessions with different modes is never mutated,
+    # so modes cannot cross-contaminate or persist past a session.
+    attr_accessor :callback_scheduling
+
+    # Internal — public only so the dynamic tool classes can reach it. The
+    # scheduling mode for the current invocation: the dispatching session's
+    # mode (a live SchedulingScope in fiber storage, set by Query around
+    # the dispatch) when present, else this server's own default. A scope
+    # inherited from an already-finished dispatch is closed and
+    # deliberately ignored — a child task spawned inside a handler must not
+    # carry the session mode into later direct calls.
+    # @api private
+    def effective_callback_scheduling
+      scope = Fiber[FiberBoundary::SCHEDULING_KEY]
+      scope&.active? ? scope.mode : @callback_scheduling
+    end
+
     def initialize(name:, version: '1.0.0', tools: [], resources: [], prompts: [])
       @name = name
       @version = version
       @tools = tools
       @resources = resources
       @prompts = prompts
+      @callback_scheduling = :thread
 
       # Create dynamic Tool classes from tool definitions
       tool_classes = create_tool_classes(tools)
@@ -171,9 +194,10 @@ module ClaudeAgentSDK
       tool = @tools.find { |t| t.name == name }
       return error_tool_result("Tool '#{name}' not found") unless tool
 
-      # Call the tool's handler on a plain thread so the async gem's
-      # Fiber scheduler is not visible to user code (which may hit AR/PG).
-      result = FiberBoundary.invoke { tool.handler.call(arguments) }
+      # Call the tool's handler on a plain thread (default) so the async
+      # gem's Fiber scheduler is not visible to user code (which may hit
+      # AR/PG); in :inline mode it runs in place on the reactor fiber.
+      result = FiberBoundary.invoke(scheduling: effective_callback_scheduling) { tool.handler.call(arguments) }
 
       # Guard before flexible_fetch: it raises on non-Hash inputs.
       content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "content", "content") : nil
@@ -208,7 +232,7 @@ module ClaudeAgentSDK
       # Hop off the Fiber scheduler before invoking user code — same reason
       # as `call_tool` above: reader blocks may touch Thread.current-keyed
       # libraries (ActiveRecord, pg, ...) and must run on a plain thread.
-      content = FiberBoundary.invoke { resource.reader.call }
+      content = FiberBoundary.invoke(scheduling: effective_callback_scheduling) { resource.reader.call }
 
       # Ensure content has the expected format (symbol or string keys; guard
       # before flexible_fetch — it raises on non-Hash inputs)
@@ -240,7 +264,7 @@ module ClaudeAgentSDK
 
       # Hop off the Fiber scheduler before invoking user code — same reason
       # as `call_tool` above.
-      result = FiberBoundary.invoke { prompt.generator.call(arguments) }
+      result = FiberBoundary.invoke(scheduling: effective_callback_scheduling) { prompt.generator.call(arguments) }
 
       # Ensure result has the expected format (symbol or string keys)
       messages = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "messages", "messages") : nil
@@ -281,10 +305,14 @@ module ClaudeAgentSDK
 
     # Create dynamic Tool classes from tool definitions
     def create_tool_classes(tools)
+      # Captured so the dynamic class can resolve the effective scheduling
+      # mode at call time — same pattern as prompt classes.
+      sdk_server = self
       tools.map do |tool_def|
         # Create a new class that extends MCP::Tool
         Class.new(MCP::Tool) do
           @tool_def = tool_def
+          @sdk_server = sdk_server
 
           class << self
             attr_reader :tool_def
@@ -335,8 +363,11 @@ module ClaudeAgentSDK
 
             def call(server_context: nil, **args)
               # Filter out server_context and pass remaining args to handler.
-              # Hop to a plain thread so user handlers don't see the Fiber scheduler.
-              result = FiberBoundary.invoke { @tool_def.handler.call(args) }
+              # Hop to a plain thread (default) so user handlers don't see
+              # the Fiber scheduler; :inline runs in place on the reactor.
+              result = FiberBoundary.invoke(scheduling: @sdk_server.effective_callback_scheduling) do
+                @tool_def.handler.call(args)
+              end
 
               # Guard BEFORE flexible_fetch: on a non-Hash it raises
               # TypeError/NoMethodError, surfacing garbage instead of the
