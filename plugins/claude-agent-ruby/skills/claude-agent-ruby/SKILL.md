@@ -29,7 +29,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
   - Auth: `AuthStatusMessage` (isAuthenticating, output, error)
   - Files: `FilesPersistedMessage` (files, failed, processed_at)
   - API: `APIRetryMessage` (attempt, max_retries, retry_delay_ms, error_status)
-  - Session store: `MirrorErrorMessage` (a SessionStore append failed after retries — session continues; local transcript stays durable)
+  - Session store: `MirrorErrorMessage` (a SessionStore append failed terminally — timeouts immediately, other failures after up to three attempts; session continues; local transcript stays durable)
   - Other: `LocalCommandOutputMessage`, `ElicitationCompleteMessage`, `PromptSuggestionMessage`
   - Unknown message types return `nil` (forward-compatible)
 - Handle content blocks: `TextBlock`, `ThinkingBlock`, `ToolUseBlock`, `ToolResultBlock`, `UnknownBlock`

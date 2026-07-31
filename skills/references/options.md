@@ -186,8 +186,9 @@ ClaudeAgentSDK.query(
   `#delete`/`#list_subkeys` optional. Copy-in S3/Redis/Postgres references live
   in `examples/session_stores/`. Validate with
   `ClaudeAgentSDK::Testing.run_session_store_conformance(-> { MyStore.new })`.
-- A failed `#append` (after 3 retries) surfaces as a `MirrorErrorMessage` on
-  the stream and never disrupts the session.
+- A terminally failed `#append` (timeouts immediately, other failures after
+  up to three attempts) surfaces as a `MirrorErrorMessage` on the stream and
+  never disrupts the session.
 - Fiber-native adapters: an adapter whose IO is entirely
   Fiber-scheduler-aware may define an optional `callback_scheduling` method
   returning `:inline` — its timeout-bounded store calls (append, load, and

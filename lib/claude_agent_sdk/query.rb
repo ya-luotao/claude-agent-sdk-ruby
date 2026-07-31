@@ -270,8 +270,9 @@ module ClaudeAgentSDK
     end
 
     # Synthesize a `mirror_error` system message and put it on the SDK message
-    # stream so consumers learn a mirror batch was dropped after exhausting
-    # retries. Non-blocking: the message queue is unbounded, so unlike the
+    # stream so consumers learn a mirror batch was dropped (timeouts
+    # immediately, other failures after up to three attempts).
+    # Non-blocking: the message queue is unbounded, so unlike the
     # Python SDK there is no buffer-full drop path.
     def report_mirror_error(key, error)
       session_id = key && (key['session_id'] || key[:session_id])
