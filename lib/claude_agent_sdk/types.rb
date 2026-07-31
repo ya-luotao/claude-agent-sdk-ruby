@@ -1683,8 +1683,9 @@ module ClaudeAgentSDK
     #     hosts that are fiber-isolated end to end (e.g. solid_queue fiber
     #     workers with IsolatedExecutionState.isolation_level = :fiber).
     #     Scheduler-opaque blocking (CPU-bound work, GVL-holding C
-    #     extensions) then stalls the whole reactor — wrap such callbacks in
-    #     ClaudeAgentSDK.offload { }.
+    #     extensions) then stalls the whole reactor — wrap GVL-releasing
+    #     blocking and Ruby CPU work in ClaudeAgentSDK.offload { }; work
+    #     that holds the GVL throughout needs a subprocess.
     # Named after the mechanism, not a safety claim: whether inline is safe
     # depends on the host satisfying the fiber-isolation precondition.
     def callback_scheduling=(value)

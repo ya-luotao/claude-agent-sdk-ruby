@@ -547,6 +547,46 @@ RSpec.describe 'Inline callback scheduling' do
 
       expect(Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY]).to be_nil
     end
+
+    # Regression (codex merge check on PR #48): fiber-storage inheritance
+    # copies the hash but shares value references, so a child task spawned
+    # INSIDE an inline handler inherits the dispatch's storage entry and
+    # keeps it after the dispatching fiber restored its own slot. The entry
+    # is therefore a closable SchedulingScope: closing it at dispatch end
+    # invalidates it for every inheritor, so a descendant that outlives the
+    # dispatch falls back to the target server's own default (:thread here)
+    # instead of running inline.
+    it 'does not leak the session mode into descendant fibers that outlive the dispatch' do
+      direct_captured = :unset
+      direct_tool = ClaudeAgentSDK.create_tool('direct_probe', 'Probe', {}) do |_args|
+        direct_captured = Fiber.scheduler
+        { content: [{ type: 'text', text: 'ok' }] }
+      end
+      direct_server = ClaudeAgentSDK::SdkMcpServer.new(name: 'direct', tools: [direct_tool])
+
+      child = nil
+      spawning_tool = ClaudeAgentSDK.create_tool('spawner', 'Spawns a background task', {}) do |_args|
+        child = Async::Task.current.async do
+          sleep 0.05 # outlive the dispatch
+          direct_server.call_tool('direct_probe', {})
+        end
+        { content: [{ type: 'text', text: 'spawned' }] }
+      end
+      session_server = ClaudeAgentSDK::SdkMcpServer.new(name: 'spawn_server', tools: [spawning_tool])
+
+      query = ClaudeAgentSDK::Query.new(
+        transport: transport, is_streaming_mode: true,
+        sdk_mcp_servers: { 'spawn_server' => session_server }, callback_scheduling: :inline
+      )
+
+      Async do
+        query.send(:handle_sdk_mcp_request, 'spawn_server',
+                   { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'spawner', arguments: {} } })
+        child.wait
+      end.wait
+
+      expect(direct_captured).to be_nil
+    end
   end
 
   describe 'SDK MCP handlers with an inline server' do

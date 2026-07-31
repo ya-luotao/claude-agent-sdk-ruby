@@ -999,14 +999,17 @@ module ClaudeAgentSDK
       # the dispatching fiber, read back by the server's handlers at invoke
       # time (see SdkMcpServer#effective_callback_scheduling). Fiber
       # storage is per-fiber, so concurrent sessions cannot see each
-      # other's value even across suspension points. RESTORED in the
-      # ensure below: child fibers inherit a copy of their creator's
-      # storage at creation, so a value left behind on a long-lived fiber
-      # (the reactor root, a test's main fiber) would be inherited by every
-      # fiber created from it later and silently override other servers'
-      # own defaults.
+      # other's value even across suspension points. The value is a
+      # closable SchedulingScope, closed + restored in the ensure below:
+      # fibers/threads created during the dispatch inherit the same scope
+      # OBJECT (storage inheritance copies the hash, shares references), so
+      # closing it invalidates the mode for every inheritor at once — a
+      # child task that outlives the dispatch cannot carry the session mode
+      # into later direct server calls, and nothing stays stamped on
+      # long-lived fibers.
       previous_scheduling = Fiber[FiberBoundary::SCHEDULING_KEY]
-      Fiber[FiberBoundary::SCHEDULING_KEY] = @callback_scheduling
+      dispatch_scope = FiberBoundary::SchedulingScope.new(@callback_scheduling)
+      Fiber[FiberBoundary::SCHEDULING_KEY] = dispatch_scope
 
       # Convert server_name to symbol if needed for hash lookup
       server_key = @sdk_mcp_servers.key?(server_name) ? server_name : server_name.to_sym
@@ -1057,6 +1060,7 @@ module ClaudeAgentSDK
         error: { code: -32603, message: e.message }
       }
     ensure
+      dispatch_scope&.close
       Fiber[FiberBoundary::SCHEDULING_KEY] = previous_scheduling
     end
 

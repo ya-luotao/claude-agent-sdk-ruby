@@ -6,7 +6,7 @@ The SDK integrates well with Rails applications. Below are the common patterns.
 
 The SDK depends on [`async`](https://github.com/socketry/async), which installs a Fiber scheduler that multiplexes fibers onto a single OS thread and intercepts IO so blocking calls yield to siblings. Most mature Ruby libraries are thread-safe but not fiber-safe — they key state (checked-out DB connections, per-thread caches, request stores) on `Thread.current`. When the scheduler interleaves two fibers on one thread, those fibers share the same state slot, and interleaved IO on a shared connection silently corrupts wire protocols. This affects every DB driver keyed by thread (`pg`, `mysql2`, `sqlite3`), ActiveRecord's connection pool, and HTTP/cache clients pooled per thread.
 
-You do **not** need to think about this. The SDK hops to a plain thread at every user-callback boundary — message blocks given to `query` / `Client`, SDK MCP tool handlers, hooks, permission callbacks, and observer methods — so your code runs with no Fiber scheduler active and inherits the ordinary thread-keyed assumptions every Rails / Sidekiq / Kamal app already makes:
+You do **not** need to think about this. By default (`callback_scheduling: :thread`; see the fiber-workers section below for the opt-in alternative) the SDK hops to a plain thread at every user-callback boundary — message blocks given to `query` / `Client`, SDK MCP tool handlers, hooks, permission callbacks, and observer methods — so your code runs with no Fiber scheduler active and inherits the ordinary thread-keyed assumptions every Rails / Sidekiq / Kamal app already makes:
 
 ```ruby
 tool = ClaudeAgentSDK.create_tool('lookup_user', 'Look up a user', { id: Integer }) do |args|
@@ -54,13 +54,13 @@ With `:inline`, every user callback — message blocks, hooks, permission callba
 The one real risk: **scheduler-opaque blocking stalls the whole reactor.** CPU-bound work or a GVL-holding C extension inside an inline callback blocks every job on that worker, not just yours. Move such pieces onto a thread explicitly:
 
 ```ruby
-tool = ClaudeAgentSDK.create_tool('render', 'Render a chart', { data: String }) do |args|
-  png = ClaudeAgentSDK.offload { expensive_render(args[:data]) }  # plain thread
-  { content: [{ type: 'text', text: Base64.encode64(png) }] }
+tool = ClaudeAgentSDK.create_tool('lookup', 'Query legacy DB', { id: String }) do |args|
+  row = ClaudeAgentSDK.offload { legacy_client.fetch(args[:id]) }  # plain thread
+  { content: [{ type: 'text', text: row.to_json }] }
 end
 ```
 
-`ClaudeAgentSDK.offload` is a no-op outside a reactor, so it's safe to call unconditionally.
+`ClaudeAgentSDK.offload` is a no-op outside a reactor, so it's safe to call unconditionally. Be precise about what it protects, though: it fully shields the reactor from blocking calls that *release* the GVL (native DB drivers, file/socket I/O the scheduler can't see), and it turns pure-Ruby CPU work from a hard stall into GVL time-slicing (added latency for sibling jobs, not starvation). A C extension that **holds** the GVL for the whole computation still freezes the process — `offload` cannot help there; run that work in a subprocess.
 
 Preconditions, spelled out: `:inline` is only correct when the process satisfies the same requirements as solid_queue's fiber workers — `isolation_level = :fiber`, Rails 7.2+ for AR, and no thread-keyed libraries used inside callbacks without a fiber-aware wrapper. The SDK warns once if it detects `:inline` under `isolation_level == :thread`. Everything else (Puma request threads, threaded Sidekiq/solid_queue workers) should stay on the default `callback_scheduling: :thread`.
 

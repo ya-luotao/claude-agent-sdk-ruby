@@ -90,11 +90,16 @@ module ClaudeAgentSDK
     # so modes cannot cross-contaminate or persist past a session.
     attr_accessor :callback_scheduling
 
-    # The scheduling mode for the current invocation: the dispatching
-    # session's mode (fiber storage, set by Query on the control-request
-    # task's fiber) when present, else this server's own default.
+    # Internal (@api private) — public only so the dynamic tool classes can
+    # reach it. The scheduling mode for the current invocation: the
+    # dispatching session's mode (a live SchedulingScope in fiber storage,
+    # set by Query around the dispatch) when present, else this server's
+    # own default. A scope inherited from an already-finished dispatch is
+    # closed and deliberately ignored — a child task spawned inside a
+    # handler must not carry the session mode into later direct calls.
     def effective_callback_scheduling
-      Fiber[FiberBoundary::SCHEDULING_KEY] || @callback_scheduling
+      scope = Fiber[FiberBoundary::SCHEDULING_KEY]
+      scope&.active? ? scope.mode : @callback_scheduling
     end
 
     def initialize(name:, version: '1.0.0', tools: [], resources: [], prompts: [])

@@ -96,13 +96,20 @@ module ClaudeAgentSDK
   end
 
   # Public escape hatch for hosts running with callback_scheduling: :inline:
-  # run a heavy (CPU-bound or scheduler-opaque) piece of a callback on a
-  # plain thread so it cannot stall the shared reactor. No-op outside a
-  # Fiber scheduler, so it is safe to call unconditionally. Returns the
-  # block's value; exceptions propagate.
+  # run a heavy piece of a callback on a plain thread instead of the shared
+  # reactor fiber. What that buys, precisely:
+  # - scheduler-opaque BLOCKING that releases the GVL (native DB drivers,
+  #   file/socket calls the scheduler can't see): the reactor keeps running.
+  # - pure-Ruby CPU-bound work: degrades a hard reactor stall into GVL
+  #   time-slicing — added latency for other fibers, not starvation.
+  # - a C extension that HOLDS the GVL for the whole computation: no help;
+  #   nothing in-process can protect the reactor from that — move such work
+  #   to a subprocess.
+  # No-op outside a Fiber scheduler, so it is safe to call unconditionally.
+  # Returns the block's value; exceptions propagate.
   #
   # @example Inside an inline-mode tool handler
-  #   ClaudeAgentSDK.offload { image.resize!(2048) }
+  #   ClaudeAgentSDK.offload { blocking_db_call }
   def self.offload(&block)
     FiberBoundary.invoke(&block)
   end

@@ -31,9 +31,12 @@ module ClaudeAgentSDK
   # same code path as the no-scheduler case — semantically the already-
   # shipped synchronous path, and Python SDK parity (async callbacks run
   # natively on the event loop there). The mode is plumbed per-call from
-  # `ClaudeAgentOptions#callback_scheduling`, never stored in a
-  # thread-/fiber-local: the reactor thread is shared by many fibers and a
-  # set/reset window across suspension points would leak across sessions.
+  # `ClaudeAgentOptions#callback_scheduling` — never a thread-local (the
+  # reactor thread is shared by many fibers, so a set/reset window across
+  # suspension points would leak across sessions). The one path a call
+  # argument cannot cross (SDK-MCP dispatch through the mcp gem) carries
+  # it via a scoped, invalidatable fiber-storage entry instead — see
+  # SCHEDULING_KEY / SchedulingScope below.
   #
   # A `timeout:` always forces the thread hop regardless of scheduling —
   # `Thread#join(timeout)` is a hard bound that can abandon a wedged call,
@@ -61,8 +64,9 @@ module ClaudeAgentSDK
     # in-flight call may still complete).
     class JoinTimeout < StandardError; end
 
-    # Cancellation injected into INLINE user callbacks by timeout
-    # enforcement (hook timeouts under scheduling: :inline). Deliberately
+    # Internal (@api private). Cancellation injected into INLINE user
+    # callbacks by timeout enforcement (hook timeouts under
+    # scheduling: :inline) — user code should let it propagate. Deliberately
     # NOT a StandardError: the exception is raised inside user code at a
     # suspension point, and a callback's ordinary `rescue StandardError`
     # must not be able to swallow the cancellation and convert an expired
@@ -71,18 +75,42 @@ module ClaudeAgentSDK
     # Async::TimeoutError once control returns from user code.
     class InlineCancellation < Exception; end # rubocop:disable Lint/InheritException
 
-    # Fiber-storage key carrying the dispatching session's callback
-    # scheduling mode across the SDK-MCP dispatch path (Query ->
-    # MCP::Server -> dynamic tool class). Fiber storage is per-fiber, so
-    # concurrent sessions with different modes sharing one SdkMcpServer
-    # instance cannot cross-contaminate — unlike mutating the shared
-    # server (last-writer-wins, persists past close) or a thread-local
-    # (the reactor thread is shared by many fibers). Set around each
-    # dispatch and RESTORED afterwards (never left behind): child fibers
-    # inherit a copy of their creator's storage, so a stale value on a
-    # long-lived fiber would silently leak into every fiber created from
-    # it later.
+    # Internal (@api private). Fiber-storage key carrying the dispatching
+    # session's callback scheduling mode across the SDK-MCP dispatch path
+    # (Query -> MCP::Server -> dynamic tool class). Fiber storage is
+    # per-fiber, so concurrent sessions with different modes sharing one
+    # SdkMcpServer instance cannot cross-contaminate — unlike mutating the
+    # shared server (last-writer-wins, persists past close) or a
+    # thread-local (the reactor thread is shared by many fibers).
     SCHEDULING_KEY = :claude_agent_sdk_callback_scheduling
+
+    # Internal (@api private). The value stored under SCHEDULING_KEY: a
+    # closable carrier rather than a bare symbol. Fiber-storage inheritance
+    # copies the storage HASH but shares value REFERENCES, so every fiber
+    # (and thread) created during a dispatch inherits this same object.
+    # Restoring the dispatching fiber's own slot is therefore not enough —
+    # a child task spawned inside a handler that outlives the dispatch
+    # would keep reading the stale mode forever. Closing the scope in the
+    # dispatch's ensure invalidates it for ALL inheritors at once; readers
+    # fall back to the server's own default. Benign race on close vs. a
+    # concurrent reader: either value is a defensible mode for a call that
+    # straddles the dispatch boundary.
+    class SchedulingScope
+      attr_reader :mode
+
+      def initialize(mode)
+        @mode = mode
+        @active = true
+      end
+
+      def active?
+        @active
+      end
+
+      def close
+        @active = false
+      end
+    end
 
     # Sentinel returned by .invoke_iteration when the user block attempted `break`.
     class Break
