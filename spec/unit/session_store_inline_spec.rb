@@ -28,6 +28,21 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
     end
   end
 
+  # A CONFORMING fiber-native adapter: :inline declarers must dedupe by
+  # entry uuid (contract 17b) because inline timeouts are retried with
+  # full-batch re-sends.
+  def deduping_inline_store_class
+    Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+      def callback_scheduling = :inline
+
+      def append(key, entries)
+        seen = Array(load(key)).filter_map { |e| e['uuid'] }
+        fresh = Array(entries).reject { |e| e['uuid'] && seen.include?(e['uuid']) }
+        super(key, fresh)
+      end
+    end
+  end
+
   describe 'FiberBoundary.invoke with timeout + scheduling: :inline' do
     it 'runs in place on the calling fiber with the scheduler live inside a reactor' do
       inner_fiber = nil
@@ -223,11 +238,9 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
 
     # The retry is what heals a half-applied cancelled append: the full
     # batch is re-sent and uuid dedupe absorbs the overlap.
-    it 'heals a half-applied cancelled append on the retry' do
+    it 'heals a half-applied cancelled append on the retry without duplicating entries' do
       attempts = 0
-      store = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
-        def callback_scheduling = :inline
-      end.new
+      store = deduping_inline_store_class.new
       underlying_append = store.method(:append)
       store.define_singleton_method(:append) do |k, entries|
         attempts += 1
@@ -250,8 +263,11 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
 
       expect(attempts).to eq(2)
       expect(errors).to be_empty
-      uuids = store.load(key).map { |e| e['uuid'] }
-      expect(uuids).to include('u1', 'u2')
+      # Exact equality, not include: the retry re-sends the full batch, and
+      # the mandatory-for-inline uuid dedupe must absorb the overlap — a
+      # duplicated u1 here is the silent-corruption case the contract
+      # forbids.
+      expect(store.load(key).map { |e| e['uuid'] }).to eq(%w[u1 u2])
     end
 
     it 'keeps an undeclared store on a scheduler-free worker thread' do
@@ -345,16 +361,26 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
   end
 
   describe 'conformance kit contract 17' do
-    it 'passes for a declaring adapter and for a non-declaring adapter' do
-      declaring = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
-        def callback_scheduling = :inline
-      end
+    it 'passes for a deduping declaring adapter and for a non-declaring adapter' do
       expect do
-        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { declaring.new })
+        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { deduping_inline_store_class.new })
       end.not_to raise_error
       expect do
         ClaudeAgentSDK::Testing.run_session_store_conformance(-> { ClaudeAgentSDK::InMemorySessionStore.new })
       end.not_to raise_error
+    end
+
+    # Contract 17b: uuid dedupe is MANDATORY for :inline declarers (inline
+    # timeouts are retried with full-batch re-sends — a non-deduping inline
+    # adapter silently duplicates the landed part of a half-applied append),
+    # while staying advisory/opt-in for thread-mode adapters.
+    it 'fails a non-deduping :inline declarer on the dedupe contract' do
+      non_deduping = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+        def callback_scheduling = :inline
+      end
+      expect do
+        ClaudeAgentSDK::Testing.run_session_store_conformance(-> { non_deduping.new })
+      end.to raise_error(ClaudeAgentSDK::Testing::ConformanceError, /dedupe by entry uuid/)
     end
 
     it 'fails for a bad declarer' do

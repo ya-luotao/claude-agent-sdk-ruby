@@ -47,9 +47,12 @@ module ClaudeAgentSDK
   # scheduler-opaque blocking stalls every job on the worker AND escapes the
   # cooperative deadline. A timed-out inline call is interrupted at its next
   # suspension point (ensure blocks run) rather than abandoned; because that
-  # cancellation is definite, the mirror batcher RETRIES inline timeouts, so
-  # a half-applied cancelled append is healed by the retry (the
-  # dedupe-by-entry-uuid recommendation above absorbs the overlap). The method is deliberately NOT defined here: the SDK probes
+  # cancellation is definite, the mirror batcher RETRIES inline timeouts by
+  # re-sending the full batch. Consequently, dedupe-by-entry-uuid is
+  # REQUIRED for :inline declarers (it stays advisory for everyone else): a
+  # non-deduping inline adapter would silently duplicate the already-landed
+  # part of a half-applied append on retry. The conformance kit enforces
+  # this unconditionally for declaring adapters (contract 17b). The method is deliberately NOT defined here: the SDK probes
   # `respond_to?(:callback_scheduling)` (see
   # SessionStores.store_callback_scheduling), so pure duck-typed adapters
   # stay minimal, and an app can opt a third-party fiber-native adapter in

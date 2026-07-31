@@ -207,8 +207,11 @@ Declaring `:inline` means the calls run in place on the reactor fiber under a
 - Timeout retries: because the cancellation is definite (nothing remains in
   flight, unlike an abandoned thread), the mirror batcher **retries** inline
   timeouts like any other failure — the retry re-sends the full batch and
-  heals a half-applied write; the existing "dedupe by `entry['uuid']`"
-  adapter recommendation absorbs the overlap. (Thread-mode timeouts remain
+  heals a half-applied write. This makes **dedupe by `entry['uuid']`
+  mandatory** for `:inline` declarers (it stays advisory for thread-mode
+  adapters): without it, the already-landed part of a half-applied append is
+  silently duplicated on retry. The conformance kit enforces this
+  unconditionally for declaring adapters. (Thread-mode timeouts remain
   non-retried: the abandoned call may still land.)
 
 Anything other than `:thread`/`:inline` raises `ArgumentError` when the

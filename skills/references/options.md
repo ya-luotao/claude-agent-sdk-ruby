@@ -194,11 +194,13 @@ ClaudeAgentSDK.query(
   the listing methods used by resume) then run in place on the reactor fiber
   under a cooperative timeout (interrupted at the next suspension point,
   `ensure` runs) instead of on a throwaway thread with a hard bound. Inline
-  timeouts are retried (definite cancellation — the retry heals a
-  half-applied append via the uuid-dedupe recommendation). Undeclared
-  adapters are unchanged; invalid values raise `ArgumentError` at setup;
-  conformance contract 17 validates the declaration. See docs/sessions.md
-  "Fiber-native adapters".
+  timeouts are retried (definite cancellation — the retry re-sends the full
+  batch and heals a half-applied append), so dedupe-by-entry-uuid is
+  MANDATORY for declaring adapters (advisory otherwise) and the conformance
+  kit enforces it unconditionally for them. Undeclared adapters are
+  unchanged; invalid values raise `ArgumentError` at setup; conformance
+  contract 17 validates the declaration. See docs/sessions.md "Fiber-native
+  adapters".
 - Store-backed helpers mirror the disk family: `list_sessions_from_store`,
   `get_session_info_from_store`, `get_session_messages_from_store`,
   `list_subagents_from_store`, `get_subagent_messages_from_store`,
