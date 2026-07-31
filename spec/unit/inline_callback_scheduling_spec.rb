@@ -550,14 +550,14 @@ RSpec.describe 'Inline callback scheduling' do
       query.send(:handle_sdk_mcp_request, 'probe_server',
                  { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'probe', arguments: {} } })
 
-      expect(Fiber[ClaudeAgentSDK::FiberBoundary::SCHEDULING_KEY]).to be_nil
+      expect(Fiber[ClaudeAgentSDK::FiberBoundary::DISPATCH_KEY]).to be_nil
     end
 
     # Regression (codex merge check on PR #48): fiber-storage inheritance
     # copies the hash but shares value references, so a child task spawned
     # INSIDE an inline handler inherits the dispatch's storage entry and
     # keeps it after the dispatching fiber restored its own slot. The entry
-    # is therefore a closable SchedulingScope: closing it at dispatch end
+    # is therefore a closable CallbackDispatchScope: closing it at dispatch end
     # invalidates it for every inheritor, so a descendant that outlives the
     # dispatch falls back to the target server's own default (:thread here)
     # instead of running inline.
