@@ -35,6 +35,8 @@ end
 
 The wrapper is a callable receiving a zero-arg `invocation`; it must call it and return its value. It runs on the **same execution context as the callback** — inside the worker thread in `:thread` mode, which is the whole point: `executor.wrap` runs on the thread that touches ActiveRecord, so connections check back in when the callback ends. Exceptions from the callback propagate through the wrapper unchanged (don't rescue them); `ensure`-based wrappers like `executor.wrap` are safe, including around a `break` from a message block. Beyond the executor, this is a generic hook for APM span propagation, `CurrentAttributes`/logging context, etc.
 
+The wrapper also composes around every timeout-bounded `SessionStore` adapter call (mirror-batcher appends, resume-materialization loads and listings), inside the timeout bound — so an ActiveRecord-backed store adapter gets the same connection hygiene as your callbacks.
+
 When do you want this vs `callback_scheduling: :inline`? `callback_wrapper` + default `:thread` mode is the right choice for ordinary threaded hosts (Puma, threaded Sidekiq/solid_queue): it fixes connection hygiene without any fiber-isolation precondition. `:inline` is only for hosts that are fiber-isolated end to end (solid_queue fiber workers with `isolation_level = :fiber`); there the wrapper still applies — it simply runs in place on the reactor fiber.
 
 ## Fiber workers (solid_queue) and `callback_scheduling: :inline`
@@ -80,7 +82,7 @@ end
 
 Preconditions, spelled out: `:inline` is only correct when the process satisfies the same requirements as solid_queue's fiber workers — `isolation_level = :fiber`, Rails 7.2+ for AR, and no thread-keyed libraries used inside callbacks without a fiber-aware wrapper. The SDK warns once if it detects `:inline` under `isolation_level == :thread`. Everything else (Puma request threads, threaded Sidekiq/solid_queue workers) should stay on the default `callback_scheduling: :thread`.
 
-Note that `SessionStore` adapter calls (`#append` / `#load`) stay on threads by default even in `:inline` mode — their timeouts are hard bounds (`Thread#join`) so a wedged store adapter can never stall the reactor. The exception is an adapter that declares itself fiber-native via an optional `callback_scheduling` method returning `:inline` (see "Fiber-native adapters" in [docs/sessions.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/sessions.md)); its calls then run on the reactor under a cooperative timeout.
+Note that `SessionStore` adapter calls (`#append` / `#load`) stay on threads by default even in `:inline` mode — their timeouts are hard bounds (`Thread#join`) so a wedged store adapter can never stall the reactor. The exception is an adapter that declares itself fiber-native via an optional `callback_scheduling` method returning `:inline` (see "Fiber-native adapters" in [docs/sessions.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/sessions.md)); its calls then run on the reactor under a cooperative timeout. In both cases a configured `callback_wrapper` composes around the adapter call inside the bound.
 
 ## ActionCable Streaming
 

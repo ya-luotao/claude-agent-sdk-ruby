@@ -175,27 +175,33 @@ module ClaudeAgentSDK
     # could falsely flag. In inline/no-scheduler mode `break` unwinds natively through the
     # wrapper's stack, so ensure-based wrappers (executor.wrap) are safe.
     #
-    # The timeout path deliberately ignores the wrapper: it belongs to the
-    # store-adapter carve-out (TranscriptMirrorBatcher, SessionResume),
-    # which never carries user callbacks.
+    # On timeout-bounded calls (the store-adapter paths:
+    # TranscriptMirrorBatcher, SessionResume) the wrapper composes INSIDE
+    # the bound: on the worker thread within the `Thread#join` deadline in
+    # :thread mode (so `executor.wrap` covers an AR-backed store adapter —
+    # connections check back in when the call ends; on a timeout the
+    # abandoned worker still runs the wrapper's ensure whenever the wedged
+    # call eventually finishes), and inside the cooperative `with_timeout`
+    # in inline mode (the cancellation passes through the wrapper
+    # un-swallowed — InlineCancellation is not a StandardError — and the
+    # wrapper's ensure runs at cancellation).
     def invoke(timeout: nil, scheduling: :thread, wrapper: nil, &block)
-      body = wrapper && timeout.nil? ? -> { wrapper.call(block) } : block
+      body = wrapper ? -> { wrapper.call(block) } : block
       return body.call if timeout.nil? && (scheduling == :inline || !Fiber.scheduler)
 
       # Cooperative timeout for inline-declared store adapters: in place on
       # the reactor fiber, cancelled at the next suspension point. The
-      # wrapper stays ignored on timeout paths (store adapters are never
-      # wrapped), so `body` is the bare block here. The cancellation class
-      # is a fresh per-invocation subclass: rescuing the shared base would
-      # also catch an OUTER timeout's cancellation delivered while this
-      # call is suspended (nested with_timeout — e.g. a store call inside a
-      # timed inline hook), mis-attributing the outer deadline to this call
-      # and letting execution continue past it. An outer cancellation is a
-      # different subclass, so it propagates through untouched.
+      # cancellation class is a fresh per-invocation subclass: rescuing the
+      # shared base would also catch an OUTER timeout's cancellation
+      # delivered while this call is suspended (nested with_timeout — e.g. a
+      # store call inside a timed inline hook), mis-attributing the outer
+      # deadline to this call and letting execution continue past it. An
+      # outer cancellation is a different subclass, so it propagates through
+      # untouched.
       if timeout && scheduling == :inline && (task = Async::Task.current?)
         cancellation = Class.new(InlineCancellation)
         begin
-          return task.with_timeout(timeout, cancellation, &block)
+          return task.with_timeout(timeout, cancellation) { body.call }
         rescue cancellation
           raise JoinTimeout, "timed out after #{timeout}s"
         end

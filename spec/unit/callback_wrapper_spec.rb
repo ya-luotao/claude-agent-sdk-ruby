@@ -134,17 +134,82 @@ RSpec.describe 'Callback wrapper' do
       end.to raise_error(RuntimeError, 'wrapper blew up')
     end
 
-    it 'ignores the wrapper on the timeout-bounded (store-adapter) path' do
-      wrapper_called = false
+    it 'composes the wrapper inside the timeout bound, on the worker thread' do
+      wrapper_thread = nil
+      wrapper_scheduler = :unset
       wrapper = lambda do |invocation|
-        wrapper_called = true
+        wrapper_thread = Thread.current
+        wrapper_scheduler = Fiber.scheduler
         invocation.call
       end
 
       result = ClaudeAgentSDK::FiberBoundary.invoke(timeout: 5, wrapper: wrapper) { :store }
 
       expect(result).to eq(:store)
-      expect(wrapper_called).to be(false)
+      expect(wrapper_thread).not_to be(Thread.current)
+      expect(wrapper_scheduler).to be_nil
+    end
+
+    it 'still enforces the hard bound through the wrapper; the abandoned worker runs its ensure' do
+      release = Queue.new
+      ensure_ran = Queue.new
+      wrapper = lambda do |invocation|
+        invocation.call
+      ensure
+        ensure_ran << true
+      end
+
+      expect do
+        ClaudeAgentSDK::FiberBoundary.invoke(timeout: 0.05, wrapper: wrapper) { release.pop }
+      end.to raise_error(ClaudeAgentSDK::FiberBoundary::JoinTimeout)
+
+      release << :done
+      expect(ensure_ran.pop).to be(true)
+    end
+
+    it 'composes the wrapper inside the cooperative inline timeout, on the reactor fiber' do
+      wrapper_fiber = nil
+      wrapper_scheduler = nil
+      outer_fiber = nil
+      wrapper = lambda do |invocation|
+        wrapper_fiber = Fiber.current
+        wrapper_scheduler = Fiber.scheduler
+        invocation.call
+      end
+
+      result = Async do
+        outer_fiber = Fiber.current
+        ClaudeAgentSDK::FiberBoundary.invoke(timeout: 5, scheduling: :inline, wrapper: wrapper) { :store }
+      end.wait
+
+      expect(result).to eq(:store)
+      expect(wrapper_scheduler).not_to be_nil
+      expect(wrapper_fiber).to be(outer_fiber)
+    end
+
+    it 'delivers the inline cancellation through the wrapper un-swallowed, running its ensure' do
+      ensure_ran = false
+      swallow_attempted = false
+      wrapper = lambda do |invocation|
+        invocation.call
+      rescue StandardError
+        # The cancellation is not a StandardError, so a rescue/report wrapper
+        # must never observe it — reaching here would mean an expired store
+        # call could be converted into a success.
+        swallow_attempted = true
+        raise
+      ensure
+        ensure_ran = true
+      end
+
+      expect do
+        Async do
+          ClaudeAgentSDK::FiberBoundary.invoke(timeout: 0.05, scheduling: :inline, wrapper: wrapper) { sleep 5 }
+        end.wait
+      end.to raise_error(ClaudeAgentSDK::FiberBoundary::JoinTimeout)
+
+      expect(ensure_ran).to be(true)
+      expect(swallow_attempted).to be(false)
     end
   end
 
@@ -726,6 +791,138 @@ RSpec.describe 'Callback wrapper' do
 
       expect(received).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
       expect(ret).to eq(:stopped)
+    end
+  end
+
+  # FiberBoundary only special-cases the exact Symbol :inline, so an
+  # unvalidated accessor value (String "inline", a typo) would silently
+  # degrade to the thread hop — the opposite of what an inline host asked
+  # for. The server setters therefore enforce the same coercion + whitelist
+  # rule as ClaudeAgentOptions.
+  describe 'SdkMcpServer accessor validation' do
+    let(:server) { ClaudeAgentSDK::SdkMcpServer.new(name: 'validated') }
+
+    it 'coerces the String form of callback_scheduling to the Symbol' do
+      server.callback_scheduling = 'inline'
+      expect(server.callback_scheduling).to eq(:inline)
+      server.callback_scheduling = 'thread'
+      expect(server.callback_scheduling).to eq(:thread)
+    end
+
+    it 'rejects unknown scheduling modes loudly instead of degrading to :thread' do
+      expect { server.callback_scheduling = :reactor }
+        .to raise_error(ArgumentError, /callback_scheduling must be one of :thread, :inline/)
+      expect { server.callback_scheduling = nil }
+        .to raise_error(ArgumentError, /callback_scheduling must be one of/)
+      expect(server.callback_scheduling).to eq(:thread) # default untouched
+    end
+
+    it 'rejects a non-callable callback_wrapper at set time' do
+      expect { server.callback_wrapper = 42 }
+        .to raise_error(ArgumentError, /callback_wrapper must be a callable/)
+      server.callback_wrapper = nil # explicit nil stays allowed
+      expect(server.callback_wrapper).to be_nil
+    end
+  end
+
+  # The wrapper also composes around timeout-bounded SessionStore adapter
+  # dispatch (mirror-batcher appends, resume-materialization loads), inside
+  # the bound — so executor.wrap covers an AR-backed adapter too.
+  describe 'store-adapter dispatch composition' do
+    let(:projects) { '/tmp/cas-wrapper-base' }
+    let(:file_path) { "#{projects}/pk/sid.jsonl" }
+    let(:errors) { [] }
+    let(:on_error) { ->(k, m) { errors << [k, m] } }
+
+    it 'wraps batcher appends for a default (thread-hop) store on the worker thread' do
+      events = []
+      append_thread = nil
+      wrapper = lambda do |invocation|
+        events << [:enter, Thread.current]
+        invocation.call
+      ensure
+        events << :exit
+      end
+      store = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+        define_method(:append) do |k, entries|
+          append_thread = Thread.current
+          super(k, entries)
+        end
+      end.new
+
+      Async do
+        b = ClaudeAgentSDK::TranscriptMirrorBatcher.new(store: store, projects_dir: projects,
+                                                        on_error: on_error, callback_wrapper: wrapper)
+        b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => '1' }])
+        b.flush
+      end.wait
+
+      expect(events.length).to eq(2)
+      expect(events.first.first).to eq(:enter)
+      expect(events.first.last).to be(append_thread)
+      expect(append_thread).not_to be(Thread.current)
+      expect(errors).to be_empty
+    end
+
+    it 'wraps batcher appends for an inline-declared store on the reactor fiber' do
+      wrapper_fiber = nil
+      append_fiber = nil
+      flush_fiber = nil
+      wrapper = lambda do |invocation|
+        wrapper_fiber = Fiber.current
+        invocation.call
+      end
+      store = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+        def callback_scheduling = :inline
+
+        define_method(:append) do |k, entries|
+          append_fiber = Fiber.current
+          super(k, entries)
+        end
+      end.new
+
+      Async do
+        b = ClaudeAgentSDK::TranscriptMirrorBatcher.new(store: store, projects_dir: projects,
+                                                        on_error: on_error, callback_wrapper: wrapper)
+        b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => '1' }])
+        flush_fiber = Fiber.current
+        b.flush
+      end.wait
+
+      expect(wrapper_fiber).to be(flush_fiber)
+      expect(append_fiber).to be(flush_fiber)
+      expect(errors).to be_empty
+    end
+
+    it 'wraps resume-materialization store calls with the session wrapper' do
+      wrapped_calls = []
+      wrapper = lambda do |invocation|
+        wrapped_calls << Thread.current
+        invocation.call
+      end
+      sid = SecureRandom.uuid
+      cwd = Dir.mktmpdir
+      store = ClaudeAgentSDK::InMemorySessionStore.new
+      project_key = ClaudeAgentSDK.project_key_for_directory(cwd)
+      store.append({ 'project_key' => project_key, 'session_id' => sid },
+                   [{ 'type' => 'user', 'uuid' => SecureRandom.uuid, 'message' => { 'content' => 'hi' } }])
+
+      mat = nil
+      begin
+        mat = ClaudeAgentSDK::SessionResume.materialize_resume_session(
+          ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: sid, cwd: cwd,
+                                                 callback_wrapper: wrapper)
+        )
+
+        expect(mat).not_to be_nil
+        # At least the #load ran; every call went through the wrapper on its
+        # worker thread (default thread-hop store).
+        expect(wrapped_calls).not_to be_empty
+        expect(wrapped_calls).to all(satisfy { |t| !t.equal?(Thread.current) })
+      ensure
+        mat&.cleanup
+        FileUtils.remove_entry(cwd) if File.directory?(cwd)
+      end
     end
   end
 end

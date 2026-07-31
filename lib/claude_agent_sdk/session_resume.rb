@@ -87,13 +87,14 @@ module ClaudeAgentSDK
     # locate the projects dir (already repointed at the temp dir when resuming
     # from a store). Eager flush mode zeroes the buffer thresholds so every
     # transcript_mirror frame triggers a background flush.
-    def build_mirror_batcher(store:, env:, on_error:, eager: false)
+    def build_mirror_batcher(store:, env:, on_error:, eager: false, callback_wrapper: nil)
       TranscriptMirrorBatcher.new(
         store: store,
         projects_dir: SessionStores.projects_dir(env),
         on_error: on_error,
         max_pending_entries: eager ? 0 : TranscriptMirrorBatcher::MAX_PENDING_ENTRIES,
-        max_pending_bytes: eager ? 0 : TranscriptMirrorBatcher::MAX_PENDING_BYTES
+        max_pending_bytes: eager ? 0 : TranscriptMirrorBatcher::MAX_PENDING_BYTES,
+        callback_wrapper: callback_wrapper
       )
     end
 
@@ -112,6 +113,10 @@ module ClaudeAgentSDK
       # point) so an invalid callback_scheduling declaration fails fast here,
       # before any store IO or temp-dir work.
       scheduling = SessionStores.store_callback_scheduling(store)
+      # The session's callback_wrapper composes around every store call below,
+      # inside the timeout bound (see FiberBoundary.invoke) — so e.g. Rails'
+      # executor.wrap covers an AR-backed adapter during materialization too.
+      wrapper = options.callback_wrapper
       project_key = Sessions.project_key_for_directory(options.cwd)
 
       resolved =
@@ -120,9 +125,9 @@ module ClaudeAgentSDK
           # prevent traversal and match every other resume path.
           return nil unless options.resume.match?(Sessions::UUID_RE)
 
-          load_candidate(store, project_key, options.resume, timeout_s, scheduling)
+          load_candidate(store, project_key, options.resume, timeout_s, scheduling, wrapper)
         else
-          resolve_continue_candidate(store, project_key, timeout_s, scheduling)
+          resolve_continue_candidate(store, project_key, timeout_s, scheduling, wrapper)
         end
       return nil if resolved.nil?
 
@@ -137,7 +142,7 @@ module ClaudeAgentSDK
         # so it can authenticate. Missing files are fine (API-key auth, etc.).
         copy_auth_files(tmp_base, options.env)
 
-        materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling) if SessionStore.implements?(store, :list_subkeys)
+        materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper) if SessionStore.implements?(store, :list_subkeys)
       rescue Exception # rubocop:disable Lint/RescueException
         # Any failure after mkdtemp leaves tmp_base (which may already hold a
         # .credentials.json copy) on disk with no path for the caller to clean
@@ -153,8 +158,8 @@ module ClaudeAgentSDK
     # -- Helpers --
 
     # Load entries for session_id; return [session_id, entries] or nil if empty.
-    def load_candidate(store, project_key, session_id, timeout_s, scheduling)
-      entries = with_timeout(timeout_s, "SessionStore#load for session #{session_id}", scheduling) do
+    def load_candidate(store, project_key, session_id, timeout_s, scheduling, wrapper)
+      entries = with_timeout(timeout_s, "SessionStore#load for session #{session_id}", scheduling, wrapper) do
         store.load('project_key' => project_key, 'session_id' => session_id)
       end
       return nil if entries.nil? || entries.empty?
@@ -166,13 +171,13 @@ module ClaudeAgentSDK
     # transcripts are mirrored as ordinary top-level keys and often have the
     # highest mtime, so walk newest->oldest and skip them so --continue resumes
     # the user's conversation, not a subagent's.
-    def resolve_continue_candidate(store, project_key, timeout_s, scheduling)
-      sessions = with_timeout(timeout_s, 'SessionStore#list_sessions', scheduling) do
+    def resolve_continue_candidate(store, project_key, timeout_s, scheduling, wrapper)
+      sessions = with_timeout(timeout_s, 'SessionStore#list_sessions', scheduling, wrapper) do
         store.list_sessions(project_key)
       end
       return nil if sessions.nil? || sessions.empty?
 
-      sidechain_flags = sidechain_flags_from_summaries(store, project_key, timeout_s, scheduling)
+      sidechain_flags = sidechain_flags_from_summaries(store, project_key, timeout_s, scheduling, wrapper)
 
       sessions.sort_by { |s| -sortable_mtime(s['mtime']) }.each do |cand|
         sid = cand['session_id']
@@ -182,7 +187,7 @@ module ClaudeAgentSDK
         # --continue O(sum of transcript sizes) instead of O(candidates).
         next if sidechain_flags&.fetch(sid, false)
 
-        loaded = load_candidate(store, project_key, sid, timeout_s, scheduling)
+        loaded = load_candidate(store, project_key, sid, timeout_s, scheduling, wrapper)
         next if loaded.nil?
 
         first = loaded[1][0]
@@ -198,10 +203,10 @@ module ClaudeAgentSDK
     # fails (callers then fall back to checking each full load). The per-load
     # isSidechain check above stays even on the summary path: a missing or
     # stale sidecar row costs one extra load, never a wrong resume.
-    def sidechain_flags_from_summaries(store, project_key, timeout_s, scheduling)
+    def sidechain_flags_from_summaries(store, project_key, timeout_s, scheduling, wrapper)
       return nil unless SessionStore.implements?(store, :list_session_summaries)
 
-      rows = with_timeout(timeout_s, 'SessionStore#list_session_summaries', scheduling) do
+      rows = with_timeout(timeout_s, 'SessionStore#list_session_summaries', scheduling, wrapper) do
         store.list_session_summaries(project_key)
       end
       Array(rows).each_with_object({}) do |row, acc|
@@ -239,9 +244,11 @@ module ClaudeAgentSDK
     # still complete. An adapter declaring `callback_scheduling -> :inline`
     # (probed once at materialization entry) instead runs in place under a
     # cooperative timeout when a reactor is present — outside one, the hard
-    # thread-hop bound still applies.
-    def with_timeout(timeout_s, what, scheduling = :thread, &block)
-      FiberBoundary.invoke(timeout: timeout_s, scheduling: scheduling, &block)
+    # thread-hop bound still applies. The session's callback_wrapper
+    # composes inside the bound (see FiberBoundary.invoke); a wrapper-raised
+    # error surfaces like a store error, with the same context message.
+    def with_timeout(timeout_s, what, scheduling = :thread, wrapper = nil, &block)
+      FiberBoundary.invoke(timeout: timeout_s, scheduling: scheduling, wrapper: wrapper, &block)
     rescue FiberBoundary::JoinTimeout
       raise "#{what} timed out after #{(timeout_s * 1000).to_i}ms during resume materialization"
     rescue RuntimeError
@@ -371,9 +378,9 @@ module ClaudeAgentSDK
     end
 
     # Load and write all subagent transcripts/metadata under session_id.
-    def materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling)
+    def materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper)
       session_dir = File.join(project_dir, session_id)
-      subkeys = with_timeout(timeout_s, "SessionStore#list_subkeys for session #{session_id}", scheduling) do
+      subkeys = with_timeout(timeout_s, "SessionStore#list_subkeys for session #{session_id}", scheduling, wrapper) do
         store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
       end
 
@@ -385,7 +392,7 @@ module ClaudeAgentSDK
           next
         end
 
-        sub_entries = with_timeout(timeout_s, "SessionStore#load for session #{session_id} subpath #{subpath}", scheduling) do
+        sub_entries = with_timeout(timeout_s, "SessionStore#load for session #{session_id} subpath #{subpath}", scheduling, wrapper) do
           store.load('project_key' => project_key, 'session_id' => session_id, 'subpath' => subpath)
         end
         next if sub_entries.nil? || sub_entries.empty?

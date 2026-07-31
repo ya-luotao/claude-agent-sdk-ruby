@@ -218,6 +218,12 @@ session is set up; without a reactor the hard thread-hop bound still applies
 even for declared adapters. To opt in a third-party fiber-native adapter you
 don't own: `def store.callback_scheduling = :inline` (singleton method).
 
+A session-configured `callback_wrapper` (see docs/rails.md) composes around
+every one of these adapter calls, inside the timeout bound — on the worker
+thread for default adapters, inside the cooperative timeout for inline
+declarers (the cancellation passes through the wrapper un-swallowed and the
+wrapper's `ensure` runs at cancellation).
+
 ### Store-backed helpers
 
 The browsing/mutation helpers above have store-backed counterparts that take a

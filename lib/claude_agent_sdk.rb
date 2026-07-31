@@ -114,6 +114,11 @@ module ClaudeAgentSDK
     FiberBoundary.invoke(&block)
   end
 
+  # Guards the once-per-process flag below: two sessions connecting
+  # concurrently must not both pass the unset check and warn twice.
+  INLINE_ISOLATION_WARN_LOCK = Mutex.new
+  private_constant :INLINE_ISOLATION_WARN_LOCK
+
   # Internal: warn once per process when :inline callback scheduling is
   # enabled while ActiveSupport reports thread isolation — the host then
   # almost certainly violates inline mode's fiber-isolation precondition
@@ -121,11 +126,14 @@ module ClaudeAgentSDK
   # defined? probing only; the SDK never loads ActiveSupport itself.
   def self.check_inline_isolation(scheduling)
     return unless scheduling == :inline
-    return if @inline_isolation_warned
     return unless defined?(ActiveSupport::IsolatedExecutionState)
     return unless ActiveSupport::IsolatedExecutionState.isolation_level == :thread
 
-    @inline_isolation_warned = true
+    INLINE_ISOLATION_WARN_LOCK.synchronize do
+      return if @inline_isolation_warned
+
+      @inline_isolation_warned = true
+    end
     warn 'ClaudeAgentSDK: callback_scheduling: :inline is enabled but ' \
          'ActiveSupport::IsolatedExecutionState.isolation_level is :thread. ' \
          'Inline callbacks run on reactor fibers that share one thread, so ' \
@@ -539,7 +547,8 @@ module ClaudeAgentSDK
               store: configured_options.session_store,
               env: configured_options.env,
               on_error: ->(key, message) { query_handler.report_mirror_error(key, message) },
-              eager: configured_options.session_store_flush.to_s == 'eager'
+              eager: configured_options.session_store_flush.to_s == 'eager',
+              callback_wrapper: callback_wrapper
             )
           )
         end
@@ -1149,7 +1158,8 @@ module ClaudeAgentSDK
         store: options.session_store,
         env: options.env,
         on_error: ->(key, message) { @query_handler.report_mirror_error(key, message) },
-        eager: options.session_store_flush.to_s == 'eager'
+        eager: options.session_store_flush.to_s == 'eager',
+        callback_wrapper: @callback_wrapper
       )
       @query_handler.set_transcript_mirror_batcher(batcher)
     end

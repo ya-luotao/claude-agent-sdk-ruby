@@ -51,12 +51,19 @@ module ClaudeAgentSDK
     # @param projects_dir [String] base dir for file_path -> SessionKey mapping
     # @param on_error [#call] called as on_error.call(key, message) after a batch
     #   exhausts retries; must not raise
+    # @param callback_wrapper [#call, nil] the session's
+    #   ClaudeAgentOptions#callback_wrapper, composed around each #append
+    #   inside the timeout bound (worker thread in :thread mode, cooperative
+    #   timeout in :inline mode) — so e.g. Rails' executor.wrap covers an
+    #   AR-backed adapter and checks connections back in per call
     def initialize(store:, projects_dir:, on_error:, send_timeout: SEND_TIMEOUT_SECONDS,
-                   max_pending_entries: MAX_PENDING_ENTRIES, max_pending_bytes: MAX_PENDING_BYTES)
+                   max_pending_entries: MAX_PENDING_ENTRIES, max_pending_bytes: MAX_PENDING_BYTES,
+                   callback_wrapper: nil)
       @store = store
       @projects_dir = projects_dir
       @on_error = on_error
       @send_timeout = send_timeout
+      @callback_wrapper = callback_wrapper
       # Probed ONCE here so an invalid callback_scheduling declaration fails
       # at construction, not mid-session inside a flush.
       @store_scheduling = SessionStores.store_callback_scheduling(store)
@@ -248,9 +255,13 @@ module ClaudeAgentSDK
     # place on the reactor under a cooperative timeout (interrupted at its
     # next suspension point, ensure blocks run) — same JoinTimeout contract
     # and same no-retry semantics (see append_with_retry: offloaded work
-    # may outlive the cancellation).
+    # may outlive the cancellation). The session's callback_wrapper composes
+    # inside the bound (see FiberBoundary.invoke); a wrapper-raised error is
+    # indistinguishable from a store error here — [:error, e], retryable.
     def invoke_append(key, entries)
-      FiberBoundary.invoke(timeout: @send_timeout, scheduling: @store_scheduling) { @store.append(key, entries) }
+      FiberBoundary.invoke(timeout: @send_timeout, scheduling: @store_scheduling, wrapper: @callback_wrapper) do
+        @store.append(key, entries)
+      end
       [:ok, nil]
     rescue FiberBoundary::JoinTimeout
       [:timeout, "append timed out after #{@send_timeout}s"]

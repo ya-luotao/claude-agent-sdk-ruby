@@ -88,14 +88,41 @@ module ClaudeAgentSDK
     # storage instead (see #effective_callback_scheduling) — a server
     # shared by concurrent sessions with different modes is never mutated,
     # so modes cannot cross-contaminate or persist past a session.
-    attr_accessor :callback_scheduling
+    attr_reader :callback_scheduling
 
     # Default callback wrapper for DIRECT invocations of this server
     # (call_tool / read_resource / get_prompt outside a session). When a
     # session dispatches to this server, the session's own wrapper arrives
     # via fiber storage instead (see #effective_callback_wrapper) — same
     # never-mutate-the-shared-server rule as callback_scheduling.
-    attr_accessor :callback_wrapper
+    attr_reader :callback_wrapper
+
+    # Same coercion + whitelist rule as ClaudeAgentOptions#callback_scheduling
+    # (String form coerced to Symbol, anything else raises). FiberBoundary
+    # only special-cases the exact Symbol :inline, so an unvalidated value —
+    # e.g. the String "inline" or a typo — would silently degrade to the
+    # thread hop, which is precisely what an inline host must not get. Unlike
+    # the options setter there is no nil form: the server always holds a
+    # concrete default (:thread from #initialize).
+    def callback_scheduling=(value)
+      mode = value.respond_to?(:to_sym) ? value.to_sym : value
+      unless ClaudeAgentOptions::CALLBACK_SCHEDULING_MODES.include?(mode)
+        raise ArgumentError,
+              'callback_scheduling must be one of ' \
+              "#{ClaudeAgentOptions::CALLBACK_SCHEDULING_MODES.map(&:inspect).join(', ')} (got #{value.inspect})"
+      end
+
+      @callback_scheduling = mode
+    end
+
+    # Same rule as ClaudeAgentOptions#callback_wrapper: callable or nil.
+    # Validated at set time so a non-callable fails here, not later as a
+    # NoMethodError inside a tool dispatch.
+    def callback_wrapper=(value)
+      raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})" unless value.nil? || value.respond_to?(:call)
+
+      @callback_wrapper = value
+    end
 
     # Internal — public only so the dynamic tool classes can reach it. The
     # (scheduling mode, wrapper) pair for the current invocation, resolved
