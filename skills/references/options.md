@@ -40,7 +40,7 @@ Notes:
 - `allowed_tools`: Explicit allow-list (examples: `Read`, `Write`, `Edit`, `Bash`, and `mcp__name__tool`). Passing `Skill` here directly is deprecated — use `skills:` instead.
 - `disallowed_tools`: Explicit block-list.
 - `permission_mode`: Valid values: `default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`.
-- `skills`: Enable skills for the main session — `'all'` for every discovered skill (the only valid String), or an Array of names (`plugin:skill` for plugin-qualified). Auto-allows the `Skill` tool (`Skill(name)` per entry) and defaults `setting_sources` to `['user', 'project']` when unset. `nil` (default) leaves CLI defaults; `[]` hides every skill. Context filter, not a sandbox — skill files stay readable on disk.
+- `skills`: Enable skills for the main session — `'all'` for every discovered skill (the only valid String), or an Array of names (`plugin:skill` for plugin-qualified). Auto-allows the `Skill` tool (`Skill(name)` per entry) and defaults `setting_sources` to `['user', 'project']` when unset. `nil` (default) leaves CLI defaults; `[]` hides every skill. Context filter, not a sandbox — skill files stay readable on disk. Names must be exact (since 0.29.0): wildcards (`'*'`, `'plugin:*'` — use `'all'` instead), parentheses, commas, control characters, surrounding whitespace, and a leading `/` raise `ArgumentError` at query/connect time.
 
 ## Permission callback (programmable allow/deny)
 
