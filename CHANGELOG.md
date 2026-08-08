@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Skill names in `ClaudeAgentOptions#skills` are now validated** (port of Python SDK [#1145](https://github.com/anthropics/claude-agent-sdk-python/pull/1145), v0.2.129). Names were formatted into the `--allowedTools` value unchecked; the CLI splits that value into permission rules on commas and spaces outside parentheses with no escape sequences, so a name carrying a delimiter could not be passed through reliably. The command builder now validates each name and fails closed with `ArgumentError` (`TypeError` for non-String entries). Rejected: parentheses, commas, control characters (C0, DEL, C1), U+FEFF, empty names; a literal `*` and wildcard suffixes (`:*`, ` *`); and shapes that parse but can never match the listed skill — surrounding whitespace (Unicode-aware, unlike `String#strip`), a leading `/`, consecutive backslashes, a trailing unpaired backslash, and byte sequences that cannot form valid UTF-8 (Ruby's analogue of Python's surrogate check). Ordinary names are unaffected, including plugin-qualified names, interior spaces, single backslashes, and non-ASCII; valid non-UTF-8 strings are converted so the argv join cannot raise `Encoding::CompatibilityError`.
+  - **Breaking:** `skills: ['*']` and `skills: ['plugin:*']` now raise — use `skills: 'all'`, or a `Skill(...)` rule in `allowed_tools` for prefix matching. `skills: [' name']` and `skills: ['/name']` now raise as well; both previously built a rule that could never match, so the skill was silently unavailable.
+
 ## [0.28.0] - 2026-07-31
 
 ### Changed
