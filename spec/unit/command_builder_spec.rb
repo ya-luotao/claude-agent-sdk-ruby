@@ -156,6 +156,116 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       expect(flag_value(cmd, '--allowedTools')).to eq('Read')
       expect(cmd).not_to include('--setting-sources')
     end
+
+    describe 'skill name validation (port of Python SDK #1145)' do
+      def expect_rejects(name, error_class, message_re)
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(skills: [name])
+        expect { build(options) }.to raise_error(error_class, message_re)
+      end
+
+      it 'rejects names containing rule-syntax delimiters' do
+        ['x),Bash(*', 'safe),Bash,Skill(dummy', 'name,with,commas', 'unbalanced(', 'unbalanced)', '()'].each do |bad|
+          expect_rejects(bad, ArgumentError, /Invalid skill name/)
+        end
+      end
+
+      it 'rejects names containing C0 control characters and DEL' do
+        newline = 10.chr
+        tab = 9.chr
+        nul = 0.chr
+        del = 0x7F.chr
+        ["with#{newline}newline", "with#{tab}tab", "nul#{nul}byte", "del#{del}char"].each do |bad|
+          expect_rejects(bad, ArgumentError, /Invalid skill name/)
+        end
+      end
+
+      it 'rejects names containing C1 control characters' do
+        nel = 0x85.chr(Encoding::UTF_8)
+        csi = 0x9B.chr(Encoding::UTF_8)
+        ["nel#{nel}end", "csi#{csi}end"].each do |bad|
+          expect_rejects(bad, ArgumentError, /Invalid skill name/)
+        end
+      end
+
+      it 'rejects byte-order marks (the CLI trims U+FEFF as whitespace)' do
+        bom = 0xFEFF.chr(Encoding::UTF_8)
+        ["#{bom}pdf", "pdf#{bom}"].each do |bad|
+          expect_rejects(bad, ArgumentError, /Invalid skill name/)
+        end
+      end
+
+      it 'rejects empty or whitespace-only names' do
+        tab = 9.chr
+        ['', ' ', "  #{tab} "].each do |bad|
+          expect_rejects(bad, ArgumentError, /non-empty/)
+        end
+      end
+
+      it 'rejects non-string entries with TypeError' do
+        expect_rejects(42, TypeError, /must be strings/)
+      end
+
+      it 'rejects wildcard-suffix names' do
+        ['pdf:*', 'my skill *', ':*'].each do |bad|
+          expect_rejects(bad, ArgumentError, /wildcard-suffix/)
+        end
+      end
+
+      it "rejects a bare '*', pointing at skills: 'all'" do
+        expect_rejects('*', ArgumentError, /use skills: 'all'/)
+      end
+
+      it 'rejects surrounding whitespace (a padded rule can never match)' do
+        tab = 9.chr
+        [' pdf', 'pdf ', "#{tab}pdf", ' pdf '].each do |bad|
+          expect_rejects(bad, ArgumentError, /whitespace/)
+        end
+      end
+
+      it 'rejects non-ASCII surrounding whitespace (NBSP), unlike String#strip' do
+        nbsp = 0xA0.chr(Encoding::UTF_8)
+        expect_rejects("#{nbsp}pdf", ArgumentError, /whitespace/)
+      end
+
+      it 'rejects a leading slash (the session allowlist matches verbatim)' do
+        ['/pdf', '/myplugin:pdf'].each do |bad|
+          expect_rejects(bad, ArgumentError, /may not start with/)
+        end
+      end
+
+      it 'rejects an unpaired trailing backslash' do
+        expect_rejects('name\\', ArgumentError, /unpaired backslash/)
+      end
+
+      it 'rejects consecutive backslashes (the per-rule parser collapses them)' do
+        ['name\\\\', 'name\\\\\\', 'mid\\\\dle'].each do |bad|
+          expect_rejects(bad, ArgumentError, /consecutive backslashes/)
+        end
+      end
+
+      it 'rejects surrogate code points and other invalid byte sequences' do
+        lone_surrogate = ('lone'.b + [0xED, 0xA0, 0x80].pack('C*')).force_encoding(Encoding::UTF_8)
+        binary_high_bytes = 0xFF.chr
+        [lone_surrogate, binary_high_bytes].each do |bad|
+          expect_rejects(bad, ArgumentError, /valid UTF-8/)
+        end
+      end
+
+      it 'converts valid non-UTF-8 names so the argv join cannot raise' do
+        utf16 = 'pdf'.encode(Encoding::UTF_16LE)
+        cmd = build(ClaudeAgentSDK::ClaudeAgentOptions.new(skills: [utf16]))
+
+        expect(flag_value(cmd, '--allowedTools')).to eq('Skill(pdf)')
+      end
+
+      it 'accepts ordinary names, including plugin-qualified, spaced, and non-ASCII' do
+        ['pdf-tools', 'my_skill.v2', 'myplugin:pdf', 'skill with spaces', 'dir\\sub', '日本語スキル'].each do |good|
+          cmd = build(ClaudeAgentSDK::ClaudeAgentOptions.new(skills: [good]))
+
+          expect(flag_value(cmd, '--allowedTools')).to eq("Skill(#{good})")
+        end
+      end
+    end
   end
 
   describe 'Hash-form thinking config' do

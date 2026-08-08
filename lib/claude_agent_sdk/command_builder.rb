@@ -9,6 +9,16 @@ module ClaudeAgentSDK
   class CommandBuilder
     EXTRA_ARG_FLAG_REGEXP = /\A[a-z0-9][a-z0-9-]*\z/
 
+    # Parentheses and commas are delimiters to the --allowedTools tokenizer;
+    # control characters (C0, DEL, C1) never appear in a skill directory name.
+    # U+FEFF is here rather than in the whitespace checks below because the
+    # CLI trims it as whitespace and [[:space:]] does not match it.
+    SKILL_NAME_INVALID_CHARS = /[(),\u0000-\u001F\u007F-\u009F\uFEFF]/
+
+    # Unicode-aware edge whitespace: the CLI and Skill tool trim Unicode
+    # whitespace, and Ruby's String#strip is ASCII-only.
+    SKILL_NAME_EDGE_WHITESPACE = /\A[[:space:]]+|[[:space:]]+\z/
+
     def initialize(cli_path, options)
       @cli_path = cli_path
       @options = options
@@ -93,24 +103,87 @@ module ClaudeAgentSDK
     # entry, no duplicates) and default setting_sources to user+project so
     # skill files are actually discovered. Explicit setting_sources (including
     # []) is never overridden. Non-mutating; returns the effective pair.
-    # Justified divergence: a non-'all' String raises (NoMethodError on #each)
-    # instead of Python's quirk of iterating its characters.
+    # Each listed name is validated before being formatted into a rule (see
+    # #validate_skill_name). Both SDKs reject non-list, non-'all' shapes
+    # loudly; this raises ArgumentError where Python raises TypeError.
     def skills_defaults
       allowed_tools = @options.allowed_tools.dup
       setting_sources = @options.setting_sources&.dup
       skills = @options.skills
       return [allowed_tools, setting_sources] if skills.nil?
 
-      # Fail loudly with a clear message instead of a bare NoMethodError from
-      # deep inside build for skills: :all / 'pdf' / Hash typos (and instead
-      # of Python's quirk of iterating a String's characters).
       valid = skills == "all" || skills.is_a?(Array)
       raise ArgumentError, "skills must be 'all' or an Array of skill names (got #{skills.inspect})" unless valid
 
-      entries = skills == "all" ? ["Skill"] : skills.map { |name| "Skill(#{name})" }
+      entries = skills == "all" ? ["Skill"] : skills.map { |name| "Skill(#{validate_skill_name(name)})" }
       entries.each { |entry| allowed_tools << entry unless allowed_tools.include?(entry) }
       setting_sources = %w[user project] if setting_sources.nil?
       [allowed_tools, setting_sources]
+    end
+
+    # Reject skill names that cannot ride safely in a Skill(name) rule
+    # (port of Python SDK #1145). Names from options.skills are formatted
+    # into the --allowedTools value, which the CLI splits into rules on
+    # commas and spaces outside parentheses. That tokenizer honors no escape
+    # sequences -- escaping exists only in the per-rule grammar, applied
+    # after splitting -- so a name carrying a delimiter cannot be passed
+    # through reliably: what it tokenizes into depends on what surrounds it.
+    #
+    # Names that tokenize cleanly but can never match the listed skill are
+    # rejected too, so a dead rule fails loudly here instead of silently
+    # granting nothing. Returns the name as a UTF-8 String so later argv
+    # joins cannot raise Encoding::CompatibilityError.
+    def validate_skill_name(name) # rubocop:disable Metrics/MethodLength
+      raise TypeError, "Skill names must be strings, got #{name.class}: #{name.inspect}" unless name.is_a?(String)
+
+      # Ruby's analogue of Python's surrogate check: a lone surrogate (or any
+      # other broken byte sequence) is unrepresentable in valid UTF-8, and no
+      # CLI-discovered skill name contains one.
+      utf8 = begin
+        name.encode(Encoding::UTF_8)
+      rescue EncodingError
+        nil
+      end
+      if utf8.nil? || !utf8.valid_encoding?
+        raise ArgumentError, "Invalid skill name #{name.inspect}: contains bytes that cannot form " \
+                             "valid UTF-8 (such as a surrogate code point), which can never match " \
+                             "a skill the CLI discovered."
+      end
+
+      stripped = utf8.gsub(SKILL_NAME_EDGE_WHITESPACE, "")
+      raise ArgumentError, "Skill names must be non-empty strings" if stripped.empty?
+
+      if utf8 != stripped
+        raise ArgumentError, "Invalid skill name #{name.inspect}: leading or trailing whitespace " \
+                             "can never match -- the Skill tool trims the invoked name."
+      end
+      if SKILL_NAME_INVALID_CHARS.match?(utf8)
+        raise ArgumentError, "Invalid skill name #{name.inspect}: parentheses, commas, control " \
+                             "characters, and byte-order marks are not allowed. Names match the " \
+                             "skill's directory name, or 'plugin:skill' for plugin-qualified skills."
+      end
+      raise ArgumentError, "Invalid skill name '*': use skills: 'all' to enable every skill." if utf8 == "*"
+
+      if utf8.end_with?(":*", " *")
+        raise ArgumentError, "Invalid skill name #{name.inspect}: wildcard-suffix names are not " \
+                             "allowed; list each skill by its exact name."
+      end
+      if utf8.start_with?("/")
+        raise ArgumentError, "Invalid skill name #{name.inspect}: skill names may not start with " \
+                             "'/'. The skills option takes the canonical name, not the " \
+                             "slash-command form."
+      end
+      if utf8.include?("\\\\")
+        raise ArgumentError, "Invalid skill name #{name.inspect}: consecutive backslashes are not " \
+                             "allowed -- the per-rule parser collapses them, so the rule would " \
+                             "name a different skill."
+      end
+      if utf8.end_with?("\\")
+        raise ArgumentError, "Invalid skill name #{name.inspect}: names may not end with an " \
+                             "unpaired backslash."
+      end
+
+      utf8
     end
 
     def append_disallowed_tools(cmd)
