@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-09
+
 ### Added
 - **`ClaudeAgentSDK::CLIInstaller`** — downloads a pinned `claude` CLI binary into a project-local directory (`vendor/claude` by default) for hermetic deploys, so a Docker image or CI job runs a known CLI version instead of whatever `npm install -g` last put on `PATH`. `CLIInstaller.install(version: '2.1.220', dir: nil)` resolves `stable`/`latest` dist-tags through the official release endpoint, verifies the platform's SHA-256 from the release manifest, streams the ~280MB binary to an unpredictable sibling temp file (opened `O_EXCL`, so a pre-planted path or symlink is never written through) and renames it into place atomically (`0755`), then records the version **and** the verified checksum in a sibling `VERSION` file. `CLIInstaller.installed_path` returns the vendored binary or `nil`. Stdlib only — no new runtime dependency, and no binary shipped inside the gem. Supports macOS and Linux (glibc + musl, x86_64 + arm64, with a Rosetta 2 override so an x86_64 Ruby on Apple Silicon gets the native build); every failure raises the new `ClaudeAgentSDK::CLIInstallError`, filesystem errors included (wrapped, with `cause` preserved).
   - **Idempotent without trusting the recorded version alone**: the shortcut re-hashes the vendored binary and skips the download only when version *and* checksum match, so a truncated or swapped binary is reinstalled rather than used. It makes no network request — repeat boots work offline.
