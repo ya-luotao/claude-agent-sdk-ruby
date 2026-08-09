@@ -2,6 +2,7 @@
 
 require 'spec_helper'
 require 'tempfile'
+require 'tmpdir'
 
 RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
   # The active-process registry is class-level mutable state shared across the
@@ -446,6 +447,97 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       cmd = transport.build_command
 
       expect(cmd).not_to include('--enable-file-checkpointing')
+    end
+  end
+
+  describe '#find_cli' do
+    # find_cli runs from #initialize, so build the transport WITH a cli_path
+    # (skipping discovery) and call the method explicitly.
+    subject(:transport) do
+      described_class.new('hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
+    end
+
+    let(:tmp_dir) { @tmp_dir }
+
+    around do |example|
+      Dir.mktmpdir('find-cli-spec') do |dir|
+        @tmp_dir = dir
+        example.run
+      end
+    end
+
+    # Every probe is stubbed by default so the host's real `claude` (and real
+    # environment) can never decide the outcome of an ordering example.
+    before do
+      allow(ENV).to receive(:fetch).and_call_original
+      allow(ENV).to receive(:fetch).with('CLAUDE_CLI_PATH', nil).and_return(nil)
+      allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_return(nil)
+      allow(Open3).to receive(:capture2).and_call_original
+      allow(Open3).to receive(:capture2).with('which', 'claude').and_return(['', nil])
+    end
+
+    def executable(name)
+      path = File.join(tmp_dir, name)
+      File.write(path, "#!/bin/sh\n")
+      File.chmod(0o755, path)
+      path
+    end
+
+    it 'prefers CLAUDE_CLI_PATH over everything else' do
+      env_cli = executable('env-claude')
+      allow(ENV).to receive(:fetch).with('CLAUDE_CLI_PATH', nil).and_return(env_cli)
+      allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_return(executable('vendored-claude'))
+      allow(Open3).to receive(:capture2).with('which', 'claude').and_return([executable('which-claude'), nil])
+
+      expect(transport.find_cli).to eq(env_cli)
+    end
+
+    it 'ignores CLAUDE_CLI_PATH when it does not point at an executable' do
+      allow(ENV).to receive(:fetch).with('CLAUDE_CLI_PATH', nil).and_return(File.join(tmp_dir, 'missing'))
+      vendored = executable('vendored-claude')
+      allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_return(vendored)
+
+      expect(transport.find_cli).to eq(vendored)
+    end
+
+    it 'ignores CLAUDE_CLI_PATH pointing at a directory (executable? is true for dirs)' do
+      allow(ENV).to receive(:fetch).with('CLAUDE_CLI_PATH', nil).and_return(tmp_dir)
+      vendored = executable('vendored-claude')
+      allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_return(vendored)
+
+      expect(transport.find_cli).to eq(vendored)
+    end
+
+    it 'prefers the vendored binary over a `which`-discovered one' do
+      vendored = executable('vendored-claude')
+      allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_return(vendored)
+      allow(Open3).to receive(:capture2).with('which', 'claude').and_return([executable('which-claude'), nil])
+
+      expect(transport.find_cli).to eq(vendored)
+    end
+
+    it 'falls back to `which` when no override and no vendored binary exist' do
+      which_cli = executable('which-claude')
+      allow(Open3).to receive(:capture2).with('which', 'claude').and_return(["#{which_cli}\n", nil])
+
+      expect(transport.find_cli).to eq(which_cli)
+    end
+
+    it 'tolerates CLIInstaller.installed_path raising' do
+      which_cli = executable('which-claude')
+      allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_raise(Errno::ENOENT)
+      allow(Open3).to receive(:capture2).with('which', 'claude').and_return([which_cli, nil])
+
+      expect(transport.find_cli).to eq(which_cli)
+    end
+
+    it 'mentions the installer and CLAUDE_CLI_PATH when nothing is found' do
+      allow(File).to receive(:exist?).and_call_original
+      allow(File).to receive(:exist?).with(a_string_matching(/claude/)).and_return(false)
+
+      expect { transport.find_cli }.to raise_error(
+        ClaudeAgentSDK::CLINotFoundError, /CLIInstaller\.install.*CLAUDE_CLI_PATH/m
+      )
     end
   end
 
