@@ -123,7 +123,7 @@ Supported platforms: `darwin-arm64`, `darwin-x64` (Rosetta 2 gets the arm64 buil
 
 **CLI discovery order.** With no explicit `cli_path:` in `ClaudeAgentOptions`, the transport probes in this order:
 
-1. `CLAUDE_CLI_PATH` — an explicit path to an executable, no discovery at all
+1. `CLAUDE_CLI_PATH` — an explicit path to an executable, no discovery at all (a relative value is resolved against the process's working directory, not `cwd:`)
 2. The vendored binary (`CLIInstaller.installed_path`) — deliberately ahead of `PATH`, so a pinned install beats whatever is installed globally
 3. `which claude`
 4. Common install locations (`~/.claude/local/claude`, `/usr/local/bin/claude`, …)

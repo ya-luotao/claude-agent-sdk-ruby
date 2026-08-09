@@ -121,10 +121,18 @@ module ClaudeAgentSDK
     #   4. Well-known install locations.
     def find_cli
       env_path = ENV.fetch(CLI_PATH_ENV_VAR, nil).to_s
-      # File.file? as well as executable?: executable? is true for directories,
-      # so a directory in CLAUDE_CLI_PATH would otherwise pass here and fail
-      # much later with an opaque spawn error.
-      return env_path if !env_path.empty? && File.file?(env_path) && File.executable?(env_path)
+      unless env_path.empty?
+        # Absolutize against the CURRENT working directory, which is where the
+        # checks below resolve a relative path — the CLI is later spawned with
+        # `chdir: options.cwd`, where the same relative path would name a
+        # different file (or nothing at all). Returning the absolute form makes
+        # what we validated and what we execute the same file.
+        env_path = File.expand_path(env_path)
+        # File.file? as well as executable?: executable? is true for
+        # directories, so a directory in CLAUDE_CLI_PATH would otherwise pass
+        # here and fail much later with an opaque spawn error.
+        return env_path if File.file?(env_path) && File.executable?(env_path)
+      end
 
       vendored = begin
         CLIInstaller.installed_path

@@ -33,7 +33,11 @@ module ClaudeAgentSDK
     # Dist-tags resolved through a GET to BASE_URL/<tag>.
     DIST_TAGS = %w[stable latest].freeze
     # Concrete version, optionally with a pre-release suffix (e.g. 2.1.220-rc1).
-    VERSION_PATTERN = /\A\d+\.\d+\.\d+(-\S+)?\z/
+    # The suffix is restricted to the semver pre-release character set: every
+    # accepted version is interpolated straight into a download URL, and a
+    # laxer `\S+` would let "2.1.220-x/../2.1.221" traverse out of the release
+    # path — silently installing something other than the pinned version.
+    VERSION_PATTERN = /\A\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?\z/
     CHECKSUM_PATTERN = /\A[0-9a-f]{64}\z/
     BINARY_NAME = 'claude'
     VERSION_FILE = 'VERSION'
@@ -193,16 +197,22 @@ module ClaudeAgentSDK
     # URL construction. Pure remote reads — no filesystem, no state.
     module Release
       class << self
-        # 'stable'/'latest' resolve through their endpoint; a concrete version
-        # is format-checked and used as-is.
-        def resolve_version(version)
+        # Local, network-free check of what the caller asked for. Returns the
+        # normalized request — a dist-tag name or a concrete version — so bad
+        # input fails before the installer touches the filesystem.
+        def validate_version(version)
           version = version.to_s.strip
-          return resolve_dist_tag(version) if DIST_TAGS.include?(version)
-          return version if version.match?(VERSION_PATTERN)
+          return version if DIST_TAGS.include?(version) || version.match?(VERSION_PATTERN)
 
           raise CLIInstallError,
                 "Invalid Claude Code CLI version #{version.inspect}: " \
                 "expected #{DIST_TAGS.join('/')} or a version like '2.1.220'"
+        end
+
+        # Turns a validated request into a concrete version: dist-tags go to
+        # the network, concrete versions are already the answer.
+        def resolve_version(validated)
+          DIST_TAGS.include?(validated) ? resolve_dist_tag(validated) : validated
         end
 
         # The manifest's release info for +platform+: the SHA-256 (required,
@@ -314,12 +324,16 @@ module ClaudeAgentSDK
       # An upgrade never destroys a working install: see #publish.
       def install(version: 'stable', dir: nil)
         dir = File.expand_path(dir || default_dir)
-        # Resolved before the lock: it is a read-only GET, and the format check
-        # must reject a bad version before anything is created on disk.
-        resolved = Release.resolve_version(version)
+        # Validated (locally) first, so malformed input never creates a
+        # directory; RESOLVED inside the lock, so a dist-tag cannot be read
+        # before another installer publishes a newer version and then be used
+        # to downgrade it. Semantics: last resolver wins.
+        requested = Release.validate_version(version)
         binary = File.join(dir, BINARY_NAME)
         FileUtils.mkdir_p(dir)
         with_install_lock(dir) do
+          sweep_stale_temp_files(dir)
+          resolved = Release.resolve_version(requested)
           next binary if installed?(dir, resolved)
 
           platform = Platform.detect
@@ -368,6 +382,21 @@ module ClaudeAgentSDK
             lock.flock(File::LOCK_UN)
           end
         end
+      end
+
+      # Remove temp files abandoned by an earlier install that died before its
+      # `ensure` could run (SIGKILL, power loss, OOM) — each one can be the
+      # full ~280MB, and every retry picks a fresh random name, so without
+      # this they accumulate. Safe because we hold the install lock: no other
+      # installer can have a download in flight. Never blocks the install.
+      def sweep_stale_temp_files(dir)
+        ["#{BINARY_NAME}.download.*", "#{VERSION_FILE}.*.tmp"].each do |pattern|
+          # base: keeps glob metacharacters in +dir+ (a `[` in a project path)
+          # from being interpreted as part of the pattern.
+          Dir.glob(pattern, base: dir).each { |name| FileUtils.rm_f(File.join(dir, name)) }
+        end
+      rescue StandardError
+        nil
       end
 
       # True only when the vendored binary is byte-for-byte the one recorded

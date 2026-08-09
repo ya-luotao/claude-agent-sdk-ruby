@@ -500,6 +500,23 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(transport.find_cli).to eq(vendored)
     end
 
+    it 'absolutizes a relative CLAUDE_CLI_PATH against the current working directory' do
+      # The CLI is spawned with `chdir: options.cwd`, where a relative path
+      # resolves somewhere else entirely — so find_cli must hand back the
+      # absolute path it actually validated.
+      executable('rel-claude')
+      allow(ENV).to receive(:fetch).with('CLAUDE_CLI_PATH', nil).and_return('rel-claude')
+      other_cwd = File.join(tmp_dir, 'elsewhere')
+      FileUtils.mkdir_p(other_cwd)
+      transport_with_cwd = described_class.new(
+        'hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', cwd: other_cwd)
+      )
+
+      Dir.chdir(tmp_dir) do
+        expect(transport_with_cwd.find_cli).to eq(File.join(File.realpath(tmp_dir), 'rel-claude'))
+      end
+    end
+
     it 'ignores CLAUDE_CLI_PATH pointing at a directory (executable? is true for dirs)' do
       allow(ENV).to receive(:fetch).with('CLAUDE_CLI_PATH', nil).and_return(tmp_dir)
       vendored = executable('vendored-claude')

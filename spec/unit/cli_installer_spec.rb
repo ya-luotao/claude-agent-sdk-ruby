@@ -111,6 +111,21 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
       expect(Dir.children(tmp_dir)).to be_empty
     end
 
+    it 'rejects a pre-release suffix that could traverse out of the release path' do
+      ['2.1.220-foo/../2.1.221', '2.1.220-../x', '2.1.220-a/b', "2.1.220-a\nb", '2.1.220- rc1'].each do |version|
+        expect { described_class.install(version: version, dir: tmp_dir) }
+          .to raise_error(ClaudeAgentSDK::CLIInstallError, /Invalid Claude Code CLI version/)
+      end
+
+      expect(Dir.children(tmp_dir)).to be_empty
+    end
+
+    it 'still accepts ordinary semver pre-release suffixes' do
+      stub_http(version: '2.1.220-beta.1')
+
+      expect(described_class.install(version: '2.1.220-beta.1', dir: tmp_dir)).to eq(binary_path)
+    end
+
     it 'raises when the dist-tag endpoint returns an HTML error page' do
       allow(http).to receive(:fetch_text).and_return("<!DOCTYPE html>\n<html><body>nope</body></html>")
 
@@ -246,6 +261,42 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
 
       expect(paths.map { |p| File.basename(p) }).to all(match(/\Aclaude\.download\.[0-9a-f]{16}\z/))
       expect(paths.uniq.size).to eq(2)
+    end
+
+    it 'sweeps temp files abandoned by an interrupted earlier install' do
+      stub_http
+      stale_download = File.join(tmp_dir, 'claude.download.0123456789abcdef')
+      stale_metadata = File.join(tmp_dir, 'VERSION.0123456789abcdef.tmp')
+      File.write(stale_download, 'orphaned 245MB of a killed install')
+      File.write(stale_metadata, 'orphaned metadata temp')
+
+      described_class.install(dir: tmp_dir)
+
+      expect(File.exist?(stale_download)).to be false
+      expect(File.exist?(stale_metadata)).to be false
+      expect(Dir.children(tmp_dir)).to contain_exactly('.install.lock', 'VERSION', 'claude')
+    end
+
+    it 'sweeps stale temp files even when the install itself is a no-op' do
+      stub_http
+      described_class.install(dir: tmp_dir)
+      stale_download = File.join(tmp_dir, 'claude.download.beefbeefbeefbeef')
+      File.write(stale_download, 'orphaned')
+
+      described_class.install(dir: tmp_dir)
+
+      expect(File.exist?(stale_download)).to be false
+      expect(File.binread(binary_path)).to eq(binary_body)
+    end
+
+    it 'leaves unrelated files in the install directory alone' do
+      stub_http
+      keeper = File.join(tmp_dir, 'README.md')
+      File.write(keeper, 'notes')
+
+      described_class.install(dir: tmp_dir)
+
+      expect(File.read(keeper)).to eq('notes')
     end
 
     it 'passes the manifest size to the downloader as a hard byte bound' do
@@ -447,6 +498,35 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
       expect(held_elsewhere).to be false
       # Released once install returns.
       expect(File.open(lock_path, 'r') { |f| f.flock(File::LOCK_EX | File::LOCK_NB) }).to eq(0)
+    end
+
+    it 'resolves the dist-tag inside the lock, so a concurrent install cannot be downgraded' do
+      # Resolving before the lock let a slow installer read an old version,
+      # wait for a faster one to publish a newer one, and then "install" the
+      # older version over it.
+      allow(platform_module).to receive(:detect).and_return('darwin-arm64')
+      lock_held_during_resolve = nil
+      allow(http).to receive(:fetch_text) do |url, **|
+        if url == "#{base}/stable"
+          lock_held_during_resolve =
+            File.open(lock_path, 'r') { |f| f.flock(File::LOCK_EX | File::LOCK_NB) }
+          "2.1.220\n"
+        else
+          JSON.generate(
+            'platforms' => { 'darwin-arm64' => { 'checksum' => checksum, 'size' => binary_body.bytesize } }
+          )
+        end
+      end
+      allow(http).to receive(:download_to) do |_url, path, **|
+        File.binwrite(path, binary_body)
+        path
+      end
+
+      described_class.install(dir: tmp_dir)
+
+      # false == the lock could not be taken, i.e. install was holding it.
+      expect(lock_held_during_resolve).to be false
+      expect(recorded_version).to eq('2.1.220')
     end
 
     it 'serializes concurrent installs so only one download happens' do
