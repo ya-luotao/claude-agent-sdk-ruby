@@ -18,6 +18,11 @@ module ClaudeAgentSDK
     end
   end
 
+  # Raised when CLIInstaller cannot install the Claude Code CLI binary
+  # (unsupported platform, invalid/unresolvable version, HTTP failure,
+  # missing manifest entry, checksum mismatch).
+  class CLIInstallError < ClaudeSDKError; end
+
   # Raised when the CLI process fails
   class ProcessError < ClaudeSDKError
     attr_reader :exit_code, :stderr

@@ -8,6 +8,7 @@ require_relative 'transport'
 require_relative 'errors'
 require_relative 'version'
 require_relative 'command_builder'
+require_relative 'cli_installer'
 
 module ClaudeAgentSDK
   # Subprocess transport using Claude Code CLI
@@ -15,6 +16,7 @@ module ClaudeAgentSDK
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
     SKIP_VERSION_CHECK_ENV_VAR = 'CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'
+    CLI_PATH_ENV_VAR = 'CLAUDE_CLI_PATH'
     VERSION_CHECK_TIMEOUT_SECONDS = 2 # mirrors Python's anyio.fail_after(2)
     RECENT_STDERR_LINES_LIMIT = 20
 
@@ -110,7 +112,36 @@ module ClaudeAgentSDK
       @stdin_mutex = Mutex.new
     end
 
+    # Probe order (first hit wins):
+    #   1. CLAUDE_CLI_PATH — explicit operator override, no discovery at all.
+    #   2. A project-local vendored binary (CLIInstaller). Deliberately ahead
+    #      of PATH: the point of a pinned, vendored CLI is that it beats
+    #      whatever version happens to be installed globally on the host.
+    #   3. `which claude`.
+    #   4. Well-known install locations.
     def find_cli
+      env_path = ENV.fetch(CLI_PATH_ENV_VAR, nil).to_s
+      unless env_path.empty?
+        # Absolutize against the CURRENT working directory, which is where the
+        # checks below resolve a relative path — the CLI is later spawned with
+        # `chdir: options.cwd`, where the same relative path would name a
+        # different file (or nothing at all). Returning the absolute form makes
+        # what we validated and what we execute the same file.
+        env_path = File.expand_path(env_path)
+        # File.file? as well as executable?: executable? is true for
+        # directories, so a directory in CLAUDE_CLI_PATH would otherwise pass
+        # here and fail much later with an opaque spawn error.
+        return env_path if File.file?(env_path) && File.executable?(env_path)
+      end
+
+      vendored = begin
+        CLIInstaller.installed_path
+      rescue StandardError
+        # e.g. Dir.pwd raising because the cwd was removed — fall through.
+        nil
+      end
+      return vendored if vendored
+
       # Try which command first (using Open3 for thread safety)
       cli = nil
       begin
@@ -141,7 +172,11 @@ module ClaudeAgentSDK
         "\nIf already installed locally, try:\n" \
         '  export PATH="$HOME/node_modules/.bin:$PATH"' \
         "\n\nOr provide the path via ClaudeAgentOptions:\n" \
-        "  ClaudeAgentOptions.new(cli_path: '/path/to/claude')"
+        "  ClaudeAgentOptions.new(cli_path: '/path/to/claude')" \
+        "\n\nFor hermetic deploys (Docker/CI), vendor a pinned CLI into the project:\n" \
+        "  ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')" \
+        "\n\nOr point the SDK at an existing binary:\n" \
+        "  export #{CLI_PATH_ENV_VAR}=/path/to/claude"
       )
     end
 

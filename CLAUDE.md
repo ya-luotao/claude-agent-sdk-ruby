@@ -44,6 +44,18 @@ User code
 
 - **`Client`** — Full-featured bidirectional sessions. Accepts optional `transport_class` (defaults to `SubprocessCLITransport`) and `transport_args` for custom transports. Creates transport, instantiates a `Query` handler that runs `read_messages` in an async task, routes control messages internally, and exposes SDK messages via `Async::Queue`. Supports hooks, permission callbacks, SDK MCP servers, interrupt, model switching, and file rewind.
 
+### CLI Discovery / Installer
+
+`SubprocessCLITransport#find_cli` probes, in order: `CLAUDE_CLI_PATH` (absolutized against the process cwd before use — the CLI is later spawned with `chdir: options.cwd`, where a relative path would name a different file) → `CLIInstaller.installed_path` (project-local vendored binary, deliberately ahead of `PATH` so a pinned install is hermetic) → `which claude` → common install locations.
+
+`CLIInstaller` (`lib/claude_agent_sdk/cli_installer.rb`) downloads a pinned CLI into `vendor/claude` (relative to `Dir.pwd`, resolved at call time) for Docker/CI deploys: dist-tag → concrete version, manifest SHA-256 + declared size, streamed download (bounded by that size) to a random-named sibling temp file (`O_EXCL`), verify, `chmod 0755`, atomically write `VERSION` = version + verified checksum, and **finally** rename the temp file into place. Stdlib only; every failure (filesystem errors included) is wrapped in `CLIInstallError` with `cause` preserved.
+
+**Publication order is load-bearing**: the rename is last precisely because nothing can fail after it. A failed upgrade (download, checksum, metadata, or the rename itself) leaves the previously installed binary intact and runnable, and the next `install` redoes it cleanly — the earlier rename-then-record order let a metadata failure delete the freshly renamed binary and take the working install with it. That same invariant is why discovery (`installed_path` / `find_cli`) is deliberately lock-free: a reader only ever sees a complete binary.
+
+The whole sequence runs under an exclusive `flock` on `<dir>/.install.lock`: sweep stale temp files (abandoned by an install killed before its `ensure`) → resolve the dist-tag → idempotency check → download → record → publish. Dist-tag resolution is deliberately *inside* the lock — resolving it outside let a slow installer read an old version, wait for a faster one to publish a newer one, and then downgrade it; the semantics are now "last resolver wins". Only the local version-format check runs before the lock, so malformed input never creates a directory. The idempotency shortcut re-hashes the binary against the recorded checksum and makes **no** network call (offline re-boot must work, given a pinned version); a mismatch or a legacy single-line `VERSION` triggers a clean reinstall.
+
+Four nested modules keep it testable without an HTTP stubbing library: `Http` (all network IO, redirect/timeout/size caps), `Platform` (host probing: `RUBY_PLATFORM` mapping, musl, Rosetta 2), `Release` (dist-tag + manifest reads), `Metadata` (the `VERSION` file). Specs stub those modules directly.
+
 ### SDK MCP Servers
 
 Custom tools run in-process (no subprocess). The flow:
