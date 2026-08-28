@@ -507,6 +507,33 @@ module ClaudeAgentSDK
     end
   end
 
+  # Emitted when the session's conversation is replaced without ending the
+  # connection — e.g. after `/clear` or any other flow that discards the
+  # transcript mid-session (type: 'conversation_reset').
+  #
+  # In streaming-input mode a single connection carries many user turns, and a
+  # reset clears the conversation history *and* zeroes the running totals
+  # reported on subsequent {ResultMessage} objects (e.g. `total_cost_usd`). If
+  # you accumulate those totals across a long-lived session, snapshot them when
+  # this message arrives.
+  #
+  # @!attribute [rw] new_conversation_id
+  #   Opaque identifier for the fresh conversation, for UIs to key an empty
+  #   transcript on (and to discard any cached session title). This is *not*
+  #   the `session_id` of subsequent messages — read that from the next
+  #   message.
+  #   @return [String]
+  # @!attribute [rw] uuid
+  #   Unique ID of this message.
+  #   @return [String]
+  # @!attribute [rw] session_id
+  #   ID of the session that was reset (the outgoing session; messages after
+  #   the reset carry a new `session_id`).
+  #   @return [String]
+  class ConversationResetMessage < Type
+    attr_accessor :new_conversation_id, :uuid, :session_id
+  end
+
   # Thinking configuration types
   #
   # `display` controls how thinking content appears in responses. Valid values

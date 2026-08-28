@@ -25,6 +25,8 @@ module ClaudeAgentSDK
         parse_stream_event(data)
       when 'rate_limit_event'
         parse_rate_limit_event(data)
+      when 'conversation_reset'
+        parse_conversation_reset_message(data)
       when 'tool_progress'
         parse_tool_progress_message(data)
       when 'auth_status'
@@ -133,6 +135,20 @@ module ClaudeAgentSDK
 
     def self.parse_rate_limit_event(data)
       RateLimitEvent.new(data.merge(raw_data: data))
+    end
+
+    # `/clear` (or any other mid-session transcript discard) resets the
+    # conversation without ending the connection. Every field is required —
+    # a frame missing one is malformed CLI output, not a forward-compatible
+    # variant, so it raises rather than yielding a half-built message.
+    def self.parse_conversation_reset_message(data)
+      ConversationResetMessage.new(
+        new_conversation_id: data.fetch(:new_conversation_id),
+        uuid: data.fetch(:uuid),
+        session_id: data.fetch(:session_id)
+      )
+    rescue KeyError => e
+      raise MessageParseError.new("Missing required field in conversation_reset message: #{e.key}", data: data)
     end
 
     def self.parse_tool_progress_message(data)

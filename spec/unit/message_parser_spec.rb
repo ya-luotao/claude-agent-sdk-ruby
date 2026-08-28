@@ -727,6 +727,29 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
       end
     end
 
+    context 'conversation reset' do
+      it 'parses conversation_reset into a typed ConversationResetMessage' do
+        data = {
+          type: 'conversation_reset',
+          new_conversation_id: 'd2f4a573-ca99-42a2-bb7a-905b40c908e8',
+          uuid: 'msg-1',
+          session_id: '66694129-ce74-4ee1-9b0f-994155ac97ba'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::ConversationResetMessage)
+        expect(msg.new_conversation_id).to eq('d2f4a573-ca99-42a2-bb7a-905b40c908e8')
+        expect(msg.uuid).to eq('msg-1')
+        expect(msg.session_id).to eq('66694129-ce74-4ee1-9b0f-994155ac97ba')
+      end
+
+      it 'raises MessageParseError when a required field is missing' do
+        expect do
+          described_class.parse(type: 'conversation_reset', uuid: 'u', session_id: 's')
+        end.to raise_error(ClaudeAgentSDK::MessageParseError, /new_conversation_id/)
+      end
+    end
+
     context 'user message tool_use_result' do
       it 'parses tool_use_result when present' do
         data = {
