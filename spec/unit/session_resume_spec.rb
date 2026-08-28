@@ -5,6 +5,7 @@ require 'securerandom'
 require 'tmpdir'
 require 'json'
 require 'fileutils'
+require 'timeout'
 
 RSpec.describe ClaudeAgentSDK::SessionResume do
   let(:store) { ClaudeAgentSDK::InMemorySessionStore.new }
@@ -60,6 +61,23 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       FileUtils.remove_entry(dir)
     end
 
+    it 'seeds no credentials file when the redacted result cannot be re-serialized' do
+      # JSON.parse accepts illegal UTF-8 bytes inside an otherwise well-formed
+      # document, so redaction can succeed and only fail at JSON.generate.
+      # Writing the original bytes through would restore the un-redacted
+      # refreshToken; raising would abort a resume every other seed file is
+      # careful not to abort. Seed nothing instead.
+      dir = Dir.mktmpdir
+      dst = File.join(dir, '.credentials.json')
+      creds = %({"claudeAiOauth":{"refreshToken":"rt","note":"lat\xE9in"}}).dup.force_encoding(Encoding::UTF_8)
+
+      expect { described_class.send(:write_redacted_credentials, creds, dst) }
+        .to output(/cannot redact credentials/).to_stderr
+      expect(File).not_to exist(dst)
+    ensure
+      FileUtils.remove_entry(dir)
+    end
+
     it 'is a no-op when credentials are nil and passes through unparseable JSON' do
       dir = Dir.mktmpdir
       dst = File.join(dir, '.credentials.json')
@@ -111,14 +129,14 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       ENV['CLAUDE_CONFIG_DIR'] = source
 
       allow(described_class).to receive(:read_keychain_credentials).and_return(nil)
-      allow(described_class).to receive(:read_file_if_present).and_return(nil)
+      allow(described_class).to receive(:read_if_present).and_return(nil)
       allow(described_class).to receive(:copy_if_present).and_return(nil)
       described_class.send(:copy_auth_files, target, 'CLAUDE_CONFIG_DIR' => '')
 
       default_dir = File.join(Dir.home, '.claude')
-      expect(described_class).to have_received(:read_file_if_present)
+      expect(described_class).to have_received(:read_if_present)
         .with(File.join(default_dir, '.credentials.json'))
-      expect(described_class).not_to have_received(:read_file_if_present)
+      expect(described_class).not_to have_received(:read_if_present)
         .with(File.join(source, '.credentials.json'))
     ensure
       FileUtils.remove_entry(source) if source && File.directory?(source)
@@ -385,6 +403,245 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
 
   # M16: when the mirror dropped batches, the materialized temp dir holds the
   # only copy of those turns (the store copy is incomplete) — teardown must
+  # --- User settings seeded into the temp config dir (Python PR #1197) ---
+  #
+  # settings.json carries apiKeyHelper (a fourth auth mechanism alongside
+  # .credentials.json / Keychain / env vars) plus env/hooks/permissions; an
+  # apiKeyHelper-only host used to fail with "Not logged in" on every
+  # store-backed resume because the file was never seeded.
+  describe 'user settings seeding' do
+    let(:source) { Dir.mktmpdir }
+
+    around do |example|
+      previous_config = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+      example.run
+    ensure
+      previous_config.nil? ? ENV.delete('CLAUDE_CONFIG_DIR') : (ENV['CLAUDE_CONFIG_DIR'] = previous_config)
+    end
+
+    after { FileUtils.remove_entry(source) if File.directory?(source) }
+
+    def materialize(env: {})
+      store.append({ 'project_key' => project_key, 'session_id' => sid }, [entry('hi')])
+      mat = described_class.materialize_resume_session(
+        ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: sid, cwd: cwd, env: env)
+      )
+      expect(mat).not_to be_nil
+      mat
+    end
+
+    def mode_of(path)
+      format('%o', File.stat(path).mode & 0o777)
+    end
+
+    it 'seeds settings.json and cowork_settings.json byte-for-byte at 0600 inside the 0700 temp dir' do
+      settings = JSON.generate('apiKeyHelper' => '/bin/print-key', 'env' => { 'FOO' => 'bar' })
+      described_class::SEEDED_SETTINGS_FILES.each { |name| File.write(File.join(source, name), settings) }
+      File.write(File.join(source, '.claude.json'), '{"theme":"dark"}')
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = materialize
+      begin
+        # Nothing to strip -> bytes copied through untouched.
+        described_class::SEEDED_SETTINGS_FILES.each do |name|
+          expect(File.binread(File.join(mat.config_dir, name))).to eq(settings)
+        end
+        expect(mode_of(mat.config_dir)).to eq('700')
+        (described_class::SEEDED_SETTINGS_FILES + ['.claude.json']).each do |name|
+          expect(mode_of(File.join(mat.config_dir, name))).to eq('600'), name
+        end
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'skips a FIFO where settings.json is expected instead of blocking on it' do
+      skip 'requires File.mkfifo' unless File.respond_to?(:mkfifo)
+
+      File.mkfifo(File.join(source, 'settings.json'))
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = nil
+      expect do
+        Timeout.timeout(5) { mat = materialize }
+      end.to output(/skipping/).to_stderr
+      begin
+        expect(File).not_to exist(File.join(mat.config_dir, 'settings.json'))
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'reads settings from the options.env config dir in preference to the parent ENV one' do
+      decoy = Dir.mktmpdir
+      File.write(File.join(decoy, 'settings.json'), '{"apiKeyHelper":"/from/decoy"}')
+      File.write(File.join(source, 'settings.json'), '{"apiKeyHelper":"/from/options"}')
+      ENV['CLAUDE_CONFIG_DIR'] = decoy
+
+      mat = materialize(env: { 'CLAUDE_CONFIG_DIR' => source })
+      begin
+        expect(JSON.parse(File.read(File.join(mat.config_dir, 'settings.json'))))
+          .to eq('apiKeyHelper' => '/from/options')
+      ensure
+        mat.cleanup
+        FileUtils.remove_entry(decoy)
+      end
+    end
+
+    it 'reads settings from the parent ENV config dir when options.env has no override' do
+      File.write(File.join(source, 'settings.json'), '{"apiKeyHelper":"/from/env"}')
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = materialize
+      begin
+        expect(JSON.parse(File.read(File.join(mat.config_dir, 'settings.json'))))
+          .to eq('apiKeyHelper' => '/from/env')
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'writes nothing when the source settings files are absent' do
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = materialize
+      begin
+        (described_class::SEEDED_SETTINGS_FILES + ['.claude.json']).each do |name|
+          expect(File).not_to exist(File.join(mat.config_dir, name))
+        end
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'strips plugin declarations and env.CLAUDE_CONFIG_DIR, tolerating a UTF-8 BOM' do
+      original = {
+        'apiKeyHelper' => '/bin/print-key',
+        'enabledPlugins' => { 'p@m' => true },
+        'extraKnownMarketplaces' => { 'm' => { 'source' => 'github', 'repo' => 'o/r' } },
+        'env' => { 'CLAUDE_CONFIG_DIR' => '/elsewhere', 'KEEP' => '1' },
+        'permissions' => { 'allow' => ['Bash(ls)'] }
+      }
+      described_class::SEEDED_SETTINGS_FILES.each do |name|
+        File.binwrite(File.join(source, name), "\xEF\xBB\xBF".b + JSON.generate(original))
+      end
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = materialize
+      begin
+        described_class::SEEDED_SETTINGS_FILES.each do |name|
+          expect(JSON.parse(File.read(File.join(mat.config_dir, name)))).to eq(
+            'apiKeyHelper' => '/bin/print-key',
+            'env' => { 'KEEP' => '1' },
+            'permissions' => { 'allow' => ['Bash(ls)'] }
+          ), name
+        end
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'copies malformed, non-object, and non-object-env settings through byte-for-byte' do
+      File.binwrite(File.join(source, 'settings.json'), '{not json')
+      File.binwrite(File.join(source, 'cowork_settings.json'), '{"env": "nope", "a": 1}')
+      File.binwrite(File.join(source, '.claude.json'), '[1, 2]')
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = materialize
+      begin
+        expect(File.binread(File.join(mat.config_dir, 'settings.json'))).to eq('{not json')
+        expect(File.binread(File.join(mat.config_dir, 'cowork_settings.json'))).to eq('{"env": "nope", "a": 1}')
+        expect(File.binread(File.join(mat.config_dir, '.claude.json'))).to eq('[1, 2]')
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'falls back to the original bytes when a stripped settings file cannot be re-serialized' do
+      # 1e999 is valid JSON that parses to Infinity; re-serializing it would
+      # emit a bare Infinity token the CLI rejects, so the transform gives up.
+      raw = '{"enabledPlugins": {"p@m": true}, "threshold": 1e999}'
+      File.binwrite(File.join(source, 'settings.json'), raw)
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = materialize
+      begin
+        expect(File.binread(File.join(mat.config_dir, 'settings.json'))).to eq(raw)
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'does not abort the resume when the credentials file holds illegal UTF-8 bytes' do
+      File.binwrite(File.join(source, '.credentials.json'),
+                    %({"claudeAiOauth":{"refreshToken":"rt","note":"lat\xE9in"}}))
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = nil
+      expect { mat = materialize }.to output(/cannot redact credentials/).to_stderr
+      begin
+        expect(File).not_to exist(File.join(mat.config_dir, '.credentials.json'))
+        expect(File).to exist(File.join(mat.config_dir, 'projects', project_key, "#{sid}.jsonl"))
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'still strips plugin declarations from settings carrying a lone surrogate escape' do
+      # Ruby's JSON parser rejects lone surrogate escapes that Python's accepts.
+      # Bailing out to a byte-for-byte copy would leave enabledPlugins in place
+      # and let the resumed CLI network-install every declared marketplace —
+      # the exact behavior this seeding exists to prevent.
+      File.binwrite(File.join(source, 'settings.json'),
+                    '{"enabledPlugins":{"p@m":true},"weird":"\ud800","keep":1}')
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = materialize
+      begin
+        # The surrogate escape survives verbatim; only the plugin key is gone.
+        expect(File.binread(File.join(mat.config_dir, 'settings.json')))
+          .to eq('{"weird":"\ud800","keep":1}')
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'leaves an escaped-backslash "\\uXXXX" literal alone while stripping' do
+      # "c:\\ud800x" is an escaped backslash followed by the literal text
+      # ud800 — not an escape sequence, and it must not be masked.
+      File.binwrite(File.join(source, 'settings.json'),
+                    '{"enabledPlugins":{"a":1},"lit":"c:\\\\ud800x"}')
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = materialize
+      begin
+        expect(JSON.parse(File.read(File.join(mat.config_dir, 'settings.json'))))
+          .to eq('lit' => 'c:\\ud800x')
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'does not abort the resume when the seed files are unreadable' do
+      # Directories where files are expected: these are best-effort enrichment,
+      # so they are logged and skipped rather than raising out of the resume.
+      ['settings.json', '.credentials.json', '.claude.json'].each { |n| Dir.mkdir(File.join(source, n)) }
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = nil
+      expect { mat = materialize }.to output(/skipping/).to_stderr
+      begin
+        ['settings.json', '.credentials.json', '.claude.json'].each do |name|
+          expect(File).not_to exist(File.join(mat.config_dir, name))
+        end
+        # The transcript itself was still materialized.
+        expect(File).to exist(File.join(mat.config_dir, 'projects', project_key, "#{sid}.jsonl"))
+      ensure
+        mat.cleanup
+      end
+    end
+  end
+
   # not delete it. It keeps the transcripts but scrubs the credential copies.
   describe 'MaterializedResume#preserve_transcripts' do
     it 'removes credential copies, keeps transcripts, warns, and never rmtrees' do
@@ -392,14 +649,19 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
         transcript = File.join(dir, 'projects', 'pk', 'sid.jsonl')
         FileUtils.mkdir_p(File.dirname(transcript))
         File.write(transcript, "{}\n")
-        File.write(File.join(dir, '.credentials.json'), '{}')
-        File.write(File.join(dir, '.claude.json'), '{}')
+        # settings.json / cowork_settings.json are seeded from the caller's
+        # config dir too, and their env blocks routinely carry API keys — the
+        # scrub must cover them, not just the credential files.
+        ['.credentials.json', '.claude.json', 'settings.json', 'cowork_settings.json'].each do |name|
+          File.write(File.join(dir, name), '{}')
+        end
 
         materialized = ClaudeAgentSDK::MaterializedResume.new(config_dir: dir, resume_session_id: 'sid')
         expect { materialized.preserve_transcripts }.to output(/[Pp]reserving/).to_stderr
 
-        expect(File).not_to exist(File.join(dir, '.credentials.json'))
-        expect(File).not_to exist(File.join(dir, '.claude.json'))
+        ['.credentials.json', '.claude.json', 'settings.json', 'cowork_settings.json'].each do |name|
+          expect(File).not_to exist(File.join(dir, name))
+        end
         expect(File).to exist(transcript)
       end
     end

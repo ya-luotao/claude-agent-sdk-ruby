@@ -243,6 +243,56 @@ RSpec.describe 'SessionStore-backed reads' do
       )
       expect(msgs.length).to eq(1)
       expect(msgs.first.text).to eq('Subagent hi')
+      # No toolUseId on the metadata entry -> no parent ids.
+      expect(msgs.first.parent_tool_use_id).to be_nil
+      expect(msgs.first.parent_agent_id).to be_nil
+    end
+
+    # --- parent ids recovered from the agent_metadata entry (Python PR #1207) ---
+
+    it 'stamps toolUseId/parentAgentId from the agent_metadata entry, last one winning' do
+      # The metadata is rewritten on resume, so a subagent stream can carry
+      # several agent_metadata entries; the last one describes the sidecar.
+      sub_key = { 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/agent-multi' }
+      root = subagent_entry(sid2, 'hi', '2024-01-02T00:00:01.000Z')
+      reply = subagent_entry(sid2, 'hello', '2024-01-02T00:00:02.000Z', 'parentUuid' => root['uuid'])
+      store.append(sub_key, [
+                     { 'type' => 'agent_metadata', 'agentType' => 'gp', 'toolUseId' => 'toolu_old' },
+                     root, reply,
+                     { 'type' => 'agent_metadata', 'agentType' => 'gp', 'toolUseId' => 'toolu_new',
+                       'parentAgentId' => 'a-parent' }
+                   ])
+
+      msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
+        session_store: store, session_id: sid2, agent_id: 'multi', directory: dir
+      )
+      expect(msgs.length).to eq(2)
+      expect(msgs.map(&:parent_tool_use_id)).to all(eq('toolu_new'))
+      expect(msgs.map(&:parent_agent_id)).to all(eq('a-parent'))
+    end
+
+    it 'ignores non-String ids on the agent_metadata entry' do
+      sub_key = { 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/agent-bad' }
+      store.append(sub_key, [
+                     { 'type' => 'agent_metadata', 'toolUseId' => 7, 'parentAgentId' => nil },
+                     subagent_entry(sid2, 'hi', '2024-01-02T00:00:01.000Z')
+                   ])
+
+      msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
+        session_store: store, session_id: sid2, agent_id: 'bad', directory: dir
+      )
+      expect(msgs.length).to eq(1)
+      expect(msgs.first.parent_tool_use_id).to be_nil
+      expect(msgs.first.parent_agent_id).to be_nil
+    end
+
+    it 'never sets parent ids on top-level store-backed session messages' do
+      msgs = ClaudeAgentSDK.get_session_messages_from_store(
+        session_store: store, session_id: sid2, directory: dir
+      )
+      expect(msgs).not_to be_empty
+      expect(msgs.map(&:parent_tool_use_id)).to all(be_nil)
+      expect(msgs.map(&:parent_agent_id)).to all(be_nil)
     end
 
     it 'returns the full parentUuid chain for a realistic sidechain transcript' do

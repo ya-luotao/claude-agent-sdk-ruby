@@ -109,6 +109,63 @@ RSpec.describe 'ClaudeAgentSDK.import_session_to_store' do
     expect(store.list_subkeys('project_key' => project_key, 'session_id' => sid)).to eq(['subagents/agent-x'])
   end
 
+  it 'keeps the synthetic agent_metadata marker even when the sidecar has its own type key' do
+    write_main_transcript
+    sub_dir = File.join(project_dir, sid, 'subagents')
+    FileUtils.mkdir_p(sub_dir)
+    File.write(File.join(sub_dir, 'agent-x.jsonl'), "#{jsonl_line('sub line')}\n")
+    File.write(File.join(sub_dir, 'agent-x.meta.json'),
+               JSON.generate('type' => 'something-else', 'toolUseId' => 'toolu_1'))
+
+    ClaudeAgentSDK.import_session_to_store(session_id: sid, session_store: store, directory: cwd)
+
+    sub_key = { 'project_key' => project_key, 'session_id' => sid, 'subpath' => 'subagents/agent-x' }
+    expect(store.load(sub_key).last).to eq('type' => 'agent_metadata', 'toolUseId' => 'toolu_1')
+  end
+
+  ['not json {', '[1, 2]', '42'].each do |sidecar|
+    it "treats an unusable .meta.json sidecar (#{sidecar}) as absent instead of aborting the import" do
+      write_main_transcript
+      sub_dir = File.join(project_dir, sid, 'subagents')
+      FileUtils.mkdir_p(sub_dir)
+      File.write(File.join(sub_dir, 'agent-x.jsonl'), "#{jsonl_line('sub line')}\n")
+      File.write(File.join(sub_dir, 'agent-x.meta.json'), sidecar)
+
+      ClaudeAgentSDK.import_session_to_store(session_id: sid, session_store: store, directory: cwd)
+
+      sub_key = { 'project_key' => project_key, 'session_id' => sid, 'subpath' => 'subagents/agent-x' }
+      entries = store.load(sub_key)
+      expect(entries.map { |e| e['type'] }).to eq(['user'])
+    end
+  end
+
+  it 'treats a sidecar holding illegal UTF-8 bytes as absent, so later resumes still work' do
+    # Regression: JSON.parse accepts illegal bytes inside a UTF-8-tagged
+    # document, so an agent_metadata entry built from one used to land in the
+    # store — and every subsequent resume through that store then died in
+    # JSON.generate while rewriting the sidecar, aborting query/Client with an
+    # opaque encoding error until someone repaired the store by hand.
+    write_main_transcript
+    sub_dir = File.join(project_dir, sid, 'subagents')
+    FileUtils.mkdir_p(sub_dir)
+    File.write(File.join(sub_dir, 'agent-x.jsonl'), "#{jsonl_line('sub line')}\n")
+    File.binwrite(File.join(sub_dir, 'agent-x.meta.json'),
+                  %({"toolUseId":"toolu_1","note":"bad \xFF\xFE bytes"}))
+
+    ClaudeAgentSDK.import_session_to_store(session_id: sid, session_store: store, directory: cwd)
+
+    sub_key = { 'project_key' => project_key, 'session_id' => sid, 'subpath' => 'subagents/agent-x' }
+    expect(store.load(sub_key).map { |e| e['type'] }).to eq(['user'])
+
+    mat = nil
+    expect do
+      mat = ClaudeAgentSDK::SessionResume.materialize_resume_session(
+        ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: sid, cwd: cwd)
+      )
+    end.not_to raise_error
+    mat&.cleanup
+  end
+
   it 'skips subagents when include_subagents is false' do
     write_main_transcript
     FileUtils.mkdir_p(File.join(project_dir, sid, 'subagents'))
