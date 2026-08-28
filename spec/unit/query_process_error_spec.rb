@@ -47,6 +47,110 @@ RSpec.describe ClaudeAgentSDK::Query, 'ProcessError handling' do
     end.wait
   end
 
+  # The replacement is a typed ResultError (a ProcessError subclass), so
+  # callers can branch on the payload instead of matching the message text.
+  it 'raises a ResultError carrying the result payload and the replaced exit error' do
+    payload = error_result
+    transport = transport_yielding(payload, error: process_error(1, stderr: 'tail'))
+    query = described_class.new(transport: transport, is_streaming_mode: true)
+
+    Async do
+      query.start
+      expect { drain_until_error(query) }.to raise_error(ClaudeAgentSDK::ResultError) do |e|
+        expect(e).to be_a(ClaudeAgentSDK::ProcessError)
+        expect(e.subtype).to eq('error_during_execution')
+        expect(e.errors).to eq(['boom'])
+        expect(e.data).to equal(payload)
+        expect(e.exit_code).to eq(1)
+        expect(e.original_error).to be_a(ClaudeAgentSDK::ProcessError)
+        expect(e.original_error.message).to include('Command failed with exit code 1')
+      end
+    end.wait
+  end
+
+  # A run that ends on an API failure arrives as subtype "success",
+  # is_error=true, errors=[] with the prose in `result`. Falling back to the
+  # subtype printed the self-contradictory "error result: success".
+  it 'prefers the result prose over a "success" subtype for API failures' do
+    api_failure = {
+      type: 'result', subtype: 'success', is_error: true, errors: [],
+      result: 'API Error: Stream idle timeout - no chunks received',
+      api_error_status: nil, terminal_reason: 'api_error', session_id: 's-1'
+    }
+    transport = transport_yielding(api_failure, error: process_error(1))
+    query = described_class.new(transport: transport, is_streaming_mode: true)
+
+    Async do
+      query.start
+      expect { drain_until_error(query) }.to raise_error(ClaudeAgentSDK::ResultError) do |e|
+        expect(e.message).to include(
+          'Claude Code returned an error result: API Error: Stream idle timeout - no chunks received'
+        )
+        expect(e.message).not_to include('error result: success')
+        expect(e.subtype).to eq('success')
+        expect(e.terminal_reason).to eq('api_error')
+        expect(e.result).to eq('API Error: Stream idle timeout - no chunks received')
+        expect(e.errors).to be_empty
+        expect(e.session_id).to eq('s-1')
+      end
+    end.wait
+  end
+
+  it 'falls back to the HTTP status when neither errors[] nor result carry text' do
+    api_failure = {
+      type: 'result', subtype: 'success', is_error: true, errors: [], result: '', api_error_status: 529
+    }
+    transport = transport_yielding(api_failure, error: process_error(1))
+    query = described_class.new(transport: transport, is_streaming_mode: true)
+
+    Async do
+      query.start
+      expect { drain_until_error(query) }.to raise_error(
+        ClaudeAgentSDK::ResultError, /returned an error result: API error \(HTTP 529\)/
+      )
+    end.wait
+  end
+
+  it 'falls back to the subtype when errors[] holds only blank entries' do
+    blank = { type: 'result', subtype: 'error_during_execution', is_error: true, errors: [' '] }
+    transport = transport_yielding(blank, error: process_error(1))
+    query = described_class.new(transport: transport, is_streaming_mode: true)
+
+    Async do
+      query.start
+      expect { drain_until_error(query) }.to raise_error(
+        ClaudeAgentSDK::ResultError, /returned an error result: error_during_execution/
+      )
+    end.wait
+  end
+
+  # A non-Array `errors` must neither be iterated per character nor crash the
+  # read loop with an unrelated NoMethodError.
+  [%w[boom boom], [42, 'error_during_execution']].each do |raw_errors, expected|
+    it "tolerates a malformed errors field (#{raw_errors.inspect})" do
+      malformed = { type: 'result', subtype: 'error_during_execution', is_error: true, errors: raw_errors }
+      transport = transport_yielding(malformed, error: process_error(1))
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      Async do
+        query.start
+        expect { drain_until_error(query) }.to raise_error(
+          ClaudeAgentSDK::ResultError, /returned an error result: #{Regexp.escape(expected)} \(/
+        )
+      end.wait
+    end
+  end
+
+  it 'preserves the type of a transport failure that is not a ProcessError' do
+    transport = transport_yielding(error_result, error: ClaudeAgentSDK::CLIConnectionError.new('lost the CLI'))
+    query = described_class.new(transport: transport, is_streaming_mode: true)
+
+    Async do
+      query.start
+      expect { drain_until_error(query) }.to raise_error(ClaudeAgentSDK::CLIConnectionError, 'lost the CLI')
+    end.wait
+  end
+
   it 'raises the raw ProcessError when the crash follows a successful result' do
     transport = transport_yielding(sample_result_message, error: process_error(139))
     query = described_class.new(transport: transport, is_streaming_mode: true)

@@ -97,7 +97,12 @@ module ClaudeAgentSDK
       # #1088/#1103), so a result that arrives while this set is non-empty
       # must not close stdin.
       @inflight_tasks = Set.new
-      @last_error_result_text = nil
+      # Set to the result payload when the most recent message is a result
+      # with is_error=true. Used to replace the generic "exit code 1"
+      # ProcessError with a ResultError carrying what the CLI already
+      # reported. Mirrors the TypeScript SDK's `lastErrorResultText`
+      # (Query.ts), but keeps the whole payload rather than just the text.
+      @last_error_result = nil
       @first_result_condition = Async::Condition.new
       @task = nil
       @child_tasks = []
@@ -355,17 +360,16 @@ module ClaudeAgentSDK
               @first_result_condition.signal
             end
             if message[:is_error]
-              errors = (message[:errors] || []).join('; ')
-              @last_error_result_text = errors.empty? ? (message[:subtype] || 'unknown error').to_s : errors
+              @last_error_result = message
             else
-              @last_error_result_text = nil
+              @last_error_result = nil
             end
           elsif !(msg_type == 'system' && message[:subtype] == 'session_state_changed')
             # Anything other than the post-turn session_state_changed marker
             # means the conversation moved on; a ProcessError now is a fresh
             # crash, not the expected exit from a prior error result. Mirrors
             # the Python/TypeScript SDK reset logic.
-            @last_error_result_text = nil
+            @last_error_result = nil
           end
           # Regular SDK messages go to the queue
           @message_queue.enqueue(message)
@@ -381,15 +385,16 @@ module ClaudeAgentSDK
       end
 
       # When the CLI emits a result with is_error=true (e.g. error_max_turns,
-      # error_during_execution, a StructuredOutput error) it then exits
-      # non-zero on purpose, for shell-script consumers. The trailing
-      # ProcessError carries no information beyond "exit code 1" — replace it
-      # with the structured error the CLI already reported so the exception is
-      # actionable. Mirrors the Python SDK (_read_messages) and the TypeScript
-      # SDK (Query.ts readMessages).
-      error = if e.is_a?(ProcessError) && @last_error_result_text
-                ProcessError.new("Claude Code returned an error result: #{@last_error_result_text}",
-                                 exit_code: e.exit_code, stderr: e.stderr)
+      # error_during_execution, an API failure, a StructuredOutput error) it
+      # then exits non-zero on purpose, for shell-script consumers. The
+      # trailing ProcessError carries no information beyond "exit code 1" —
+      # replace it with a ResultError carrying what the CLI already reported
+      # so the exception is actionable *and* typed. Mirrors the Python SDK
+      # (_read_messages) and the TypeScript SDK (Query.ts readMessages).
+      error = if e.is_a?(ProcessError) && @last_error_result
+                ResultError.new("Claude Code returned an error result: #{error_result_text(@last_error_result)}",
+                                data: @last_error_result, exit_code: e.exit_code, stderr: e.stderr,
+                                original_error: e)
               else
                 e
               end
@@ -432,6 +437,34 @@ module ClaudeAgentSDK
     # spawned it.
     #
     # Only delegated agent work is tracked (DEFERRING_TASK_TYPES). A
+    # Pick the most informative text from a `result` frame with is_error.
+    #
+    # Terminal errors the CLI raises itself (error_max_turns,
+    # error_during_execution, ...) carry their prose in errors[]. A run that
+    # ends on an API failure instead arrives as subtype "success" with
+    # is_error true, an empty errors[] and the "API Error: ..." prose in
+    # `result` — falling back to the subtype there produced the self-
+    # contradictory "Claude Code returned an error result: success". Prefer
+    # errors[], then `result`, then a non-success subtype, then the HTTP
+    # status, mirroring the TypeScript SDK's choice of `result` for the
+    # `success` subtype. Reads fields through ResultError so the text and the
+    # exception's structured attributes can never disagree.
+    def error_result_text(message)
+      errors = ResultError.normalize_errors(ResultError.field(message, :errors))
+      return errors.join('; ') unless errors.empty?
+
+      result = ResultError.field(message, :result)
+      return result.strip if result.is_a?(String) && !result.strip.empty?
+
+      subtype = ResultError.field(message, :subtype)
+      return subtype if subtype.is_a?(String) && !subtype.empty? && subtype != 'success'
+
+      status = ResultError.field(message, :api_error_status)
+      return "API error (HTTP #{status})" unless status.nil?
+
+      'unknown error'
+    end
+
     # background *shell* is also reported through these frames, but it may
     # never reach a terminal status, and the CLI in stream-json mode only
     # exits on stdin EOF — tracking one would withhold the close forever.
