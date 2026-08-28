@@ -1676,6 +1676,7 @@ module ClaudeAgentSDK
     attr_reader :bare, :fork_session, :enable_file_checkpointing,
                 :include_partial_messages, :continue_conversation,
                 :include_hook_events, :strict_mcp_config,
+                :forward_subagent_text,
                 :callback_scheduling, :callback_wrapper
 
     def initialize(attributes = {})
@@ -1685,6 +1686,7 @@ module ClaudeAgentSDK
       self.enable_file_checkpointing = false
       self.include_hook_events = false
       self.strict_mcp_config = false
+      self.forward_subagent_text = false
 
       super(merge_with_defaults(attributes || {}))
 
@@ -1771,6 +1773,25 @@ module ClaudeAgentSDK
 
     def strict_mcp_config=(value)
       @strict_mcp_config = coerce_boolean(value)
+    end
+
+    def forward_subagent_text?
+      !!forward_subagent_text
+    end
+
+    # Forward subagent text and thinking blocks as messages in the stream.
+    #
+    # By default only `tool_use` / `tool_result` blocks from subagents
+    # (spawned via the Agent tool) are emitted, as {AssistantMessage} /
+    # {UserMessage} objects whose `parent_tool_use_id` is the spawning Agent
+    # `tool_use` id — enough for a progress heartbeat. When true, the
+    # subagent's text and thinking blocks are forwarded the same way, so
+    # consumers can render the full nested transcript. Sent as the
+    # `forwardSubagentText` initialize capability, not a CLI flag, so it only
+    # applies in streaming/Client mode. Matches the TypeScript SDK's
+    # `forwardSubagentText`.
+    def forward_subagent_text=(value)
+      @forward_subagent_text = coerce_boolean(value)
     end
 
     CALLBACK_SCHEDULING_MODES = %i[thread inline].freeze

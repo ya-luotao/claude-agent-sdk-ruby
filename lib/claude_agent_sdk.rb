@@ -536,6 +536,7 @@ module ClaudeAgentSDK
           sdk_mcp_servers: sdk_mcp_servers,
           exclude_dynamic_sections: ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt),
           skills: configured_options.skills,
+          forward_subagent_text: configured_options.forward_subagent_text?,
           callback_scheduling: callback_scheduling,
           callback_wrapper: callback_wrapper
         )
@@ -1074,6 +1075,7 @@ module ClaudeAgentSDK
         agents: configured_options.agents,
         exclude_dynamic_sections: exclude_dynamic_sections,
         skills: configured_options.skills,
+        forward_subagent_text: configured_options.forward_subagent_text?,
         callback_scheduling: @callback_scheduling,
         callback_wrapper: @callback_wrapper
       )
