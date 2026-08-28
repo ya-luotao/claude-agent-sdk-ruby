@@ -1305,6 +1305,13 @@ module ClaudeAgentSDK
     # another result. The condition is guaranteed to be signaled: by the
     # result branch in read_messages once no tasks are in flight, or by its
     # ensure block when the process exits early.
+    #
+    # Known limitation (same as Python's): the condition is one-shot and is
+    # not aware of prompt messages still queued CLI-side, so an Enumerator
+    # prompt yielding several user messages (several turns) releases the hold
+    # at the first turn boundary with no tracked tasks; control requests from
+    # later turns can then find stdin closed. Single-message and String
+    # prompts — the common one-shot shapes — are fully covered.
     def wait_for_result_and_end_input
       @first_result_condition.wait if !@first_result_received && bidirectional_needs?
     ensure
