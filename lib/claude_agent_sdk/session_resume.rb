@@ -36,7 +36,7 @@ module ClaudeAgentSDK
     # copies, and tell the user where the data is so they can import it into
     # the store manually. Never raises.
     def preserve_transcripts
-      ['.credentials.json', '.claude.json'].each do |name|
+      ['.credentials.json', '.claude.json', 'settings.json', 'cowork_settings.json'].each do |name|
         FileUtils.rm_f(File.join(@config_dir, name))
       end
       warn "Claude SDK: transcript mirror dropped batches; the session store copy is incomplete. " \
@@ -55,6 +55,18 @@ module ClaudeAgentSDK
   # from the store, writes it to a temp dir laid out like ~/.claude/, and returns
   # the path so the caller can point the subprocess at it via CLAUDE_CONFIG_DIR.
   module SessionResume # rubocop:disable Metrics/ModuleLength
+    # User settings files seeded into the temp config dir. cowork_settings.json
+    # is the alternate filename the CLI reads in cowork-plugins mode.
+    SEEDED_SETTINGS_FILES = ['settings.json', 'cowork_settings.json'].freeze
+
+    # User-settings keys that only misbehave under the redirected
+    # CLAUDE_CONFIG_DIR: plugin declarations reconcile against the
+    # always-empty tmp_base/plugins cache and would network-install each
+    # declared marketplace on every resume.
+    RESUME_SETTINGS_STRIPPED_KEYS = %w[enabledPlugins extraKnownMarketplaces].freeze
+
+    UTF8_BOM = "\xEF\xBB\xBF".b.freeze
+
     KEYCHAIN_SERVICE_NAME = 'Claude Code-credentials'
     KEYCHAIN_TIMEOUT_SECONDS = 5
 
@@ -269,13 +281,24 @@ module ClaudeAgentSDK
       chmod_owner_only(path)
     end
 
-    # Copy .credentials.json (refreshToken redacted) and .claude.json from the
-    # caller's effective config locations so the resumed subprocess can auth.
+    # Seed tmp_base with the caller's auth and user config so the resumed
+    # subprocess can authenticate: .credentials.json (refreshToken redacted),
+    # .claude.json, and user settings.json / cowork_settings.json (plugin
+    # declarations stripped).
+    #
+    # Source resolution mirrors the CLI: .credentials.json, settings.json and
+    # cowork_settings.json live under the config dir (default ~/.claude/), while
+    # .claude.json lives at $CLAUDE_CONFIG_DIR/.claude.json when set, else
+    # ~/.claude.json (NOT ~/.claude/.claude.json).
     def copy_auth_files(tmp_base, opt_env)
       caller_config_dir = env_value(opt_env, 'CLAUDE_CONFIG_DIR')
       source_config_dir = caller_config_dir || File.join(Dir.home, '.claude')
 
-      creds_json = read_file_if_present(File.join(source_config_dir, '.credentials.json'))
+      # read_if_present returns raw bytes; the credentials path parses and
+      # re-serializes JSON, so hand it a UTF-8-tagged string (invalid bytes
+      # simply fail to parse and get written through, as before).
+      creds_bytes = read_if_present(File.join(source_config_dir, '.credentials.json'))
+      creds_json = creds_bytes&.dup&.force_encoding(Encoding::UTF_8)
 
       # macOS default keeps OAuth tokens in the Keychain, not a file. Redirecting
       # CLAUDE_CONFIG_DIR changes the Keychain service suffix so the subprocess's
@@ -291,6 +314,67 @@ module ClaudeAgentSDK
 
       claude_json_src = caller_config_dir ? File.join(caller_config_dir, '.claude.json') : File.join(Dir.home, '.claude.json')
       copy_if_present(claude_json_src, File.join(tmp_base, '.claude.json'))
+
+      # User settings carry apiKeyHelper (a fourth auth mechanism alongside
+      # .credentials.json / Keychain / env vars) plus the user's env, hooks and
+      # permissions. Without them the resumed subprocess sees no user settings
+      # at all, and an apiKeyHelper-only host fails with "Not logged in".
+      # cowork_settings.json is the alternate filename the CLI reads in
+      # cowork-plugins mode. Both pass through strip_settings_for_resume so
+      # plugin declarations don't reconcile against the empty tmp_base cache.
+      transform = ->(content) { strip_settings_for_resume(content) }
+      SEEDED_SETTINGS_FILES.each do |name|
+        copy_if_present(File.join(source_config_dir, name), File.join(tmp_base, name), transform)
+      end
+    end
+
+    # Drop settings keys that only misbehave under the redirected config dir:
+    # RESUME_SETTINGS_STRIPPED_KEYS (plugin declarations, which reconcile
+    # against the always-empty tmp_base plugin cache and would network-install
+    # every declared marketplace on each resume) and env.CLAUDE_CONFIG_DIR
+    # (which would point the subprocess's config reads away from tmp_base).
+    # Content that doesn't parse as a JSON object is returned untouched so the
+    # subprocess sees exactly what the CLI would have read.
+    def strip_settings_for_resume(content)
+      parsed = parse_settings_bytes(content)
+      return content unless parsed.is_a?(Hash)
+
+      stripped = false
+      RESUME_SETTINGS_STRIPPED_KEYS.each do |key|
+        next unless parsed.key?(key)
+
+        parsed.delete(key)
+        stripped = true
+      end
+      env_block = parsed['env']
+      if env_block.is_a?(Hash) && env_block.key?('CLAUDE_CONFIG_DIR')
+        env_block.delete('CLAUDE_CONFIG_DIR')
+        stripped = true
+      end
+      return content unless stripped
+
+      begin
+        JSON.generate(parsed)
+      rescue JSON::GeneratorError
+        # A spec-valid overflow like 1e999 parses to Infinity, and JSON.generate
+        # refuses to emit the bare token the CLI would reject anyway. Fall back
+        # to the original bytes rather than writing something unusable.
+        content
+      end
+    end
+
+    # Parse settings bytes tolerating a UTF-8 BOM (PowerShell writes
+    # settings.json with one, and JSON.parse rejects it). Returns nil when the
+    # bytes aren't valid UTF-8 or aren't valid JSON.
+    def parse_settings_bytes(content)
+      body = content.b
+      body = body.byteslice(3..) || +'' if body.start_with?(UTF8_BOM)
+      text = body.dup.force_encoding(Encoding::UTF_8)
+      return nil unless text.valid_encoding?
+
+      JSON.parse(text)
+    rescue JSON::ParserError
+      nil
     end
 
     # Write creds_json with claudeAiOauth.refreshToken removed. The resumed
@@ -466,9 +550,26 @@ module ClaudeAgentSDK
       FileUtils.rm_rf(path)
     end
 
-    def read_file_if_present(path)
-      File.read(path)
-    rescue SystemCallError
+    # Read a regular file's bytes, or return nil.
+    #
+    # A missing source is skipped silently. Any other reason it can't be read
+    # (EACCES, a directory or FIFO where a file was expected, ...) is logged and
+    # skipped: these files are best-effort enrichment of the temp config dir, so
+    # an unreadable one must not abort — or, for a FIFO, hang — the resume. The
+    # ftype check happens on the stat, before any open: opening a FIFO blocks
+    # forever, so it must never be opened in the first place.
+    def read_if_present(path)
+      ftype = File.stat(path).ftype
+      unless ftype == 'file'
+        warn "Claude SDK: [SessionStore] resume: skipping #{path} (not a regular file: #{ftype})"
+        return nil
+      end
+
+      File.binread(path)
+    rescue Errno::ENOENT
+      nil
+    rescue SystemCallError => e
+      warn "Claude SDK: [SessionStore] resume: skipping #{path} (#{e.message})"
       nil
     end
 
@@ -482,15 +583,28 @@ module ClaudeAgentSDK
       nil
     end
 
-    # Copy src to dst (locked to 0600) when src exists; no-op otherwise. The
-    # only caller copies .claude.json, which can hold MCP-header secrets and
-    # customApiKeyResponses, so it gets the same owner-only mode as the other
+    # Copy src to dst (locked to 0600) when src exists, through an optional
+    # transform; no-op otherwise. Callers copy .claude.json and the user
+    # settings files, which can hold MCP-header secrets, customApiKeyResponses
+    # and apiKeyHelper env, so they get the same owner-only mode as the other
     # materialized files rather than inheriting the source's (often 0644) mode.
-    def copy_if_present(src, dst)
-      FileUtils.copy_file(src, dst)
-      chmod_owner_only(dst)
-    rescue SystemCallError
-      nil
+    # See read_if_present for the skip policy.
+    def copy_if_present(src, dst, transform = nil)
+      content = read_if_present(src)
+      return if content.nil?
+
+      begin
+        File.binwrite(dst, transform ? transform.call(content) : content)
+        chmod_owner_only(dst)
+      rescue SystemCallError => e
+        # Don't leave a truncated dst behind for the subprocess to misparse.
+        begin
+          FileUtils.rm_f(dst)
+        rescue SystemCallError
+          nil
+        end
+        warn "Claude SDK: [SessionStore] resume: skipping #{src} (#{e.message})"
+      end
     end
 
     # Resolve the value the CHILD process will see for env var +name+. Presence
@@ -513,6 +627,7 @@ module ClaudeAgentSDK
     private_class_method :load_candidate, :resolve_continue_candidate, :sortable_mtime, :with_timeout, :write_jsonl,
                          :copy_auth_files, :write_redacted_credentials, :read_keychain_credentials,
                          :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
-                         :resolve_dir, :read_file_if_present, :chmod_owner_only, :copy_if_present, :env_value
+                         :resolve_dir, :read_if_present, :chmod_owner_only, :copy_if_present, :env_value,
+                         :strip_settings_for_resume, :parse_settings_bytes
   end
 end
