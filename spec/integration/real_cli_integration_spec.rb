@@ -2,6 +2,7 @@
 
 require 'spec_helper'
 require 'async'
+require 'tmpdir'
 
 RSpec.describe 'Real Claude CLI Integration', :integration do
   # Gated by RUN_INTEGRATION (see spec_helper.rb). These spawn the real `claude`
@@ -101,6 +102,99 @@ RSpec.describe 'Real Claude CLI Integration', :integration do
 
     expect(executions).not_to be_empty
     expect(executions.first[:text]).to eq('ruby real cli mcp')
+  end
+
+  # can_use_tool is served over the control protocol: the CLI writes the
+  # permission request to stdout and blocks until the verdict comes back on
+  # stdin. Both of these fail against the real CLI without the stdin-lifecycle
+  # fix — a String prompt used to be refused outright, and an Enumerator
+  # prompt closed stdin when its input ran out, so the CLI reported
+  # "Stream closed". permission_mode 'default' keeps the ladder on "ask" so
+  # the callback is actually consulted regardless of the host's settings.
+  describe 'can_use_tool over the control protocol' do
+    def permission_options(cwd)
+      ClaudeAgentSDK::ClaudeAgentOptions.new(
+        can_use_tool: @callback,
+        cwd: cwd,
+        permission_mode: 'default',
+        max_turns: 10,
+        max_budget_usd: 0.5
+      )
+    end
+
+    before do
+      @granted = []
+      @callback = lambda do |tool_name, _input, _context|
+        @granted << tool_name
+        ClaudeAgentSDK::PermissionResultAllow.new
+      end
+    end
+
+    # The invariant, independent of which tool the model reaches for: the CLI
+    # asked for permission at least once (so the control_request arrived),
+    # and the run still reached a non-error result (asserted by
+    # run_one_shot_query) — which it cannot do if the verdict never got back
+    # over stdin, since the CLI then fails the tool call with "Stream closed".
+    # Whether the file lands is up to the model and deliberately not asserted;
+    # the unit specs pin the exact wire exchange.
+    def expect_permission_round_trip
+      expect(@granted).not_to be_empty, 'expected the CLI to ask can_use_tool at least once'
+    end
+
+    it 'answers the permission request for a String prompt' do
+      Dir.mktmpdir('cas-permission') do |dir|
+        run_one_shot_query(
+          prompt: 'Create a file named ok.txt containing exactly: hello',
+          options: permission_options(dir)
+        )
+
+        expect_permission_round_trip
+      end
+    end
+
+    it 'answers the permission request for an Enumerator prompt' do
+      Dir.mktmpdir('cas-permission') do |dir|
+        prompt = ClaudeAgentSDK::Streaming.from_array(
+          ['Create a file named ok.txt containing exactly: hello']
+        )
+
+        run_one_shot_query(prompt: prompt, options: permission_options(dir))
+
+        expect_permission_round_trip
+      end
+    end
+  end
+
+  # A run that trips a terminal guard ends with an is_error result followed by
+  # a deliberate non-zero exit; the SDK must surface that as a typed
+  # ResultError carrying the CLI's own text, not a bare "exit code 1". The
+  # budget cap is the cheapest deterministic trigger — it fires on the very
+  # first turn, so this costs a cent and never depends on how many turns the
+  # model chooses to take.
+  it 'raises a typed ResultError when the CLI exits after an error result' do
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+      permission_mode: 'bypassPermissions',
+      max_budget_usd: 0.01
+    )
+
+    error = nil
+    begin
+      ClaudeAgentSDK.query(
+        prompt: 'Run `ls` with the Bash tool, then summarize what you saw.',
+        options: options
+      ) { |_message| nil }
+    rescue ClaudeAgentSDK::ResultError => e
+      error = e
+    end
+
+    expect(error).to be_a(ClaudeAgentSDK::ResultError)
+    expect(error).to be_a(ClaudeAgentSDK::ProcessError)
+    expect(error.message).to include('Claude Code returned an error result:')
+    expect(error.message).not_to include('error result: success')
+    expect(error.subtype).to eq('error_max_budget_usd')
+    expect(error.errors).not_to be_empty
+    expect(error.exit_code).to eq(1)
+    expect(error.original_error).to be_a(ClaudeAgentSDK::ProcessError)
   end
 
   it 'initializes Client and returns server info' do

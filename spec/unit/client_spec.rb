@@ -116,6 +116,18 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(received_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
   end
 
+  # query() and Client#connect share ClaudeAgentSDK.configure_can_use_tool,
+  # so the mutual-exclusion rule is enforced identically at both entry points.
+  it 'rejects can_use_tool combined with permission_prompt_tool_name' do
+    callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+      can_use_tool: callback, permission_prompt_tool_name: 'mcp__auth__prompt'
+    )
+    client = described_class.new(options: options)
+
+    expect { client.connect }.to raise_error(ArgumentError, /cannot be used with permission_prompt_tool_name/)
+  end
+
   it 'warns on connect when can_use_tool is shadowed by allowed_tools' do
     ClaudeAgentSDK::OptionWarnings.reset!
     transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)

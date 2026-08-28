@@ -141,7 +141,59 @@ RSpec.describe ClaudeAgentSDK::Query do
       end.wait
     end
 
-    it 'ends input immediately when no hooks or SDK MCP servers are configured' do
+    # can_use_tool is served over the same control protocol as hooks and SDK
+    # MCP servers, but was missing from the bidirectional-needs check: an
+    # Enumerator prompt with only a permission callback closed stdin as soon
+    # as the input ended, and every later permission control_request failed
+    # CLI-side with "Stream closed".
+    it 'ends input only after the first result when only can_use_tool is configured' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
+      query = described_class.new(transport: transport, is_streaming_mode: true, can_use_tool: callback)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+        task.sleep 0.05
+        expect(ended).to be_empty
+
+        queue.enqueue(sample_result_message)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    # A config layer writing `can_use_tool: enabled ? callback : false` must
+    # not end up half-configured: ClaudeAgentSDK.configure_can_use_tool reads
+    # a falsey callback as "no callback" (so no stdio routing, no mutual
+    # exclusion check), and this predicate has to agree — otherwise stdin
+    # would be held open waiting for a permission reply the CLI will never
+    # be asked to request.
+    it 'ends input immediately when can_use_tool is false rather than a callback' do
+      transport = mock_transport
+      ended = []
+      allow(transport).to receive(:end_input) { ended << true }
+      query = described_class.new(transport: transport, is_streaming_mode: true, can_use_tool: false)
+
+      # Bounded: the regression parks on @first_result_condition forever, and
+      # the ensure in wait_for_result_and_end_input still runs on timeout, so
+      # `ended` alone cannot tell the two apart — completing without timing
+      # out is the actual assertion.
+      timed_out = false
+      Async do |task|
+        task.with_timeout(2.0) { query.wait_for_result_and_end_input }
+      rescue Async::TimeoutError
+        timed_out = true
+      end.wait
+
+      expect(timed_out).to be(false)
+      expect(ended).not_to be_empty
+    end
+
+    it 'ends input immediately when nothing needs bidirectional communication' do
       transport = mock_transport
       ended = []
       allow(transport).to receive(:end_input) { ended << true }
