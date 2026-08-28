@@ -49,6 +49,8 @@ messages = ClaudeAgentSDK.get_subagent_messages(session_id: "uuid-here", agent_i
 
 With `directory:` given, only that project and its git worktrees are searched (no global fallback). Store-backed counterparts: `list_subagents_from_store` / `get_subagent_messages_from_store`.
 
+> Each returned `SessionMessage` carries `parent_tool_use_id` — the id of the Agent `tool_use` block in the parent session that spawned this subagent — and `parent_agent_id`, the spawning subagent's id for nested subagents. Both are read from the `agent-<id>.meta.json` sidecar beside the transcript (or the `agent_metadata` entry in a `SessionStore`), and are `nil` when it is missing or unusable.
+
 ## Renaming a Session
 
 ```ruby
@@ -112,6 +114,46 @@ ClaudeAgentSDK.query(
 ```
 
 `resume_session_at` requires `resume`; the SDK raises `ArgumentError` from `CommandBuilder` when this constraint is violated, matching the underlying CLI's validation but surfacing it synchronously in the caller's stack.
+
+### Validating what the truncation discards
+
+A bare `resume_session_at` silently drops everything after the fork point —
+including a queued user message or a task notification the session absorbed
+mid-turn that you never observed. `resume_drops_turn` names the user prompt
+whose turn you *intend* to discard, and the CLI refuses the resume if anything
+past the fork point is not attributable to that turn:
+
+```ruby
+ClaudeAgentSDK.query(
+  prompt: 'try a different approach',
+  options: ClaudeAgentSDK::ClaudeAgentOptions.new(
+    resume: session_id,
+    resume_session_at: last_kept_entry_uuid,
+    resume_drops_turn: discarded_prompt_uuid
+  )
+) { |m| handle(m) }
+```
+
+Rule of thumb: set `resume_session_at` to the **last transcript entry of the
+turn you are keeping** (whatever its type), and `resume_drops_turn` to the
+prompt UUID of the turn immediately after it — the next `SessionMessage` with
+`type == 'user'` from `get_session_messages`, or the `uuid` you supplied on a
+streamed user message.
+
+With structured output (`output_format`) or end-turn MCP tools, a kept turn
+ends on entries *after* its last assistant message, so forking at the assistant
+UUID is refused by design.
+
+A refusal surfaces as a `ResultError` whose message contains
+`Resume rejected by --resume-drops-turn:`. Treat it as **deterministic** —
+clear the pending fork target and resume plainly; do not retry the same
+request. Leave `resume_drops_turn` unset to keep the unvalidated behavior.
+
+Unlike `resume_session_at`, the SDK applies no combination validation to
+`resume_drops_turn` and defers entirely to the CLI. An empty string is
+forwarded rather than dropped, so the CLI rejects it as a malformed
+declaration instead of the SDK silently disarming a guard you believe is
+armed.
 
 ## Mirroring to a `SessionStore`
 

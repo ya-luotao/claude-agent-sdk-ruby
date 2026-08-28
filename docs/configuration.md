@@ -223,6 +223,23 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 See [examples/bare_mode_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/bare_mode_example.rb).
 
+## Forwarding Subagent Text
+
+By default only `tool_use` / `tool_result` blocks from subagents (spawned via
+the Agent tool) reach the message stream, as `AssistantMessage` /
+`UserMessage` objects whose `parent_tool_use_id` is the spawning Agent
+`tool_use` id — enough for a progress heartbeat. Set `forward_subagent_text`
+to forward the subagent's **text and thinking** blocks the same way, so you
+can render the full nested transcript:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(forward_subagent_text: true)
+```
+
+Matches the TypeScript SDK's `forwardSubagentText`. The capability is
+negotiated on the control-protocol handshake, so it applies to both
+`ClaudeAgentSDK.query` and `Client`.
+
 ## File Checkpointing & Rewind
 
 Enable file checkpointing to revert file changes to a previous state:

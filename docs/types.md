@@ -6,7 +6,8 @@ See [lib/claude_agent_sdk/types.rb](https://github.com/ya-luotao/claude-agent-sd
 
 ```ruby
 # Union type of all possible messages
-Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage
+Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage |
+          StreamEvent | RateLimitEvent | ConversationResetMessage
 ```
 
 ### UserMessage
@@ -18,7 +19,8 @@ class UserMessage
   attr_accessor :content,            # String | Array<ContentBlock>
                 :uuid,               # String | nil - Unique ID for rewind support
                 :parent_tool_use_id, # String | nil
-                :tool_use_result     # Hash | nil - Tool result data when message is a tool response
+                :tool_use_result,    # Hash | nil - Tool result data when message is a tool response
+                :origin              # Hash | nil - message provenance (see Message Origin below)
 end
 ```
 
@@ -91,7 +93,8 @@ class ResultMessage
                 :uuid,               # String | nil
                 :fast_mode_state,    # String | nil ('off', 'cooldown', 'on')
                 :api_error_status,   # Integer | nil (HTTP status on api_error subtype)
-                :terminal_reason     # String | nil (see below)
+                :terminal_reason,    # String | nil (see below)
+                :origin              # Hash | nil - origin of the triggering user message (see below)
 end
 ```
 
@@ -108,6 +111,71 @@ are camelCase (the TypeScript/Python SDKs' `ModelUsage` shape): `inputTokens`,
 optional `canonicalModel` (canonical id used for the pricing lookup, which can
 differ from the raw model-string key for provider-specific ids/aliases) and
 `provider` (`'firstParty'`, `'bedrock'`, `'vertex'`, ...).
+
+## Message Origin
+
+`UserMessage#origin` and `ResultMessage#origin` carry the provenance of a
+user-role turn. In streaming/`Client` mode one connection interleaves the turns
+your application sends with turns the session injects on its own — background
+task notifications, fired scheduled-task prompts, MCP channel messages,
+messages relayed from peer sessions. `origin` tells them apart:
+
+```ruby
+if result.origin.nil? || result.origin[:kind] == 'human'
+  # a turn this application submitted
+elsif result.origin[:kind] == 'task-notification'
+  # follow-up turn driven by a background task
+end
+```
+
+The Hash is passed through from the CLI **verbatim**, so:
+
+- **Keys are Symbols**, and non-`kind` keys keep the CLI's camelCase spelling —
+  `origin[:fromSession]`, `origin[:senderTaskId]`, `origin[:verifiedPeerPid]`.
+  (The Python SDK's equivalent is string-keyed; do not port `origin["kind"]`
+  literally.)
+- Keys this SDK version does not model still reach you, so newer CLI origin
+  kinds stay visible.
+- Anything that is not an object with a String `kind` reads as `nil`.
+
+Only `kind` is always present. Known kinds — treat anything unrecognized as
+"not human":
+
+`human`, `channel`, `peer`, `task-notification`, `coordinator`,
+`unclassified`, `observer`, `auto-continuation`, `observer-activity`
+
+For `kind == 'task-notification'`, `origin[:subkind]` may be
+`scheduled-trigger` (a scheduled task's prompt fired) or `peer-send-message`
+(a message from another of your sessions); it is absent for ordinary
+background-task notifications.
+
+`nil` means the CLI did not attribute the message. Prompts you send through
+`ClaudeAgentSDK.query` or `Client#query` arrive that way unless you stamp
+`origin: { kind: 'human' }` on the message Hash yourself — only the `human`
+kind is honored from an SDK host. Tool-result messages never carry an origin.
+
+### ConversationResetMessage
+
+Emitted when the session's conversation is replaced without ending the
+connection — after `/clear`, or any other flow that discards the transcript
+mid-session.
+
+```ruby
+class ConversationResetMessage
+  attr_accessor :new_conversation_id, # String - id of the fresh conversation
+                :uuid,                # String - unique ID of this message
+                :session_id           # String - the session that was reset
+end
+```
+
+A reset clears the conversation history **and zeroes the running totals**
+reported on subsequent `ResultMessage` objects (`total_cost_usd`, and the
+rest). If you accumulate those across a long-lived session, snapshot them when
+this message arrives.
+
+`new_conversation_id` is **not** the `session_id` of subsequent messages — it
+is an opaque id for keying an empty transcript in a UI (and for discarding a
+cached session title). Read the new session id from the next message.
 
 ## Content Block Types
 
