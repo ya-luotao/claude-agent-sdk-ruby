@@ -33,9 +33,14 @@ Checks:
 ## Permission callback not firing
 
 Checks:
-- Use `ClaudeAgentSDK::Client` (streaming mode) — see `references/options.md` (Permission callback).
-- `ClaudeAgentSDK.query` does not support `can_use_tool` (use `ClaudeAgentSDK::Client`).
+- Since 0.31.0 both `ClaudeAgentSDK.query` (String prompt included) and `ClaudeAgentSDK::Client` support `can_use_tool` — see `references/options.md` (Permission callback). Before 0.31.0, `query` raised `ArgumentError` for it.
 - Do not combine `can_use_tool` with `permission_prompt_tool_name`.
+- **Something auto-approved before the callback.** The callback only runs when the permission ladder lands on "ask". An `allowed_tools` entry allowing a whole tool, `permission_mode: 'bypassPermissions'`, or a settings-file rule short-circuits it. The SDK warns to stderr about the rules it can see, but **settings files are invisible to it** — a user-level `permissions.defaultMode: auto` in `~/.claude/settings.json` silently auto-approves with no warning. Pass `setting_sources: []` to isolate from user/project settings when testing a callback.
+
+## Resume fails with an opaque error
+
+- A refused or invalid resume (nonexistent session, or a `resume_drops_turn` guard failure) raises `ResultError` (0.31.0+) carrying the CLI's own reason. Before 0.31.0 this surfaced as a bare `ProcessError` "exit code 1" with the reason discarded — including on the initial handshake.
+- Match `Resume rejected by --resume-drops-turn:` in the message and treat it as deterministic: clear the fork target and resume plainly instead of retrying the same request.
 
 ## Unknown content block or message types
 

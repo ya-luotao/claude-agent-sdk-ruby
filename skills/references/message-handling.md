@@ -9,6 +9,21 @@ Use these patterns to consume messages yielded by `ClaudeAgentSDK.query` and `Cl
 - `ClaudeAgentSDK::SystemMessage` (metadata/events)
 - `ClaudeAgentSDK::ResultMessage` (end-of-turn marker with `result`, `structured_output`, `total_cost_usd`, `session_id`)
 - `ClaudeAgentSDK::StreamEvent` (partial updates; only if enabled)
+- `ClaudeAgentSDK::ConversationResetMessage` (0.31.0+) — the conversation was replaced mid-session (`/clear` and friends). Has `new_conversation_id`, `uuid`, `session_id`. A reset **zeroes the running totals** on later `ResultMessage`s (`total_cost_usd`, ...), so snapshot them here if you accumulate across a long-lived session. `new_conversation_id` is not the next `session_id` — read that from the following message.
+
+## Message origin (0.31.0+)
+
+`UserMessage#origin` and `ResultMessage#origin` say where a user-role turn came from, so a streaming consumer can tell its own prompt's result from an injected turn (background-task notification, scheduled trigger, MCP channel message, peer session):
+
+```ruby
+if result.origin.nil? || result.origin[:kind] == 'human'
+  # a turn this application submitted
+elsif result.origin[:kind] == 'task-notification'
+  # follow-up driven by a background task
+end
+```
+
+Passed through from the CLI verbatim. **Keys are Symbols and keep the CLI's camelCase** — `origin[:fromSession]`, `origin[:senderTaskId]`. (The Python SDK's equivalent is string-keyed; do not port `origin["kind"]` literally.) Anything that is not an object with a String `kind` reads as `nil`, and prompts sent through `query()` / `Client#query` arrive unattributed unless the host stamps `origin: { kind: 'human' }` itself.
 
 ## Content block types
 

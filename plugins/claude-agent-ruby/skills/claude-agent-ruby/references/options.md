@@ -50,7 +50,7 @@ Use `can_use_tool:` to control tool execution from Ruby.
 - Use `ClaudeAgentSDK::PermissionResultDeny.new(message: ..., interrupt: ...)` to deny.
 
 Important constraints:
-- Use `can_use_tool` only with `ClaudeAgentSDK::Client` (streaming mode); it is not supported by `ClaudeAgentSDK.query`.
+- Since 0.31.0 `can_use_tool` works with both `ClaudeAgentSDK::Client` and `ClaudeAgentSDK.query`, including a plain String prompt. (Before 0.31.0 a String prompt raised `ArgumentError`.)
 - Do not use `can_use_tool` together with `permission_prompt_tool_name`.
 - The callback only runs when the permission ladder lands on "ask": `permission_mode: 'bypassPermissions'` or an `allowed_tools` entry that allows a whole tool (`'Read'`, `'Read()'`, `'Read(*)'`, or the bare `Skill` implied by `skills: 'all'`) auto-approves first and the callback never fires for it. The SDK warns to stderr when it can see this shadowing.
 
@@ -81,6 +81,8 @@ Structured data may be available in either of these places:
 ## Sessions and rewind
 
 - `resume`: Resume a previous session (store the `ResultMessage#session_id`).
+- `resume_session_at`: Truncate the resumed conversation at a transcript entry UUID. Requires `resume`.
+- `resume_drops_turn` (0.31.0+): With `resume_session_at`, the UUID of the user prompt whose turn the truncation intends to discard. The CLI refuses the resume if anything past the fork point is not attributable to that turn — so a queued message or task notification absorbed mid-turn is not dropped silently. Set `resume_session_at` to the last entry of the turn you keep and `resume_drops_turn` to the next turn's prompt UUID. A refusal raises `ResultError` whose message contains `Resume rejected by --resume-drops-turn:`; treat it as deterministic and resume plainly rather than retrying.
 - `fork_session`: Fork a session (create an isolated branch of the conversation).
 - `continue_conversation`: Continue an existing conversation when supported by the CLI.
 - `enable_file_checkpointing`: Enable file checkpoints so `UserMessage#uuid` can be used with `Client#rewind_files`.
@@ -115,6 +117,7 @@ client = ClaudeAgentSDK::Client.new(
 
 - `betas`: Enable CLI beta features (`--betas`).
 - `include_hook_events`: Emit hook lifecycle events (`HookStartedMessage` / `HookProgressMessage` / `HookResponseMessage`) into the message stream (`--include-hook-events`).
+- `forward_subagent_text` (0.31.0+): Forward a subagent's text and thinking blocks into the message stream, not just its `tool_use` / `tool_result` blocks, so the full nested transcript can be rendered. Negotiated on the control-protocol handshake, so it applies to both `query()` and `Client`. Matches the TypeScript SDK's `forwardSubagentText`.
 - `callback_scheduling`: where user callbacks (message blocks, hooks, permission callbacks, SDK MCP handlers, observers) run when the SDK is hosted inside an Async reactor. `:thread` (default) hops each callback to a plain thread so thread-keyed libraries (ActiveRecord, pg) behave as usual; `:inline` runs callbacks in place on the reactor fiber — only for hosts that are fiber-isolated end to end (solid_queue fiber workers with `IsolatedExecutionState.isolation_level = :fiber`). In `:inline` mode hook timeouts cancel cooperatively, and CPU-bound / scheduler-opaque work should be wrapped in `ClaudeAgentSDK.offload { }` (no help for GVL-holding C extensions). See docs/rails.md "Fiber workers".
 - `callback_wrapper`: optional middleware around every user-callback dispatch — a callable receiving a zero-arg invocation that it must call and return, e.g. `->(inv) { Rails.application.executor.wrap { inv.call } }`. Runs on the same execution context as the callback (the worker thread in `:thread` mode, the reactor fiber in `:inline`), so Rails-executor wrapping checks AR connections back in when the callback ends; also a generic hook for APM/logging context. Since 0.28.0 this includes the SDK's timeout-bounded SessionStore calls (mirror appends, resume loads). Exceptions propagate through it unchanged — don't rescue them. Default `nil`. See docs/rails.md "Rails executor around callbacks".
 
