@@ -139,6 +139,33 @@ RSpec.describe 'ClaudeAgentSDK.import_session_to_store' do
     end
   end
 
+  it 'treats a sidecar holding illegal UTF-8 bytes as absent, so later resumes still work' do
+    # Regression: JSON.parse accepts illegal bytes inside a UTF-8-tagged
+    # document, so an agent_metadata entry built from one used to land in the
+    # store — and every subsequent resume through that store then died in
+    # JSON.generate while rewriting the sidecar, aborting query/Client with an
+    # opaque encoding error until someone repaired the store by hand.
+    write_main_transcript
+    sub_dir = File.join(project_dir, sid, 'subagents')
+    FileUtils.mkdir_p(sub_dir)
+    File.write(File.join(sub_dir, 'agent-x.jsonl'), "#{jsonl_line('sub line')}\n")
+    File.binwrite(File.join(sub_dir, 'agent-x.meta.json'),
+                  %({"toolUseId":"toolu_1","note":"bad \xFF\xFE bytes"}))
+
+    ClaudeAgentSDK.import_session_to_store(session_id: sid, session_store: store, directory: cwd)
+
+    sub_key = { 'project_key' => project_key, 'session_id' => sid, 'subpath' => 'subagents/agent-x' }
+    expect(store.load(sub_key).map { |e| e['type'] }).to eq(['user'])
+
+    mat = nil
+    expect do
+      mat = ClaudeAgentSDK::SessionResume.materialize_resume_session(
+        ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: sid, cwd: cwd)
+      )
+    end.not_to raise_error
+    mat&.cleanup
+  end
+
   it 'skips subagents when include_subagents is false' do
     write_main_transcript
     FileUtils.mkdir_p(File.join(project_dir, sid, 'subagents'))

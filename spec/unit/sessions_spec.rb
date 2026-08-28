@@ -4,6 +4,7 @@ require 'spec_helper'
 require 'tmpdir'
 require 'fileutils'
 require 'json'
+require 'timeout'
 
 RSpec.describe ClaudeAgentSDK::Sessions do
   describe '.simple_hash' do
@@ -1122,6 +1123,39 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
           expect(messages.map(&:parent_tool_use_id)).to eq([nil, nil])
           expect(messages.map(&:parent_agent_id)).to eq([nil, nil])
         end
+      end
+    end
+
+    it 'treats a sidecar holding illegal UTF-8 bytes as absent' do
+      # JSON.parse accepts illegal bytes inside a UTF-8-tagged document and
+      # hands back a Hash whose values only blow up later, at JSON.generate
+      # time. Accepting it here poisons everything downstream (see the import
+      # + resume regression in session_import_spec).
+      with_session_on_disk do |subagents_dir, canonical|
+        write_agent(subagents_dir, 'x', nil)
+        File.binwrite(File.join(subagents_dir, 'agent-x.meta.json'),
+                      %({"toolUseId":"toolu_1","note":"bad \xFF\xFE bytes"}))
+
+        messages = ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: 'x', directory: canonical)
+        expect(messages.length).to eq(2)
+        expect(messages.map(&:parent_tool_use_id)).to eq([nil, nil])
+      end
+    end
+
+    it 'skips a FIFO sidecar instead of blocking forever on it' do
+      # Opening a FIFO with no writer waits forever, and the caller's
+      # best-effort rescue never fires because nothing is ever raised.
+      skip 'requires File.mkfifo' unless File.respond_to?(:mkfifo)
+
+      with_session_on_disk do |subagents_dir, canonical|
+        write_agent(subagents_dir, 'x', nil)
+        File.mkfifo(File.join(subagents_dir, 'agent-x.meta.json'))
+
+        messages = Timeout.timeout(5) do
+          ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: 'x', directory: canonical)
+        end
+        expect(messages.length).to eq(2)
+        expect(messages.map(&:parent_tool_use_id)).to eq([nil, nil])
       end
     end
 

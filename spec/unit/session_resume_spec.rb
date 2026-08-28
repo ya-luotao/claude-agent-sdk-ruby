@@ -61,6 +61,23 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       FileUtils.remove_entry(dir)
     end
 
+    it 'seeds no credentials file when the redacted result cannot be re-serialized' do
+      # JSON.parse accepts illegal UTF-8 bytes inside an otherwise well-formed
+      # document, so redaction can succeed and only fail at JSON.generate.
+      # Writing the original bytes through would restore the un-redacted
+      # refreshToken; raising would abort a resume every other seed file is
+      # careful not to abort. Seed nothing instead.
+      dir = Dir.mktmpdir
+      dst = File.join(dir, '.credentials.json')
+      creds = %({"claudeAiOauth":{"refreshToken":"rt","note":"lat\xE9in"}}).dup.force_encoding(Encoding::UTF_8)
+
+      expect { described_class.send(:write_redacted_credentials, creds, dst) }
+        .to output(/cannot redact credentials/).to_stderr
+      expect(File).not_to exist(dst)
+    ensure
+      FileUtils.remove_entry(dir)
+    end
+
     it 'is a no-op when credentials are nil and passes through unparseable JSON' do
       dir = Dir.mktmpdir
       dst = File.join(dir, '.credentials.json')
@@ -550,6 +567,56 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       mat = materialize
       begin
         expect(File.binread(File.join(mat.config_dir, 'settings.json'))).to eq(raw)
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'does not abort the resume when the credentials file holds illegal UTF-8 bytes' do
+      File.binwrite(File.join(source, '.credentials.json'),
+                    %({"claudeAiOauth":{"refreshToken":"rt","note":"lat\xE9in"}}))
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = nil
+      expect { mat = materialize }.to output(/cannot redact credentials/).to_stderr
+      begin
+        expect(File).not_to exist(File.join(mat.config_dir, '.credentials.json'))
+        expect(File).to exist(File.join(mat.config_dir, 'projects', project_key, "#{sid}.jsonl"))
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'still strips plugin declarations from settings carrying a lone surrogate escape' do
+      # Ruby's JSON parser rejects lone surrogate escapes that Python's accepts.
+      # Bailing out to a byte-for-byte copy would leave enabledPlugins in place
+      # and let the resumed CLI network-install every declared marketplace —
+      # the exact behavior this seeding exists to prevent.
+      File.binwrite(File.join(source, 'settings.json'),
+                    '{"enabledPlugins":{"p@m":true},"weird":"\ud800","keep":1}')
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = materialize
+      begin
+        # The surrogate escape survives verbatim; only the plugin key is gone.
+        expect(File.binread(File.join(mat.config_dir, 'settings.json')))
+          .to eq('{"weird":"\ud800","keep":1}')
+      ensure
+        mat.cleanup
+      end
+    end
+
+    it 'leaves an escaped-backslash "\\uXXXX" literal alone while stripping' do
+      # "c:\\ud800x" is an escaped backslash followed by the literal text
+      # ud800 — not an escape sequence, and it must not be masked.
+      File.binwrite(File.join(source, 'settings.json'),
+                    '{"enabledPlugins":{"a":1},"lit":"c:\\\\ud800x"}')
+      ENV['CLAUDE_CONFIG_DIR'] = source
+
+      mat = materialize
+      begin
+        expect(JSON.parse(File.read(File.join(mat.config_dir, 'settings.json'))))
+          .to eq('lit' => 'c:\\ud800x')
       ensure
         mat.cleanup
       end

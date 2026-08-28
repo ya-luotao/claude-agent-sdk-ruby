@@ -5,6 +5,7 @@ require 'fileutils'
 require 'tmpdir'
 require 'open3'
 require 'rbconfig'
+require 'securerandom'
 require_relative 'fiber_boundary'
 require_relative 'sessions'
 require_relative 'session_store'
@@ -336,7 +337,7 @@ module ClaudeAgentSDK
     # Content that doesn't parse as a JSON object is returned untouched so the
     # subprocess sees exactly what the CLI would have read.
     def strip_settings_for_resume(content)
-      parsed = parse_settings_bytes(content)
+      parsed, restore = parse_settings_bytes(content)
       return content unless parsed.is_a?(Hash)
 
       stripped = false
@@ -354,27 +355,75 @@ module ClaudeAgentSDK
       return content unless stripped
 
       begin
-        JSON.generate(parsed)
+        out = JSON.generate(parsed)
       rescue JSON::GeneratorError
         # A spec-valid overflow like 1e999 parses to Infinity, and JSON.generate
         # refuses to emit the bare token the CLI would reject anyway. Fall back
         # to the original bytes rather than writing something unusable.
-        content
+        return content
       end
+      restore ? restore.call(out) : out
     end
 
     # Parse settings bytes tolerating a UTF-8 BOM (PowerShell writes
-    # settings.json with one, and JSON.parse rejects it). Returns nil when the
-    # bytes aren't valid UTF-8 or aren't valid JSON.
+    # settings.json with one, and JSON.parse rejects it). Returns
+    # [parsed, restore] where +restore+ is nil, or a callable that must be
+    # applied to the re-serialized output (see mask_surrogate_escapes).
+    # Returns [nil, nil] when the bytes aren't valid UTF-8 or aren't valid JSON.
     def parse_settings_bytes(content)
       body = content.b
       body = body.byteslice(3..) || +'' if body.start_with?(UTF8_BOM)
       text = body.dup.force_encoding(Encoding::UTF_8)
-      return nil unless text.valid_encoding?
+      return [nil, nil] unless text.valid_encoding?
 
-      JSON.parse(text)
-    rescue JSON::ParserError
-      nil
+      parsed = begin
+        JSON.parse(text)
+      rescue JSON::ParserError
+        nil
+      end
+      return [parsed, nil] unless parsed.nil?
+
+      # Ruby's JSON parser rejects lone surrogate escapes ("\ud800") that
+      # Python's accepts, with no option to relax it. Passing the file through
+      # unstripped over one would leave enabledPlugins in place and let the
+      # resumed CLI keep network-installing every declared marketplace — the
+      # exact behavior this seeding exists to prevent. Retry with the surrogate
+      # escapes masked out, restoring them verbatim after re-serialization.
+      masked, restore = mask_surrogate_escapes(text)
+      return [nil, nil] if masked.nil?
+
+      begin
+        [JSON.parse(masked), restore]
+      rescue JSON::ParserError
+        [nil, nil]
+      end
+    end
+
+    # Replace every \uD800-\uDFFF escape with an opaque ASCII token so the
+    # document parses, and return [masked_text, restore] where +restore+ maps
+    # the tokens in generated output back to the original escape text
+    # byte-for-byte. Returns [nil, nil] when there is nothing to mask (the
+    # parse failure was something else) or the token could collide.
+    def mask_surrogate_escapes(text)
+      token_prefix = "CASDKSURROGATE#{SecureRandom.hex(8)}"
+      return [nil, nil] if text.include?(token_prefix)
+
+      escapes = []
+      masked = text.gsub(/\\+u[0-9a-fA-F]{4}/) do |match|
+        slashes = match[/\A\\+/]
+        # An even run is escaped backslashes followed by literal "uXXXX" text,
+        # not an escape sequence.
+        next match if slashes.length.even?
+
+        escape = "\\#{match[slashes.length..]}"
+        next match unless escape[2..].to_i(16).between?(0xD800, 0xDFFF)
+
+        escapes << escape
+        "#{slashes[0...-1]}#{token_prefix}#{escapes.length - 1}Z"
+      end
+      return [nil, nil] if escapes.empty?
+
+      [masked, ->(out) { out.gsub(/#{Regexp.escape(token_prefix)}(\d+)Z/) { escapes[::Regexp.last_match(1).to_i] } }]
     end
 
     # Write creds_json with claudeAiOauth.refreshToken removed. The resumed
@@ -382,22 +431,46 @@ module ClaudeAgentSDK
     # single-use refresh token would be consumed and the new tokens written
     # somewhere the parent never reads — revoking the parent's creds. Stripping
     # refreshToken short-circuits the subprocess's refresh check.
+    #
+    # Content that isn't JSON at all is written through unchanged: the
+    # subprocess then reads exactly what the CLI would have read (and fails on
+    # it the same way). Note this branch is narrower than "unreadable content" —
+    # JSON.parse accepts illegal UTF-8 bytes inside an otherwise well-formed
+    # document, so redaction can instead fail at re-serialization time; see
+    # below for why that case writes nothing rather than writing through.
     def write_redacted_credentials(creds_json, dst)
-      return if creds_json.nil?
+      out = redacted_credentials(creds_json)
+      return if out.nil?
 
-      out = creds_json
-      begin
-        data = JSON.parse(creds_json)
-        oauth = data.is_a?(Hash) ? data['claudeAiOauth'] : nil
-        if oauth.is_a?(Hash) && oauth.key?('refreshToken')
-          oauth.delete('refreshToken')
-          out = JSON.generate(data)
-        end
-      rescue JSON::ParserError
-        # Unparseable — write through; the subprocess will fail to parse it too.
-      end
       File.write(dst, out)
       chmod_owner_only(dst)
+    end
+
+    # The redaction itself: returns the bytes to write, or nil to write no
+    # credentials file at all.
+    def redacted_credentials(creds_json)
+      return nil if creds_json.nil?
+
+      data = JSON.parse(creds_json)
+      oauth = data.is_a?(Hash) ? data['claudeAiOauth'] : nil
+      return creds_json unless oauth.is_a?(Hash) && oauth.key?('refreshToken')
+
+      oauth.delete('refreshToken')
+      begin
+        JSON.generate(data)
+      rescue JSON::GeneratorError => e
+        # The redaction succeeded but the result can't be re-emitted (illegal
+        # UTF-8 elsewhere in the file). Writing the original bytes through
+        # would put the un-redacted refreshToken back into the temp dir, so
+        # seed no credentials file instead — and don't abort the resume over
+        # it either, matching every other seed file's policy. A resume that
+        # falls back to another auth mechanism beats one that lets the
+        # subprocess burn the parent's single-use refresh token.
+        warn "Claude SDK: [SessionStore] resume: cannot redact credentials (#{e.message}); seeding none"
+        nil
+      end
+    rescue JSON::ParserError
+      creds_json
     end
 
     # Read OAuth credentials JSON from the macOS Keychain (default service name).
@@ -629,6 +702,7 @@ module ClaudeAgentSDK
                          :copy_auth_files, :write_redacted_credentials, :read_keychain_credentials,
                          :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
                          :resolve_dir, :read_if_present, :chmod_owner_only, :copy_if_present, :env_value,
-                         :strip_settings_for_resume, :parse_settings_bytes
+                         :strip_settings_for_resume, :parse_settings_bytes, :mask_surrogate_escapes,
+                         :redacted_credentials
   end
 end

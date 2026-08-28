@@ -1034,11 +1034,27 @@ module ClaudeAgentSDK
     end
 
     # Read the .meta.json sidecar beside a subagent transcript. Returns nil when
-    # the sidecar is missing, not valid JSON, or not a JSON object — an unusable
-    # optional sidecar degrades to an absent one. Other IO errors (EACCES,
-    # EISDIR, ...) propagate; callers that need a best-effort read rescue them.
+    # the sidecar is missing, is not a regular file, is not valid UTF-8, is not
+    # valid JSON, or is not a JSON object — an unusable optional sidecar
+    # degrades to an absent one. Other IO errors (EACCES, ...) propagate;
+    # callers that need a best-effort read rescue them.
     def read_agent_metadata_sidecar(transcript_path)
-      meta = JSON.parse(File.read(agent_metadata_sidecar_path(transcript_path), encoding: 'UTF-8'))
+      path = agent_metadata_sidecar_path(transcript_path)
+      # Check the type on the stat, before any open: opening a FIFO with no
+      # writer blocks forever, and this optional read would hang the caller
+      # with no exception for its best-effort rescue to catch.
+      return nil unless File.stat(path).ftype == 'file'
+
+      text = File.read(path, encoding: 'UTF-8')
+      # JSON.parse is lenient about illegal bytes inside an otherwise
+      # well-formed UTF-8-tagged document: it returns a Hash holding
+      # invalidly-encoded values that only blow up later, at JSON.generate
+      # time. Session import would persist such a Hash as an agent_metadata
+      # entry, and every subsequent resume through that store would then die
+      # re-serializing the sidecar. Treat unusable bytes as an absent sidecar.
+      return nil unless text.valid_encoding?
+
+      meta = JSON.parse(text)
       meta.is_a?(Hash) ? meta : nil
     rescue Errno::ENOENT, JSON::ParserError
       nil
