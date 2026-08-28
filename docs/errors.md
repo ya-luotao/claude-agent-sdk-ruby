@@ -31,12 +31,52 @@ rescue ClaudeAgentSDK::ControlRequestTimeoutError
   puts "Control protocol timed out — consider increasing the timeout"
 rescue ClaudeAgentSDK::CLINotFoundError
   puts "Please install Claude Code"
+rescue ClaudeAgentSDK::ResultError => e
+  # More specific than ProcessError — must be rescued first.
+  case e.terminal_reason
+  when 'api_error' then puts "API failed (HTTP #{e.api_error_status}): #{e.result}"
+  else puts "Run failed (#{e.subtype}): #{e.errors.join('; ')}"
+  end
 rescue ClaudeAgentSDK::ProcessError => e
   puts "Process failed with exit code: #{e.exit_code}"
 rescue ClaudeAgentSDK::CLIJSONDecodeError => e
   puts "Failed to parse response: #{e}"
 end
 ```
+
+## Terminal Error Results
+
+When a run fails, the CLI emits a `result` message with `is_error: true` (which
+you still receive as a `ResultMessage`) and *then* exits non-zero on purpose,
+for shell-script consumers. That trailing process failure carries nothing
+beyond "exit code 1", so the SDK replaces it with a `ResultError` carrying the
+payload the CLI already reported — you can branch on *why* the run failed
+without matching on strings:
+
+```ruby
+begin
+  ClaudeAgentSDK.query(prompt: "...") { |m| handle(m) }
+rescue ClaudeAgentSDK::ResultError => e
+  retry_later    if e.terminal_reason == 'api_error'   # overloaded / timeout
+  widen_budget   if e.subtype == 'error_max_turns'
+  raise
+end
+```
+
+`ResultError` subclasses `ProcessError`, so existing `rescue ProcessError`
+handlers keep working unchanged — but rescue `ResultError` **first** if you
+want the structured fields.
+
+The exception message prefers, in order: the CLI's `errors[]`, then `result`,
+then a non-`success` `subtype`, then the HTTP status. A run that ends on an API
+failure arrives as `subtype: "success"` with `is_error: true` and the prose in
+`result`, which is why `subtype` alone is not used as the message.
+
+A refused resume (a nonexistent session, or a `resume_drops_turn` guard
+failure) reaches you the same way — including on a control request such as the
+initial handshake that was still in flight when the CLI exited. Match on
+`Resume rejected by --resume-drops-turn:` in the message and treat it as
+deterministic: clear the fork target and resume plainly rather than retrying.
 
 ## Configuring Timeout
 
@@ -68,6 +108,19 @@ end
 class ProcessError < ClaudeSDKError
   attr_reader :exit_code,  # Integer | nil
               :stderr      # String | nil
+end
+
+# Raised when the CLI exits after reporting a terminal error result.
+# Subclasses ProcessError, so existing `rescue ProcessError` keeps working.
+class ResultError < ProcessError
+  attr_reader :subtype,          # String | nil ('error_max_turns', 'error_during_execution', ...)
+              :errors,           # Array<String> - error strings from the CLI (may be empty)
+              :result,           # String | nil - result text; holds the "API Error: ..." prose
+              :api_error_status, # Integer | nil - HTTP status of the failing API call
+              :terminal_reason,  # String | nil - why the run ended ('api_error', 'max_turns', ...)
+              :session_id,       # String | nil
+              :data,             # Hash - raw `result` payload as emitted by the CLI
+              :original_error    # ProcessError | nil - the bare exit error this replaced
 end
 
 # Raised when JSON parsing fails

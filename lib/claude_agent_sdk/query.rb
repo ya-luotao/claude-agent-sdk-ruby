@@ -63,7 +63,8 @@ module ClaudeAgentSDK
     end
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
-                   exclude_dynamic_sections: nil, skills: nil, callback_scheduling: :thread, callback_wrapper: nil)
+                   exclude_dynamic_sections: nil, skills: nil, forward_subagent_text: false,
+                   callback_scheduling: :thread, callback_wrapper: nil)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
@@ -74,6 +75,7 @@ module ClaudeAgentSDK
       @agents = agents
       @exclude_dynamic_sections = exclude_dynamic_sections
       @skills = skills
+      @forward_subagent_text = forward_subagent_text
 
       # Control protocol state
       @pending_control_responses = {}
@@ -97,7 +99,12 @@ module ClaudeAgentSDK
       # #1088/#1103), so a result that arrives while this set is non-empty
       # must not close stdin.
       @inflight_tasks = Set.new
-      @last_error_result_text = nil
+      # Set to the result payload when the most recent message is a result
+      # with is_error=true. Used to replace the generic "exit code 1"
+      # ProcessError with a ResultError carrying what the CLI already
+      # reported. Mirrors the TypeScript SDK's `lastErrorResultText`
+      # (Query.ts), but keeps the whole payload rather than just the text.
+      @last_error_result = nil
       @first_result_condition = Async::Condition.new
       @task = nil
       @child_tasks = []
@@ -185,6 +192,9 @@ module ClaudeAgentSDK
       # 'all' and omitted are equivalent at the wire level (no filter), so
       # only send the field when it's an explicit list (mirrors Python).
       request[:skills] = @skills if @skills.is_a?(Array)
+      # Off is the CLI default, so only send the field when enabled — an
+      # older CLI then never sees an unknown key on the common path.
+      request[:forwardSubagentText] = true if @forward_subagent_text
 
       response = send_control_request(request)
       @initialized = true
@@ -355,44 +365,51 @@ module ClaudeAgentSDK
               @first_result_condition.signal
             end
             if message[:is_error]
-              errors = (message[:errors] || []).join('; ')
-              @last_error_result_text = errors.empty? ? (message[:subtype] || 'unknown error').to_s : errors
+              @last_error_result = message
             else
-              @last_error_result_text = nil
+              @last_error_result = nil
             end
           elsif !(msg_type == 'system' && message[:subtype] == 'session_state_changed')
             # Anything other than the post-turn session_state_changed marker
             # means the conversation moved on; a ProcessError now is a fresh
             # crash, not the expected exit from a prior error result. Mirrors
             # the Python/TypeScript SDK reset logic.
-            @last_error_result_text = nil
+            @last_error_result = nil
           end
           # Regular SDK messages go to the queue
           @message_queue.enqueue(message)
         end
       end
     rescue StandardError => e
-      # Unblock pending control requests (e.g., initialize) so callers don't
-      # hang until timeout. INVARIANT: store the result before signaling —
-      # senders check the slot before waiting (level-trigger).
-      @pending_control_responses.dup.each do |request_id, condition|
-        @pending_control_results[request_id] ||= e
-        condition.signal
-      end
-
       # When the CLI emits a result with is_error=true (e.g. error_max_turns,
-      # error_during_execution, a StructuredOutput error) it then exits
-      # non-zero on purpose, for shell-script consumers. The trailing
-      # ProcessError carries no information beyond "exit code 1" — replace it
-      # with the structured error the CLI already reported so the exception is
-      # actionable. Mirrors the Python SDK (_read_messages) and the TypeScript
-      # SDK (Query.ts readMessages).
-      error = if e.is_a?(ProcessError) && @last_error_result_text
-                ProcessError.new("Claude Code returned an error result: #{@last_error_result_text}",
-                                 exit_code: e.exit_code, stderr: e.stderr)
+      # error_during_execution, an API failure, a StructuredOutput error) it
+      # then exits non-zero on purpose, for shell-script consumers. The
+      # trailing ProcessError carries no information beyond "exit code 1" —
+      # replace it with a ResultError carrying what the CLI already reported
+      # so the exception is actionable *and* typed. Mirrors the Python SDK
+      # (_read_messages) and the TypeScript SDK (Query.ts readMessages).
+      error = if e.is_a?(ProcessError) && @last_error_result
+                ResultError.new("Claude Code returned an error result: #{ResultError.error_text(@last_error_result)}",
+                                data: @last_error_result, exit_code: e.exit_code, stderr: e.stderr,
+                                original_error: e)
               else
                 e
               end
+
+      # Unblock pending control requests (e.g., initialize) so callers don't
+      # hang until timeout. Computed AFTER the replacement above so they get
+      # the same enriched error the message stream does: a refused resume (a
+      # nonexistent session, a failed --resume-drops-turn guard) is reported
+      # by the CLI as an error result followed by exit 1 *before* it answers
+      # the SDK's `initialize`, so signaling the raw `e` here handed that
+      # in-flight request "Command failed with exit code 1" and discarded the
+      # real reason (Python #1198).
+      # INVARIANT: store the result before signaling — senders check the slot
+      # before waiting (level-trigger).
+      @pending_control_responses.dup.each do |request_id, condition|
+        @pending_control_results[request_id] ||= error
+        condition.signal
+      end
 
       # Put error in queue so iterators can handle it
       @message_queue.enqueue({ type: 'error', error: error })
@@ -457,6 +474,24 @@ module ClaudeAgentSDK
         status = patch.is_a?(Hash) ? patch[:status] : nil
         @inflight_tasks.delete(task_id) if TERMINAL_TASK_STATUSES.include?(status)
       end
+    end
+
+    # Whether the CLI may still send control requests that need a reply.
+    #
+    # SDK MCP servers, hooks and the can_use_tool permission callback are all
+    # served over the control protocol: the CLI writes a control_request to
+    # stdout and blocks until the SDK writes the matching control_response to
+    # stdin. Closing stdin while any of these is configured makes every later
+    # request fail CLI-side with "Stream closed". Mirrors the TypeScript
+    # SDK's hasBidirectionalNeeds, de-prefixed per Ruby naming (Python #1204).
+    #
+    # can_use_tool is tested for truthiness, not for nil: ClaudeAgentSDK
+    # .configure_can_use_tool treats a falsey callback as "no callback"
+    # (`can_use_tool: enabled ? cb : false` is a real config shape), and the
+    # two must agree — otherwise `false` would skip the stdio routing while
+    # still holding stdin open for a reply that can never be asked for.
+    def bidirectional_needs?
+      !@sdk_mcp_servers.empty? || !@hooks.empty? || !!@can_use_tool
     end
 
     # Flush the transcript-mirror batcher, swallowing errors — a mirror failure
@@ -1239,8 +1274,9 @@ module ClaudeAgentSDK
                            })
     end
 
-    # Wait for a run-ending result before closing stdin when hooks or SDK MCP
-    # servers may still need to exchange control messages with the CLI.
+    # Wait for a run-ending result before closing stdin when hooks, SDK MCP
+    # servers or a can_use_tool callback may still need to exchange control
+    # messages with the CLI.
     # The control protocol requires stdin to stay open for the entire turn
     # (hook replies, can_use_tool replies and SDK MCP tool results are all
     # written to stdin), so no timeout is applied — closing stdin mid-turn
@@ -1252,11 +1288,15 @@ module ClaudeAgentSDK
     # another result. The condition is guaranteed to be signaled: by the
     # result branch in read_messages once no tasks are in flight, or by its
     # ensure block when the process exits early.
+    #
+    # Known limitation (same as Python's): the condition is one-shot and is
+    # not aware of prompt messages still queued CLI-side, so an Enumerator
+    # prompt yielding several user messages (several turns) releases the hold
+    # at the first turn boundary with no tracked tasks; control requests from
+    # later turns can then find stdin closed. Single-message and String
+    # prompts — the common one-shot shapes — are fully covered.
     def wait_for_result_and_end_input
-      if !@first_result_received &&
-         ((@sdk_mcp_servers && !@sdk_mcp_servers.empty?) || (@hooks && !@hooks.empty?))
-        @first_result_condition.wait
-      end
+      @first_result_condition.wait if !@first_result_received && bidirectional_needs?
     ensure
       @transport.end_input
     end

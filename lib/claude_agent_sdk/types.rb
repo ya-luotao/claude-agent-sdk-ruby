@@ -212,6 +212,64 @@ module ClaudeAgentSDK
   class UserMessage < Type
     attr_accessor :content, :uuid, :parent_tool_use_id, :tool_use_result
 
+    # Provenance of this message — where the turn came from.
+    #
+    # In streaming-input mode a single connection interleaves the turns you
+    # send with turns the session injects on its own (background-task
+    # notifications, fired scheduled-task prompts, MCP channel messages,
+    # messages relayed from peer sessions, ...). `origin` tells them apart —
+    # see {ResultMessage#origin} for deciding whether a result answers *your*
+    # prompt.
+    #
+    # **Key form — read this before indexing into it.** A plain Hash, passed
+    # through from the CLI untouched: the SDK does not model it, whitelist its
+    # keys, or rewrite them, so kinds and fields newer CLI versions add stay
+    # visible. Keys therefore follow the transport's JSON parsing, which uses
+    # `symbolize_names: true` — they are **Symbols with the wire spelling
+    # preserved**, so camelCase keys stay camelCase and you index with
+    # `origin[:kind]`, `origin[:fromSession]`, `origin[:senderTaskId]`,
+    # `origin[:verifiedPeerPid]`. This is unlike the snake_case attributes
+    # elsewhere in this SDK, and unlike the Python SDK's string keys: a
+    # `origin["kind"]` or `origin[:from_session]` lookup silently returns nil
+    # and makes every attributed turn look unattributed. Only `:kind` is
+    # guaranteed present; the rest depend on it.
+    #
+    # `nil` means the CLI did not attribute the message — that is the normal
+    # case for prompts you send through {ClaudeAgentSDK.query} / {Client#query},
+    # unless the host stamps `origin: { kind: 'human' }` on the message Hash
+    # itself (only the `human` kind is honored from an SDK host). Populated on
+    # injected turns (task notifications, channel/peer messages, ...) and on
+    # user messages the CLI replays; tool-result messages never carry it.
+    #
+    # Known `:kind` values — documentation, not validation; treat anything
+    # unrecognized as "not human":
+    #
+    # - `'human'` — a turn submitted by the SDK host
+    # - `'channel'` — arrived on an MCP channel; `:server` names the MCP server
+    # - `'peer'` — relayed from a peer session. `:from` (sender address,
+    #   sender-asserted — for reply routing or display, never as proof of
+    #   identity), `:name` (display name, already normalized by the CLI),
+    #   `:fromSession` (the sender's host-openable session id, a navigation
+    #   target only), `:senderTaskId` (task id of the in-process background
+    #   subagent that sent it; absent for cross-session peers), `:body`
+    #   (decoded message body with the peer envelope stripped, byte-exact with
+    #   what the model saw — render this instead of re-parsing the message
+    #   text), `:verifiedPeerPid` (kernel-verified pid of the process that
+    #   connected to this session's local messaging socket — the *connecting*
+    #   process, which for relayed traffic is the relay; absent when
+    #   unverifiable)
+    # - `'task-notification'` — a background task's delivery. `:subkind` is
+    #   `'scheduled-trigger'` (the fired prompt of a scheduled task) or
+    #   `'peer-send-message'` (a message sent from another of the user's
+    #   sessions); absent for ordinary background-task notifications
+    # - `'coordinator'`, `'unclassified'`, `'observer'` (`:from` /
+    #   `:senderTaskId` as for `peer`), `'auto-continuation'`,
+    #   `'observer-activity'`
+    #
+    # @return [Hash{Symbol => Object}, nil]
+    # @see ResultMessage#origin
+    attr_accessor :origin
+
     # Concatenated text of this message. Handles both String content
     # (plain-text user prompt) and Array-of-blocks content (typed content).
     # Returns "" when there is no text.
@@ -442,6 +500,32 @@ module ClaudeAgentSDK
     def deferred_tool_use=(value)
       @deferred_tool_use = value.is_a?(Hash) ? DeferredToolUse.from_hash(value) : value
     end
+
+    # Provenance of the user message that triggered this turn — `nil` when the
+    # CLI did not attribute it. Lets a streaming-input consumer distinguish the
+    # result of its own prompt from the result of a turn the session injected
+    # on its own:
+    #
+    #     if result.origin.nil? || result.origin[:kind] == 'human'
+    #       # a turn this application submitted
+    #     elsif result.origin[:kind] == 'task-notification'
+    #       # follow-up turn driven by a background task
+    #     end
+    #
+    # **Key form.** A plain Hash passed through from the CLI untouched, so its
+    # keys are **Symbols with the wire spelling preserved** — camelCase stays
+    # camelCase (`origin[:kind]`, `origin[:fromSession]`,
+    # `origin[:verifiedPeerPid]`), unlike the snake_case attributes elsewhere
+    # in this SDK and unlike the Python SDK's string keys. Indexing with
+    # `origin["kind"]` silently returns nil and makes every attributed turn
+    # look unattributed.
+    #
+    # See {UserMessage#origin} for the full list of known `:kind` values and
+    # their per-kind keys.
+    #
+    # @return [Hash{Symbol => Object}, nil]
+    # @see UserMessage#origin
+    attr_accessor :origin
   end
 
   # Stream event for partial message updates
@@ -505,6 +589,33 @@ module ClaudeAgentSDK
     def data
       @raw_data || {}
     end
+  end
+
+  # Emitted when the session's conversation is replaced without ending the
+  # connection — e.g. after `/clear` or any other flow that discards the
+  # transcript mid-session (type: 'conversation_reset').
+  #
+  # In streaming-input mode a single connection carries many user turns, and a
+  # reset clears the conversation history *and* zeroes the running totals
+  # reported on subsequent {ResultMessage} objects (e.g. `total_cost_usd`). If
+  # you accumulate those totals across a long-lived session, snapshot them when
+  # this message arrives.
+  #
+  # @!attribute [rw] new_conversation_id
+  #   Opaque identifier for the fresh conversation, for UIs to key an empty
+  #   transcript on (and to discard any cached session title). This is *not*
+  #   the `session_id` of subsequent messages — read that from the next
+  #   message.
+  #   @return [String]
+  # @!attribute [rw] uuid
+  #   Unique ID of this message.
+  #   @return [String]
+  # @!attribute [rw] session_id
+  #   ID of the session that was reset (the outgoing session; messages after
+  #   the reset carry a new `session_id`).
+  #   @return [String]
+  class ConversationResetMessage < Type
+    attr_accessor :new_conversation_id, :uuid, :session_id
   end
 
   # Thinking configuration types
@@ -1580,6 +1691,42 @@ module ClaudeAgentSDK
                 :include_hook_events, :strict_mcp_config,
                 :callback_scheduling, :callback_wrapper
 
+    # With {#resume_session_at}: the UUID of the user prompt whose turn this
+    # truncating resume intends to discard.
+    #
+    # When set, the CLI validates at load time that every transcript entry
+    # after the `resume_session_at` point is attributable to that turn, and
+    # refuses the resume otherwise — e.g. when the discarded range contains a
+    # queued user message or task notification the session absorbed mid-turn
+    # that the caller had not yet observed. Leave unset to keep the
+    # unvalidated truncation behavior.
+    #
+    # **Choosing the fork point.** Set `resume_session_at` to the *last*
+    # transcript entry of the turn you are keeping — whatever its type — and
+    # `resume_drops_turn` to the prompt UUID of the turn immediately after it
+    # (e.g. the next `SessionMessage` of `type == "user"` from
+    # {ClaudeAgentSDK.get_session_messages}, or the `uuid` you supplied on a
+    # streamed user message). Note that with structured output
+    # ({#output_format}) or end-turn MCP tools a kept turn ends on entries
+    # *after* its last assistant message, so forking at the assistant UUID is
+    # refused by design.
+    #
+    # **On refusal.** The CLI reports an `error_during_execution` result whose
+    # message starts with `Resume rejected by --resume-drops-turn:` — match on
+    # that text. Treat it as deterministic: clear the pending fork target and
+    # resume plainly rather than retrying the same request.
+    #
+    # Forwarded whenever it is not `nil`. An empty string reaches the CLI and
+    # is rejected there as a malformed declaration rather than being dropped by
+    # the SDK, which would silently disarm the guard you believe is armed. The
+    # SDK does not validate the option combination (`resume` /
+    # `resume_session_at`); like the TypeScript and Python SDKs that is the
+    # CLI's call.
+    #
+    # @return [String, nil]
+    # @see #resume_session_at
+    attr_accessor :resume_drops_turn
+
     def initialize(attributes = {})
       self.fork_session = false
       self.continue_conversation = false
@@ -1587,6 +1734,7 @@ module ClaudeAgentSDK
       self.enable_file_checkpointing = false
       self.include_hook_events = false
       self.strict_mcp_config = false
+      self.forward_subagent_text = false
 
       super(merge_with_defaults(attributes || {}))
 
@@ -1673,6 +1821,38 @@ module ClaudeAgentSDK
 
     def strict_mcp_config=(value)
       @strict_mcp_config = coerce_boolean(value)
+    end
+
+    # Forward subagent text and thinking blocks as messages in the stream.
+    # Defaults to `false`.
+    #
+    # By default only `tool_use` / `tool_result` blocks from subagents
+    # (spawned via the Agent tool) are emitted, as {AssistantMessage} /
+    # {UserMessage} objects whose `parent_tool_use_id` is the spawning Agent
+    # `tool_use` id — enough for a progress heartbeat. When true, the
+    # subagent's text and thinking blocks are forwarded the same way, so
+    # consumers can render the full nested transcript. Matches the TypeScript
+    # SDK's `forwardSubagentText`.
+    #
+    # Sent as the `forwardSubagentText` initialize capability rather than a CLI
+    # flag, and only when enabled, so an older CLI never sees an unknown key on
+    # the common path. Both {ClaudeAgentSDK.query} and {Client} run the control
+    # protocol, so the option applies to either entry point.
+    #
+    # Assigning coerces to a Boolean; {#forward_subagent_text?} is the
+    # predicate form.
+    #
+    # @return [Boolean]
+    attr_reader :forward_subagent_text
+
+    # @return [Boolean] {#forward_subagent_text}, as a strict Boolean.
+    def forward_subagent_text?
+      !!forward_subagent_text
+    end
+
+    # @see #forward_subagent_text
+    def forward_subagent_text=(value)
+      @forward_subagent_text = coerce_boolean(value)
     end
 
     CALLBACK_SCHEDULING_MODES = %i[thread inline].freeze

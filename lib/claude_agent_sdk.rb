@@ -64,6 +64,34 @@ module ClaudeAgentSDK
     servers
   end
 
+  # Internal: validate can_use_tool and route permission prompts over stdio.
+  #
+  # Shared by query() and Client#connect so both entry points enforce the
+  # same rules. Returns options unchanged when no callback is set; otherwise
+  # checks it is not combined with permission_prompt_tool_name, emits the
+  # shadowing advisory, and returns a copy with permission_prompt_tool_name
+  # set to 'stdio' so the CLI sends permission requests over the control
+  # protocol.
+  #
+  # A String prompt is fine here: the SDK is always streaming internally (a
+  # String is written to stdin as a user message like any other), so as long
+  # as stdin stays open for the turn — which Query#bidirectional_needs? now
+  # guarantees for can_use_tool — the permission round-trip works. The old
+  # "requires streaming mode" ArgumentError was a needless restriction
+  # (Python #1204).
+  def self.configure_can_use_tool(options)
+    return options unless options.can_use_tool
+
+    # can_use_tool and permission_prompt_tool_name are mutually exclusive
+    raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name' if options.permission_prompt_tool_name
+
+    # Advisory: warn if other options shadow the callback. After the
+    # ArgumentError above so invalid configs raise, not warn.
+    OptionWarnings.warn_if_can_use_tool_shadowed(options)
+
+    options.dup_with(permission_prompt_tool_name: 'stdio')
+  end
+
   # Internal: pull exclude_dynamic_sections out of a preset system prompt for
   # the initialize request (older CLIs ignore unknown initialize fields).
   # Shared by Client#connect and the one-shot query() path.
@@ -448,21 +476,7 @@ module ClaudeAgentSDK
 
     options ||= ClaudeAgentOptions.new
 
-    configured_options = options
-    if options.can_use_tool
-      if prompt.is_a?(String)
-        raise ArgumentError,
-              'can_use_tool callback requires streaming mode. Please provide prompt as an Enumerator instead of a String.'
-      end
-
-      raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name' if options.permission_prompt_tool_name
-
-      configured_options = options.dup_with(permission_prompt_tool_name: 'stdio')
-    end
-
-    # Advisory: warn if other options shadow the can_use_tool callback.
-    # After the ArgumentError validations so invalid configs raise, not warn.
-    OptionWarnings.warn_if_can_use_tool_shadowed(options)
+    configured_options = ClaudeAgentSDK.configure_can_use_tool(options)
 
     # Fail fast on invalid session_store combinations before spawning the CLI.
     SessionStores.validate_session_store_options(configured_options)
@@ -536,6 +550,7 @@ module ClaudeAgentSDK
           sdk_mcp_servers: sdk_mcp_servers,
           exclude_dynamic_sections: ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt),
           skills: configured_options.skills,
+          forward_subagent_text: configured_options.forward_subagent_text?,
           callback_scheduling: callback_scheduling,
           callback_wrapper: callback_wrapper
         )
@@ -742,18 +757,7 @@ module ClaudeAgentSDK
       raise ArgumentError, "prompt must be a String, an Enumerator, or nil (got #{prompt.class})" unless prompt.nil? || prompt.is_a?(String) || prompt.respond_to?(:each)
 
       # Validate and configure permission settings
-      configured_options = @options
-      if @options.can_use_tool
-        # can_use_tool and permission_prompt_tool_name are mutually exclusive
-        raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name' if @options.permission_prompt_tool_name
-
-        # Set permission_prompt_tool_name to stdio for control protocol
-        configured_options = @options.dup_with(permission_prompt_tool_name: 'stdio')
-      end
-
-      # Advisory: warn if other options shadow the can_use_tool callback.
-      # After the ArgumentError validations so invalid configs raise, not warn.
-      OptionWarnings.warn_if_can_use_tool_shadowed(@options)
+      configured_options = ClaudeAgentSDK.configure_can_use_tool(@options)
 
       # Fail fast on invalid session_store combinations before spawning the CLI.
       # Configuration validation is a usage error, like the ArgumentErrors
@@ -1074,6 +1078,7 @@ module ClaudeAgentSDK
         agents: configured_options.agents,
         exclude_dynamic_sections: exclude_dynamic_sections,
         skills: configured_options.skills,
+        forward_subagent_text: configured_options.forward_subagent_text?,
         callback_scheduling: @callback_scheduling,
         callback_wrapper: @callback_wrapper
       )

@@ -323,13 +323,162 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     end
   end
 
-  it 'rejects string prompts when can_use_tool is configured' do
-    callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
-    options = ClaudeAgentSDK::ClaudeAgentOptions.new(can_use_tool: callback)
+  # can_use_tool is served over the control protocol, which needs stdin open
+  # for the verdict to reach the CLI. The SDK is always streaming internally
+  # (a String prompt is written to stdin as a user message like any other),
+  # so a String prompt works too — the old "requires streaming mode" refusal
+  # was a needless restriction (Python #1204).
+  describe 'can_use_tool' do
+    # Enforces the real CLI contract: the permission control_request is only
+    # emitted after the user message is written, the assistant/result frames
+    # only after the verdict is written back, and any write after end_input
+    # raises like a closed pipe would.
+    def permission_gated_transport(state)
+      Class.new do
+        define_method(:initialize) do
+          @incoming = Async::Queue.new
+          @state = state
+        end
+        def connect; end
 
-    expect do
-      described_class.query(prompt: 'hello', options: options) { |_message| nil }
-    end.to raise_error(ArgumentError, /can_use_tool callback requires streaming mode/)
+        # Like the real CLI in stream-json mode: stdin EOF ends the process.
+        # A regression that closes stdin early therefore fails the example
+        # (no permission callback, no messages) instead of hanging.
+        def end_input
+          @state[:ended] = true
+          @incoming.enqueue(:end)
+        end
+
+        def close
+          @state[:closed] = true
+        end
+
+        def write(data)
+          raise IOError, 'stdin closed' if @state[:ended]
+
+          @state[:writes] << data
+          msg = JSON.parse(data, symbolize_names: true)
+          case msg[:type]
+          when 'control_request'
+            handle_initialize(msg) if msg.dig(:request, :subtype) == 'initialize'
+          when 'user'
+            request_permission
+          when 'control_response'
+            finish_turn
+          end
+        end
+
+        def read_messages
+          loop do
+            msg = @incoming.dequeue
+            break if msg == :end
+
+            yield msg
+          end
+        end
+
+        private
+
+        def handle_initialize(msg)
+          @incoming.enqueue(
+            type: 'control_response',
+            response: { subtype: 'success', request_id: msg[:request_id], response: {} }
+          )
+        end
+
+        def request_permission
+          @incoming.enqueue(
+            type: 'control_request',
+            request_id: 'perm_1',
+            request: {
+              subtype: 'can_use_tool', tool_name: 'Write',
+              input: { file_path: '/tmp/x', content: 'hi' }, tool_use_id: 'toolu_1'
+            }
+          )
+        end
+
+        def finish_turn
+          @incoming.enqueue(type: 'assistant',
+                            message: { role: 'assistant', model: 'claude-sonnet-4',
+                                       content: [{ type: 'text', text: 'done' }] })
+          @incoming.enqueue(type: 'result', subtype: 'success', is_error: false, duration_ms: 1,
+                            duration_api_ms: 1, num_turns: 1, session_id: 's', total_cost_usd: 0)
+          @incoming.enqueue(:end)
+        end
+      end.new
+    end
+
+    def run_permission_query(prompt)
+      state = { writes: [], ended: false, closed: false, calls: [] }
+      callback = lambda do |tool_name, _input, _context|
+        state[:calls] << tool_name
+        ClaudeAgentSDK::PermissionResultAllow.new
+      end
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(can_use_tool: callback)
+
+      messages = []
+      described_class.query(prompt: prompt, options: options,
+                            transport: permission_gated_transport(state)) { |m| messages << m }
+      [messages, state]
+    end
+
+    def permission_verdicts(state)
+      state[:writes].map { |w| JSON.parse(w, symbolize_names: true) }
+                    .select { |m| m[:type] == 'control_response' }
+    end
+
+    it 'answers the permission request for a String prompt' do
+      messages, state = run_permission_query('write it')
+
+      expect(state[:calls]).to eq(['Write'])
+      expect(messages.map(&:class)).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+      expect(state[:ended]).to be(true)
+    end
+
+    it 'answers the permission request for an Enumerator prompt' do
+      prompt = Enumerator.new do |y|
+        y << { type: 'user', message: { role: 'user', content: 'write it' }, parent_tool_use_id: nil, session_id: '' }
+      end
+      messages, state = run_permission_query(prompt)
+
+      expect(state[:calls]).to eq(['Write'])
+      expect(messages.map(&:class)).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+      expect(state[:ended]).to be(true)
+    end
+
+    it 'writes an allow verdict back over the control protocol' do
+      _messages, state = run_permission_query('write it')
+
+      verdicts = permission_verdicts(state)
+      expect(verdicts.length).to eq(1)
+      expect(verdicts.first.dig(:response, :subtype)).to eq('success')
+      expect(verdicts.first.dig(:response, :response, :behavior)).to eq('allow')
+    end
+
+    it 'routes permission prompts over stdio' do
+      captured = nil
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |opts|
+        captured = opts
+        raise ClaudeAgentSDK::CLIConnectionError, 'stop here'
+      end
+      callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(can_use_tool: callback)
+
+      expect { described_class.query(prompt: 'hello', options: options) { |_m| nil } }
+        .to raise_error(ClaudeAgentSDK::CLIConnectionError)
+      expect(captured.permission_prompt_tool_name).to eq('stdio')
+    end
+
+    it 'rejects can_use_tool combined with permission_prompt_tool_name' do
+      callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        can_use_tool: callback, permission_prompt_tool_name: 'mcp__auth__prompt'
+      )
+
+      expect do
+        described_class.query(prompt: 'hello', options: options) { |_message| nil }
+      end.to raise_error(ArgumentError, /cannot be used with permission_prompt_tool_name/)
+    end
   end
 
   # Regression (M6): Client#query validated the prompt but query() did not —
@@ -387,5 +536,36 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     end.wait
 
     expect(captured_query_args[:exclude_dynamic_sections]).to be(true)
+  end
+
+  it 'passes forward_subagent_text from the options to the control protocol' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+    allow(transport).to receive(:write)
+
+    query_handler = instance_double(
+      ClaudeAgentSDK::Query,
+      start: true,
+      initialize_protocol: nil,
+      wait_for_result_and_end_input: nil,
+      close: nil
+    )
+    allow(query_handler).to receive(:receive_messages)
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+
+    [true, false].each do |enabled|
+      captured_query_args = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        captured_query_args = kwargs
+        query_handler
+      end
+
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(forward_subagent_text: enabled)
+      Async do
+        described_class.query(prompt: 'hello', options: options) { |_message| nil }
+      end.wait
+
+      expect(captured_query_args[:forward_subagent_text]).to be(enabled)
+    end
   end
 end

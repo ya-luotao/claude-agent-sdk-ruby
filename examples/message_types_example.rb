@@ -115,6 +115,11 @@ ClaudeAgentSDK.query(prompt: "List the files in the current directory", options:
     info = msg.rate_limit_info
     puts "[rate_limit] #{info.status} (#{info.rate_limit_type})"
 
+  # --- Conversation reset (/clear and friends) ---
+  when ClaudeAgentSDK::ConversationResetMessage
+    # Running totals on later ResultMessages restart from zero — snapshot here.
+    puts "[reset] new conversation #{msg.new_conversation_id} (was session #{msg.session_id})"
+
   # --- Streaming events ---
   when ClaudeAgentSDK::StreamEvent
     # Only present when include_partial_messages: true

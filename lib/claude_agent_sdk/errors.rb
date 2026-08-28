@@ -38,6 +38,153 @@ module ClaudeAgentSDK
     end
   end
 
+  # Raised when the CLI exits after reporting a terminal error result.
+  #
+  # The CLI ends a failed run by emitting a +result+ message with
+  # +is_error: true+ (yielded to you as a ResultMessage) and *then* exiting
+  # non-zero, on purpose, for shell-script consumers. This exception replaces
+  # the bare "exit code 1" ProcessError for that case and carries the
+  # result's payload, so callers can branch on *why* the run failed without
+  # string matching:
+  #
+  #   begin
+  #     ClaudeAgentSDK.query(prompt: '...') { |message| ... }
+  #   rescue ClaudeAgentSDK::ResultError => e
+  #     if e.terminal_reason == 'api_error'   # e.g. overloaded / timeout
+  #       retry_later
+  #     elsif e.subtype == 'error_max_turns'
+  #       ...
+  #     end
+  #   end
+  #
+  # It subclasses ProcessError, so existing +rescue ProcessError+ handlers
+  # keep working.
+  #
+  # Every structured field is type-narrowed: a payload whose +subtype+ is not
+  # a String (or whose +api_error_status+ is not an Integer, ...) reads back
+  # as nil rather than leaking the raw value, so callers can branch on these
+  # without re-validating. #data always holds the payload as the CLI sent it.
+  class ResultError < ProcessError
+    # The result subtype ("error_max_turns", "error_during_execution", ... —
+    # or "success" when the agent loop itself completed but the last turn was
+    # an API error).
+    attr_reader :subtype
+
+    # Error strings reported by the CLI (may be empty). Normalized the same
+    # way the exception text is built, so the two never disagree.
+    attr_reader :errors
+
+    # The result text, if any. For API failures this holds the
+    # "API Error: ..." prose.
+    attr_reader :result
+
+    # HTTP status of the failing API call, if any.
+    attr_reader :api_error_status
+
+    # Why the run ended (e.g. "api_error", "max_turns"), if reported.
+    attr_reader :terminal_reason
+
+    # Session the result belongs to, if reported.
+    attr_reader :session_id
+
+    # The raw +result+ message payload as emitted by the CLI.
+    attr_reader :data
+
+    # The ProcessError this replaced (the bare "exit code 1" exit).
+    #
+    # Ruby only populates #cause for an exception raised inside a rescue
+    # block; the read loop hands this one to the message queue instead of
+    # raising it there, so #cause is nil and the original exit error would be
+    # lost without an explicit accessor. Mirrors Python's __cause__ chaining.
+    attr_reader :original_error
+
+    # Reading a `result` payload: shared by the structured attributes below
+    # and by .error_text, which is the whole point — the exception's fields
+    # and its message are derived from the same normalization, so they can
+    # never disagree. Private to ResultError (Python keeps the equivalent
+    # helpers module-private as _normalize_result_errors); callers outside
+    # go through .error_text.
+    module Payload
+      module_function
+
+      # Normalize the +errors+ field of a +result+ frame to clean strings.
+      #
+      # The CLI emits an Array of Strings; tolerate a bare String (older or
+      # buggy emitters), treat anything else as empty, and drop non-String or
+      # blank entries.
+      def normalize_errors(raw)
+        raw = [raw] if raw.is_a?(String)
+        return [] unless raw.is_a?(Array)
+
+        raw.filter_map { |e| e.strip if e.is_a?(String) && !e.strip.empty? }
+      end
+
+      # Read a payload field, tolerating both key forms.
+      #
+      # Wire messages reach the SDK with symbolized keys, but a payload
+      # reconstructed by a caller (or replayed from JSON.parse without
+      # symbolize_names) uses Strings.
+      def field(data, key)
+        return nil unless data.is_a?(Hash)
+
+        data.key?(key) ? data[key] : data[key.to_s]
+      end
+    end
+    private_constant :Payload
+
+    # Pick the most informative text from a `result` frame with is_error.
+    #
+    # Terminal errors the CLI raises itself (error_max_turns,
+    # error_during_execution, ...) carry their prose in errors[]. A run that
+    # ends on an API failure instead arrives as subtype "success" with
+    # is_error true, an empty errors[] and the "API Error: ..." prose in
+    # `result` — falling back to the subtype there produced the self-
+    # contradictory "Claude Code returned an error result: success". Prefer
+    # errors[], then `result`, then a non-success subtype, then the HTTP
+    # status, mirroring the TypeScript SDK's choice of `result` for the
+    # `success` subtype.
+    #
+    # Public because the read loop builds the exception message from it, and
+    # because it is the documented way to get the same one-line summary out
+    # of a raw error result you already hold (an is_error ResultMessage the
+    # CLI emitted before exiting). Mirrors Python's _error_result_text.
+    def self.error_text(data)
+      errors = Payload.normalize_errors(Payload.field(data, :errors))
+      return errors.join('; ') unless errors.empty?
+
+      result = Payload.field(data, :result)
+      return result.strip if result.is_a?(String) && !result.strip.empty?
+
+      subtype = Payload.field(data, :subtype)
+      return subtype if subtype.is_a?(String) && !subtype.empty? && subtype != 'success'
+
+      status = Payload.field(data, :api_error_status)
+      return "API error (HTTP #{status})" unless status.nil?
+
+      'unknown error'
+    end
+
+    def initialize(message, data: nil, exit_code: nil, stderr: nil, original_error: nil)
+      data = {} unless data.is_a?(Hash)
+      @data = data
+      @original_error = original_error
+
+      subtype = Payload.field(data, :subtype)
+      @subtype = subtype.is_a?(String) ? subtype : nil
+      @errors = Payload.normalize_errors(Payload.field(data, :errors))
+      result = Payload.field(data, :result)
+      @result = result.is_a?(String) ? result : nil
+      status = Payload.field(data, :api_error_status)
+      @api_error_status = status.is_a?(Integer) ? status : nil
+      reason = Payload.field(data, :terminal_reason)
+      @terminal_reason = reason.is_a?(String) ? reason : nil
+      session_id = Payload.field(data, :session_id)
+      @session_id = session_id.is_a?(String) ? session_id : nil
+
+      super(message, exit_code: exit_code, stderr: stderr)
+    end
+  end
+
   # Raised when unable to decode JSON from CLI output
   class CLIJSONDecodeError < ClaudeSDKError
     attr_reader :line, :original_error

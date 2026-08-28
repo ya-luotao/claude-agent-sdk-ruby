@@ -23,6 +23,26 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(received_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
   end
 
+  it 'passes forward_subagent_text through to the Query handler' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+
+    [true, false].each do |enabled|
+      captured = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        captured = kwargs
+        query_handler
+      end
+
+      described_class.new(
+        options: ClaudeAgentSDK::ClaudeAgentOptions.new(forward_subagent_text: enabled)
+      ).connect
+
+      expect(captured[:forward_subagent_text]).to be(enabled)
+    end
+  end
+
   it 'sends an initial String prompt as a user message after connecting' do
     writes = []
     transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true)
@@ -94,6 +114,18 @@ RSpec.describe ClaudeAgentSDK::Client do
 
     expect(received_options.permission_prompt_tool_name).to eq('stdio')
     expect(received_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
+  end
+
+  # query() and Client#connect share ClaudeAgentSDK.configure_can_use_tool,
+  # so the mutual-exclusion rule is enforced identically at both entry points.
+  it 'rejects can_use_tool combined with permission_prompt_tool_name' do
+    callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+      can_use_tool: callback, permission_prompt_tool_name: 'mcp__auth__prompt'
+    )
+    client = described_class.new(options: options)
+
+    expect { client.connect }.to raise_error(ArgumentError, /cannot be used with permission_prompt_tool_name/)
   end
 
   it 'warns on connect when can_use_tool is shadowed by allowed_tools' do

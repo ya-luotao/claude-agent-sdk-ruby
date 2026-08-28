@@ -25,7 +25,7 @@ All three SDKs share the same underlying mechanism: they spawn the `claude` CLI 
 | Hooks (all 27 events) | ✅ | ✅ | ✅ |
 | Permission callbacks | ✅ | ✅ | ✅ |
 | Structured output | ✅ | ✅ | ✅ |
-| All 24 message types | ✅ | partial | ✅ |
+| All 25 message types | ✅ | partial | ✅ |
 | [Sandbox](https://github.com/anthropic-experimental/sandbox-runtime) settings | ✅ | partial | ✅ |
 | Bare mode (`--bare`) | ✅ | ✅ | ✅ |
 | File checkpointing & rewind | ✅ | ✅ | ✅ |
@@ -36,7 +36,7 @@ All three SDKs share the same underlying mechanism: they spawn the `claude` CLI 
 | Custom transport (pluggable I/O) | — | — | ✅ |
 | Rails integration | — | — | ✅ |
 
-**Where Ruby goes further:** Built-in OpenTelemetry observer with Langfuse flow diagram support — no third-party instrumentation library needed. Custom transport support lets you swap the subprocess for any I/O layer (e.g., connect to a remote Claude Code instance over SSH or a container). Rails integration provides a `configure` block for initializers with thread-safe observer factories, and plays well with ActionCable for real-time streaming. Full typed coverage for all 24 CLI message types and all 27 hook events.
+**Where Ruby goes further:** Built-in OpenTelemetry observer with Langfuse flow diagram support — no third-party instrumentation library needed. Custom transport support lets you swap the subprocess for any I/O layer (e.g., connect to a remote Claude Code instance over SSH or a container). Rails integration provides a `configure` block for initializers with thread-safe observer factories, and plays well with ActionCable for real-time streaming. Full typed coverage for all 25 CLI message types and all 27 hook events.
 
 **What's missing:** The Ruby gem does not bundle the `claude` CLI binary (`npm install -g @anthropic-ai/claude-code`).
 
@@ -272,7 +272,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 |---------|-------------|
 | [quick_start.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/quick_start.rb) | Basic `query()` usage with options |
 | [client_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/client_example.rb) | Interactive Client usage |
-| [message_types_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/message_types_example.rb) | Handling all 24 SDK message types |
+| [message_types_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/message_types_example.rb) | Handling all 25 SDK message types |
 | [streaming_input_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/streaming_input_example.rb) | Streaming input for multi-turn conversations |
 | [session_resumption_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/session_resumption_example.rb) | Multi-turn conversations with session persistence |
 | [structured_output_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/structured_output_example.rb) | JSON schema structured output |
