@@ -55,15 +55,31 @@ module ClaudeAgentSDK
       content = message_data[:content]
       raise MessageParseError.new("Missing content in user message", data: data) unless content
 
+      origin = parse_origin(data)
+
       if content.is_a?(Array)
         content_blocks = parse_content_blocks(content, data)
         UserMessage.new(content: content_blocks, uuid: uuid, parent_tool_use_id: parent_tool_use_id,
-                        tool_use_result: tool_use_result)
+                        tool_use_result: tool_use_result, origin: origin)
       else
         UserMessage.new(content: content, uuid: uuid, parent_tool_use_id: parent_tool_use_id,
-                        tool_use_result: tool_use_result)
+                        tool_use_result: tool_use_result, origin: origin)
       end
     end
+
+    # Returns `data[:origin]` when it is a well-formed origin object.
+    #
+    # Passed through as-is — including keys and kinds this SDK version doesn't
+    # model, and with the wire key spelling untouched (`:fromSession` stays
+    # camelCase) — so newer CLI origin kinds/fields stay visible to callers.
+    # Anything that is not a Hash with a String `:kind` is treated as absent.
+    def self.parse_origin(data)
+      origin = data[:origin]
+      return origin if origin.is_a?(Hash) && origin[:kind].is_a?(String)
+
+      nil
+    end
+    private_class_method :parse_origin
 
     def self.parse_assistant_message(data)
       message_data = data[:message]
@@ -126,7 +142,10 @@ module ClaudeAgentSDK
     end
 
     def self.parse_result_message(data)
-      ResultMessage.new(data)
+      # `origin` is overwritten with the validated value (or nil) rather than
+      # letting the base class assign the raw field: a malformed origin must
+      # read as absent, not be surfaced verbatim.
+      ResultMessage.new(data.merge(origin: parse_origin(data)))
     end
 
     def self.parse_stream_event(data)

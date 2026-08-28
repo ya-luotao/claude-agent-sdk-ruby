@@ -208,9 +208,72 @@ module ClaudeAgentSDK
 
   # Message Types
 
+  # Provenance of a user-role message, and — on a {ResultMessage} — of the
+  # message that triggered that turn.
+  #
+  # In streaming-input mode a single connection interleaves the turns you send
+  # with turns the session injects on its own (background-task notifications,
+  # fired scheduled-task prompts, MCP channel messages, messages relayed from
+  # peer sessions, ...). `origin` tells them apart, e.g. to decide whether a
+  # {ResultMessage} answers *your* prompt:
+  #
+  #     if result.origin.nil? || result.origin[:kind] == 'human'
+  #       # a turn this application submitted
+  #     elsif result.origin[:kind] == 'task-notification'
+  #       # follow-up turn driven by a background task
+  #     end
+  #
+  # **Shape.** A plain Hash, passed through from the CLI untouched — the SDK
+  # does not model it, whitelist its keys, or rewrite them, so kinds and fields
+  # newer CLI versions add stay visible. Keys therefore follow the transport's
+  # JSON parsing: live messages are parsed with `symbolize_names: true`, so
+  # they are **symbols with the wire spelling preserved** — camelCase keys stay
+  # camelCase (`origin[:fromSession]`, `origin[:senderTaskId]`,
+  # `origin[:verifiedPeerPid]`), unlike the snake_case attributes elsewhere in
+  # this SDK. Only `:kind` is guaranteed present; the rest depend on it.
+  #
+  # `nil` means the CLI did not attribute the message. Prompts sent through
+  # {ClaudeAgentSDK.query} / {Client#query} arrive that way unless the host
+  # stamps `origin: { kind: 'human' }` on the message Hash itself (only the
+  # `human` kind is honored from an SDK host).
+  #
+  # Known `:kind` values — documentation, not validation; treat anything
+  # unrecognized as "not human":
+  #
+  # - `'human'` — a turn submitted by the SDK host
+  # - `'channel'` — arrived on an MCP channel; `:server` names the MCP server
+  # - `'peer'` — relayed from a peer session. `:from` (sender address,
+  #   sender-asserted — for reply routing or display, never as proof of
+  #   identity), `:name` (display name, already normalized by the CLI),
+  #   `:fromSession` (the sender's host-openable session id, a navigation
+  #   target only), `:senderTaskId` (task id of the in-process background
+  #   subagent that sent it; absent for cross-session peers), `:body` (decoded
+  #   message body with the peer envelope stripped, byte-exact with what the
+  #   model saw — render this instead of re-parsing the message text),
+  #   `:verifiedPeerPid` (kernel-verified pid of the process that connected to
+  #   this session's local messaging socket — the *connecting* process, which
+  #   for relayed traffic is the relay; absent when unverifiable)
+  # - `'task-notification'` — a background task's delivery. `:subkind` is
+  #   `'scheduled-trigger'` (the fired prompt of a scheduled task) or
+  #   `'peer-send-message'` (a message sent from another of the user's
+  #   sessions); absent for ordinary background-task notifications
+  # - `'coordinator'`, `'unclassified'`, `'observer'` (`:from` /
+  #   `:senderTaskId` as for `peer`), `'auto-continuation'`,
+  #   `'observer-activity'`
+  #
+  # @see UserMessage#origin
+  # @see ResultMessage#origin
+
   # User message
+  #
+  # @!attribute [rw] origin
+  #   Provenance of this message — see the MessageOrigin documentation above.
+  #   `nil` when the CLI did not attribute it. Populated on injected turns
+  #   (task notifications, channel/peer messages, ...) and on user messages the
+  #   CLI replays; tool-result messages never carry it.
+  #   @return [Hash, nil]
   class UserMessage < Type
-    attr_accessor :content, :uuid, :parent_tool_use_id, :tool_use_result
+    attr_accessor :content, :uuid, :parent_tool_use_id, :tool_use_result, :origin
 
     # Concatenated text of this message. Handles both String content
     # (plain-text user prompt) and Array-of-blocks content (typed content).
@@ -426,6 +489,13 @@ module ClaudeAgentSDK
     # interrupt control request). nil when the CLI did not report one
     # (older CLI versions, or a result that bypassed the query loop such
     # as a local slash command).
+    #
+    # origin is the provenance of the user message that triggered this turn
+    # (a Hash, or nil when unattributed) — see the MessageOrigin
+    # documentation above UserMessage. It lets a streaming-input consumer
+    # distinguish the result of its own prompt (nil, or { kind: 'human' } if
+    # it stamped that) from results of injected turns such as background-task
+    # notifications ({ kind: 'task-notification' }).
     attr_accessor :subtype, :duration_ms, :duration_api_ms, :is_error,
                   :num_turns, :session_id, :stop_reason, :total_cost_usd, :usage,
                   :result, :structured_output,
@@ -435,7 +505,8 @@ module ClaudeAgentSDK
                   :uuid,
                   :fast_mode_state,    # "off", "cooldown", or "on"
                   :api_error_status,   # Integer HTTP status (429, 500, 529) on api_error subtype (CLI 2.1.110+)
-                  :terminal_reason     # why the query loop ended, see above
+                  :terminal_reason,    # why the query loop ended, see above
+                  :origin              # provenance of the triggering turn, see above
 
     attr_reader :deferred_tool_use     # DeferredToolUse, populated when a PreToolUse hook deferred
 

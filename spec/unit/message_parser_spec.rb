@@ -750,6 +750,77 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
       end
     end
 
+    context 'message origin' do
+      it 'surfaces origin on user messages for both content shapes, passing unmodeled keys through' do
+        peer = {
+          kind: 'peer',
+          from: 'peer-addr',
+          name: 'other-session',
+          verifiedPeerPid: 4242,
+          someFutureField: true
+        }
+
+        ['hi', [{ type: 'text', text: 'hi' }]].each do |content|
+          msg = described_class.parse(type: 'user', message: { content: content }, origin: peer)
+          expect(msg).to be_a(ClaudeAgentSDK::UserMessage)
+          expect(msg.origin).to eq(peer)
+          expect(msg.origin[:kind]).to eq('peer')
+          expect(msg.origin[:from]).to eq('peer-addr')
+          # camelCase wire keys survive untouched, unlike snake_case attributes
+          expect(msg.origin[:verifiedPeerPid]).to eq(4242)
+          expect(msg.origin[:someFutureField]).to be(true)
+        end
+      end
+
+      it 'parses an absent, non-Hash or kind-less origin on a user message to nil' do
+        [{}, { origin: nil }, { origin: 'human' }, { origin: {} }, { origin: { kind: 42 } }].each do |extra|
+          msg = described_class.parse({ type: 'user', message: { content: 'hi' } }.merge(extra))
+          expect(msg).to be_a(ClaudeAgentSDK::UserMessage)
+          expect(msg.origin).to be_nil, "expected nil origin for #{extra.inspect}"
+        end
+      end
+
+      context 'on results' do
+        let(:base) do
+          {
+            type: 'result',
+            subtype: 'success',
+            duration_ms: 1000,
+            duration_api_ms: 500,
+            is_error: false,
+            num_turns: 2,
+            session_id: 'session_123'
+          }
+        end
+
+        it 'is nil when the CLI did not attribute the turn' do
+          msg = described_class.parse(base)
+          expect(msg).to be_a(ClaudeAgentSDK::ResultMessage)
+          expect(msg.origin).to be_nil
+        end
+
+        it 'identifies what triggered the turn' do
+          msg = described_class.parse(base.merge(origin: { kind: 'human' }))
+          expect(msg.origin).to eq({ kind: 'human' })
+
+          %w[scheduled-trigger peer-send-message].each do |subkind|
+            origin = { kind: 'task-notification', subkind: subkind }
+            expect(described_class.parse(base.merge(origin: origin)).origin).to eq(origin)
+          end
+
+          msg = described_class.parse(base.merge(origin: { kind: 'unclassified' }))
+          expect(msg.origin[:kind]).to eq('unclassified')
+        end
+
+        it 'reads a malformed origin as absent rather than surfacing it verbatim' do
+          [{ origin: nil }, { origin: 'human' }, { origin: {} }, { origin: { kind: 42 } }].each do |extra|
+            msg = described_class.parse(base.merge(extra))
+            expect(msg.origin).to be_nil, "expected nil origin for #{extra.inspect}"
+          end
+        end
+      end
+    end
+
     context 'user message tool_use_result' do
       it 'parses tool_use_result when present' do
         data = {
