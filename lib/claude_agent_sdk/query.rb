@@ -384,7 +384,7 @@ module ClaudeAgentSDK
       # so the exception is actionable *and* typed. Mirrors the Python SDK
       # (_read_messages) and the TypeScript SDK (Query.ts readMessages).
       error = if e.is_a?(ProcessError) && @last_error_result
-                ResultError.new("Claude Code returned an error result: #{error_result_text(@last_error_result)}",
+                ResultError.new("Claude Code returned an error result: #{ResultError.error_text(@last_error_result)}",
                                 data: @last_error_result, exit_code: e.exit_code, stderr: e.stderr,
                                 original_error: e)
               else
@@ -444,46 +444,6 @@ module ClaudeAgentSDK
     # spawned it.
     #
     # Only delegated agent work is tracked (DEFERRING_TASK_TYPES). A
-    # Whether the CLI may still send control requests that need a reply.
-    #
-    # SDK MCP servers, hooks and the can_use_tool permission callback are all
-    # served over the control protocol: the CLI writes a control_request to
-    # stdout and blocks until the SDK writes the matching control_response to
-    # stdin. Closing stdin while any of these is configured makes every later
-    # request fail CLI-side with "Stream closed". Mirrors the TypeScript
-    # SDK's hasBidirectionalNeeds, de-prefixed per Ruby naming (Python #1204).
-    def bidirectional_needs?
-      !@sdk_mcp_servers.empty? || !@hooks.empty? || !@can_use_tool.nil?
-    end
-
-    # Pick the most informative text from a `result` frame with is_error.
-    #
-    # Terminal errors the CLI raises itself (error_max_turns,
-    # error_during_execution, ...) carry their prose in errors[]. A run that
-    # ends on an API failure instead arrives as subtype "success" with
-    # is_error true, an empty errors[] and the "API Error: ..." prose in
-    # `result` — falling back to the subtype there produced the self-
-    # contradictory "Claude Code returned an error result: success". Prefer
-    # errors[], then `result`, then a non-success subtype, then the HTTP
-    # status, mirroring the TypeScript SDK's choice of `result` for the
-    # `success` subtype. Reads fields through ResultError so the text and the
-    # exception's structured attributes can never disagree.
-    def error_result_text(message)
-      errors = ResultError.normalize_errors(ResultError.field(message, :errors))
-      return errors.join('; ') unless errors.empty?
-
-      result = ResultError.field(message, :result)
-      return result.strip if result.is_a?(String) && !result.strip.empty?
-
-      subtype = ResultError.field(message, :subtype)
-      return subtype if subtype.is_a?(String) && !subtype.empty? && subtype != 'success'
-
-      status = ResultError.field(message, :api_error_status)
-      return "API error (HTTP #{status})" unless status.nil?
-
-      'unknown error'
-    end
-
     # background *shell* is also reported through these frames, but it may
     # never reach a terminal status, and the CLI in stream-json mode only
     # exits on stdin EOF — tracking one would withhold the close forever.
@@ -509,6 +469,24 @@ module ClaudeAgentSDK
         status = patch.is_a?(Hash) ? patch[:status] : nil
         @inflight_tasks.delete(task_id) if TERMINAL_TASK_STATUSES.include?(status)
       end
+    end
+
+    # Whether the CLI may still send control requests that need a reply.
+    #
+    # SDK MCP servers, hooks and the can_use_tool permission callback are all
+    # served over the control protocol: the CLI writes a control_request to
+    # stdout and blocks until the SDK writes the matching control_response to
+    # stdin. Closing stdin while any of these is configured makes every later
+    # request fail CLI-side with "Stream closed". Mirrors the TypeScript
+    # SDK's hasBidirectionalNeeds, de-prefixed per Ruby naming (Python #1204).
+    #
+    # can_use_tool is tested for truthiness, not for nil: ClaudeAgentSDK
+    # .configure_can_use_tool treats a falsey callback as "no callback"
+    # (`can_use_tool: enabled ? cb : false` is a real config shape), and the
+    # two must agree — otherwise `false` would skip the stdio routing while
+    # still holding stdin open for a reply that can never be asked for.
+    def bidirectional_needs?
+      !@sdk_mcp_servers.empty? || !@hooks.empty? || !!@can_use_tool
     end
 
     # Flush the transcript-mirror batcher, swallowing errors — a mirror failure

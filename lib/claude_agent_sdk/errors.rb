@@ -98,29 +98,70 @@ module ClaudeAgentSDK
     # lost without an explicit accessor. Mirrors Python's __cause__ chaining.
     attr_reader :original_error
 
-    # Normalize the +errors+ field of a +result+ frame to clean strings.
-    #
-    # The CLI emits an Array of Strings; tolerate a bare String (older/buggy
-    # emitters), treat anything else as empty, and drop non-String or blank
-    # entries so the structured #errors and the exception text always agree.
-    def self.normalize_errors(raw)
-      raw = [raw] if raw.is_a?(String)
-      return [] unless raw.is_a?(Array)
+    # Reading a `result` payload: shared by the structured attributes below
+    # and by .error_text, which is the whole point — the exception's fields
+    # and its message are derived from the same normalization, so they can
+    # never disagree. Private to ResultError (Python keeps the equivalent
+    # helpers module-private as _normalize_result_errors); callers outside
+    # go through .error_text.
+    module Payload
+      module_function
 
-      raw.filter_map { |e| e.strip if e.is_a?(String) && !e.strip.empty? }
+      # Normalize the +errors+ field of a +result+ frame to clean strings.
+      #
+      # The CLI emits an Array of Strings; tolerate a bare String (older or
+      # buggy emitters), treat anything else as empty, and drop non-String or
+      # blank entries.
+      def normalize_errors(raw)
+        raw = [raw] if raw.is_a?(String)
+        return [] unless raw.is_a?(Array)
+
+        raw.filter_map { |e| e.strip if e.is_a?(String) && !e.strip.empty? }
+      end
+
+      # Read a payload field, tolerating both key forms.
+      #
+      # Wire messages reach the SDK with symbolized keys, but a payload
+      # reconstructed by a caller (or replayed from JSON.parse without
+      # symbolize_names) uses Strings.
+      def field(data, key)
+        return nil unless data.is_a?(Hash)
+
+        data.key?(key) ? data[key] : data[key.to_s]
+      end
     end
+    private_constant :Payload
 
-    # Read a payload field, tolerating both key forms.
+    # Pick the most informative text from a `result` frame with is_error.
     #
-    # Wire messages reach the SDK with symbolized keys, but a payload
-    # reconstructed by a caller (or replayed from JSON.parse without
-    # symbolize_names) uses Strings. Every field read goes through here so
-    # the structured attributes and the exception text can never disagree
-    # about which key form they saw.
-    def self.field(data, key)
-      return nil unless data.is_a?(Hash)
+    # Terminal errors the CLI raises itself (error_max_turns,
+    # error_during_execution, ...) carry their prose in errors[]. A run that
+    # ends on an API failure instead arrives as subtype "success" with
+    # is_error true, an empty errors[] and the "API Error: ..." prose in
+    # `result` — falling back to the subtype there produced the self-
+    # contradictory "Claude Code returned an error result: success". Prefer
+    # errors[], then `result`, then a non-success subtype, then the HTTP
+    # status, mirroring the TypeScript SDK's choice of `result` for the
+    # `success` subtype.
+    #
+    # Public because the read loop builds the exception message from it, and
+    # because it is the documented way to get the same one-line summary out
+    # of a raw error result you already hold (an is_error ResultMessage the
+    # CLI emitted before exiting). Mirrors Python's _error_result_text.
+    def self.error_text(data)
+      errors = Payload.normalize_errors(Payload.field(data, :errors))
+      return errors.join('; ') unless errors.empty?
 
-      data.key?(key) ? data[key] : data[key.to_s]
+      result = Payload.field(data, :result)
+      return result.strip if result.is_a?(String) && !result.strip.empty?
+
+      subtype = Payload.field(data, :subtype)
+      return subtype if subtype.is_a?(String) && !subtype.empty? && subtype != 'success'
+
+      status = Payload.field(data, :api_error_status)
+      return "API error (HTTP #{status})" unless status.nil?
+
+      'unknown error'
     end
 
     def initialize(message, data: nil, exit_code: nil, stderr: nil, original_error: nil)
@@ -128,16 +169,16 @@ module ClaudeAgentSDK
       @data = data
       @original_error = original_error
 
-      subtype = self.class.field(data, :subtype)
+      subtype = Payload.field(data, :subtype)
       @subtype = subtype.is_a?(String) ? subtype : nil
-      @errors = self.class.normalize_errors(self.class.field(data, :errors))
-      result = self.class.field(data, :result)
+      @errors = Payload.normalize_errors(Payload.field(data, :errors))
+      result = Payload.field(data, :result)
       @result = result.is_a?(String) ? result : nil
-      status = self.class.field(data, :api_error_status)
+      status = Payload.field(data, :api_error_status)
       @api_error_status = status.is_a?(Integer) ? status : nil
-      reason = self.class.field(data, :terminal_reason)
+      reason = Payload.field(data, :terminal_reason)
       @terminal_reason = reason.is_a?(String) ? reason : nil
-      session_id = self.class.field(data, :session_id)
+      session_id = Payload.field(data, :session_id)
       @session_id = session_id.is_a?(String) ? session_id : nil
 
       super(message, exit_code: exit_code, stderr: stderr)

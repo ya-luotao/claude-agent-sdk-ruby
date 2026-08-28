@@ -130,6 +130,44 @@ RSpec.describe ClaudeAgentSDK do
         expect(described_class.new('m', data: { errors: [' ', 'x ', 3] }).errors).to eq(['x'])
       end
 
+      # The payload readers are an implementation detail shared by the
+      # attributes above and .error_text; only .error_text is public API.
+      it 'keeps its payload readers private' do
+        expect { ClaudeAgentSDK::ResultError::Payload }.to raise_error(NameError, /private constant/)
+        expect(described_class).not_to respond_to(:normalize_errors)
+        expect(described_class).not_to respond_to(:field)
+      end
+
+      describe '.error_text' do
+        it 'prefers errors[] joined over everything else' do
+          expect(described_class.error_text({ errors: %w[a b], result: 'ignored', subtype: 'x' }))
+            .to eq('a; b')
+        end
+
+        it 'falls back to the result prose over a success subtype' do
+          expect(described_class.error_text({ errors: [], result: ' API Error: boom ', subtype: 'success' }))
+            .to eq('API Error: boom')
+        end
+
+        it 'falls back to a non-success subtype' do
+          expect(described_class.error_text({ errors: [' '], result: '', subtype: 'error_max_turns' }))
+            .to eq('error_max_turns')
+        end
+
+        it 'falls back to the HTTP status, then to a placeholder' do
+          expect(described_class.error_text({ subtype: 'success', api_error_status: 529 }))
+            .to eq('API error (HTTP 529)')
+          expect(described_class.error_text({ subtype: 'success' })).to eq('unknown error')
+          expect(described_class.error_text(nil)).to eq('unknown error')
+        end
+
+        # The invariant the shared readers exist for.
+        it 'agrees with the structured errors attribute' do
+          data = { errors: [' boom ', 3, ''] }
+          expect(described_class.error_text(data)).to eq(described_class.new('m', data: data).errors.join('; '))
+        end
+      end
+
       # Wire payloads arrive symbolized; a payload replayed from plain
       # JSON.parse has String keys and must read back identically.
       it 'reads String-keyed payloads too' do

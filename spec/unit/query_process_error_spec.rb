@@ -285,5 +285,47 @@ RSpec.describe ClaudeAgentSDK::Query, 'ProcessError handling' do
       expect(failure.subtype).to eq('error_during_execution')
       expect(failure.exit_code).to eq(1)
     end
+
+    # The literal shape the fix was written for: the CLI reports the refusal
+    # and exits *before* it ever answers `initialize`, so the handshake
+    # itself is the pending request that has to receive the real reason.
+    it 'hands a pending initialize the enriched result error' do
+      initialize_on_wire = Async::Queue.new
+      refused = {
+        type: 'result', subtype: 'error_during_execution', is_error: true,
+        errors: ['Resume rejected by --resume-drops-turn: nope']
+      }
+
+      transport = mock_transport
+      allow(transport).to receive(:write) do |data|
+        msg = JSON.parse(data, symbolize_names: true)
+        initialize_on_wire.enqueue(true) if msg.dig(:request, :subtype) == 'initialize'
+      end
+      # The error result reaches stdout before the CLI answers initialize;
+      # the exit follows only once the handshake is parked on its condition.
+      allow(transport).to receive(:read_messages) do |&block|
+        block.call(refused)
+        initialize_on_wire.dequeue
+        raise process_error(1)
+      end
+
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      failure = nil
+      Async do
+        query.start
+        begin
+          query.initialize_protocol
+        rescue StandardError => e
+          failure = e
+        end
+      end.wait
+
+      expect(failure).to be_a(ClaudeAgentSDK::ResultError),
+                         "expected ResultError, got: #{failure.inspect}"
+      expect(failure.message).to include('Resume rejected by --resume-drops-turn: nope')
+      expect(failure.message).not_to include('Command failed with exit code 1')
+      expect(failure.exit_code).to eq(1)
+    end
   end
 end
