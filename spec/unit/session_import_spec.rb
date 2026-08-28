@@ -109,6 +109,36 @@ RSpec.describe 'ClaudeAgentSDK.import_session_to_store' do
     expect(store.list_subkeys('project_key' => project_key, 'session_id' => sid)).to eq(['subagents/agent-x'])
   end
 
+  it 'keeps the synthetic agent_metadata marker even when the sidecar has its own type key' do
+    write_main_transcript
+    sub_dir = File.join(project_dir, sid, 'subagents')
+    FileUtils.mkdir_p(sub_dir)
+    File.write(File.join(sub_dir, 'agent-x.jsonl'), "#{jsonl_line('sub line')}\n")
+    File.write(File.join(sub_dir, 'agent-x.meta.json'),
+               JSON.generate('type' => 'something-else', 'toolUseId' => 'toolu_1'))
+
+    ClaudeAgentSDK.import_session_to_store(session_id: sid, session_store: store, directory: cwd)
+
+    sub_key = { 'project_key' => project_key, 'session_id' => sid, 'subpath' => 'subagents/agent-x' }
+    expect(store.load(sub_key).last).to eq('type' => 'agent_metadata', 'toolUseId' => 'toolu_1')
+  end
+
+  ['not json {', '[1, 2]', '42'].each do |sidecar|
+    it "treats an unusable .meta.json sidecar (#{sidecar}) as absent instead of aborting the import" do
+      write_main_transcript
+      sub_dir = File.join(project_dir, sid, 'subagents')
+      FileUtils.mkdir_p(sub_dir)
+      File.write(File.join(sub_dir, 'agent-x.jsonl'), "#{jsonl_line('sub line')}\n")
+      File.write(File.join(sub_dir, 'agent-x.meta.json'), sidecar)
+
+      ClaudeAgentSDK.import_session_to_store(session_id: sid, session_store: store, directory: cwd)
+
+      sub_key = { 'project_key' => project_key, 'session_id' => sid, 'subpath' => 'subagents/agent-x' }
+      entries = store.load(sub_key)
+      expect(entries.map { |e| e['type'] }).to eq(['user'])
+    end
+  end
+
   it 'skips subagents when include_subagents is false' do
     write_main_transcript
     FileUtils.mkdir_p(File.join(project_dir, sid, 'subagents'))

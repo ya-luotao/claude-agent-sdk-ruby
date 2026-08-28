@@ -488,16 +488,17 @@ module ClaudeAgentSDK
     # Partition entries into transcript vs agent_metadata and write the
     # <subpath>.jsonl transcript and, if present, the <subpath>.meta.json sidecar.
     def write_subagent_files(session_dir, subpath, entries)
-      metadata, transcript = entries.partition { |e| e.is_a?(Hash) && e['type'] == 'agent_metadata' }
+      # Last metadata entry wins (see Sessions.split_agent_metadata).
+      metadata, transcript = Sessions.split_agent_metadata(entries)
       sub_file = File.join(session_dir, "#{subpath}.jsonl")
 
       write_jsonl(sub_file, transcript) unless transcript.empty?
 
-      return if metadata.empty?
+      return if metadata.nil?
 
-      # Last metadata entry wins; strip the synthetic type field.
-      meta_content = metadata.last.except('type')
-      meta_file = "#{sub_file.delete_suffix('.jsonl')}.meta.json"
+      # Strip the synthetic type field.
+      meta_content = metadata.except('type')
+      meta_file = Sessions.agent_metadata_sidecar_path(sub_file)
       FileUtils.mkdir_p(File.dirname(meta_file))
       File.write(meta_file, JSON.generate(meta_content))
       chmod_owner_only(meta_file)

@@ -849,6 +849,17 @@ RSpec.describe ClaudeAgentSDK::SessionMessage do
     expect(msg.session_id).to eq('sess-1')
     expect(msg.message).to eq({ 'role' => 'user', 'content' => 'Hello' })
     expect(msg.parent_tool_use_id).to be_nil
+    expect(msg.parent_agent_id).to be_nil
+  end
+
+  it 'carries the subagent parent ids when given' do
+    msg = described_class.new(
+      type: 'assistant', uuid: 'abc', session_id: 'sess', message: nil,
+      parent_tool_use_id: 'toolu_1', parent_agent_id: 'agent-1'
+    )
+
+    expect(msg.parent_tool_use_id).to eq('toolu_1')
+    expect(msg.parent_agent_id).to eq('agent-1')
   end
 
   def build(message)
@@ -1055,6 +1066,85 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
         # Deliberate divergence from Python (limit=0 means "no limit" there):
         # the Ruby read-API family standardized limit <= 0 -> [].
         expect(ClaudeAgentSDK.get_subagent_messages(**args, limit: 0)).to eq([])
+      end
+    end
+
+    # --- parent ids recovered from the .meta.json sidecar (Python PR #1207) ---
+
+    def write_agent(subagents_dir, agent_id, meta)
+      File.write(File.join(subagents_dir, "agent-#{agent_id}.jsonl"), [
+        sidechain_entry('s1', text: 'hi').to_json,
+        sidechain_entry('s2', parent: 's1', text: 'hello').to_json
+      ].join("\n"))
+      return if meta.nil?
+
+      File.write(File.join(subagents_dir, "agent-#{agent_id}.meta.json"),
+                 meta.is_a?(String) ? meta : JSON.generate(meta))
+    end
+
+    it 'stamps toolUseId/parentAgentId from the sidecar on every message' do
+      with_session_on_disk do |subagents_dir, canonical|
+        write_agent(subagents_dir, 'abc', 'agentType' => 'general-purpose', 'toolUseId' => 'toolu_01ABC',
+                                          'parentAgentId' => 'a-parent', 'spawnDepth' => 2)
+
+        messages = ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: 'abc', directory: canonical)
+        expect(messages.length).to eq(2)
+        expect(messages.map(&:parent_tool_use_id)).to eq(%w[toolu_01ABC toolu_01ABC])
+        expect(messages.map(&:parent_agent_id)).to eq(%w[a-parent a-parent])
+      end
+    end
+
+    it 'reads the sidecar beside a nested workflow transcript' do
+      with_session_on_disk do |subagents_dir, canonical|
+        nested = File.join(subagents_dir, 'workflows', 'run-1')
+        FileUtils.mkdir_p(nested)
+        write_agent(nested, 'deep', 'toolUseId' => 'toolu_nested')
+
+        messages = ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: 'deep', directory: canonical)
+        expect(messages.map(&:parent_tool_use_id)).to eq(%w[toolu_nested toolu_nested])
+        expect(messages.map(&:parent_agent_id)).to eq([nil, nil])
+      end
+    end
+
+    [
+      [nil, 'no sidecar'],
+      ['not json {', 'an unparseable sidecar'],
+      ['[1, 2]', 'a non-object sidecar'],
+      [{ 'agentType' => 'general-purpose' }, 'a sidecar without ids'],
+      [{ 'toolUseId' => 42, 'parentAgentId' => ['x'] }, 'non-String ids']
+    ].each do |meta, label|
+      it "leaves both parent ids nil for #{label}" do
+        with_session_on_disk do |subagents_dir, canonical|
+          write_agent(subagents_dir, 'x', meta)
+
+          messages = ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: 'x', directory: canonical)
+          expect(messages.length).to eq(2)
+          expect(messages.map(&:parent_tool_use_id)).to eq([nil, nil])
+          expect(messages.map(&:parent_agent_id)).to eq([nil, nil])
+        end
+      end
+    end
+
+    it 'degrades to no metadata when the sidecar exists but cannot be read' do
+      # A directory where the sidecar is expected raises EISDIR out of the read
+      # helper; this best-effort caller must swallow it, not propagate.
+      with_session_on_disk do |subagents_dir, canonical|
+        write_agent(subagents_dir, 'x', nil)
+        Dir.mkdir(File.join(subagents_dir, 'agent-x.meta.json'))
+
+        messages = ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: 'x', directory: canonical)
+        expect(messages.length).to eq(2)
+        expect(messages.map(&:parent_tool_use_id)).to eq([nil, nil])
+        expect(messages.map(&:parent_agent_id)).to eq([nil, nil])
+      end
+    end
+
+    it 'never sets parent ids on top-level session messages' do
+      with_session_on_disk do |_subagents_dir, canonical|
+        messages = ClaudeAgentSDK.get_session_messages(session_id: uuid, directory: canonical)
+        expect(messages).not_to be_empty
+        expect(messages.map(&:parent_tool_use_id)).to all(be_nil)
+        expect(messages.map(&:parent_agent_id)).to all(be_nil)
       end
     end
 
