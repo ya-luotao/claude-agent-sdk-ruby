@@ -444,6 +444,18 @@ module ClaudeAgentSDK
     # spawned it.
     #
     # Only delegated agent work is tracked (DEFERRING_TASK_TYPES). A
+    # Whether the CLI may still send control requests that need a reply.
+    #
+    # SDK MCP servers, hooks and the can_use_tool permission callback are all
+    # served over the control protocol: the CLI writes a control_request to
+    # stdout and blocks until the SDK writes the matching control_response to
+    # stdin. Closing stdin while any of these is configured makes every later
+    # request fail CLI-side with "Stream closed". Mirrors the TypeScript
+    # SDK's hasBidirectionalNeeds, de-prefixed per Ruby naming (Python #1204).
+    def bidirectional_needs?
+      !@sdk_mcp_servers.empty? || !@hooks.empty? || !@can_use_tool.nil?
+    end
+
     # Pick the most informative text from a `result` frame with is_error.
     #
     # Terminal errors the CLI raises itself (error_max_turns,
@@ -1279,8 +1291,9 @@ module ClaudeAgentSDK
                            })
     end
 
-    # Wait for a run-ending result before closing stdin when hooks or SDK MCP
-    # servers may still need to exchange control messages with the CLI.
+    # Wait for a run-ending result before closing stdin when hooks, SDK MCP
+    # servers or a can_use_tool callback may still need to exchange control
+    # messages with the CLI.
     # The control protocol requires stdin to stay open for the entire turn
     # (hook replies, can_use_tool replies and SDK MCP tool results are all
     # written to stdin), so no timeout is applied — closing stdin mid-turn
@@ -1293,10 +1306,7 @@ module ClaudeAgentSDK
     # result branch in read_messages once no tasks are in flight, or by its
     # ensure block when the process exits early.
     def wait_for_result_and_end_input
-      if !@first_result_received &&
-         ((@sdk_mcp_servers && !@sdk_mcp_servers.empty?) || (@hooks && !@hooks.empty?))
-        @first_result_condition.wait
-      end
+      @first_result_condition.wait if !@first_result_received && bidirectional_needs?
     ensure
       @transport.end_input
     end

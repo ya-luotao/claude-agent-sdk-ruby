@@ -141,7 +141,32 @@ RSpec.describe ClaudeAgentSDK::Query do
       end.wait
     end
 
-    it 'ends input immediately when no hooks or SDK MCP servers are configured' do
+    # can_use_tool is served over the same control protocol as hooks and SDK
+    # MCP servers, but was missing from the bidirectional-needs check: an
+    # Enumerator prompt with only a permission callback closed stdin as soon
+    # as the input ended, and every later permission control_request failed
+    # CLI-side with "Stream closed".
+    it 'ends input only after the first result when only can_use_tool is configured' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
+      query = described_class.new(transport: transport, is_streaming_mode: true, can_use_tool: callback)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+        task.sleep 0.05
+        expect(ended).to be_empty
+
+        queue.enqueue(sample_result_message)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    it 'ends input immediately when nothing needs bidirectional communication' do
       transport = mock_transport
       ended = []
       allow(transport).to receive(:end_input) { ended << true }
