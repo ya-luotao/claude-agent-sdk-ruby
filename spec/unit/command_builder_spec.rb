@@ -389,6 +389,48 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
         expect(cmd).to include("--resume-session-at=#{message_uuid}")
       end
     end
+
+    describe '--resume-drops-turn' do
+      let(:message_uuid) { '0d78eb23-2d48-4741-b970-4ed0a3356cce' }
+      let(:prompt_uuid) { 'ce0a8011-2c8d-40f2-86e5-d6e1b0c041c0' }
+
+      it 'passes --resume-drops-turn in equals form alongside the truncating resume' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          resume: 'sess-source',
+          resume_session_at: message_uuid,
+          resume_drops_turn: prompt_uuid
+        )
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).to include("--resume-session-at=#{message_uuid}")
+        expect(cmd).to include("--resume-drops-turn=#{prompt_uuid}")
+      end
+
+      it 'omits --resume-drops-turn when not set' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(resume: 'sess-source')
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd.grep(/\A--resume-drops-turn/)).to be_empty
+      end
+
+      it 'forwards an empty string so the CLI rejects it as a malformed declaration' do
+        # Dropping it SDK-side would silently disarm the guard the caller
+        # believes is armed — hence `.nil?`, not truthiness.
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          resume: 'sess-source',
+          resume_session_at: message_uuid,
+          resume_drops_turn: ''
+        )
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).to include('--resume-drops-turn=')
+      end
+
+      it 'does not validate the option combination SDK-side' do
+        # Like the TypeScript and Python SDKs, whether the combination makes
+        # sense is the CLI's call.
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(resume_drops_turn: prompt_uuid)
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).to include("--resume-drops-turn=#{prompt_uuid}")
+      end
+    end
   end
 
   describe 'thinking config' do

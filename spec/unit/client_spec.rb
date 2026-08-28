@@ -23,6 +23,26 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(received_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
   end
 
+  it 'passes forward_subagent_text through to the Query handler' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+
+    [true, false].each do |enabled|
+      captured = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        captured = kwargs
+        query_handler
+      end
+
+      described_class.new(
+        options: ClaudeAgentSDK::ClaudeAgentOptions.new(forward_subagent_text: enabled)
+      ).connect
+
+      expect(captured[:forward_subagent_text]).to be(enabled)
+    end
+  end
+
   it 'sends an initial String prompt as a user message after connecting' do
     writes = []
     transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true)

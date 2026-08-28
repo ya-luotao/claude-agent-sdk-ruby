@@ -713,6 +713,7 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.load_timeout_ms).to eq(60_000)
         expect(options.include_hook_events).to eq(false)
         expect(options.strict_mcp_config).to eq(false)
+        expect(options.forward_subagent_text).to eq(false)
       end
 
       it 'accepts session store options and preserves an explicit zero load_timeout_ms' do
@@ -723,11 +724,13 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.load_timeout_ms).to eq(0)
       end
 
-      it 'accepts and coerces include_hook_events / strict_mcp_config' do
-        options = described_class.new(include_hook_events: true, strict_mcp_config: 'yes')
+      it 'accepts and coerces include_hook_events / strict_mcp_config / forward_subagent_text' do
+        options = described_class.new(include_hook_events: true, strict_mcp_config: 'yes',
+                                      forward_subagent_text: 'true')
 
         expect(options.include_hook_events?).to eq(true)
         expect(options.strict_mcp_config?).to eq(true)
+        expect(options.forward_subagent_text?).to eq(true)
       end
 
       it 'accepts configuration' do

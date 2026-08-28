@@ -222,6 +222,7 @@ module ClaudeAgentSDK
       # flags. The equals form always binds the value to its flag.
       cmd.push("--resume=#{@options.resume}") if @options.resume
       append_resume_session_at(cmd)
+      append_resume_drops_turn(cmd)
       cmd.push("--session-id=#{@options.session_id}") if @options.session_id
     end
 
@@ -238,6 +239,29 @@ module ClaudeAgentSDK
       # Equals form for the same reason as --resume above: never let a
       # dash-leading value parse as a separate flag.
       cmd.push("--resume-session-at=#{@options.resume_session_at}")
+    end
+
+    # `--resume-drops-turn=<prompt-uuid>` declares, alongside
+    # `--resume-session-at`, which user prompt's turn this truncating resume
+    # intends to discard. The CLI validates at load time that every transcript
+    # entry after the fork point is attributable to that turn and refuses the
+    # resume otherwise — so a caller can rewind to "before my last prompt"
+    # without silently dropping a queued message or task notification the
+    # session absorbed mid-turn that the caller never observed. A refusal
+    # surfaces as an `error_during_execution` result whose message starts with
+    # `Resume rejected by --resume-drops-turn:`.
+    #
+    # No SDK-side validation of the option combination (resume /
+    # resume_session_at): like the TypeScript and Python SDKs this defers to
+    # the CLI.
+    def append_resume_drops_turn(cmd)
+      # `.nil?`, not truthiness: an empty string is forwarded so the CLI
+      # rejects it as a malformed declaration. Dropping it here would silently
+      # disarm the guard the caller believes is armed.
+      return if @options.resume_drops_turn.nil?
+
+      # Equals form for the same reason as --resume above.
+      cmd.push("--resume-drops-turn=#{@options.resume_drops_turn}")
     end
 
     # Sandbox gating is `!nil?` throughout — Python's `sandbox is not None`.

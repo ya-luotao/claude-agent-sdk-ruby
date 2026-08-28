@@ -816,6 +816,26 @@ RSpec.describe ClaudeAgentSDK::Query do
       end
     end
 
+    it 'sends forwardSubagentText in initialize only when enabled' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      query = described_class.new(transport: transport, is_streaming_mode: true, forward_subagent_text: true)
+      allow(query).to receive(:send_control_request) do |request|
+        expect(request[:forwardSubagentText]).to be(true)
+        {}
+      end
+      query.initialize_protocol
+
+      [{}, { forward_subagent_text: false }].each do |kwargs|
+        query = described_class.new(transport: transport, is_streaming_mode: true, **kwargs)
+        allow(query).to receive(:send_control_request) do |request|
+          expect(request).not_to have_key(:forwardSubagentText)
+          {}
+        end
+        query.initialize_protocol
+      end
+    end
+
     it 'includes skills, memory, mcpServers in agents dict' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
 
