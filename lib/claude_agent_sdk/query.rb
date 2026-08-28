@@ -376,14 +376,6 @@ module ClaudeAgentSDK
         end
       end
     rescue StandardError => e
-      # Unblock pending control requests (e.g., initialize) so callers don't
-      # hang until timeout. INVARIANT: store the result before signaling —
-      # senders check the slot before waiting (level-trigger).
-      @pending_control_responses.dup.each do |request_id, condition|
-        @pending_control_results[request_id] ||= e
-        condition.signal
-      end
-
       # When the CLI emits a result with is_error=true (e.g. error_max_turns,
       # error_during_execution, an API failure, a StructuredOutput error) it
       # then exits non-zero on purpose, for shell-script consumers. The
@@ -398,6 +390,21 @@ module ClaudeAgentSDK
               else
                 e
               end
+
+      # Unblock pending control requests (e.g., initialize) so callers don't
+      # hang until timeout. Computed AFTER the replacement above so they get
+      # the same enriched error the message stream does: a refused resume (a
+      # nonexistent session, a failed --resume-drops-turn guard) is reported
+      # by the CLI as an error result followed by exit 1 *before* it answers
+      # the SDK's `initialize`, so signaling the raw `e` here handed that
+      # in-flight request "Command failed with exit code 1" and discarded the
+      # real reason (Python #1198).
+      # INVARIANT: store the result before signaling — senders check the slot
+      # before waiting (level-trigger).
+      @pending_control_responses.dup.each do |request_id, condition|
+        @pending_control_results[request_id] ||= error
+        condition.signal
+      end
 
       # Put error in queue so iterators can handle it
       @message_queue.enqueue({ type: 'error', error: error })

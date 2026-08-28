@@ -237,5 +237,53 @@ RSpec.describe ClaudeAgentSDK::Query, 'ProcessError handling' do
                          "expected fast ProcessError, got: #{failure.inspect}"
       expect(failure.exit_code).to eq(137)
     end
+
+    # A refused resume (nonexistent session, failed --resume-drops-turn
+    # guard) is reported by the CLI as an error result on stdout followed by
+    # exit 1, *before* it answers the SDK's `initialize`. The read loop used
+    # to signal pending control requests with the raw exception, so the
+    # in-flight request saw "Command failed with exit code 1" and the real
+    # reason was discarded (Python #1198).
+    it 'hands a pending control request the enriched result error, not the bare exit failure' do
+      # Same load-bearing sequencing as above: the transport must not raise
+      # until the interrupt's condition is registered, or the pending loop
+      # would run before there is anything to signal.
+      interrupt_on_wire = Async::Queue.new
+      refused = {
+        type: 'result', subtype: 'error_during_execution', is_error: true,
+        errors: ['Resume rejected by --resume-drops-turn: nope']
+      }
+
+      transport = mock_transport
+      allow(transport).to receive(:write) do |data|
+        msg = JSON.parse(data, symbolize_names: true)
+        interrupt_on_wire.enqueue(true) if msg[:type] == 'control_request' && msg.dig(:request, :subtype) == 'interrupt'
+      end
+      allow(transport).to receive(:read_messages) do |&block|
+        block.call(refused)
+        interrupt_on_wire.dequeue
+        raise process_error(1)
+      end
+
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+
+      failure = nil
+      Async do
+        query.start
+        begin
+          query.interrupt
+        rescue StandardError => e
+          failure = e
+        end
+      end.wait
+
+      expect(failure).to be_a(ClaudeAgentSDK::ResultError),
+                         "expected ResultError, got: #{failure.inspect}"
+      expect(failure.message).to include(
+        'Claude Code returned an error result: Resume rejected by --resume-drops-turn: nope'
+      )
+      expect(failure.subtype).to eq('error_during_execution')
+      expect(failure.exit_code).to eq(1)
+    end
   end
 end
