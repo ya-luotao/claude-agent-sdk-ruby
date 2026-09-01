@@ -26,7 +26,9 @@ module ClaudeAgentSDK
   # Stdlib only (net/http, json, digest, fileutils, rbconfig) — the gem gains
   # no runtime dependency for this.
   #
-  # @example Pin a version in bin/setup or a Dockerfile build step
+  # @example Install the gem's tested version in bin/setup or a Dockerfile build step
+  #   ClaudeAgentSDK::CLIInstaller.install_pinned
+  # @example Pin a version of your own
   #   ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')
   module CLIInstaller
     BASE_URL = 'https://downloads.claude.ai/claude-code-releases'
