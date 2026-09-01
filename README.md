@@ -25,7 +25,7 @@ A Ruby SDK for the [Claude Code](https://docs.claude.com/en/docs/claude-code-ove
 
 ```ruby
 # Gemfile
-gem 'claude-agent-sdk', '~> 0.31.0'
+gem 'claude-agent-sdk', '~> 0.32.0'
 ```
 
 Then `bundle install`, or install directly with `gem install claude-agent-sdk`. To track unreleased changes, point the Gemfile at GitHub: `gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'`.
