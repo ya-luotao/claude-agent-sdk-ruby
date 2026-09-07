@@ -70,8 +70,8 @@ The Ruby SDK has been fully implemented with the following components:
 
 ### Documentation
 
-- **README.md** - Overview, install, comparison table, quick start, and minimal API examples
-- **docs/** - Topic subpages (client, MCP servers, hooks, configuration, sessions, observability, Rails, types, errors) linked from the README
+- **README.md** - Overview, highlights, install, quick start, minimal API examples, documentation/examples index, and the comparison table
+- **docs/** - Topic subpages (client, MCP servers, hooks, configuration, sessions, observability, Rails, CLI installer, types, errors) linked from the README
 - **CHANGELOG.md** - Version history
 - **IMPLEMENTATION.md** - This file
 
