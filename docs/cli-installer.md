@@ -14,7 +14,7 @@ ClaudeAgentSDK::CLIInstaller.install_pinned
 # => "/app/vendor/claude/claude"
 
 # Or pin your own: 'stable' (default), 'latest', or a concrete version.
-ClaudeAgentSDK::CLIInstaller.install(version: '2.1.259', dir: '/opt/claude')
+ClaudeAgentSDK::CLIInstaller.install(version: 'stable', dir: '/opt/claude')
 
 # nil unless a binary is already installed there
 ClaudeAgentSDK::CLIInstaller.installed_path
