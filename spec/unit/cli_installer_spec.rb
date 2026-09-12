@@ -72,6 +72,29 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
     end
   end
 
+  describe 'PINNED_CLI_VERSION' do
+    it 'is a concrete version, never a dist-tag — the pin must be resolvable offline' do
+      expect(described_class::PINNED_CLI_VERSION).to match(described_class::VERSION_PATTERN)
+    end
+  end
+
+  describe '.install_pinned' do
+    it 'delegates to install with the pinned version' do
+      expect(described_class).to receive(:install)
+        .with(version: described_class::PINNED_CLI_VERSION, dir: tmp_dir)
+        .and_return(binary_path)
+
+      expect(described_class.install_pinned(dir: tmp_dir)).to eq(binary_path)
+    end
+
+    it 'defaults the directory the same way install does' do
+      expect(described_class).to receive(:install)
+        .with(version: described_class::PINNED_CLI_VERSION, dir: nil)
+
+      described_class.install_pinned
+    end
+  end
+
   describe '.install version resolution' do
     it "resolves the 'stable' dist-tag through its endpoint" do
       stub_http(version: '2.1.220')
