@@ -7,11 +7,14 @@ The SDK runs the `claude` CLI as a subprocess, so a deploy is only reproducible 
 ```ruby
 require 'claude_agent_sdk'
 
-# 'stable' (default), 'latest', or a concrete version — pin it in production.
-ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')
+# Install the CLI version this gem release was tested against
+# (CLIInstaller::PINNED_CLI_VERSION) — recommended: bumping the gem
+# then carries the CLI forward with it, e.g. via Dependabot.
+ClaudeAgentSDK::CLIInstaller.install_pinned
 # => "/app/vendor/claude/claude"
 
-ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220', dir: '/opt/claude')
+# Or pin your own: 'stable' (default), 'latest', or a concrete version.
+ClaudeAgentSDK::CLIInstaller.install(version: '2.1.259', dir: '/opt/claude')
 
 # nil unless a binary is already installed there
 ClaudeAgentSDK::CLIInstaller.installed_path
@@ -31,16 +34,17 @@ Failures (unsupported platform, invalid version, HTTP error, response-size cap, 
 ## Docker and `bin/setup`
 
 ```dockerfile
-# Dockerfile — pin the CLI in its own cached layer
+# Dockerfile — the gem's pinned CLI version in its own cached layer
 RUN bundle exec ruby -e "require 'claude_agent_sdk'; \
-    ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')"
+    ClaudeAgentSDK::CLIInstaller.install_pinned"
 ```
 
 ```ruby
 #!/usr/bin/env ruby
-# bin/setup
+# bin/setup — gem's pin by default, overridable per developer
 require 'claude_agent_sdk'
-puts ClaudeAgentSDK::CLIInstaller.install(version: ENV.fetch('CLAUDE_CLI_VERSION', 'stable'))
+version = ENV.fetch('CLAUDE_CLI_VERSION', ClaudeAgentSDK::CLIInstaller::PINNED_CLI_VERSION)
+puts ClaudeAgentSDK::CLIInstaller.install(version: version)
 ```
 
 ## Supported platforms
