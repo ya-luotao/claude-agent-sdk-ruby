@@ -69,6 +69,65 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       cmd = described_class.new('/usr/bin/claude', options).build
       expect(cmd).to include('--append-system-prompt', 'Extra')
     end
+
+    # Python #1268: the custom form reaches the CLI exactly like a String
+    # does. snapshot is negotiated on initialize and must never become a flag.
+    describe 'custom form' do
+      ['Be helpful', '', '--help'].each do |prompt|
+        it "passes SystemPromptCustom #{prompt.inspect} via --system-prompt" do
+          custom = ClaudeAgentSDK::SystemPromptCustom.new(prompt: prompt, snapshot: false)
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: custom)
+          cmd = described_class.new('/usr/bin/claude', options).build
+
+          expect(cmd[cmd.index('--system-prompt') + 1]).to eq(prompt)
+          expect(cmd).not_to include('--append-system-prompt')
+          expect(cmd).not_to include('--system-prompt-snapshot')
+        end
+
+        it "passes Hash with type custom and prompt #{prompt.inspect} via --system-prompt" do
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+            system_prompt: { type: 'custom', prompt: prompt, snapshot: false }
+          )
+          cmd = described_class.new('/usr/bin/claude', options).build
+
+          expect(cmd[cmd.index('--system-prompt') + 1]).to eq(prompt)
+          expect(cmd).not_to include('--append-system-prompt')
+          expect(cmd).not_to include('--system-prompt-snapshot')
+        end
+      end
+
+      it 'handles Hash with string keys for type custom' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          system_prompt: { 'type' => 'custom', 'prompt' => 'Be helpful' }
+        )
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).to include('--system-prompt', 'Be helpful')
+      end
+
+      it 'does not pass --system-prompt-snapshot for SystemPromptPreset either' do
+        preset = ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: 'Extra', snapshot: false)
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: preset)
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).to include('--append-system-prompt', 'Extra')
+        expect(cmd).not_to include('--system-prompt')
+        expect(cmd).not_to include('--system-prompt-snapshot')
+      end
+
+      # A custom prompt with no text must not fall through and silently
+      # activate the default Claude Code prompt (Python raises KeyError here).
+      it 'rejects a custom Hash without a prompt' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: { type: 'custom', snapshot: false })
+        expect { described_class.new('/usr/bin/claude', options).build }
+          .to raise_error(ArgumentError, /type 'custom' requires a :prompt String/)
+      end
+
+      it 'rejects a SystemPromptCustom without a prompt' do
+        custom = ClaudeAgentSDK::SystemPromptCustom.new(snapshot: true)
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: custom)
+        expect { described_class.new('/usr/bin/claude', options).build }
+          .to raise_error(ArgumentError, /type 'custom' requires a :prompt String/)
+      end
+    end
   end
 
   describe 'tools' do

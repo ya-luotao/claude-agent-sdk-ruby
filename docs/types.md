@@ -267,7 +267,9 @@ end
 | `SandboxSettings` | Sandbox settings for isolated command execution |
 | `SandboxNetworkConfig` | Network configuration for sandbox |
 | `SandboxIgnoreViolations` | Configure which sandbox violations to ignore |
-| `SystemPromptPreset` | System prompt preset configuration |
+| `SystemPromptPreset` | System prompt preset configuration (`preset`, `append`, `exclude_dynamic_sections`, `snapshot`) |
+| `SystemPromptCustom` | Custom system prompt configuration — the object form of a String prompt, so `snapshot` can be set alongside it |
+| `SystemPromptFile` | System prompt loaded from a file path |
 | `ToolsPreset` | Tools preset configuration for base tools selection |
 
 ## Constants

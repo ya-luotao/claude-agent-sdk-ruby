@@ -413,6 +413,56 @@ RSpec.describe ClaudeAgentSDK::Client do
     end
   end
 
+  # Python #1268: connect() hands the system prompt's snapshot to Query only
+  # for the preset and custom forms; String and file prompts have none.
+  context 'with system prompt snapshot' do
+    let(:transport) { instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil) }
+    let(:query_handler) { instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true) }
+
+    before do
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    end
+
+    def snapshot_passed_to_query(system_prompt)
+      received_kwargs = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        received_kwargs = kwargs
+        query_handler
+      end
+
+      client = described_class.new(options: ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: system_prompt))
+      client.connect
+      received_kwargs.fetch(:system_prompt_snapshot)
+    end
+
+    {
+      'custom Hash with snapshot false' => [{ type: 'custom', prompt: 'Be helpful', snapshot: false }, false],
+      'preset Hash with snapshot true' => [{ type: 'preset', preset: 'claude_code', snapshot: true }, true],
+      'preset Hash with string keys and snapshot false' =>
+        [{ 'type' => 'preset', 'preset' => 'claude_code', 'snapshot' => false }, false],
+      'preset Hash without snapshot' => [{ type: 'preset', preset: 'claude_code' }, nil],
+      'file Hash (snapshot ignored)' => [{ type: 'file', path: '/p.md', snapshot: false }, nil],
+      'plain String' => ['Be helpful', nil],
+      'nil system_prompt' => [nil, nil]
+    }.each do |label, (system_prompt, expected)|
+      it "passes #{expected.inspect} for a #{label}" do
+        expect(snapshot_passed_to_query(system_prompt)).to be(expected)
+      end
+    end
+
+    it 'passes snapshot from SystemPromptCustom and SystemPromptPreset objects' do
+      custom = ClaudeAgentSDK::SystemPromptCustom.new(prompt: 'Be helpful', snapshot: false)
+      preset = ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', snapshot: true)
+
+      expect(snapshot_passed_to_query(custom)).to be(false)
+      expect(snapshot_passed_to_query(preset)).to be(true)
+    end
+
+    it 'ignores a non-boolean snapshot' do
+      expect(snapshot_passed_to_query({ type: 'custom', prompt: 'x', snapshot: 'yes' })).to be_nil
+    end
+  end
+
   context 'with default configuration' do
     after { ClaudeAgentSDK.reset_configuration }
 

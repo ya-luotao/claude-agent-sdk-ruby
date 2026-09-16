@@ -1601,6 +1601,40 @@ RSpec.describe ClaudeAgentSDK do
 
         expect(hash.key?(:exclude_dynamic_sections)).to eq(false)
       end
+
+      # Python #1268: snapshot on the preset form. false is the primary use
+      # case, so to_h must keep it rather than treating it as unset.
+      it 'stores snapshot and keeps false in to_h' do
+        preset = described_class.new(preset: 'claude_code', append: 'Be concise.', snapshot: false)
+        expect(preset.snapshot).to be(false)
+        expect(preset.to_h).to eq(
+          type: 'preset', preset: 'claude_code', append: 'Be concise.', snapshot: false
+        )
+      end
+
+      it 'omits snapshot from to_h when nil' do
+        preset = described_class.new(preset: 'claude_code')
+        expect(preset.to_h.key?(:snapshot)).to eq(false)
+      end
+    end
+
+    describe ClaudeAgentSDK::SystemPromptCustom do
+      it 'stores prompt and snapshot with type custom' do
+        custom = described_class.new(prompt: 'You are a release bot.', snapshot: true)
+        expect(custom.type).to eq('custom')
+        expect(custom.prompt).to eq('You are a release bot.')
+        expect(custom.snapshot).to be(true)
+      end
+
+      it 'converts to hash, keeping a false snapshot' do
+        custom = described_class.new(prompt: 'You are a release bot.', snapshot: false)
+        expect(custom.to_h).to eq(type: 'custom', prompt: 'You are a release bot.', snapshot: false)
+      end
+
+      it 'omits snapshot from to_h when nil' do
+        custom = described_class.new(prompt: 'Be helpful')
+        expect(custom.to_h).to eq(type: 'custom', prompt: 'Be helpful')
+      end
     end
 
     describe 'ClaudeAgentOptions new options' do
