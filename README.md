@@ -1,3 +1,5 @@
+![Claude Agent SDK for Ruby — a ruby connecting code to terminal, tools, and messages](assets/readme-banner.webp)
+
 # Claude Agent SDK for Ruby
 
 [![Gem Version](https://img.shields.io/gem/v/claude-agent-sdk)](https://rubygems.org/gems/claude-agent-sdk)
