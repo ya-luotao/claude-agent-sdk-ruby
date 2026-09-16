@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# Match the newest Ruby series exercised by CI; avoid slow source builds.
+ruby_version=3.4.10
+bundler_version=2.6.9
+claude_version=2.1.273
+cli_prefix="$HOME/.local/share/claude-agent-sdk-orb-cli"
+
+echo '==> Checking native gem build prerequisites'
+started=$SECONDS
+missing=()
+for package in build-essential libyaml-dev libssl-dev zlib1g-dev; do
+  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+    missing+=("$package")
+  fi
+done
+if ((${#missing[@]})); then
+  sudo apt-get update -qq
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"
+fi
+echo "==> System prerequisites ready ($((SECONDS - started))s)"
+
+echo "==> Installing Ruby $ruby_version"
+started=$SECONDS
+if [[ ! -x "$HOME/.local/bin/mise" ]]; then
+  curl -fsSL https://mise.run | sh
+fi
+export MISE_RUBY_COMPILE=false
+"$HOME/.local/bin/mise" install "ruby@$ruby_version"
+ruby_bin="$("$HOME/.local/bin/mise" where "ruby@$ruby_version")/bin"
+export PATH="$ruby_bin:$cli_prefix/bin:$HOME/.local/bin:$PATH"
+echo "==> Ruby ready ($((SECONDS - started))s)"
+
+# Login shells used by agents and supervised services must see the same tools.
+# Keep this scoped to this checkout, including commands run in subdirectories.
+profile_marker='# claude-agent-sdk orb toolchain'
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  printf '\n%s\nsource %q\n' "$profile_marker" "$HOME/.config/claude-agent-sdk-orb-env" >> "$HOME/.bash_profile"
+fi
+mkdir -p "$HOME/.config"
+printf 'case "$PWD" in\n  %q|%q/*) export PATH=%q:"$PATH" ;;\nesac\n' \
+  "$repo_root" "$repo_root" "$ruby_bin:$cli_prefix/bin:$HOME/.local/bin" \
+  > "$HOME/.config/claude-agent-sdk-orb-env"
+
+echo '==> Installing gem dependencies'
+started=$SECONDS
+if ! gem list --local --installed bundler --version "$bundler_version" >/dev/null; then
+  gem install bundler --version "$bundler_version" --no-document
+fi
+# This library intentionally ignores Gemfile.lock. Retain the generated lock
+# and gems in snapshots; Bundler detects changes to Gemfile or the gemspec.
+bundle "_${bundler_version}_" check || bundle "_${bundler_version}_" install --jobs 4 --retry 3
+echo "==> Gems ready ($((SECONDS - started))s)"
+
+echo "==> Installing Claude CLI $claude_version (no authentication)"
+started=$SECONDS
+if [[ ! -x "$cli_prefix/bin/claude" ]] || \
+   [[ "$("$cli_prefix/bin/claude" --version)" != "$claude_version (Claude Code)" ]]; then
+  npm install --global --prefix "$cli_prefix" --no-audit --no-fund \
+    "@anthropic-ai/claude-code@$claude_version"
+fi
+echo "==> Claude CLI ready ($((SECONDS - started))s)"
+echo "==> Setup complete (${SECONDS}s total)"
