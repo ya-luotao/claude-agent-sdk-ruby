@@ -22,7 +22,7 @@ Notes:
 
 ## Core knobs
 
-- `system_prompt`: Set an overall instruction as a string, use `ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: '...', exclude_dynamic_sections: true)` to extend a preset (with optional cross-user caching), or use `ClaudeAgentSDK::SystemPromptFile.new(path: '/path/to/prompt.txt')` to load from a file.
+- `system_prompt`: Set an overall instruction as a string, use `ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: '...', exclude_dynamic_sections: true)` to extend a preset (with optional cross-user caching), or use `ClaudeAgentSDK::SystemPromptFile.new(path: '/path/to/prompt.txt')` to load from a file. Pass `snapshot: false` on a preset, or on `ClaudeAgentSDK::SystemPromptCustom.new(prompt: '...', snapshot: false)` (the object form of a string prompt), to make the CLI rebuild the prompt on every request instead of reusing the one recorded on the session's first request — useful while iterating on prompt text across resumed sessions (CLI 2.1.257+).
 - `model`: Select the model.
 - `fallback_model`: Use when the primary model is unavailable.
 - `advisor_model`: Pair the main model with a stronger advisor model consulted at decision points (server-side advisor tool; alias like `'opus'` or full model ID). Anthropic API only; the CLI validates the main/advisor pairing. Consultations appear as `ServerToolUseBlock` (name `'advisor'`) / `ServerToolResultBlock` content.
