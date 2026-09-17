@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-09-17
+
 Syncs the gem with Python SDK **0.2.153** (previously 0.2.147). The intervening Python releases 0.2.148–0.2.152 only bump the CLI binary Python bundles; this gem does not vendor a CLI, so they carry no Ruby-side change.
 
 ### Added
