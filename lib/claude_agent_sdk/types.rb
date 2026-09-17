@@ -1640,10 +1640,22 @@ module ClaudeAgentSDK
     end
   end
 
-  # System prompt preset configuration
+  # System prompt preset configuration.
+  #
+  # +snapshot+ controls whether the session keeps the system prompt it
+  # recorded on its first request. When true, every later request (including
+  # after resume) sends the recorded prompt, so a changed +append+ has no
+  # effect until the session is compacted or a new session starts. When
+  # false, the prompt is rebuilt on every request — useful while iterating on
+  # +append+ text across calls that resume the same session. When nil
+  # (omitted), the CLI treats it as true, except in bare mode (+--bare+),
+  # where it acts as false. Sent on the control-protocol +initialize+ request
+  # (never as a CLI flag); requires Claude Code CLI 2.1.257 or later, and
+  # before 2.1.265 a session with an +append+ prompt recorded it only when
+  # +snapshot+ was true. Older CLIs silently ignore it.
   class SystemPromptPreset < Type
     attr_reader :type
-    attr_accessor :preset, :append, :exclude_dynamic_sections
+    attr_accessor :preset, :append, :exclude_dynamic_sections, :snapshot
 
     def initialize(attributes = {})
       super
@@ -1654,6 +1666,27 @@ module ClaudeAgentSDK
       result = { type: @type, preset: @preset }
       result[:append] = @append if @append
       result[:exclude_dynamic_sections] = @exclude_dynamic_sections unless @exclude_dynamic_sections.nil?
+      result[:snapshot] = @snapshot unless @snapshot.nil?
+      result
+    end
+  end
+
+  # Custom system prompt configuration — the object form of passing a String
+  # as +system_prompt+. Reaches the CLI the same way a String does
+  # (+--system-prompt <prompt>+); the object form exists so +snapshot+ can be
+  # set alongside it (see SystemPromptPreset#snapshot for its semantics).
+  class SystemPromptCustom < Type
+    attr_reader :type
+    attr_accessor :prompt, :snapshot
+
+    def initialize(attributes = {})
+      super
+      @type = 'custom'
+    end
+
+    def to_h
+      result = { type: @type, prompt: @prompt }
+      result[:snapshot] = @snapshot unless @snapshot.nil?
       result
     end
   end

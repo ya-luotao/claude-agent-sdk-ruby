@@ -109,6 +109,26 @@ module ClaudeAgentSDK
     nil
   end
 
+  # Internal: pull snapshot out of a preset or custom system prompt for the
+  # initialize request (older CLIs ignore unknown initialize fields). A
+  # String or file prompt has no snapshot, and only a genuine true/false is
+  # forwarded — `snapshot: false` is the primary use case, so the Hash lookup
+  # must not collapse it to nil. Shared by Client#connect and query().
+  def self.extract_system_prompt_snapshot(system_prompt)
+    case system_prompt
+    when SystemPromptPreset, SystemPromptCustom
+      snapshot = system_prompt.snapshot
+      return snapshot if [true, false].include?(snapshot)
+    when Hash
+      type = system_prompt[:type] || system_prompt['type']
+      if %w[preset custom].include?(type)
+        snapshot = system_prompt.fetch(:snapshot) { system_prompt['snapshot'] }
+        return snapshot if [true, false].include?(snapshot)
+      end
+    end
+    nil
+  end
+
   # Safely call a method on each observer, suppressing any errors.
   # Each observer is invoked through FiberBoundary so that user code runs
   # on a plain thread (no Fiber scheduler) even when called from inside
@@ -549,6 +569,7 @@ module ClaudeAgentSDK
           agents: configured_options.agents,
           sdk_mcp_servers: sdk_mcp_servers,
           exclude_dynamic_sections: ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt),
+          system_prompt_snapshot: ClaudeAgentSDK.extract_system_prompt_snapshot(configured_options.system_prompt),
           skills: configured_options.skills,
           forward_subagent_text: configured_options.forward_subagent_text?,
           callback_scheduling: callback_scheduling,
@@ -1064,9 +1085,10 @@ module ClaudeAgentSDK
       # Convert hooks to internal format
       hooks = convert_hooks_to_internal_format(configured_options.hooks) if configured_options.hooks
 
-      # Extract exclude_dynamic_sections from preset system prompt for the
-      # initialize request (older CLIs ignore unknown initialize fields)
+      # Extract exclude_dynamic_sections and snapshot from the system prompt
+      # for the initialize request (older CLIs ignore unknown initialize fields)
       exclude_dynamic_sections = ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt)
+      system_prompt_snapshot = ClaudeAgentSDK.extract_system_prompt_snapshot(configured_options.system_prompt)
 
       # Create Query handler
       @query_handler = Query.new(
@@ -1077,6 +1099,7 @@ module ClaudeAgentSDK
         sdk_mcp_servers: sdk_mcp_servers,
         agents: configured_options.agents,
         exclude_dynamic_sections: exclude_dynamic_sections,
+        system_prompt_snapshot: system_prompt_snapshot,
         skills: configured_options.skills,
         forward_subagent_text: configured_options.forward_subagent_text?,
         callback_scheduling: @callback_scheduling,

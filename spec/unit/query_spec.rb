@@ -868,6 +868,34 @@ RSpec.describe ClaudeAgentSDK::Query do
       end
     end
 
+    # Python #1268: systemPromptSnapshot rides on initialize. false is
+    # meaningful (rebuild every request), so it is sent explicitly; only an
+    # unset value is omitted.
+    it 'sends systemPromptSnapshot in initialize, including an explicit false' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      [true, false].each do |snapshot|
+        query = described_class.new(transport: transport, is_streaming_mode: true, system_prompt_snapshot: snapshot)
+        allow(query).to receive(:send_control_request) do |request|
+          expect(request[:subtype]).to eq('initialize')
+          expect(request[:systemPromptSnapshot]).to be(snapshot)
+          {}
+        end
+        query.initialize_protocol
+      end
+    end
+
+    it 'omits systemPromptSnapshot from initialize when unset' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+      allow(query).to receive(:send_control_request) do |request|
+        expect(request).not_to have_key(:systemPromptSnapshot)
+        {}
+      end
+      query.initialize_protocol
+    end
+
     it 'sends forwardSubagentText in initialize only when enabled' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
 

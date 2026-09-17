@@ -63,8 +63,8 @@ module ClaudeAgentSDK
     end
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
-                   exclude_dynamic_sections: nil, skills: nil, forward_subagent_text: false,
-                   callback_scheduling: :thread, callback_wrapper: nil)
+                   exclude_dynamic_sections: nil, system_prompt_snapshot: nil, skills: nil,
+                   forward_subagent_text: false, callback_scheduling: :thread, callback_wrapper: nil)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
@@ -74,6 +74,7 @@ module ClaudeAgentSDK
       @callback_wrapper = callback_wrapper
       @agents = agents
       @exclude_dynamic_sections = exclude_dynamic_sections
+      @system_prompt_snapshot = system_prompt_snapshot
       @skills = skills
       @forward_subagent_text = forward_subagent_text
 
@@ -189,6 +190,9 @@ module ClaudeAgentSDK
         agents: agents_dict
       }
       request[:excludeDynamicSections] = @exclude_dynamic_sections unless @exclude_dynamic_sections.nil?
+      # false is meaningful (rebuild the prompt every request), so send it
+      # explicitly; only nil (unset) is omitted.
+      request[:systemPromptSnapshot] = @system_prompt_snapshot unless @system_prompt_snapshot.nil?
       # 'all' and omitted are equivalent at the wire level (no filter), so
       # only send the field when it's an explicit list (mirrors Python).
       request[:skills] = @skills if @skills.is_a?(Array)

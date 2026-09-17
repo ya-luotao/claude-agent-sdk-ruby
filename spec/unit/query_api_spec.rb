@@ -538,6 +538,46 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     expect(captured_query_args[:exclude_dynamic_sections]).to be(true)
   end
 
+  # Python #1268: query() hands snapshot to Query only for the preset and
+  # custom forms, and a false value survives the trip.
+  {
+    [{ type: 'custom', prompt: 'Be helpful', snapshot: false }] => false,
+    [{ type: 'preset', preset: 'claude_code', snapshot: true }] => true,
+    [{ type: 'preset', preset: 'claude_code' }] => nil,
+    [{ type: 'file', path: '/p.md', snapshot: false }] => nil,
+    ['Be helpful'] => nil
+  }.each do |(system_prompt), expected|
+    it "passes system_prompt_snapshot #{expected.inspect} for #{system_prompt.inspect} to the control protocol" do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: system_prompt)
+
+      captured_query_args = nil
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+      allow(transport).to receive(:write)
+
+      query_handler = instance_double(
+        ClaudeAgentSDK::Query,
+        start: true,
+        initialize_protocol: nil,
+        wait_for_result_and_end_input: nil,
+        close: nil
+      )
+      allow(query_handler).to receive(:receive_messages)
+      allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        captured_query_args = kwargs
+        query_handler
+      end
+
+      Async do
+        described_class.query(prompt: 'hello', options: options) { |_message| nil }
+      end.wait
+
+      expect(captured_query_args.fetch(:system_prompt_snapshot)).to be(expected)
+    end
+  end
+
   it 'passes forward_subagent_text from the options to the control protocol' do
     transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
     allow(transport).to receive(:write)

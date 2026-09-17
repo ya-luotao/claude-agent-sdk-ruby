@@ -78,6 +78,28 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 When set, the CLI strips per-user dynamic sections (working directory, auto-memory, git status) from the system prompt and re-injects them into the first user message instead. Older CLIs silently ignore this option.
 
+### System Prompt Snapshot
+
+By default, Claude Code builds the system prompt on a session's first request, records it, and reuses it on every later request, including after you resume the session. A changed custom prompt, or changed `append` text on the `claude_code` preset, then has no effect until the session is compacted or you start a new session. To rebuild the prompt on every request instead, for example while you iterate on its wording, set `snapshot: false` on a `SystemPromptPreset` or on `SystemPromptCustom` (the object form of a String prompt, which exists so `snapshot` can be set alongside it):
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  system_prompt: ClaudeAgentSDK::SystemPromptCustom.new(
+    prompt: 'You are a release bot.',
+    snapshot: false
+  )
+)
+
+# Hash forms work too:
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  system_prompt: { type: 'preset', preset: 'claude_code', append: '...', snapshot: false }
+)
+```
+
+`snapshot` is sent on the control-protocol `initialize` request (never as a CLI flag), so it applies to both `query()` and `Client`. When omitted it acts as `true`, except in bare mode (`bare: true`), where it acts as `false`. A `SystemPromptFile` has no `snapshot`.
+
+Requires Claude Code CLI 2.1.257 or later. Before 2.1.265, a session with an `append` or custom prompt recorded it only when `snapshot` was `true`. See [Modifying system prompts](https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts#change-the-prompt-of-an-existing-session) for details.
+
 ## Budget Control
 
 ```ruby

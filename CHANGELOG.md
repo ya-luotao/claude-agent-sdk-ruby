@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Syncs the gem with Python SDK **0.2.153** (previously 0.2.147). The intervening Python releases 0.2.148–0.2.152 only bump the CLI binary Python bundles; this gem does not vendor a CLI, so they carry no Ruby-side change.
+
+### Added
+- **`snapshot` on `SystemPromptPreset`, and a new `SystemPromptCustom` type** (port of Python [#1268](https://github.com/anthropics/claude-agent-sdk-python/pull/1268), v0.2.153). By default the CLI records the system prompt on a session's first request and reuses it on every later request, including after resume, so a changed `append` or custom prompt has no effect until the session is compacted or a new one starts. `snapshot: false` makes the CLI rebuild the prompt on every request instead — useful while iterating on prompt text across calls that resume the same session. `SystemPromptCustom` (`prompt:`, `snapshot:`) is the object form of a String prompt, so `snapshot` can travel with it; the `{ type: 'custom', prompt: '...', snapshot: false }` and `{ type: 'preset', ..., snapshot: false }` Hash forms are accepted too. The value rides on the control-protocol `initialize` request as `systemPromptSnapshot` (never as a CLI flag), so it applies to both `query()` and `Client`; `false` is sent explicitly and only an unset value is omitted. `SystemPromptFile` has no `snapshot`, and one given on a file Hash is ignored, as in Python. Requires Claude Code CLI 2.1.257 or later; before 2.1.265 a session with an `append` or custom prompt recorded it only when `snapshot` was `true`. Older CLIs silently ignore the field.
+  - **Compatibility:** a `{ type: 'custom', ... }` Hash previously fell through the command builder unrecognised — pushing no flag at all — and so silently activated the *default* Claude Code system prompt. It now forwards `--system-prompt <prompt>` exactly like a String, and a custom prompt without a String `prompt` raises `ArgumentError` at command-build time rather than falling through (Python raises `KeyError` on the same input).
+
 ## [0.31.0] - 2026-08-28
 
 Syncs the gem with Python SDK **0.2.147** (previously 0.2.134). The intervening Python releases 0.2.135/136/138/139/141–147 only bump the CLI binary Python bundles; this gem does not vendor a CLI, so they carry no Ruby-side change.
