@@ -1095,7 +1095,10 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
 
         expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: canonical))
           .to eq(meta)
-        Dir.mktmpdir do |other|
+        Dir.mktmpdir do |tmp|
+          # Canonicalize like with_session_on_disk: on macOS the tmpdir is a
+          # symlink, and the reader passes detect_worktrees the realpath.
+          other = File.realpath(tmp).unicode_normalize(:nfc)
           allow(described_class).to receive(:detect_worktrees).with(other).and_return([other])
           expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: other))
             .to be_nil
