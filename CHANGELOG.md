@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Best-effort control error/cancellation replies no longer leak a secondary connection error when the CLI has already exited. Original transport read errors still propagate to the consumer.
+- Control-request tracking is identity-guarded: if the CLI ever reused an in-flight request ID, the first handler finishing no longer untracks the later request's cancellation signal or task, so EOF, disconnect, and `control_cancel_request` still invalidate it and its late decision cannot be sent as a success.
 
 ## [0.32.0] - 2026-09-17
 
