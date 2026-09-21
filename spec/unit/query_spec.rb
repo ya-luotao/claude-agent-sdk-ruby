@@ -940,9 +940,21 @@ RSpec.describe ClaudeAgentSDK::Query do
 
       expect(response[:error]).to be_nil
       expect(response.dig(:result, :isError)).to eq(true)
-      # gem text ("Internal error calling tool X: msg"); Python says
-      # "msg" bare — same semantics, different prefix (accepted divergence)
-      expect(response.dig(:result, :content).first[:text]).to include('kaboom from user handler')
+      # Bare message like Python's str(e). Rescued inside the SDK's tool
+      # class, so the text is independent of the mcp gem version — mcp >= 1.2
+      # redacts e.message from its own "Internal error calling tool X".
+      expect(response.dig(:result, :content).first[:text]).to eq('kaboom from user handler')
+    end
+
+    it 'reports a malformed handler result in-band with the SDK diagnostic intact' do
+      server = server_with('not_hash') { |_args| 'oops' }
+
+      response = dispatch(server, { id: 3, method: 'tools/call', params: { name: 'not_hash', arguments: {} } })
+
+      expect(response[:error]).to be_nil
+      expect(response.dig(:result, :isError)).to eq(true)
+      expect(response.dig(:result, :content).first[:text])
+        .to eq("Tool 'not_hash' must return a hash with :content key")
     end
 
     it 'reports unknown tools in-band with isError' do
