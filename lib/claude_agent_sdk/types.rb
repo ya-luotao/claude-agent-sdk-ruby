@@ -742,8 +742,10 @@ module ClaudeAgentSDK
   # `decision_reason`) so the SDK consumer can render the same prompt UI
   # the CLI would have shown. Older fields (`signal`, `suggestions`,
   # `tool_use_id`, `agent_id`) remain unchanged.
+  # `signal` is a CancellationSignal on dispatched callbacks; `request_id`
+  # identifies this permission request (distinct from the tool invocation).
   class ToolPermissionContext < Type
-    attr_accessor :signal, :suggestions, :tool_use_id, :agent_id,
+    attr_accessor :signal, :request_id, :suggestions, :tool_use_id, :agent_id,
                   :title, :display_name, :description,
                   :blocked_path, :decision_reason
 
@@ -786,9 +788,10 @@ module ClaudeAgentSDK
     end
   end
 
-  # Hook context passed to hook callbacks
+  # Hook context passed to hook callbacks. Dispatched hooks receive the control
+  # request ID and a CancellationSignal (including on HookMatcher timeout).
   class HookContext < Type
-    attr_accessor :signal
+    attr_accessor :signal, :request_id
   end
 
   # Base hook input with common fields
@@ -828,8 +831,11 @@ module ClaudeAgentSDK
   end
 
   # Stop hook input
+  # Snapshot arrays are passed through unchanged. nil means unavailable;
+  # [] means the CLI provided an empty snapshot. They cover the parent
+  # session's background work, NOT all foreground and background agents.
   class StopHookInput < BaseHookInput
-    attr_accessor :stop_hook_active, :last_assistant_message
+    attr_accessor :stop_hook_active, :last_assistant_message, :background_tasks, :session_crons
 
     def initialize(attributes = {})
       super
@@ -841,7 +847,7 @@ module ClaudeAgentSDK
   # SubagentStop hook input
   class SubagentStopHookInput < BaseHookInput
     attr_accessor :stop_hook_active, :agent_id, :agent_transcript_path, :agent_type,
-                  :last_assistant_message
+                  :last_assistant_message, :background_tasks, :session_crons
 
     def initialize(attributes = {})
       super

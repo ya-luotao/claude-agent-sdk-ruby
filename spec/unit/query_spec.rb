@@ -975,6 +975,30 @@ RSpec.describe ClaudeAgentSDK::Query do
   end
 
   describe '#parse_hook_input' do
+    %w[Stop SubagentStop].each do |event|
+      it "preserves #{event} background snapshots, including unknown fields and nil versus empty" do
+        query = described_class.new(transport: mock_transport, is_streaming_mode: true)
+        tasks = [{ id: 'bg-1', type: 'subagent', status: 'running', agent_type: 'reviewer', future: false }]
+        crons = [{ id: 'cron-2', schedule: '*/5 * * * *', prompt: 'Check' }]
+        payload = { hook_event_name: event, background_tasks: tasks, session_crons: crons }
+        parsed = query.send(:parse_hook_input, payload)
+        expect(parsed.background_tasks).to eq(tasks)
+        expect(parsed.session_crons).to eq(crons)
+
+        string_payload = JSON.parse(JSON.generate(payload))
+        parsed = query.send(:parse_hook_input, string_payload)
+        expect(parsed.background_tasks).to eq(string_payload['background_tasks'])
+        expect(parsed.session_crons).to eq(string_payload['session_crons'])
+
+        absent = query.send(:parse_hook_input, { hook_event_name: event })
+        expect(absent.background_tasks).to be_nil
+        expect(absent.session_crons).to be_nil
+        empty = query.send(:parse_hook_input, { hook_event_name: event, background_tasks: [], session_crons: [] })
+        expect(empty.background_tasks).to eq([])
+        expect(empty.session_crons).to eq([])
+      end
+    end
+
     it 'preserves the event name and raw payload for unknown hook events' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
       query = described_class.new(transport: transport, is_streaming_mode: true)

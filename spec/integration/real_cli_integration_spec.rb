@@ -211,4 +211,196 @@ RSpec.describe 'Real Claude CLI Integration', :integration do
       end
     end.wait
   end
+
+  describe 'subagent contracts' do
+    # Keep CLI settings/transcripts disposable and let the public disk reader
+    # resolve the same config directory as the subprocess. No auth is copied.
+    around do |example|
+      previous_config_dir = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+      Dir.mktmpdir('cas-subagents') do |directory|
+        @project_dir = File.join(directory, 'project')
+        FileUtils.mkdir_p(@project_dir)
+        ENV['CLAUDE_CONFIG_DIR'] = File.join(directory, 'config')
+        example.run
+      end
+    ensure
+      if previous_config_dir
+        ENV['CLAUDE_CONFIG_DIR'] = previous_config_dir
+      else
+        ENV.delete('CLAUDE_CONFIG_DIR')
+      end
+    end
+
+    def subagent_options(**overrides)
+      ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cwd: @project_dir, setting_sources: [], tools: ['Agent'], allowed_tools: ['Agent'],
+        max_turns: 8, max_budget_usd: 0.5, forward_subagent_text: true, **overrides
+      )
+    end
+
+    it 'correlates two foreground agents, forwarded text, and disk metadata without equating IDs' do
+      inputs = []
+      hook = lambda do |input, _tool_id, _context|
+        inputs << input
+        {}
+      end
+      agents = %w[alpha beta].to_h do |name|
+        [name, ClaudeAgentSDK::AgentDefinition.new(description: "The #{name} reporter",
+                                                   prompt: "Reply with exactly: #{name.upcase}_REPORT", tools: [])]
+      end
+      options = subagent_options(
+        agents: agents,
+        hooks: %w[SubagentStart SubagentStop].to_h do |event|
+          [event, [ClaudeAgentSDK::HookMatcher.new(hooks: [hook])]]
+        end
+      )
+      messages = []
+      Async do |task|
+        client = ClaudeAgentSDK::Client.new(options: options)
+        begin
+          task.with_timeout(120) do
+            client.connect
+            client.query('Call alpha and beta once each as foreground agents, not in the background. ' \
+                         'Ask each for its report, then summarize both reports.')
+            client.receive_response { |message| messages << message }
+          end
+        ensure
+          client.disconnect
+        end
+      end.wait
+
+      result = messages.grep(ClaudeAgentSDK::ResultMessage).last
+      expect(result).not_to be_nil
+      expect(result.is_error).to be false
+      starts = inputs.grep(ClaudeAgentSDK::SubagentStartHookInput)
+      stops = inputs.grep(ClaudeAgentSDK::SubagentStopHookInput)
+      expect(starts.map(&:agent_type)).to contain_exactly('alpha', 'beta')
+      expect(starts.map(&:agent_id).uniq.size).to eq(2)
+      expect(stops.map(&:agent_id)).to match_array(starts.map(&:agent_id))
+      parent_calls = messages.grep(ClaudeAgentSDK::AssistantMessage)
+                             .select { |message| message.parent_tool_use_id.nil? }
+                             .flat_map(&:content).grep(ClaudeAgentSDK::ToolUseBlock)
+                             .select { |block| block.name == 'Agent' }.map(&:id)
+      tool_ids = starts.map do |input|
+        expect(input.session_id).to eq(result.session_id)
+        metadata = ClaudeAgentSDK.get_subagent_metadata(session_id: result.session_id,
+                                                        agent_id: input.agent_id, directory: @project_dir)
+        expect(metadata).to include('agentType' => input.agent_type)
+        tool_id = metadata.fetch('toolUseId')
+        expect(parent_calls).to include(tool_id)
+        child_text = messages.grep(ClaudeAgentSDK::AssistantMessage)
+                             .select { |message| message.parent_tool_use_id == tool_id }.map(&:text).join
+        expect(child_text).to include("#{input.agent_type.upcase}_REPORT")
+        tool_id
+      end
+      expect(tool_ids.uniq.size).to eq(2)
+    end
+
+    it 'invalidates a subagent permission request on interrupt before disconnect' do
+      pending = Thread::Queue.new
+      permission = lambda do |tool_name, _input, context|
+        if tool_name == 'Bash' && context.agent_id
+          pending << context
+          context.signal.wait
+        end
+        ClaudeAgentSDK::PermissionResultDeny.new(message: 'Test does not execute shell commands')
+      end
+      options = subagent_options(
+        permission_mode: 'default', can_use_tool: permission,
+        agents: { 'worker' => ClaudeAgentSDK::AgentDefinition.new(
+          description: 'Permission test worker', tools: ['Bash'],
+          prompt: 'Use Bash exactly once to run printf permission_probe. Do not use any other tools.'
+        ) }
+      )
+      Async do |task|
+        client = ClaudeAgentSDK::Client.new(options: options)
+        begin
+          task.with_timeout(120) do
+            client.connect
+            client.query('Call worker once in the foreground to perform its permission probe.')
+            context = pending.pop
+            expect(context.request_id).not_to be_empty
+            expect(context.tool_use_id).not_to be_empty
+            expect(context.signal.cancelled?).to be false
+            client.interrupt
+            # This must happen before ensure disconnect; otherwise we would
+            # merely be testing SDK teardown, not the CLI's cancellation.
+            expect(context.signal.wait(timeout: 15)).to be true
+          end
+        ensure
+          client.disconnect
+        end
+      end.wait
+    end
+
+    %i[complete stop].each do |action|
+      it "observes a background agent #{action} after the parent result" do
+        # A local tool gate guarantees the child is still working at the first
+        # parent result; no sleeps or guesses about model latency are needed.
+        entered = Thread::Queue.new
+        release = Thread::Queue.new
+        started = Thread::Queue.new
+        parent_result = Thread::Queue.new
+        gate = ClaudeAgentSDK.create_tool('wait', 'Wait for the test harness to release you', {}) do |_args|
+          entered << true
+          raise 'test gate expired or closed' unless release.pop(timeout: 120)
+
+          { content: [{ type: 'text', text: 'GATE_RELEASED' }] }
+        end
+        server = ClaudeAgentSDK.create_sdk_mcp_server(name: 'gate', tools: [gate])
+        options = subagent_options(
+          allowed_tools: %w[Agent mcp__gate__wait], mcp_servers: { 'gate' => server },
+          agents: { 'worker' => ClaudeAgentSDK::AgentDefinition.new(
+            description: 'Background test worker', background: true, tools: ['mcp__gate__wait'],
+            prompt: 'Call mcp__gate__wait exactly once. After it returns, reply GATE_RELEASED.'
+          ) }
+        )
+        messages = []
+        task_id = nil
+        terminal = nil
+        Async do |task|
+          client = ClaudeAgentSDK::Client.new(options: options)
+          controller = nil
+          begin
+            task.with_timeout(120) do
+              client.connect
+              client.query('Start worker in the background. Do not wait for it, stop it, or call its tool yourself. ' \
+                           'Reply STARTED immediately after launching it.')
+              controller = task.async do
+                child = started.pop
+                entered.pop
+                parent_result.pop
+                action == :stop ? client.stop_task(child.task_id) : release.push(true)
+              end
+              client.receive_messages do |message|
+                messages << message
+                if message.is_a?(ClaudeAgentSDK::TaskStartedMessage) && message.task_type == 'local_agent'
+                  task_id = message.task_id
+                  started << message
+                elsif message.is_a?(ClaudeAgentSDK::ResultMessage)
+                  parent_result << message
+                elsif message.is_a?(ClaudeAgentSDK::TaskUpdatedMessage) || message.is_a?(ClaudeAgentSDK::TaskNotificationMessage)
+                  if message.task_id == task_id && ClaudeAgentSDK::TERMINAL_TASK_STATUSES.include?(message.status)
+                    terminal = message
+                    break
+                  end
+                end
+              end
+              controller.wait
+            end
+          ensure
+            release.close # release any worker even when the assertion/protocol fails
+            controller&.stop
+            client.disconnect
+          end
+        end.wait
+        expect(terminal).not_to be_nil
+        expect(action == :stop ? %w[killed stopped] : ['completed']).to include(terminal.status)
+        result_index = messages.index { |message| message.is_a?(ClaudeAgentSDK::ResultMessage) }
+        expect(result_index).not_to be_nil
+        expect(result_index).to be < messages.index(terminal)
+        expect(messages[result_index].is_error).to be false
+      end
+    end
+  end
 end

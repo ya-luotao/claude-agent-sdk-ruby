@@ -8,6 +8,7 @@ require 'async/condition'
 require 'securerandom'
 require_relative 'transport'
 require_relative 'errors'
+require_relative 'cancellation_signal'
 
 module ClaudeAgentSDK
   # Handles bidirectional control protocol on top of Transport
@@ -87,6 +88,7 @@ module ClaudeAgentSDK
       @request_counter = 0
       @request_counter_mutex = Mutex.new
       @inflight_control_request_tasks = {}
+      @callback_request_signals = {}
 
       # Message stream
       @message_queue = Async::Queue.new
@@ -341,6 +343,7 @@ module ClaudeAgentSDK
           @inflight_control_request_tasks[request_id] = handler_task if request_id && !handler_task.finished?
         when 'control_cancel_request'
           request_id = message[:request_id] || message[:requestId]
+          @callback_request_signals[request_id]&.cancel
           task = request_id ? @inflight_control_request_tasks[request_id] : nil
           task&.stop
           next
@@ -418,6 +421,9 @@ module ClaudeAgentSDK
       # Put error in queue so iterators can handle it
       @message_queue.enqueue({ type: 'error', error: error })
     ensure
+      # A callback can no longer be answered after EOF, transport failure,
+      # or reactor cancellation. Wake cooperative worker-thread callbacks too.
+      @callback_request_signals.dup.each_value(&:cancel)
       # Catch entries from a turn that ended without a `result` (early EOF /
       # transport error) so they aren't dropped. The flush can suspend (lock
       # acquire / thread join), so Async::Stop delivered mid-flush would skip
@@ -539,9 +545,9 @@ module ClaudeAgentSDK
 
       case subtype
       when 'can_use_tool'
-        response_data = handle_permission_request(request_data)
+        response_data = handle_permission_request(request_data, request_id: request_id)
       when 'hook_callback'
-        response_data = handle_hook_callback(request_data)
+        response_data = handle_hook_callback(request_data, request_id: request_id)
       when 'mcp_message'
         response_data = handle_mcp_message(request_data)
       else
@@ -561,33 +567,34 @@ module ClaudeAgentSDK
       writeln(JSON.generate(success_response))
     rescue Async::Stop
       # Cancellation requested; respond with an error so the CLI can unblock.
-      cancelled_response = {
-        type: 'control_response',
-        response: {
-          subtype: 'error',
-          request_id: request_id,
-          requestId: request_id,
-          error: 'Cancelled'
-        }
-      }
-      writeln(JSON.generate(cancelled_response))
+      send_control_error(request_id, 'Cancelled')
     rescue StandardError => e
-      # Send error response
+      send_control_error(request_id, e.message)
+    end
+
+    def send_control_error(request_id, message)
       error_response = {
         type: 'control_response',
         response: {
           subtype: 'error',
           request_id: request_id,
           requestId: request_id,
-          error: e.message
+          error: message
         }
       }
       writeln(JSON.generate(error_response))
+    rescue CLIConnectionError
+      # EOF/close can invalidate a callback after the peer has gone away.
+      # Only this best-effort reply is discarded; read errors still reach
+      # the message queue through read_messages.
+      nil
     end
 
-    def handle_permission_request(request_data)
+    def handle_permission_request(request_data, request_id: nil)
       raise 'canUseTool callback is not provided' unless @can_use_tool
 
+      signal = CancellationSignal.new
+      @callback_request_signals[request_id] = signal if request_id
       original_input = request_data[:input]
 
       # Field order mirrors Python _internal/query.py's can_use_tool branch.
@@ -595,7 +602,8 @@ module ClaudeAgentSDK
       # malformed entry raises here, on the reactor, and becomes an error
       # control_response — same observable behavior as Python.
       context = ToolPermissionContext.new(
-        signal: nil,
+        signal: signal,
+        request_id: request_id,
         suggestions: (request_data[:permission_suggestions] || []).map { |s| PermissionUpdate.new(s) },
         tool_use_id: request_data[:tool_use_id],
         agent_id: request_data[:agent_id],
@@ -614,6 +622,9 @@ module ClaudeAgentSDK
       response = FiberBoundary.invoke(scheduling: @callback_scheduling, wrapper: @callback_wrapper) do
         @can_use_tool.call(request_data[:tool_name], request_data[:input], context)
       end
+      # A worker may return a decision after the read loop invalidated the
+      # request. Never turn that late decision into an allow response.
+      raise Async::Stop if signal.cancelled?
 
       # Convert PermissionResult to expected format
       case response
@@ -633,19 +644,27 @@ module ClaudeAgentSDK
       else
         raise "Tool permission callback must return PermissionResult, got #{response.class}"
       end
+      completed = true
+      result
+    ensure
+      signal&.cancel unless completed
+      @callback_request_signals.delete(request_id) if request_id
     end
 
-    def handle_hook_callback(request_data)
+    def handle_hook_callback(request_data, request_id: nil)
       callback_id = request_data[:callback_id]
       callback = @hook_callbacks[callback_id]
       raise "No hook callback found for ID: #{callback_id}" unless callback
+
+      signal = CancellationSignal.new
+      @callback_request_signals[request_id] = signal if request_id
 
       # Parse input data into typed HookInput object
       input_data = request_data[:input] || {}
       hook_input = parse_hook_input(input_data)
 
       # Create typed HookContext
-      context = HookContext.new(signal: nil)
+      context = HookContext.new(signal: signal, request_id: request_id)
 
       # Hop off the Fiber scheduler before invoking user hook code (default
       # :thread mode). With a timeout, the Async-side with_timeout wraps the
@@ -693,8 +712,16 @@ module ClaudeAgentSDK
           end
       end
 
+      # A thread callback may finish after EOF/close invalidated its request.
+      raise Async::Stop if signal.cancelled?
+
       # Convert Ruby-safe field names to CLI-expected names
-      convert_hook_output_for_cli(hook_output)
+      result = convert_hook_output_for_cli(hook_output)
+      completed = true
+      result
+    ensure
+      signal&.cancel unless completed
+      @callback_request_signals.delete(request_id) if request_id
     end
 
     def parse_hook_input(input_data)
@@ -753,6 +780,8 @@ module ClaudeAgentSDK
         StopHookInput.new(
           stop_hook_active: fetch.call(:stop_hook_active),
           last_assistant_message: fetch.call(:last_assistant_message),
+          background_tasks: fetch.call(:background_tasks),
+          session_crons: fetch.call(:session_crons),
           **base_args
         )
       when 'SubagentStop'
@@ -762,6 +791,8 @@ module ClaudeAgentSDK
           agent_transcript_path: fetch.call(:agent_transcript_path),
           agent_type: fetch.call(:agent_type),
           last_assistant_message: fetch.call(:last_assistant_message),
+          background_tasks: fetch.call(:background_tasks),
+          session_crons: fetch.call(:session_crons),
           **base_args
         )
       when 'Notification'
@@ -1410,6 +1441,8 @@ module ClaudeAgentSDK
       return unless first_caller
 
       @closed = true
+      # Snapshot for the off-reactor fallback, like the response waiters below.
+      @callback_request_signals.dup.each_value(&:cancel)
       # Wake pending control-request waiters (same shape as the read-loop
       # rescue broadcast): close stops the read task with Async::Stop, which
       # bypasses that broadcast — a worker-thread caller parked in

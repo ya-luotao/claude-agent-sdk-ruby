@@ -302,6 +302,15 @@ module ClaudeAgentSDK
     Sessions.list_subagents(session_id: session_id, directory: directory)
   end
 
+  # Read a subagent's optional metadata (not live status) from local disk.
+  # @param session_id [String] The parent session UUID
+  # @param agent_id [String] The subagent ID, without the agent- prefix
+  # @param directory [String, nil] Project directory to search in
+  # @return [Hash{String => Object}, nil] CLI metadata, or nil if unavailable
+  def self.get_subagent_metadata(session_id:, agent_id:, directory: nil)
+    Sessions.get_subagent_metadata(session_id: session_id, agent_id: agent_id, directory: directory)
+  end
+
   # Read a subagent's conversation messages from local disk
   # @param session_id [String] The session UUID
   # @param agent_id [String] The subagent ID (without the agent- prefix)
@@ -392,6 +401,13 @@ module ClaudeAgentSDK
   # @return [Array<String>]
   def self.list_subagents_from_store(session_store:, session_id:, directory: nil)
     Sessions.list_subagents_from_store(session_store: session_store, session_id: session_id, directory: directory)
+  end
+
+  # Read the latest subagent metadata from a SessionStore, without its synthetic type marker.
+  # @return [Hash{String => Object}, nil]
+  def self.get_subagent_metadata_from_store(session_store:, session_id:, agent_id:, directory: nil)
+    Sessions.get_subagent_metadata_from_store(session_store: session_store, session_id: session_id,
+                                              agent_id: agent_id, directory: directory)
   end
 
   # Read a subagent's conversation messages from a SessionStore.
