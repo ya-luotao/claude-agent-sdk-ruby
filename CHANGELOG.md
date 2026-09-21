@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `get_subagent_metadata` / `get_subagent_metadata_from_store`: read optional subagent metadata with original string keys, including type, spawning tool ID, parent agent, depth, and future CLI fields. Disk reads reuse transcript scoping without parsing the transcript; store reads select the latest metadata entry even before messages arrive. These are historical reads, not live-status queries.
+- `background_tasks` and `session_crons` on `StopHookInput` / `SubagentStopHookInput`. Raw snapshots preserve unavailable (`nil`) versus explicitly empty (`[]`) and describe the parent session, not all foreground/background agents.
+- Cooperative permission cancellation through `ToolPermissionContext#signal` (`CancellationSignal#cancelled?` / `#wait`) and the associated `request_id`. CLI cancellation, disconnect, EOF, and failed dispatch invalidate pending requests, including callbacks running on worker threads; normal decisions do not. User threads are not forcibly stopped, and late decisions after observed cancellation cannot become allow responses.
+- `HookContext#signal` / `#request_id` use the same per-invocation cancellation contract, including hook timeouts. Thread callbacks can cooperate with cancellation; late hook output is discarded.
+- A minimal subagent event subscription example and capability reference covering lifecycle events, metadata, background snapshots, and permission cancellation. UI and application status aggregation remain outside the SDK.
+- Opt-in real-CLI subagent contract tests for ID/metadata/text correlation, permission cancellation on interrupt, and background completion/stop after a parent result. They self-skip without CLI credentials.
+
+### Fixed
+- Best-effort control error/cancellation replies no longer leak a secondary connection error when the CLI has already exited. Original transport read errors still propagate to the consumer.
+
 ## [0.32.0] - 2026-09-17
 
 Syncs the gem with Python SDK **0.2.153** (previously 0.2.147). The intervening Python releases 0.2.148–0.2.152 only bump the CLI binary Python bundles; this gem does not vendor a CLI, so they carry no Ruby-side change.

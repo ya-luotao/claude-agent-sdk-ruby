@@ -146,6 +146,7 @@ See [docs/hooks-and-permissions.md](docs/hooks-and-permissions.md) for the full 
 | All hook events, typed inputs, permission callbacks | [docs/hooks-and-permissions.md](docs/hooks-and-permissions.md) |
 | Structured output, thinking, budget, fallback and advisor models, sandbox, bare mode, checkpointing | [docs/configuration.md](docs/configuration.md) |
 | Session listing, reading, renaming, tagging, forking, resume-at-message | [docs/sessions.md](docs/sessions.md) |
+| Subagent capabilities, event contracts, and minimal example | [docs/subagents.md](docs/subagents.md) |
 | OpenTelemetry tracing, Langfuse, custom observers | [docs/observability.md](docs/observability.md) |
 | Rails: fiber safety, solid_queue fiber workers, ActionCable, jobs, initializer | [docs/rails.md](docs/rails.md) |
 | Vendoring a pinned CLI binary and CLI discovery order | [docs/cli-installer.md](docs/cli-installer.md) |

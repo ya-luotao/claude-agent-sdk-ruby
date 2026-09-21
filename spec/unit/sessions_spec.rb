@@ -1083,6 +1083,55 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
                  meta.is_a?(String) ? meta : JSON.generate(meta))
     end
 
+    it 'reads metadata without parsing the transcript, preserving unknown fields and nesting' do
+      with_session_on_disk do |subagents_dir, canonical|
+        nested = File.join(subagents_dir, 'workflows', 'run-1')
+        FileUtils.mkdir_p(nested)
+        meta = { 'agentType' => 'reviewer', 'toolUseId' => 'spawn-7', 'parentAgentId' => 'parent-2',
+                 'spawnDepth' => 2, 'futureField' => { 'enabled' => false } }
+        write_agent(nested, 'worker', meta)
+        File.write(File.join(nested, 'agent-worker.jsonl'), '')
+        expect(described_class).not_to receive(:parse_jsonl_entries)
+
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: canonical))
+          .to eq(meta)
+        Dir.mktmpdir do |other|
+          allow(described_class).to receive(:detect_worktrees).with(other).and_return([other])
+          expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: other))
+            .to be_nil
+        end
+      end
+    end
+
+    it 'selects the same first matching transcript as the message reader' do
+      with_session_on_disk do |subagents_dir, canonical|
+        nested = File.join(subagents_dir, 'workflows', 'run-1')
+        FileUtils.mkdir_p(nested)
+        write_agent(nested, 'worker', 'toolUseId' => 'nested')
+        write_agent(subagents_dir, 'worker', 'toolUseId' => 'top-level')
+
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: canonical))
+          .to eq('toolUseId' => 'top-level')
+      end
+    end
+
+    it 'returns nil for unavailable metadata, but preserves an empty metadata object' do
+      with_session_on_disk do |subagents_dir, canonical|
+        [nil, 'not json', '[]', "{\"bad\":\"\xFF\"}"].each do |meta|
+          FileUtils.rm_f(File.join(subagents_dir, 'agent-worker.meta.json'))
+          write_agent(subagents_dir, 'worker', meta)
+          expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: canonical))
+            .to be_nil
+        end
+        write_agent(subagents_dir, 'worker', {})
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: canonical))
+          .to eq({})
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'missing', directory: canonical)).to be_nil
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: 'invalid', agent_id: 'worker')).to be_nil
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: '')).to be_nil
+      end
+    end
+
     it 'stamps toolUseId/parentAgentId from the sidecar on every message' do
       with_session_on_disk do |subagents_dir, canonical|
         write_agent(subagents_dir, 'abc', 'agentType' => 'general-purpose', 'toolUseId' => 'toolu_01ABC',

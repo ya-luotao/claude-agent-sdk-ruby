@@ -596,6 +596,25 @@ module ClaudeAgentSDK
       collect_agent_files(subagents_dir).map(&:first)
     end
 
+    # Read the optional subagent metadata sidecar without reading its transcript.
+    # Uses the same project scoping and sorted first-match rule as the message
+    # reader. This is historical metadata, not a live status query.
+    # @return [Hash{String => Object}, nil] Original CLI fields, or nil if unavailable
+    def get_subagent_metadata(session_id:, agent_id:, directory: nil)
+      return nil unless session_id.match?(UUID_RE)
+      return nil if agent_id.nil? || agent_id.empty?
+
+      subagents_dir = resolve_subagents_dir(session_id, directory)
+      return nil if subagents_dir.nil?
+
+      _id, path = collect_agent_files(subagents_dir).find { |id, _path| id == agent_id }
+      return nil if path.nil?
+
+      read_agent_metadata_sidecar(path)
+    rescue SystemCallError
+      nil
+    end
+
     # Read a subagent's conversation messages from local disk (counterpart to
     # get_subagent_messages_from_store). First match in sorted walk order wins
     # when the same agent id exists at multiple depths (mirrors Python).
@@ -758,6 +777,24 @@ module ClaudeAgentSDK
         seen[agent_id] = true
         agent_id
       end
+    end
+
+    # Store counterpart to get_subagent_metadata. The last agent_metadata entry
+    # wins, including when no conversation messages have been mirrored yet.
+    # The synthetic `type` marker is omitted; all other string-keyed fields
+    # remain unchanged. Adapter failures propagate, like other store readers.
+    # @return [Hash{String => Object}, nil]
+    def get_subagent_metadata_from_store(session_store:, session_id:, agent_id:, directory: nil)
+      return nil unless session_id.match?(UUID_RE)
+      return nil if agent_id.nil? || agent_id.empty?
+
+      project_key = project_key_for_directory(directory)
+      subpath = resolve_subagent_subpath(session_store, project_key, session_id, agent_id)
+      return nil if subpath.nil?
+
+      entries = session_store.load('project_key' => project_key, 'session_id' => session_id, 'subpath' => subpath)
+      metadata, = split_agent_metadata(entries || [])
+      metadata&.except('type')
     end
 
     # Read a subagent's conversation messages from a SessionStore. Subagents may
