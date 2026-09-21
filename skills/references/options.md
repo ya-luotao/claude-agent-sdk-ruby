@@ -66,7 +66,7 @@ ClaudeAgentSDK::HookMatcher.new(
 )
 ```
 
-Hook callbacks receive typed input objects (for example `ClaudeAgentSDK::PreToolUseHookInput`) and a `ClaudeAgentSDK::HookContext`. Access fields via Ruby accessors like `input.tool_name` and `input.tool_input`.
+Hook callbacks receive typed input objects (for example `ClaudeAgentSDK::PreToolUseHookInput`) and a `ClaudeAgentSDK::HookContext` (`request_id`, plus `signal` — a `CancellationSignal` to poll with `cancelled?` or `wait(timeout:)` while waiting on external work; it fires on CLI cancel, EOF, disconnect, callback failure, and `HookMatcher` timeout). `ToolPermissionContext` carries the same `request_id` / `signal` for `can_use_tool`. Access fields via Ruby accessors like `input.tool_name` and `input.tool_input`.
 
 Hook callbacks should return a hash. Only top-level keys are auto-converted; use CLI-style camelCase for nested keys.
 
@@ -161,6 +161,7 @@ Return types:
 - `get_session_messages` → `Array<SessionMessage>` (fields: `type`, `uuid`, `session_id`, `message`, `parent_tool_use_id`)
 - `fork_session` → `ForkSessionResult` (field: `session_id`)
 - `list_subagents` → `Array<String>`; `get_subagent_messages` → `Array<SessionMessage>` (disk counterparts of the `*_from_store` pair)
+- `get_subagent_metadata` / `get_subagent_metadata_from_store` → string-keyed `Hash` with original CLI field names (`'toolUseId'`, `'parentAgentId'`, `'agentType'`, `'spawnDepth'`, …) or `nil`; `{}` is a valid empty sidecar. The disk reader needs the agent's transcript file to exist; the store reader returns the last `agent_metadata` entry without its `type` marker
 
 ## SessionStore: mirror transcripts to external storage
 

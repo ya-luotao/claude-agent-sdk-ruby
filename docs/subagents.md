@@ -138,8 +138,12 @@ Other frames the CLI marks internal (`agents_killed`, `task_summary`, and
 
 **Provenance.** The fields, messages, control request, and option in this
 section were read from the schema embedded in Claude Code CLI 2.1.278. They are
-covered by protocol unit tests but have **not** been verified against a live CLI
-run. Every new reader is `nil` whenever the CLI does not send its field. The
+covered by protocol unit tests, but only partly verified against a live CLI: a
+smoke run against 2.1.278 confirmed `task_started`'s `subagent_type` /
+`is_backgrounded` / `spawn_depth` and the `{ backgrounded: false }` answer to a
+targeted miss. Actually backgrounding a task, `background_tasks_changed` and
+`permission_denied` frames, and progress summaries are schema-derived only.
+Every new reader is `nil` whenever the CLI does not send its field. The
 Python SDK exposes none of them as of Python SDK 0.2.153.
 
 `task_id`, `agent_id`, and `tool_use_id` are different identifiers. The metadata

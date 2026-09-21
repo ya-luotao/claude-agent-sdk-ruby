@@ -27,7 +27,7 @@ A Ruby SDK for the [Claude Code](https://docs.claude.com/en/docs/claude-code-ove
 
 ```ruby
 # Gemfile
-gem 'claude-agent-sdk', '~> 0.32.0'
+gem 'claude-agent-sdk', '~> 0.33.0'
 ```
 
 Then `bundle install`, or install directly with `gem install claude-agent-sdk`. To track unreleased changes, point the Gemfile at GitHub: `gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'`.
@@ -181,7 +181,7 @@ All three SDKs drive the same CLI over the same protocol, so capabilities line u
 | Hooks (all 27 events) | ✅ | ✅ | ✅ |
 | Permission callbacks | ✅ | ✅ | ✅ |
 | Structured output | ✅ | ✅ | ✅ |
-| All 25 message types | ✅ | partial | ✅ |
+| All 28 message types | ✅ | partial | ✅ |
 | [Sandbox](https://github.com/anthropic-experimental/sandbox-runtime) settings | ✅ | partial | ✅ |
 | Bare mode (`--bare`) | ✅ | ✅ | ✅ |
 | File checkpointing & rewind | ✅ | ✅ | ✅ |

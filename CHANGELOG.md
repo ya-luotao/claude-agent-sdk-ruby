@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-21
+
+Subagent capabilities for UI builders: metadata reads, background snapshots, cooperative callback cancellation, and the task/background/permission signals the CLI already emits — all raw data and controls, no status model. Ruby-ahead of the Python SDK (0.2.153).
+
 ### Added
 - `get_subagent_metadata` / `get_subagent_metadata_from_store`: read optional subagent metadata with original string keys, including type, spawning tool ID, parent agent, depth, and future CLI fields. Disk reads reuse transcript scoping without parsing the transcript; store reads select the latest metadata entry even before messages arrive. These are historical reads, not live-status queries.
 - `background_tasks` and `session_crons` on `StopHookInput` / `SubagentStopHookInput`. Raw snapshots preserve unavailable (`nil`) versus explicitly empty (`[]`) and describe the parent session, not all foreground/background agents.
@@ -14,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HookContext#signal` / `#request_id` use the same per-invocation cancellation contract, including hook timeouts. Thread callbacks can cooperate with cancellation; late hook output is discarded.
 - A minimal subagent event subscription example and capability reference covering lifecycle events, metadata, background snapshots, and permission cancellation. UI and application status aggregation remain outside the SDK.
 - Opt-in real-CLI subagent contract tests for ID/metadata/text correlation, permission cancellation on interrupt, and background completion/stop after a parent result. They self-skip without CLI credentials.
-- Subagent UI signals the CLI already emits, read from the schema embedded in Claude Code CLI 2.1.278 (the Python SDK has none of these as of Python SDK 0.2.153; not yet verified against a live CLI run). The SDK exposes raw data and controls only — no status aggregation.
+- Subagent UI signals the CLI already emits, read from the schema embedded in Claude Code CLI 2.1.278 (the Python SDK has none of these as of Python SDK 0.2.153; only partly verified live — a smoke run against CLI 2.1.278 confirmed the `task_started` fields and the targeted-miss `background_tasks` response; the rest is schema-derived). The SDK exposes raw data and controls only — no status aggregation.
   - `TaskStartedMessage#subagent_type` / `#is_backgrounded` / `#spawn_depth`, `TaskProgressMessage#subagent_type`, `TaskNotificationMessage#reason` / `#resource_links` (raw Array, symbol keys with the wire spelling), the `#skip_transcript` / `#ambient` display flags on both `TaskStartedMessage` and `TaskNotificationMessage` (hints for the host — the SDK never filters frames or computes activity), and `TaskUpdatedMessage#is_backgrounded` / `#error` / `#end_time` / `#total_paused_ms` / `#description` derived from `patch` like `status`. `is_backgrounded` keeps `nil` (not reported) distinct from an explicit `false` (foreground, spawning tool call blocking). `TaskUpdatedMessage` now also reads a string-keyed `patch` on hand-built messages.
   - `BackgroundTasksChangedMessage` (`background_tasks_changed`): the full set of live background tasks, a level signal with REPLACE semantics. The SDK's own stdin-close bookkeeping still deliberately ignores this frame.
   - `PermissionDeniedMessage` (`permission_denied`): a tool call auto-denied without an interactive prompt, with `agent_id` for subagent routing (not a permission `request_id`). A best-effort advisory, not a complete denial feed — `ResultMessage#permission_denials` stays authoritative.
