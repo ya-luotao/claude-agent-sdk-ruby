@@ -1958,6 +1958,12 @@ module ClaudeAgentSDK
     # Merge caller-provided attributes with configured defaults.
     # Only keys the caller explicitly passed are treated as overrides;
     # method-signature defaults ([], {}, false) are NOT present unless the caller wrote them.
+    #
+    # Both sides are keyed by the option they name, not by their literal
+    # spelling: Type accepts symbol/string and snake_case/camelCase names, so a
+    # caller's `'permissionMode' => nil` must still inherit a configured
+    # `permission_mode:` (and a Hash must still merge into it) rather than
+    # riding along as a second entry that overwrites the default on assignment.
     def merge_with_defaults(attributes)
       return attributes unless defined?(ClaudeAgentSDK) && ClaudeAgentSDK.respond_to?(:default_options)
 
@@ -1968,8 +1974,10 @@ module ClaudeAgentSDK
       # duped so per-instance mutation (options.allowed_tools << 'Bash')
       # can never corrupt the global defaults; non-container leaves
       # (Strings, Procs, SdkMcpServer instances) intentionally keep identity.
-      result = deep_dup_containers(defaults)
+      result = {}
+      defaults.each { |key, value| result[option_key(key)] = deep_dup_containers(value) }
       attributes.each do |key, value|
+        key = option_key(key)
         default_val = result[key]
         result[key] = if value.nil?
                         default_val # nil means "no preference" — keep the configured default
@@ -1980,6 +1988,14 @@ module ClaudeAgentSDK
                       end
       end
       result
+    end
+
+    # The canonical Symbol for a known option, whatever its spelling. An
+    # unknown name is returned untouched so assign_attribute's strict check
+    # reports the typo exactly as the developer wrote it.
+    def option_key(name)
+      normalized = normalize_name(name)
+      respond_to?(:"#{normalized}=") ? normalized.to_sym : name
     end
 
     # Recurse ONLY into Hash/Array; leaves keep object identity (observer
