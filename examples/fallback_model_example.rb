@@ -14,12 +14,12 @@ puts "Demonstrating fallback_model for improved reliability\n\n"
 
 # Example 1: Basic fallback configuration
 puts "--- Example 1: Primary with Fallback ---"
-puts "Primary: claude-sonnet-4-20250514"
-puts "Fallback: claude-3-5-haiku-20241022\n"
+puts "Primary: claude-sonnet-5"
+puts "Fallback: claude-haiku-4-5\n"
 
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  model: 'claude-sonnet-4-20250514',
-  fallback_model: 'claude-3-5-haiku-20241022',
+  model: 'claude-sonnet-5',
+  fallback_model: 'claude-haiku-4-5',
   max_turns: 1
 )
 
@@ -45,8 +45,8 @@ puts "\n--- Example 2: Session with Fallback Model ---"
 
 Async do
   session_options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-    model: 'claude-sonnet-4-20250514',
-    fallback_model: 'claude-3-5-haiku-20241022',
+    model: 'claude-sonnet-5',
+    fallback_model: 'claude-haiku-4-5',
     system_prompt: "You are a helpful assistant. Always mention which model you are at the start."
   )
 
@@ -94,16 +94,16 @@ puts "\n--- Example 3: Fallback Strategy Patterns ---"
 
 # Strategy 1: Fast fallback (use cheaper model as backup)
 fast_fallback = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  model: 'claude-sonnet-4-20250514',
-  fallback_model: 'claude-3-5-haiku-20241022',  # Cheaper, faster
+  model: 'claude-sonnet-5',
+  fallback_model: 'claude-haiku-4-5',  # Cheaper, faster
   max_turns: 1
 )
 puts "Strategy 1: Sonnet -> Haiku (cost optimization)"
 
 # Strategy 2: Quality fallback (use similar-tier model)
 quality_fallback = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  model: 'claude-opus-4-20250514',
-  fallback_model: 'claude-sonnet-4-20250514',  # Still high quality
+  model: 'claude-opus-5',
+  fallback_model: 'claude-sonnet-5',  # Still high quality
   max_turns: 1
 )
 puts "Strategy 2: Opus -> Sonnet (quality preservation)"

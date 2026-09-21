@@ -98,18 +98,19 @@ end
 
 Thinking configuration:
 ```ruby
-# Adaptive (32k default budget)
+# Adaptive — the model decides when and how much to think (use this on
+# current models; control depth with `effort:` below)
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new
 )
 
-# Custom budget
+# Fixed budget — only for older models that still take one
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 10_000)
 )
 
-# Opus 4.7 defaults thinking display to "omitted" (empty thinking field,
-# signature only). Pass display: "summarized" to receive plaintext
+# Current models default thinking display to "omitted" (empty thinking
+# field, signature only). Pass display: "summarized" to receive plaintext
 # thinking text. Valid values: "summarized", "omitted".
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new(display: 'summarized')

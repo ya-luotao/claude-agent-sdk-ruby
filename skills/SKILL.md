@@ -19,6 +19,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
 - Build `ClaudeAgentSDK::ClaudeAgentOptions` and pass it to `query` or `Client.new`.
 - Handle messages by type — the SDK has **28 typed message classes**:
   - Core: `AssistantMessage`, `UserMessage`, `ResultMessage`, `StreamEvent`, `RateLimitEvent`
+  - Conversation reset: `ConversationResetMessage` (the conversation was replaced mid-session, e.g. `/clear` — see references/message-handling.md)
   - System init: `InitMessage` (session start / /clear — carries uuid, session_id, tools, model, cwd, agents, betas, claude_code_version, permission_mode, slash_commands, output_style, skills, plugins, fast_mode_state)
   - Compaction: `CompactBoundaryMessage` (uuid, session_id, compact_metadata with pre_tokens, trigger, preserved_segment)
   - Status: `StatusMessage` (compacting status, permission mode changes)
@@ -37,7 +38,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
 - `AssistantMessage` carries: `content`, `model`, `parent_tool_use_id`, `error`, `usage`, `message_id` (API message ID), `stop_reason`, `session_id`, `uuid` (transcript UUID)
 - `ResultMessage` carries: `stop_reason`, `model_usage` (per-model breakdown), `permission_denials`, `errors` (on error subtypes), `uuid`, `fast_mode_state`, `terminal_reason` (why the query loop ended; `aborted_streaming`/`aborted_tools` mean interrupted)
 - Use `output_format` for JSON schema structured output
-- Use `thinking:` with `ThinkingConfigAdaptive`, `ThinkingConfigEnabled(budget_tokens:)`, or `ThinkingConfigDisabled`. Use `effort:` for effort level.
+- Use `thinking: ThinkingConfigAdaptive.new` and control depth with `effort:`. `ThinkingConfigEnabled(budget_tokens:)` is only for older models that take a fixed budget; `ThinkingConfigDisabled` turns thinking off.
 
 ## Hooks (27 events)
 All hook events: PreToolUse, PostToolUse, PostToolUseFailure, Notification, UserPromptSubmit, SessionStart, SessionEnd, Stop, StopFailure, SubagentStart, SubagentStop, PreCompact, PostCompact, PermissionRequest, PermissionDenied, Setup, TeammateIdle, TaskCreated, TaskCompleted, Elicitation, ElicitationResult, ConfigChange, WorktreeCreate, WorktreeRemove, InstructionsLoaded, CwdChanged, FileChanged.

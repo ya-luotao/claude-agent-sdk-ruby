@@ -89,7 +89,7 @@ Bump version to X.Y.Z and cut CHANGELOG
 
 <short 1–2 line summary of what's in this release>
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+<the commit attribution lines given in the session's system-reminder, verbatim>
 ```
 
 Stage explicitly — not `git add -A` — to avoid sweeping in `pkg/*.gem`:

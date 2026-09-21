@@ -9,7 +9,7 @@ module ClaudeAgentSDK
 
   # Effort levels for `ClaudeAgentOptions#effort`. The CLI (Claude Code 2.1.111+)
   # accepts these values; the set of *supported* levels is model-dependent
-  # (e.g. `xhigh` is only supported on Opus 4.7 and falls back to `high` on
+  # (e.g. `xhigh` arrived with Opus 4.7 and falls back to `high` on
   # Opus 4.6 / Sonnet 4.6). An Integer is also accepted and forwarded verbatim.
   EFFORT_LEVELS = %w[low medium high xhigh max].freeze
 
@@ -785,12 +785,13 @@ module ClaudeAgentSDK
   # `display` controls how thinking content appears in responses. Valid values
   # are `"summarized"` (plaintext summary) and `"omitted"` (empty thinking
   # field, signature only). Defaults are model-dependent: Opus 4.6/Sonnet 4.6
-  # default to `"summarized"`; Opus 4.7 and Mythos Preview default to
-  # `"omitted"`. Pass `display: "summarized"` explicitly on Opus 4.7 to get
+  # default to `"summarized"`; Opus 4.7 and every later model default to
+  # `"omitted"`. Pass `display: "summarized"` explicitly on those to get
   # visible thinking text. Not supported with `ThinkingConfigDisabled`.
   THINKING_DISPLAY_VALUES = %w[summarized omitted].freeze
 
-  # Adaptive thinking: uses a default budget of 32000 tokens
+  # Adaptive thinking: the model decides when and how much to think
+  # (sent as `--thinking adaptive`, no budget); control depth with `effort`.
   class ThinkingConfigAdaptive < Type
     attr_reader :type, :display
 
