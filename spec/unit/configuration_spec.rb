@@ -242,6 +242,45 @@ RSpec.describe ClaudeAgentSDK do
         end
       end
 
+      # A tri-state Boolean option: nil means "no preference", so only an
+      # explicit false may override a configured true.
+      context 'agent_progress_summaries against a configured default' do
+        it 'lets a per-call false override a global true' do
+          ClaudeAgentSDK.configure { |config| config.default_options = { agent_progress_summaries: true } }
+
+          expect(described_class.new(agent_progress_summaries: false).agent_progress_summaries).to be(false)
+        end
+
+        it 'inherits the global value when the per-call option is unset or nil' do
+          ClaudeAgentSDK.configure { |config| config.default_options = { agent_progress_summaries: true } }
+
+          expect(described_class.new.agent_progress_summaries).to be(true)
+          expect(described_class.new(agent_progress_summaries: nil).agent_progress_summaries).to be(true)
+        end
+
+        it 'inherits a global false rather than collapsing it to nil' do
+          ClaudeAgentSDK.configure { |config| config.default_options = { agent_progress_summaries: false } }
+
+          expect(described_class.new.agent_progress_summaries).to be(false)
+          expect(described_class.new(agent_progress_summaries: true).agent_progress_summaries).to be(true)
+        end
+
+        it 'stays nil when neither the defaults nor the call set it' do
+          ClaudeAgentSDK.configure { |config| config.default_options = { model: 'sonnet' } }
+
+          expect(described_class.new.agent_progress_summaries).to be_nil
+        end
+
+        it 'keeps false and nil across dup_with under a configured default' do
+          ClaudeAgentSDK.configure { |config| config.default_options = { agent_progress_summaries: true } }
+          off = described_class.new(agent_progress_summaries: false)
+
+          expect(off.dup_with(model: 'opus').agent_progress_summaries).to be(false)
+          expect(off.dup_with(agent_progress_summaries: true).agent_progress_summaries).to be(true)
+          expect(off.agent_progress_summaries).to be(false)
+        end
+      end
+
       # Test for env hash mutation
       context 'env hash isolation from defaults' do
         before do

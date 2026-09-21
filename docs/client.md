@@ -44,6 +44,10 @@ Async do
   client.reconnect_mcp_server('my-server')      # Reconnect a failed MCP server
   client.toggle_mcp_server('my-server', false)  # Enable/disable an MCP server
   client.stop_task('task_abc123')               # Stop a running background task
+  client.background_tasks                       # Background every foreground task (Ctrl+B) => {}
+  client.background_tasks(tool_use_id: 'toolu_01') # Only the task spawned by that tool_use block
+                                                # => { backgrounded: true } | { backgrounded: false } (definitive miss)
+                                                # '' or a non-String raises ArgumentError; nil is the all-tasks form
 
   client.disconnect
 end.wait

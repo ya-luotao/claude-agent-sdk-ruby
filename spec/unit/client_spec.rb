@@ -209,6 +209,110 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(query_handler).to have_received(:toggle_mcp_server).with('my-server', false)
   end
 
+  it 'passes agent_progress_summaries through to the Query handler, preserving nil vs false' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+
+    [true, false, nil].each do |value|
+      captured = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        captured = kwargs
+        query_handler
+      end
+
+      described_class.new(
+        options: ClaudeAgentSDK::ClaudeAgentOptions.new(agent_progress_summaries: value)
+      ).connect
+
+      expect(captured).to have_key(:agent_progress_summaries)
+      expect(captured[:agent_progress_summaries]).to be(value)
+    end
+  end
+
+  it 'raises when backgrounding tasks while not connected' do
+    client = described_class.new
+    expect { client.background_tasks }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+    expect { client.background_tasks(tool_use_id: 'toolu_1') }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+  end
+
+  it 'checks the connection before validating the background_tasks selector' do
+    expect { described_class.new.background_tasks(tool_use_id: '') }
+      .to raise_error(ClaudeAgentSDK::CLIConnectionError)
+  end
+
+  it 'rejects an empty background_tasks selector when connected, writing nothing' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    query_handler = ClaudeAgentSDK::Query.new(transport: transport, is_streaming_mode: true)
+    allow(query_handler).to receive_messages(start: true, initialize_protocol: true)
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    # Recorder instead of the real control path: a regressed guard then fails
+    # here at once rather than parking on the default control timeout.
+    sent = []
+    allow(query_handler).to receive(:send_control_request) do |request|
+      sent << request
+      {}
+    end
+
+    client = described_class.new
+    client.connect
+    expect { client.background_tasks(tool_use_id: '') }.to raise_error(ArgumentError, /pass nil explicitly/)
+    expect(sent).to be_empty
+    expect(transport).not_to have_received(:write)
+  end
+
+  # Through the real Query response handler: the Client must hand back a
+  # definitive targeted miss as-is, never as success.
+  [{ backgrounded: false }, { backgrounded: true }].each do |payload|
+    it "returns #{payload.inspect} from a targeted background_tasks unchanged" do
+      written = []
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true)
+      allow(transport).to receive(:write) { |line| written << JSON.parse(line) }
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      query_handler = ClaudeAgentSDK::Query.new(transport: transport, is_streaming_mode: true)
+      allow(query_handler).to receive_messages(start: true, initialize_protocol: true)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      client = described_class.new
+      client.connect
+
+      result = nil
+      Async do |task|
+        task.with_timeout(2.0) do
+          sender = task.async { client.background_tasks(tool_use_id: 'toolu_42') }
+          task.sleep 0.01 until written.any?
+          query_handler.send(:handle_control_response,
+                             { type: 'control_response',
+                               response: { subtype: 'success', request_id: written.first.fetch('request_id'),
+                                           response: payload } })
+          result = sender.wait
+        end
+      end.wait
+
+      expect(result).to eq(payload)
+      expect(result[:backgrounded]).to be(payload[:backgrounded])
+      expect(written.first.fetch('request')).to eq('subtype' => 'background_tasks', 'tool_use_id' => 'toolu_42')
+    end
+  end
+
+  it 'delegates background_tasks when connected and returns the CLI payload' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+    allow(query_handler).to receive(:background_tasks).with(tool_use_id: nil).and_return({})
+    allow(query_handler).to receive(:background_tasks).with(tool_use_id: 'toolu_42').and_return({ backgrounded: true })
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+    allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+    client = described_class.new
+    client.connect
+    expect(client.background_tasks).to eq({})
+    expect(client.background_tasks(tool_use_id: 'toolu_42')).to eq({ backgrounded: true })
+    expect(query_handler).to have_received(:background_tasks).with(tool_use_id: nil)
+    expect(query_handler).to have_received(:background_tasks).with(tool_use_id: 'toolu_42')
+  end
+
   it 'raises when stopping task while not connected' do
     client = described_class.new
     expect { client.stop_task('task_1') }.to raise_error(ClaudeAgentSDK::CLIConnectionError)

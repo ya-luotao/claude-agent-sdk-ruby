@@ -608,4 +608,36 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       expect(captured_query_args[:forward_subagent_text]).to be(enabled)
     end
   end
+
+  it 'passes agent_progress_summaries from the options to the control protocol, preserving nil vs false' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+    allow(transport).to receive(:write)
+
+    query_handler = instance_double(
+      ClaudeAgentSDK::Query,
+      start: true,
+      initialize_protocol: nil,
+      wait_for_result_and_end_input: nil,
+      close: nil
+    )
+    allow(query_handler).to receive(:receive_messages)
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+
+    [true, false, nil].each do |value|
+      captured_query_args = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        captured_query_args = kwargs
+        query_handler
+      end
+
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(agent_progress_summaries: value)
+      Async do
+        described_class.query(prompt: 'hello', options: options) { |_message| nil }
+      end.wait
+
+      expect(captured_query_args).to have_key(:agent_progress_summaries)
+      expect(captured_query_args[:agent_progress_summaries]).to be(value)
+    end
+  end
 end

@@ -262,6 +262,39 @@ Matches the TypeScript SDK's `forwardSubagentText`. The capability is
 negotiated on the control-protocol handshake, so it applies to both
 `ClaudeAgentSDK.query` and `Client`.
 
+## Subagent Progress Summaries
+
+Set `agent_progress_summaries` to **request** model-generated one-line progress
+summaries for subagent (`local_agent`) tasks. While the CLI has generation
+enabled, a subagent's `TaskProgressMessage#summary` **may** be present; the
+field stays optional on the wire, so not every progress frame carries one —
+read it nil-safely:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(agent_progress_summaries: true)
+
+# ...
+when ClaudeAgentSDK::TaskProgressMessage
+  puts "#{message.task_id}: #{message.summary}" if message.summary
+```
+
+`false` and `nil` do not enable generation. They do not promise suppression
+either: a process that already enabled summaries keeps producing them, and a
+backgrounded `mcp_task` reports its own status in `summary` regardless of this
+option.
+
+The option is tri-state: `nil` (the default) omits the key from the `initialize`
+control request, while `true` and `false` are forwarded verbatim as
+`agentProgressSummaries`. It is an **enable switch, not a live toggle**: CLI
+2.1.278 only acts on a truthy value, so `false` is schema-valid but equivalent
+to leaving the option unset — it does not switch summaries off on a process that
+already enabled them. With `ClaudeAgentSDK.configure` defaults, a per-call
+`false` overrides a global `true`, and an unset per-call value inherits the
+global one. It applies to both `ClaudeAgentSDK.query` and `Client`. The key was
+read from the schema embedded in Claude Code CLI 2.1.278 and has not been
+verified against a live run. See
+[subagent capabilities](subagents.md).
+
 ## File Checkpointing & Rewind
 
 Enable file checkpointing to revert file changes to a previous state:

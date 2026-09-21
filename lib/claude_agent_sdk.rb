@@ -588,6 +588,7 @@ module ClaudeAgentSDK
           system_prompt_snapshot: ClaudeAgentSDK.extract_system_prompt_snapshot(configured_options.system_prompt),
           skills: configured_options.skills,
           forward_subagent_text: configured_options.forward_subagent_text?,
+          agent_progress_summaries: configured_options.agent_progress_summaries,
           callback_scheduling: callback_scheduling,
           callback_wrapper: callback_wrapper
         )
@@ -985,6 +986,31 @@ module ClaudeAgentSDK
       @query_handler.stop_task(task_id)
     end
 
+    # Background in-flight foreground tasks (Bash commands and subagents) — the
+    # control-request equivalent of pressing Ctrl+B in the terminal. Each
+    # blocking tool call returns a "running in the background" tool_result and
+    # the turn continues; the task keeps running and emits a
+    # TaskNotificationMessage when it settles.
+    #
+    # The targeted form reports its outcome: `{ backgrounded: true }`, or
+    # `{ backgrounded: false }` — a definitive miss (no matching foreground
+    # task), so do not wait for an event after it. The all-tasks form returns
+    # `{}` and says nothing about whether any task existed. Observe
+    # TaskUpdatedMessage#is_backgrounded / BackgroundTasksChangedMessage for the
+    # lifecycle state that follows.
+    #
+    # @param tool_use_id [String, nil] The id of the tool_use block that spawned
+    #   the task — NOT a task_id or agent_id. nil is the explicit all-tasks form.
+    #   Never substitute nil or '' for a per-task id you do not have yet
+    #   (TaskStartedMessage#tool_use_id is optional on the wire)
+    # @return [Hash] `{ backgrounded: true/false }` when tool_use_id was given,
+    #   `{}` otherwise
+    # @raise [ArgumentError] if tool_use_id is neither nil nor a non-empty String
+    def background_tasks(tool_use_id: nil)
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.background_tasks(tool_use_id: tool_use_id)
+    end
+
     # Rewind files to a previous checkpoint (v0.1.15+)
     # Restores file state to what it was at the given user message
     # Requires enable_file_checkpointing to be true in options
@@ -1118,6 +1144,7 @@ module ClaudeAgentSDK
         system_prompt_snapshot: system_prompt_snapshot,
         skills: configured_options.skills,
         forward_subagent_text: configured_options.forward_subagent_text?,
+        agent_progress_summaries: configured_options.agent_progress_summaries,
         callback_scheduling: @callback_scheduling,
         callback_wrapper: @callback_wrapper
       )

@@ -258,6 +258,55 @@ RSpec.describe ClaudeAgentSDK::Query do
       end
     end
 
+    # background_tasks_changed is typed for consumers (BackgroundTasksChangedMessage)
+    # but must stay invisible to the stdin-close bookkeeping, in both
+    # directions — see the comment above Query#track_task_lifecycle.
+    it 'does not narrow the in-flight set from an empty background_tasks_changed snapshot' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+
+        # A foreground subagent is absent from the *background* snapshot.
+        queue.enqueue({ type: 'system', subtype: 'task_started', task_id: 'fg-1', task_type: 'local_agent' })
+        queue.enqueue({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+        queue.enqueue(sample_result_message)
+        task.sleep 0.05
+        expect(query.instance_variable_get(:@inflight_tasks).to_a).to eq(%w[fg-1])
+        expect(ended).to be_empty # fg-1 still in flight despite the empty snapshot
+
+        queue.enqueue({ type: 'system', subtype: 'task_notification', task_id: 'fg-1', status: 'completed' })
+        queue.enqueue(sample_result_message)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    it 'does not widen the in-flight set from a background_tasks_changed snapshot' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+
+        queue.enqueue({ type: 'system', subtype: 'background_tasks_changed',
+                        tasks: [{ task_id: 'bg-9', task_type: 'local_agent', description: 'observer' }] })
+        queue.enqueue(sample_result_message)
+        task.with_timeout(2.0) { waiter.wait }
+        expect(query.instance_variable_get(:@inflight_tasks)).to be_empty
+        expect(ended).not_to be_empty # first result still closes stdin
+      ensure
+        query.close
+      end.wait
+    end
+
     it 'closes stdin on the first result when the started task is not a deferring type' do
       # A background shell may never reach a terminal status; tracking it
       # would withhold the close forever (the CLI only exits on stdin EOF).
@@ -387,6 +436,16 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(inflight.to_a).to eq(%w[a])
     end
 
+    it 'ignores background_tasks_changed in both directions' do
+      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
+      track({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      expect(inflight.to_a).to eq(%w[a])
+
+      track({ type: 'system', subtype: 'background_tasks_changed',
+              tasks: [{ task_id: 'b', task_type: 'local_agent', description: 'other' }] })
+      expect(inflight.to_a).to eq(%w[a])
+    end
+
     it 'is a no-op for terminal frames about unknown task ids' do
       track({ type: 'system', subtype: 'task_notification', task_id: 'ghost', status: 'completed' })
       track({ type: 'system', subtype: 'task_updated', task_id: 'ghost', patch: { status: 'failed' } })
@@ -431,6 +490,146 @@ RSpec.describe ClaudeAgentSDK::Query do
                                                              task_id: 'task_abc123'
                                                            })
       query.stop_task('task_abc123')
+    end
+  end
+
+  describe '#background_tasks' do
+    let(:transport) { instance_double(ClaudeAgentSDK::Transport, write: nil) }
+    let(:query) { described_class.new(transport: transport, is_streaming_mode: true) }
+
+    it 'omits tool_use_id entirely when backgrounding every foreground task' do
+      expect(query).to receive(:send_control_request).with({ subtype: 'background_tasks' }).and_return({})
+      expect(query.background_tasks).to eq({})
+    end
+
+    it 'omits tool_use_id when it is explicitly nil' do
+      expect(query).to receive(:send_control_request).with({ subtype: 'background_tasks' }).and_return({})
+      query.background_tasks(tool_use_id: nil)
+    end
+
+    it 'targets a single task by its spawning tool_use_id and returns the CLI payload' do
+      expect(query).to receive(:send_control_request)
+        .with({ subtype: 'background_tasks', tool_use_id: 'toolu_42' })
+        .and_return({ backgrounded: false })
+      expect(query.background_tasks(tool_use_id: 'toolu_42')).to eq({ backgrounded: false })
+    end
+
+    # The CLI normalizes "" to "background ALL foreground tasks" — a selector
+    # built from a missing id must never reach it.
+    #
+    # send_control_request is replaced with a recorder, so a regressed guard
+    # fails these examples immediately instead of falling into the real control
+    # path and parking on the (20-minute default) control timeout.
+    describe 'selector guard' do
+      let(:sent) { [] }
+
+      before do
+        allow(query).to receive(:send_control_request) do |request|
+          sent << request
+          {}
+        end
+      end
+
+      {
+        'an empty String' => '', 'a frozen empty String' => ''.dup.freeze, 'a Symbol' => :toolu,
+        'an Integer' => 42, 'false' => false, 'an Array' => [], 'a Hash' => {}, 'an arbitrary Object' => Object.new
+      }.each do |label, bad|
+        it "rejects #{label} as a tool_use_id and sends nothing" do
+          expect { query.background_tasks(tool_use_id: bad) }
+            .to raise_error(ArgumentError, /non-empty String.*pass nil explicitly/)
+          expect(sent).to be_empty
+          expect(transport).not_to have_received(:write)
+        end
+      end
+
+      it 'rejects an empty String subclass whose empty? lies, and sends nothing' do
+        lying = Class.new(String) { def empty? = false }.new('')
+
+        expect { query.background_tasks(tool_use_id: lying) }
+          .to raise_error(ArgumentError, /non-empty String.*pass nil explicitly/)
+        expect(sent).to be_empty
+      end
+
+      it 'sends a private plain-String copy, not the caller\'s object' do
+        caller_id = +'toolu_42'
+        query.background_tasks(tool_use_id: caller_id)
+
+        selector = sent.first.fetch(:tool_use_id)
+        expect(sent.size).to eq(1)
+        expect(selector).to eq('toolu_42')
+        expect(selector).to be_instance_of(String)
+        expect(selector).not_to equal(caller_id)
+
+        caller_id.clear # a later mutation of the caller's String cannot reach the request
+        expect(sent.first.fetch(:tool_use_id)).to eq('toolu_42')
+      end
+
+      it 'copies a String subclass down to a plain String with the real id' do
+        subclass_id = Class.new(String).new('toolu_42')
+        query.background_tasks(tool_use_id: subclass_id)
+
+        expect(sent.first.fetch(:tool_use_id)).to eq('toolu_42')
+        expect(sent.first.fetch(:tool_use_id)).to be_instance_of(String)
+      end
+
+      it 'accepts a frozen valid String' do
+        frozen_id = (+'toolu_42').freeze
+        expect(frozen_id).to be_frozen
+        query.background_tasks(tool_use_id: frozen_id)
+
+        expect(sent).to eq([{ subtype: 'background_tasks', tool_use_id: 'toolu_42' }])
+      end
+
+      it 'keeps a whitespace-only id as a targeted selector, byte for byte (never stripped or widened)' do
+        query.background_tasks(tool_use_id: " \t\n ")
+
+        expect(sent).to eq([{ subtype: 'background_tasks', tool_use_id: " \t\n " }])
+      end
+    end
+
+    # Drives the real send_control_request / JSON writer / control_response
+    # path, bounded so a request that is never written fails fast.
+    def background_tasks_over_the_wire(payload, **kwargs)
+      written = []
+      allow(transport).to receive(:write) { |line| written << JSON.parse(line) }
+
+      result = nil
+      Async do |task|
+        task.with_timeout(2.0) do
+          sender = task.async { query.background_tasks(**kwargs) }
+          task.sleep 0.01 until written.any?
+          query.send(:handle_control_response,
+                     { type: 'control_response',
+                       response: { subtype: 'success', request_id: written.first.fetch('request_id'),
+                                   response: payload } })
+          result = sender.wait
+        end
+      end.wait
+      [result, written]
+    end
+
+    # Resolved through the real control_response path, so the documented
+    # return contract is what send_control_request actually unwraps.
+    [
+      [{ tool_use_id: 'toolu_42' }, { backgrounded: true }, { 'subtype' => 'background_tasks', 'tool_use_id' => 'toolu_42' }],
+      [{ tool_use_id: 'toolu_42' }, { backgrounded: false }, { 'subtype' => 'background_tasks', 'tool_use_id' => 'toolu_42' }],
+      [{}, {}, { 'subtype' => 'background_tasks' }]
+    ].each do |kwargs, payload, wire_request|
+      it "returns #{payload.inspect} unchanged for #{kwargs.inspect}" do
+        result, written = background_tasks_over_the_wire(payload, **kwargs)
+
+        expect(result).to eq(payload)
+        expect(written.size).to eq(1)
+        expect(written.first).to include('type' => 'control_request')
+        expect(written.first.fetch('request')).to eq(wire_request)
+      end
+    end
+
+    it 'serializes the real id even when a String subclass overrides to_json' do
+      forged = Class.new(String) { def to_json(*) = '""' }.new('toolu_42')
+      _result, written = background_tasks_over_the_wire({ backgrounded: true }, tool_use_id: forged)
+
+      expect(written.first.fetch('request')).to eq('subtype' => 'background_tasks', 'tool_use_id' => 'toolu_42')
     end
   end
 
@@ -913,6 +1112,35 @@ RSpec.describe ClaudeAgentSDK::Query do
           {}
         end
         query.initialize_protocol
+      end
+    end
+
+    it 'sends agentProgressSummaries in initialize whenever it is set, false included' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      [true, false].each do |value|
+        query = described_class.new(transport: transport, is_streaming_mode: true, agent_progress_summaries: value)
+        requests = []
+        allow(query).to receive(:send_control_request) { |request| requests << request and {} }
+        query.initialize_protocol
+
+        expect(requests.size).to eq(1)
+        expect(requests.first).to have_key(:agentProgressSummaries)
+        expect(requests.first[:agentProgressSummaries]).to be(value)
+      end
+    end
+
+    it 'omits agentProgressSummaries from initialize when unset' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      [{}, { agent_progress_summaries: nil }].each do |kwargs|
+        query = described_class.new(transport: transport, is_streaming_mode: true, **kwargs)
+        requests = []
+        allow(query).to receive(:send_control_request) { |request| requests << request and {} }
+        query.initialize_protocol
+
+        expect(requests.size).to eq(1)
+        expect(requests.first).not_to have_key(:agentProgressSummaries)
       end
     end
 

@@ -52,7 +52,8 @@ Async do |task|
       client.receive_messages do |message|
         case message
         when ClaudeAgentSDK::TaskStartedMessage, ClaudeAgentSDK::TaskProgressMessage,
-             ClaudeAgentSDK::TaskUpdatedMessage, ClaudeAgentSDK::TaskNotificationMessage
+             ClaudeAgentSDK::TaskUpdatedMessage, ClaudeAgentSDK::TaskNotificationMessage,
+             ClaudeAgentSDK::BackgroundTasksChangedMessage
           puts JSON.generate(message.data)
         when ClaudeAgentSDK::AssistantMessage
           if message.parent_tool_use_id
