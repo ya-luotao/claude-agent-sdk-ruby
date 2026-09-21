@@ -219,6 +219,52 @@ RSpec.shared_examples 'callback cancellation through the control protocol' do
     expect(writes.pop.dig(:response, :error)).to eq('decision service unavailable')
     expect(query.instance_variable_get(:@callback_request_signals)).to be_empty
   end
+
+  # The CLI does not reuse an in-flight request id today. If it ever does, the
+  # first handler finishing must not untrack the second one's signal or task.
+  %i[eof cancel].each do |ending|
+    it "keeps a colliding request id tracked until its own handler ends (#{ending})" do
+      messages = Thread::Queue.new
+      writes = Thread::Queue.new
+      entered = Thread::Queue.new
+      releases = [Thread::Queue.new, Thread::Queue.new]
+      calls = 0
+      callback = lambda do |_tool, _input, context|
+        release = releases[calls]
+        calls += 1
+        entered << context
+        release.pop
+        successful_result
+      end
+      query = callback_query(routed_transport(messages, writes), callback)
+
+      Async do |task|
+        task.with_timeout(5) do
+          query.start
+          messages << callback_request('dup')
+          first = entered.pop
+          messages << callback_request('dup')
+          second = entered.pop
+          releases[0] << true
+          expect(writes.pop.fetch(:response)).to include(request_id: 'dup', subtype: 'success')
+          expect(first.signal.cancelled?).to be false
+
+          messages << (ending == :eof ? nil : { type: 'control_cancel_request', request_id: 'dup' })
+          expect(second.signal.wait(timeout: 2)).to be true
+          releases[1] << true
+          # Never a late success: the invalidated decision becomes a best-effort error reply.
+          expect(writes.pop.fetch(:response)).to include(request_id: 'dup', subtype: 'error', error: 'Cancelled')
+          query.close
+          expect(writes).to be_empty
+          expect(query.instance_variable_get(:@callback_request_signals)).to be_empty
+          expect(query.instance_variable_get(:@inflight_control_request_tasks)).to be_empty
+        end
+      ensure
+        query.close
+        releases.each(&:close)
+      end.wait
+    end
+  end
 end
 
 RSpec.describe 'Callback cancellation' do

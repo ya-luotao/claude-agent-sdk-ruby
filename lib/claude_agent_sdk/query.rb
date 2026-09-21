@@ -339,7 +339,11 @@ module ClaudeAgentSDK
             begin
               handle_control_request(message)
             ensure
-              @inflight_control_request_tasks.delete(request_id) if request_id
+              # Identity-guarded: if the CLI ever reused an in-flight request
+              # id, the later handler owns the slot and must stay cancellable.
+              if request_id && @inflight_control_request_tasks[request_id].equal?(Async::Task.current)
+                @inflight_control_request_tasks.delete(request_id)
+              end
             end
           end
           # A handler that never suspends (MCP metadata, unsupported-subtype
@@ -654,7 +658,7 @@ module ClaudeAgentSDK
       result
     ensure
       signal&.cancel unless completed
-      @callback_request_signals.delete(request_id) if request_id
+      untrack_callback_signal(request_id, signal)
     end
 
     def handle_hook_callback(request_data, request_id: nil)
@@ -727,7 +731,16 @@ module ClaudeAgentSDK
       result
     ensure
       signal&.cancel unless completed
-      @callback_request_signals.delete(request_id) if request_id
+      untrack_callback_signal(request_id, signal)
+    end
+
+    # Identity-guarded for the same reason as the in-flight task map: a handler
+    # only untracks its own signal, never a later request that reused its id —
+    # otherwise EOF/close could no longer invalidate that later request.
+    def untrack_callback_signal(request_id, signal)
+      return unless request_id && @callback_request_signals[request_id].equal?(signal)
+
+      @callback_request_signals.delete(request_id)
     end
 
     def parse_hook_input(input_data)

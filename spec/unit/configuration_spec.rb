@@ -360,6 +360,74 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    # Type accepts symbol/string and snake_case/camelCase option names, so the
+    # defaults merge must resolve them to one option before deciding whether a
+    # nil inherits, a Hash merges, or a value overrides.
+    context 'when the caller and the configured defaults spell a key differently' do
+      spellings = { 'symbol snake_case' => :permission_mode, 'string snake_case' => 'permission_mode',
+                    'symbol camelCase' => :permissionMode, 'string camelCase' => 'permissionMode' }
+
+      spellings.each do |default_label, default_key|
+        spellings.each do |caller_label, caller_key|
+          it "inherits on nil and overrides on a value (default: #{default_label}, caller: #{caller_label})" do
+            ClaudeAgentSDK.configure { |config| config.default_options = { default_key => 'plan' } }
+
+            expect(described_class.new(caller_key => nil).permission_mode).to eq('plan')
+            expect(described_class.new(caller_key => 'acceptEdits').permission_mode).to eq('acceptEdits')
+            expect(described_class.new.permission_mode).to eq('plan')
+          end
+        end
+      end
+
+      it 'merges Hash options across spellings instead of replacing the default' do
+        ClaudeAgentSDK.configure { |config| config.default_options = { env: { 'A' => '1', 'B' => '2' } } }
+
+        expect(described_class.new('env' => { 'B' => 'override', 'C' => '3' }).env)
+          .to eq('A' => '1', 'B' => 'override', 'C' => '3')
+        expect(described_class.new('extraArgs' => nil, 'env' => nil).env).to eq('A' => '1', 'B' => '2')
+      end
+
+      it 'keeps an explicit false distinct from nil across spellings' do
+        ClaudeAgentSDK.configure { |config| config.default_options = { forward_subagent_text: true } }
+
+        expect(described_class.new('forwardSubagentText' => false).forward_subagent_text).to be false
+        expect(described_class.new('forwardSubagentText' => nil).forward_subagent_text).to be true
+      end
+
+      it 'lets the later of two caller spellings win, with nil still meaning no preference' do
+        ClaudeAgentSDK.configure { |config| config.default_options = { model: 'opus' } }
+
+        expect(described_class.new(model: 'haiku', 'model' => 'sonnet').model).to eq('sonnet')
+        expect(described_class.new(model: 'haiku', 'model' => nil).model).to eq('haiku')
+      end
+
+      it 'does not mutate the configured defaults or the caller hash' do
+        defaults = { 'allowedTools' => ['Read'] }
+        ClaudeAgentSDK.configure { |config| config.default_options = defaults }
+        attributes = { allowed_tools: nil, 'model' => 'haiku' }
+
+        options = described_class.new(attributes)
+        options.allowed_tools << 'Bash'
+
+        expect(defaults).to eq('allowedTools' => ['Read'])
+        expect(attributes).to eq(allowed_tools: nil, 'model' => 'haiku')
+        expect(described_class.new.allowed_tools).to eq(['Read'])
+      end
+
+      it "reports an unknown option with the caller's own spelling" do
+        ClaudeAgentSDK.configure { |config| config.default_options = { model: 'opus' } }
+
+        expect { described_class.new('modlE' => 'haiku') }
+          .to raise_error(ArgumentError, /unknown ClaudeAgentOptions option: "modlE"/)
+      end
+
+      it 'reports an unknown configured default with its own spelling' do
+        ClaudeAgentSDK.configure { |config| config.default_options = { 'modlE' => 'opus' } }
+
+        expect { described_class.new }.to raise_error(ArgumentError, /unknown ClaudeAgentOptions option: "modlE"/)
+      end
+    end
+
     context 'when no default options are configured' do
       it 'creates options with defaults unchanged' do
         options = described_class.new(model: 'haiku')
