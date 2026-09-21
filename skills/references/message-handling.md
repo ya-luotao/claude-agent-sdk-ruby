@@ -128,4 +128,5 @@ These methods are available on a connected `Client` instance for mid-conversatio
 - `client.reconnect_mcp_server(server_name)` — Reconnect a failed MCP server
 - `client.toggle_mcp_server(server_name, enabled)` — Enable or disable an MCP server
 - `client.stop_task(task_id)` — Stop a running background task
+- `client.background_tasks(tool_use_id: nil)` — Send in-flight foreground tasks (Bash commands and subagents) to the background (Ctrl+B). Keyed by the **spawning** `tool_use_id`, not `task_id` / `agent_id`. Targeted: returns `{ backgrounded: true }` or `{ backgrounded: false }` (a definitive miss — do not wait for an event). `nil` is the explicit all-tasks form and returns `{}`. `''` or a non-String raises `ArgumentError` (the CLI would treat `''` as "all tasks"); never substitute `nil` / `''` for a per-task id you do not have yet
 - `client.server_info` — Access cached server initialization result (no control request)

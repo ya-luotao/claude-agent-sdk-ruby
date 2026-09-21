@@ -65,7 +65,8 @@ module ClaudeAgentSDK
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
                    exclude_dynamic_sections: nil, system_prompt_snapshot: nil, skills: nil,
-                   forward_subagent_text: false, callback_scheduling: :thread, callback_wrapper: nil)
+                   forward_subagent_text: false, agent_progress_summaries: nil,
+                   callback_scheduling: :thread, callback_wrapper: nil)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
@@ -78,6 +79,7 @@ module ClaudeAgentSDK
       @system_prompt_snapshot = system_prompt_snapshot
       @skills = skills
       @forward_subagent_text = forward_subagent_text
+      @agent_progress_summaries = agent_progress_summaries
 
       # Control protocol state
       @pending_control_responses = {}
@@ -201,6 +203,10 @@ module ClaudeAgentSDK
       # Off is the CLI default, so only send the field when enabled — an
       # older CLI then never sees an unknown key on the common path.
       request[:forwardSubagentText] = true if @forward_subagent_text
+      # Unset (nil) omits the key; true/false are forwarded verbatim. Not a live toggle: CLI
+      # 2.1.278 only acts on a truthy value, so false is schema-valid but
+      # equivalent to omitting the key.
+      request[:agentProgressSummaries] = @agent_progress_summaries unless @agent_progress_summaries.nil?
 
       response = send_control_request(request)
       @initialized = true
@@ -1311,6 +1317,21 @@ module ClaudeAgentSDK
                            })
     end
 
+    # Background in-flight foreground tasks (Bash commands and subagents) — the
+    # control-request equivalent of pressing Ctrl+B in the terminal.
+    # @param tool_use_id [String, nil] The spawning tool_use block's id (not a
+    #   task_id or agent_id). nil is the explicit all-tasks form: it backgrounds
+    #   every foreground task
+    # @return [Hash] Targeted: `{ backgrounded: true }`, or `{ backgrounded:
+    #   false }` — a definitive miss (no matching foreground task). All-tasks:
+    #   `{}`, which says nothing about whether any task existed
+    # @raise [ArgumentError] if tool_use_id is neither nil nor a non-empty String
+    def background_tasks(tool_use_id: nil)
+      request = { subtype: 'background_tasks' }
+      request[:tool_use_id] = background_selector(tool_use_id) unless tool_use_id.nil?
+      send_control_request(request)
+    end
+
     # Rewind files to a previous checkpoint (v0.1.15+)
     # Restores file state to what it was at the given user message
     # Requires enable_file_checkpointing to be true in options
@@ -1435,6 +1456,25 @@ module ClaudeAgentSDK
     end
 
     private
+
+    # The selector actually sent for a targeted background_tasks request.
+    #
+    # The CLI normalizes "" to "background ALL foreground tasks", so a selector
+    # built from a missing id (`id.to_s`) would release every blocking call.
+    # Validate the value that goes on the wire, not the caller's object: a
+    # private plain-String copy cannot be emptied by another thread between this
+    # check and serialization (send_control_request can park on a mutex first),
+    # and a String subclass cannot answer `empty?` or `to_json` for it. Never
+    # normalize a bad selector to nil, and never strip — a whitespace-only id is
+    # still a targeted selector CLI-side, so stripping would widen the request.
+    def background_selector(tool_use_id)
+      selector = String.new(tool_use_id) if String === tool_use_id # rubocop:disable Style/CaseEquality
+      return selector unless selector.nil? || selector.empty?
+
+      raise ArgumentError,
+            "tool_use_id must be a non-empty String (got #{tool_use_id.inspect}); " \
+            'pass nil explicitly to background all foreground tasks'
+    end
 
     def close_now
       # First caller wins: a reactor-side close racing a watcher-served
