@@ -58,7 +58,7 @@ Use the `effort` option to control the model's effort level:
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(effort: 'xhigh')
 ```
 
-Valid levels live in `ClaudeAgentSDK::EFFORT_LEVELS` (`low`, `medium`, `high`, `xhigh`, `max`). The set of *supported* levels is model-dependent — `xhigh` is available on Opus 4.7 and the CLI falls back to the highest supported level at or below the one you set (e.g. `xhigh` → `high` on Opus 4.6). When `effort` is `nil`, the CLI picks a model-native default (Opus 4.7 → `xhigh`).
+Valid levels live in `ClaudeAgentSDK::EFFORT_LEVELS` (`low`, `medium`, `high`, `xhigh`, `max`). The set of *supported* levels is model-dependent — `xhigh` is available on Opus 4.7 and later models, and the CLI falls back to the highest supported level at or below the one you set (e.g. `xhigh` → `high` on Opus 4.6). When `effort` is `nil`, the CLI picks a model-native default (e.g. Opus 4.7 → `xhigh`).
 
 > **Note:** When `system_prompt` is `nil` (the default), the SDK passes `--system-prompt ""` to the CLI, which suppresses the default Claude Code system prompt. To use the default system prompt, use a `SystemPromptPreset`.
 
@@ -119,8 +119,8 @@ See [examples/budget_control_example.rb](https://github.com/ya-luotao/claude-age
 
 ```ruby
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  model: 'claude-sonnet-4-20250514',
-  fallback_model: 'claude-3-5-haiku-20241022'
+  model: 'claude-sonnet-5',
+  fallback_model: 'claude-haiku-4-5'
 )
 ```
 
@@ -136,7 +136,7 @@ receives the full conversation.
 ```ruby
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   model: 'haiku',
-  advisor_model: 'opus'  # alias or full model ID, e.g. 'claude-opus-4-8'
+  advisor_model: 'opus'  # alias or full model ID, e.g. 'claude-opus-5'
 )
 ```
 

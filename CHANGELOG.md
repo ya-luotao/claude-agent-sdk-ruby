@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Docs, examples and the bundled `claude-agent-ruby` skill now use current model IDs (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`) and recommend adaptive thinking plus `effort:`; `ThinkingConfigEnabled(budget_tokens:)` is described as the older-model path. `examples/extended_thinking_example.rb` no longer teaches the deprecated `max_thinking_tokens`. No API changes.
+
 ## [0.33.1] - 2026-09-21
 
 Compatibility with `json` 3.x and `mcp` 1.x. Upgrade if your bundle resolves `json` 3.x — `rename_session` / `tag_session` raise on 0.33.0.

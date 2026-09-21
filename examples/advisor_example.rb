@@ -31,7 +31,7 @@ puts "\n--- Example 1: Haiku main + Opus advisor ---"
 
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   model: 'haiku',
-  advisor_model: 'opus', # alias or full model ID, e.g. 'claude-opus-4-8'
+  advisor_model: 'opus', # alias or full model ID, e.g. 'claude-opus-5'
   allowed_tools: ['Read', 'Glob'],
   max_turns: 5
 )

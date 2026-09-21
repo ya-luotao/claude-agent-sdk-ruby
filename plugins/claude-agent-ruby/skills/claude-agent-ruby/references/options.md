@@ -9,7 +9,7 @@ Set defaults once, then override only when needed per call.
 ```ruby
 ClaudeAgentSDK.configure do |config|
   config.default_options = {
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-5',
     permission_mode: 'bypassPermissions',
     env: { 'ANTHROPIC_API_KEY' => ENV.fetch('ANTHROPIC_API_KEY') }
   }

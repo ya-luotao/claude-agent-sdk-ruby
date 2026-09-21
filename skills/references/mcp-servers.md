@@ -6,7 +6,7 @@ You can run MCP servers in-process (SDK MCP servers) or connect to external serv
 
 ## SDK MCP servers (in-process)
 
-Define tools as Ruby procs/lambdas, then mount them as an SDK MCP server.
+Define tools as Ruby procs/lambdas, then mount them as an SDK MCP server. The description is what Claude reads to decide whether and how to call the tool, so in real tools say what it does, when to use it (and when not to), what each parameter means, and what it does not return — the one-line descriptions below are only to keep the examples short.
 
 ```ruby
 require "claude_agent_sdk"

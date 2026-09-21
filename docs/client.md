@@ -38,7 +38,7 @@ Async do
 
   client.interrupt                              # Send interrupt signal
   client.set_permission_mode('acceptEdits')     # Change permission mode mid-conversation
-  client.set_model('claude-sonnet-4-5')         # Switch model mid-conversation
+  client.set_model('claude-sonnet-5')           # Switch model mid-conversation
   status = client.get_mcp_status                # Inspect MCP server status
   info   = client.get_server_info               # Inspect server init info
   client.reconnect_mcp_server('my-server')      # Reconnect a failed MCP server

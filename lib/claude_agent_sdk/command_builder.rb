@@ -373,7 +373,7 @@ module ClaudeAgentSDK
     end
 
     # `--thinking-display` toggles between `"summarized"` (visible thinking
-    # text) and `"omitted"` (empty thinking, signature only). Opus 4.7 defaults
+    # text) and `"omitted"` (empty thinking, signature only). Current models default
     # to `"omitted"`, so pass `display: "summarized"` to see reasoning.
     def append_thinking_display(cmd, display)
       return if display.nil?

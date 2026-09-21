@@ -4,30 +4,28 @@
 require 'bundler/setup'
 require 'claude_agent_sdk'
 
-# Example: Using max_thinking_tokens for extended thinking
-# This feature allows Claude to use extended thinking for complex reasoning tasks.
-# Extended thinking gives Claude more "thinking time" before responding.
-#
-# NOTE: This option is defined in ClaudeAgentOptions for API parity with Python SDK,
-# but is not yet supported by the Claude Code CLI. This example demonstrates the
-# intended usage and how to handle ThinkingBlock content when the feature becomes available.
+# Example: configuring thinking
+# `thinking:` selects the mode and `effort:` controls how deeply Claude reasons.
+# Adaptive thinking lets the model decide when and how much to think; current
+# models return an empty ThinkingBlock unless `display: 'summarized'` is set.
+# (`max_thinking_tokens` is deprecated — a fixed budget only applies to older
+# models, via ThinkingConfigEnabled.new(budget_tokens:).)
 
 puts "=== Extended Thinking Example ==="
-puts "Demonstrating max_thinking_tokens for complex reasoning\n\n"
+puts "Demonstrating adaptive thinking + effort for complex reasoning\n\n"
 
 # Example 1: Math problem with extended thinking
 puts "--- Example 1: Complex Math Problem ---"
 puts "Enabling extended thinking for complex calculations\n"
 
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  max_thinking_tokens: 10000,  # Allow up to 10,000 tokens for thinking
+  thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new(display: 'summarized'),
   max_turns: 1
 )
 
 ClaudeAgentSDK.query(
-  prompt: "Solve this step by step: If a train travels at 60 mph for 2.5 hours, " \
-          "then at 80 mph for 1.75 hours, what is the total distance traveled? " \
-          "Show your reasoning.",
+  prompt: "If a train travels at 60 mph for 2.5 hours, then at 80 mph for " \
+          "1.75 hours, what is the total distance traveled?",
   options: options
 ) do |message|
   case message
@@ -56,7 +54,8 @@ puts "\n--- Example 2: Logic Puzzle ---"
 puts "Using extended thinking for a logic puzzle\n"
 
 logic_options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  max_thinking_tokens: 15000,  # More thinking for complex logic
+  thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new,
+  effort: 'high', # Deeper reasoning for complex logic
   max_turns: 1
 )
 
@@ -94,7 +93,8 @@ puts "\n--- Example 3: Code Analysis ---"
 puts "Using extended thinking for code analysis\n"
 
 code_options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  max_thinking_tokens: 8000,
+  thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new,
+  effort: 'medium',
   max_turns: 1
 )
 
