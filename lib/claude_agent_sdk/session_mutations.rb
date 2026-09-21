@@ -38,8 +38,7 @@ module ClaudeAgentSDK
       stripped = title.strip
       raise ArgumentError, 'title must be non-empty' if stripped.empty?
 
-      data = "#{JSON.generate({ type: 'custom-title', customTitle: stripped, sessionId: session_id },
-                              space_size: 0)}\n"
+      data = "#{JSON.generate({ type: 'custom-title', customTitle: stripped, sessionId: session_id })}\n"
 
       append_to_session(session_id, data, directory)
     end
@@ -64,8 +63,7 @@ module ClaudeAgentSDK
         tag = sanitized
       end
 
-      data = "#{JSON.generate({ type: 'tag', tag: tag || '', sessionId: session_id },
-                              space_size: 0)}\n"
+      data = "#{JSON.generate({ type: 'tag', tag: tag || '', sessionId: session_id })}\n"
 
       append_to_session(session_id, data, directory)
     end

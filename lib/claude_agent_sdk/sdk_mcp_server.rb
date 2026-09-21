@@ -453,6 +453,16 @@ module ClaudeAgentSDK
                 error: !!is_error,
                 structured_content: structured_content
               )
+            rescue StandardError => e
+              # Report handler failures in-band HERE rather than letting them
+              # reach the gem: mcp >= 1.2 deliberately drops e.message from
+              # its "Internal error calling tool X" wrapper (CWE-209), which
+              # would hide the text the model needs to self-correct. Bare
+              # e.message like Python's str(e) and #call_tool — no prefix.
+              # Nothing gem-internal can be swallowed here today: handlers get
+              # no server_context, so MCP::CancelledError never originates
+              # inside this method. Revisit if cancellation is ever plumbed in.
+              MCP::Tool::Response.new([{ type: 'text', text: e.message }], error: true)
             end
           end
         end

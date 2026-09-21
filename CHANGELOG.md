@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `mcp` dependency is now `>= 0.20, < 2` (was `>= 0.6, < 1`). The floor moves to 0.20 because `mcp` 0.19 and older validate through the `json-schema` gem, which breaks under `json` 3.x and fails every SDK MCP `tools/call`; with `json` 2.x those versions still pass, so this only forces an `mcp` upgrade on bundles pinned below 0.20. The suite passes against every 1.x release through 1.6.0, and `initialize` / `tools/list` / `tools/call` / `resources/*` / `prompts/*` wire output is byte-identical to 0.2x.
+- SDK MCP tool handler exceptions now reach the model as the bare exception message (matching Python's `str(e)` and `SdkMcpServer#call_tool`) instead of the gem's `Internal error calling tool X: msg`. The exception is rescued inside the SDK's tool class, so the text no longer depends on the `mcp` gem version — `mcp` 1.2+ redacts the message from its own wrapper, which would otherwise have left the model with no error text to self-correct from. Still in-band `isError: true`.
+
+### Fixed
+- `rename_session` / `tag_session` raised `ArgumentError: unknown keyword: space_size` under `json` 3.x, which takes generator options as strict keywords. The option was a no-op on `json` 2.x (output unchanged), so it is simply gone. A fresh end-user bundle resolves `json` 3.x through `async → console → json`; CI missed it only because the dev-only RuboCop pin holds `json` at 2.x.
+
 ## [0.33.0] - 2026-09-21
 
 Subagent capabilities for UI builders: metadata reads, background snapshots, cooperative callback cancellation, and the task/background/permission signals the CLI already emits — all raw data and controls, no status model. Ruby-ahead of the Python SDK (0.2.153).

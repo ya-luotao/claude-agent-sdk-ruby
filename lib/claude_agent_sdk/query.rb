@@ -1195,9 +1195,12 @@ module ClaudeAgentSDK
       # server validates arguments against the tool's inputSchema BEFORE the
       # handler runs and reports validation failures, unknown tools, and
       # handler exceptions as in-band isError results). tools/list,
-      # initialize, resources/* and prompts/* stay on the SDK paths — the
-      # gem drops annotations/_meta from tools/list and negotiates newer
-      # protocol versions.
+      # initialize, resources/* and prompts/* stay on the SDK paths: the
+      # gem's tools/list injects "$schema" and drops `required: []` (and
+      # would advertise the empty fallback schema where the SDK advertises
+      # the user's own), and its initialize negotiates newer protocol
+      # versions and advertises prompts/resources/logging even for a
+      # tools-only server. Annotations/_meta do survive the gem path.
       server.handle_message(message)
     end
 

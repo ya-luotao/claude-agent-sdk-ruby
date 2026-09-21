@@ -35,11 +35,16 @@ Gem::Specification.new do |spec|
 
   # Runtime dependencies
   spec.add_dependency 'async', '~> 2.0'
-  # >= 0.6: 0.4 raised protocol errors for tool failures; 0.5 serializes
-  # empty icons arrays into resources/prompts lists. tools/call error
-  # envelopes are normalized to in-band isError by the SDK itself, so the
-  # gem's per-version error behavior swings (0.7.1+/0.18) don't leak through.
-  spec.add_dependency 'mcp', '>= 0.6', '< 1'
+  # >= 0.20: first release on json_schemer. <= 0.19 validates through the
+  # json-schema gem, whose JSON.parse(s, quirks_mode: true) raises under
+  # json 3.x (strict keywords) and fails every SDK MCP tools/call — and a
+  # fresh bundle resolves json 3.x via async -> console -> json.
+  # tools/call error envelopes are normalized to in-band isError by the SDK
+  # itself, and handler exceptions are rescued inside the SDK's tool class
+  # (1.2+ redacts e.message from its own error text, CWE-209), so the gem's
+  # per-version error behavior swings don't leak through.
+  # < 2: the suite is verified against every 1.x release through 1.6.0.
+  spec.add_dependency 'mcp', '>= 0.20', '< 2'
 
   # Development dependencies
   spec.add_development_dependency 'bundler', '~> 2.0'
