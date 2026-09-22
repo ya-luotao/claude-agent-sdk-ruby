@@ -141,6 +141,19 @@ module ClaudeAgentSDK
 
     module_function
 
+    # Capture only the optional OTel context before crossing a fiber/thread
+    # boundary. OTel keeps its current context fiber-local; copying generic
+    # thread locals would also copy unsafe connection/request state. The
+    # returned block activates this context on its destination and restores
+    # the destination's prior context even when the operation raises.
+    # @api private
+    def capture_otel_context(&block)
+      return block unless defined?(OpenTelemetry::Context) && OpenTelemetry::Context.respond_to?(:current)
+
+      context = OpenTelemetry::Context.current
+      proc { |*args| OpenTelemetry::Context.with_current(context) { block.call(*args) } }
+    end
+
     # Run the given block on a plain thread when a Fiber scheduler is active.
     # Returns the block's value. Exceptions propagate to the caller.
     #
@@ -199,7 +212,7 @@ module ClaudeAgentSDK
         return with_cooperative_timeout(task, timeout, on_timeout: expired) { body.call }
       end
 
-      thread = Thread.new(&body)
+      thread = Thread.new(&capture_otel_context(&body))
       thread.report_on_exception = false
       return thread.value if timeout.nil?
       raise JoinTimeout, "timed out after #{timeout}s" unless thread.join(timeout)

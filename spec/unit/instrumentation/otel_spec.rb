@@ -30,17 +30,25 @@ module OpenTelemetry
     end
 
     def self.current_span
-      nil
+      Context.current[:span]
     end
 
     def self.context_with_span(span)
-      { span: span }
+      Context.current.merge(span: span)
     end
   end
 
   module Context
-    def self.with_current(_context)
+    def self.current
+      Thread.current[:mock_otel_context] || {}
+    end
+
+    def self.with_current(context)
+      previous = Thread.current[:mock_otel_context]
+      Thread.current[:mock_otel_context] = context
       yield
+    ensure
+      Thread.current[:mock_otel_context] = previous
     end
   end
 
@@ -75,12 +83,13 @@ module OpenTelemetry
   end
 
   class MockSpan
-    attr_reader :name, :attributes, :events, :finished
+    attr_reader :name, :attributes, :events, :finished, :parent_context
     attr_accessor :status
 
     def initialize(name, attributes = {})
       @name = name
       @attributes = attributes.dup
+      @parent_context = Context.current
       @events = []
       @finished = false
       @status = nil
@@ -124,6 +133,85 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       span = OpenTelemetry::MockSpan.new(name, kwargs[:attributes] || {})
       created_spans << span
       span
+    end
+  end
+
+  describe 'parent context across execution boundaries' do
+    let(:transport) { instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, write: nil) }
+    let(:query_handler) do
+      instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: nil,
+                                             wait_for_result_and_end_input: nil, close: nil)
+    end
+
+    before do
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+      allow(query_handler).to receive(:spawn_task) { |&block| block.call }
+      allow(query_handler).to receive(:receive_messages)
+        .and_yield(type: 'system', subtype: 'init', session_id: 'context-session', model: 'claude-sonnet-4')
+        .and_yield(type: 'result', subtype: 'success', session_id: 'context-session', duration_ms: 1,
+                   duration_api_ms: 1, num_turns: 1, is_error: false)
+    end
+
+    %i[thread inline].each do |scheduling|
+      %i[query client].each do |entrypoint|
+        it "preserves each caller's parent and baggage for #{entrypoint} in #{scheduling} mode" do
+          # Construct once OUTSIDE the parent scope, then reuse: capturing at
+          # observer creation would incorrectly latch a missing/stale parent.
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer], callback_scheduling: scheduling)
+          parents = [Object.new, Object.new]
+          contexts = parents.map { |parent| { span: parent, baggage: { 'request' => parent.object_id } } }
+
+          Async do
+            contexts.each do |context|
+              OpenTelemetry::Context.with_current(context) do
+                if entrypoint == :query
+                  ClaudeAgentSDK.query(prompt: 'hello', options: options, transport: transport) { |_message| nil }
+                else
+                  client = ClaudeAgentSDK::Client.new(options: options)
+                  begin
+                    client.connect
+                    client.receive_response { |_message| nil }
+                  ensure
+                    client.disconnect
+                  end
+                end
+                expect(OpenTelemetry::Context.current).to equal(context)
+              end
+            end
+          end.wait
+
+          expect(created_spans.map(&:parent_context)).to eq(contexts)
+          expect(created_spans).to all(have_attributes(finished: true))
+        end
+      end
+    end
+
+    it 'restores the destination context when a captured operation raises' do
+      source = { span: Object.new, baggage: { 'request' => 'source' } }
+      destination = { span: Object.new }
+      operation = OpenTelemetry::Context.with_current(source) do
+        ClaudeAgentSDK::FiberBoundary.capture_otel_context do
+          expect(OpenTelemetry::Context.current).to equal(source)
+          raise 'operation failed'
+        end
+      end
+
+      OpenTelemetry::Context.with_current(destination) do
+        expect { operation.call }.to raise_error('operation failed')
+        expect(OpenTelemetry::Context.current).to equal(destination)
+      end
+    end
+
+    it 'does not load OpenTelemetry or wrap operations when it is absent' do
+      hide_const('OpenTelemetry')
+      operation = proc { :unchanged }
+      expect(ClaudeAgentSDK::FiberBoundary.capture_otel_context(&operation)).to equal(operation)
+
+      Async do
+        expect(ClaudeAgentSDK::FiberBoundary.invoke { [Fiber.scheduler, :value] }).to eq([nil, :value])
+      end.wait
+      expect(defined?(OpenTelemetry)).to be_nil
     end
   end
 

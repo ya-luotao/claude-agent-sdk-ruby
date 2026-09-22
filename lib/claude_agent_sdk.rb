@@ -528,7 +528,7 @@ module ClaudeAgentSDK
 
     raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)' if transport && !transport.respond_to?(:connect)
 
-    Async do
+    Async(&FiberBoundary.capture_otel_context do
       materialized = nil
       query_handler = nil
       begin
@@ -686,7 +686,7 @@ module ClaudeAgentSDK
           end
         end
       end
-    end.wait
+    end).wait
   end
 
   # Client for bidirectional, interactive conversations with Claude Code
