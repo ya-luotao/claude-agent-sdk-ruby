@@ -321,6 +321,33 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       end
     end
 
+    %w[customTitle aiTitle].each do |field|
+      it "does not let an unverified nested blank #{field} clear a head title" do
+        Dir.mktmpdir do |dir|
+          sid = '12345678-1234-1234-1234-123456789abc'
+          file_path = File.join(dir, "#{sid}.jsonl")
+          entries = [
+            { 'type' => 'user', 'uuid' => 'u1', 'message' => { 'content' => 'Hello' } },
+            { 'type' => 'custom-title', field => 'Real title' },
+            { 'type' => 'assistant', 'uuid' => 'a1', 'message' => {
+              'content' => [{ 'type' => 'tool_use', 'name' => 'SendMessage',
+                              'input' => { 'padding' => 'x' * 140_000, field => '' } }]
+            } }
+          ]
+          File.write(file_path, entries.map(&:to_json).join("\n"))
+          store = ClaudeAgentSDK::InMemorySessionStore.new
+          store.append({ 'project_key' => described_class.project_key_for_directory(dir), 'session_id' => sid }, entries)
+
+          disk = described_class.read_session_lite(file_path, dir)
+          stored = described_class.get_session_info_from_store(session_store: store, session_id: sid, directory: dir)
+          [disk, stored].each do |info|
+            expect(info.custom_title).to eq('Real title')
+            expect(info.summary).to eq('Real title')
+          end
+        end
+      end
+    end
+
     it 'keeps the raw-scan value for a line truncated at the tail window edge' do
       stub_const('ClaudeAgentSDK::Sessions::LITE_READ_BUF_SIZE', 64)
       Dir.mktmpdir do |dir|

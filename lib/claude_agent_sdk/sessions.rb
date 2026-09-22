@@ -230,7 +230,8 @@ module ClaudeAgentSDK
     # which reads only top-level keys — disagreed. A line that doesn't parse
     # (truncated at the head/tail window edge) keeps the raw-scan value: its
     # top-level shape can't be checked, and dropping it would regress the
-    # common case of a true entry cut by the 64KB window.
+    # common case of a true entry cut by the 64KB window. Unverified blanks
+    # cannot clear a previously verified value: they may be nested tool inputs.
     def extract_top_level_string_field(text, key, last: false)
       positions = field_match_positions(text, key)
       positions.reverse! if last
@@ -247,7 +248,8 @@ module ClaudeAgentSDK
           next # parseable line without a top-level string value: nested/false match
         end
         value = extract_json_string_value(text, value_start)
-        return unescape_json_string(value) if value
+        value = presence(unescape_json_string(value)) if value
+        return value if value
       end
       nil
     end
