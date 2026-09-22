@@ -1078,15 +1078,17 @@ module ClaudeAgentSDK
           waiter.wait until @pending_control_results.key?(request_id)
         end
       else
-        # Only schedulerless callers use stdlib Timeout. Its default internal
-        # exception bypasses StandardError rescues inside the transport too;
-        # interrupt the caller rather than abandoning a still-writing worker.
+        # Only schedulerless callers use stdlib Timeout. A fresh, private
+        # non-StandardError deadline bypasses transport write rescues without
+        # relabeling a transport's own Timeout::Error or an outer deadline.
+        # Interrupt the caller rather than abandoning a still-writing worker.
+        cancellation = Class.new(Exception) # rubocop:disable Lint/InheritException -- cancellation must bypass transport rescues
         begin
-          Timeout.timeout(timeout_seconds) do
+          Timeout.timeout(timeout_seconds, cancellation) do
             yield
             waiter.wait(nil) until @pending_control_results.key?(request_id)
           end
-        rescue Timeout::Error
+        rescue cancellation
           raise expired.call
         end
       end

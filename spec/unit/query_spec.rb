@@ -1483,6 +1483,20 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect_no_control_waiters
     end
 
+    it 'preserves a schedulerless transport timeout rather than relabeling it' do
+      error = Timeout::Error.new('remote transport read deadline')
+      allow(transport).to receive(:write).and_raise(error)
+      expect { query.interrupt }.to(raise_error { |raised| expect(raised).to equal(error) })
+      expect_no_control_waiters
+    end
+
+    it 'preserves an outer schedulerless deadline rather than relabeling it' do
+      allow(query).to receive(:control_request_timeout_seconds).and_return(10)
+      allow(transport).to receive(:write) { sleep 10 }
+      expect { Timeout.timeout(0.01) { query.interrupt } }.to raise_error(Timeout::Error)
+      expect_no_control_waiters
+    end
+
     it 'cleans registration when the sender is stopped inside write' do
       entered = Thread::Queue.new
       release = Thread::Queue.new
