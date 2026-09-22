@@ -68,6 +68,42 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
     end
   end
 
+  describe 'reserved arguments before MCP context injection' do
+    [
+      { type: 'object', allOf: [{ properties: { server_context: { type: 'string' } } }] },
+      { type: 'object', '$ref' => '#/$defs/args', '$defs' => { args: { properties: { server_context: { type: 'string' } } } } },
+      { type: 'object', additionalProperties: true }
+    ].each_with_index do |schema, index|
+      it "rejects reserved arguments without losing data for schema #{index}, through both MCP entry points" do
+        received = []
+        tool = ClaudeAgentSDK.create_tool('echo', 'Echo', schema) do |args|
+          received << args
+          { content: [{ type: 'text', text: JSON.generate(args) }] }
+        end
+        server = described_class.new(name: 'test', tools: [tool])
+
+        %i[handle_message handle_json].each do |entry_point|
+          [:server_context, 'server_context'].each do |key|
+            request = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: { key => 'keep' } } }
+            response = if entry_point == :handle_json
+                         JSON.parse(server.handle_json(JSON.generate(request)), symbolize_names: true)
+                       else
+                         server.handle_message(request)
+                       end
+            expect(response.dig(:result, :isError)).to be true
+            expect(response.dig(:result, :content, 0, :text)).to match(/server_context.*reserved.*rename/i)
+          end
+        end
+        expect(received).to be_empty
+
+        arguments = { request_context: 'outer', payload: { server_context: 'nested' } }
+        result = server.handle_message(id: 2, method: 'tools/call', params: { name: 'echo', arguments: arguments })
+        expect(result.dig(:result, :isError)).to be false
+        expect(received).to eq([arguments])
+      end
+    end
+  end
+
   describe '#list_tools' do
     it 'returns empty array for no tools' do
       server = described_class.new(name: 'test')
@@ -501,7 +537,7 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       # a given mcp version's metaschema happens to reject: simulate the gem
       # raising ArgumentError on the tool's real schema (non-empty properties),
       # while still letting the permissive fallback ({} properties) build.
-      allow(MCP::Tool::InputSchema).to receive(:new).and_wrap_original do |orig, schema|
+      allow(described_class::ToolInputSchema).to receive(:new).and_wrap_original do |orig, schema|
         props = schema[:properties] || schema['properties']
         raise ArgumentError, 'simulated draft4 incompatibility' if props && !props.empty?
 
@@ -520,6 +556,13 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       end.to output(/argument validation disabled/).to_stderr
       expect(res.dig(:result, :content, 0, :text)).to eq('n=3')
       expect(res.dig(:result, :isError)).to eq(false)
+
+      expect(tool.handler).not_to receive(:call)
+      [nil, false].each do |value|
+        rejected = rpc(server3, 'tools/call', { name: 'count', arguments: { n: 3, server_context: value } })
+        expect(rejected.dig(:result, :isError)).to be true
+        expect(rejected.dig(:result, :content, 0, :text)).to match(/server_context.*reserved.*rename/i)
+      end
     end
 
     it 'normalizes gem protocol errors on tools/call to in-band isError (version drift guard)' do
