@@ -229,6 +229,100 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
     end
   end
 
+  describe 'parent context in real Query child tasks' do
+    %i[thread inline].each do |scheduling|
+      %i[query client].each do |entrypoint|
+        it "preserves context for streamed prompts and routed callbacks via #{entrypoint} in #{scheduling} mode" do
+          incoming = Async::Queue.new
+          responses = []
+          callback_id = nil
+          transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil)
+          allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+          allow(transport).to receive(:end_input) { incoming.enqueue(:end) }
+          allow(transport).to receive(:read_messages) do |&receive|
+            loop do
+              message = incoming.dequeue
+              break if message == :end
+
+              receive.call(message)
+            end
+          end
+          allow(transport).to receive(:write) do |json|
+            message = JSON.parse(json, symbolize_names: true)
+            case message[:type]
+            when 'control_request'
+              callback_id = message.dig(:request, :hooks, :PreToolUse, 0, :hookCallbackIds, 0)
+              incoming.enqueue(type: 'control_response',
+                               response: { subtype: 'success', request_id: message[:request_id], response: {} })
+            when 'user'
+              [
+                { subtype: 'hook_callback', callback_id: callback_id, input: { hook_event_name: 'PreToolUse' } },
+                { subtype: 'can_use_tool', tool_name: 'Read', input: {} },
+                { subtype: 'mcp_message', server_name: 'tools',
+                  message: { id: 1, method: 'tools/call', params: { name: 'probe', arguments: {} } } }
+              ].each_with_index do |request, index|
+                incoming.enqueue(type: 'control_request', request_id: "callback_#{index}", request: request)
+              end
+            when 'control_response'
+              responses << message[:response]
+              if responses.size == 3
+                incoming.enqueue(type: 'result', subtype: 'success', session_id: 'context-session',
+                                 duration_ms: 1, duration_api_ms: 1, num_turns: 1, is_error: false)
+              end
+            end
+          end
+
+          seen = {}
+          wrapper_contexts = []
+          prompt_observer = Object.new.extend(ClaudeAgentSDK::Observer)
+          prompt_observer.define_singleton_method(:on_user_prompt) { |_prompt| seen[:prompt] = OpenTelemetry::Context.current }
+          hook = lambda do |*_args|
+            seen[:hook] = OpenTelemetry::Context.current
+            {}
+          end
+          permission = lambda do |*_args|
+            seen[:permission] = OpenTelemetry::Context.current
+            ClaudeAgentSDK::PermissionResultAllow.new
+          end
+          tool = ClaudeAgentSDK.create_tool('probe', 'Probe context', {}) do |_args|
+            seen[:tool] = OpenTelemetry::Context.current
+            { content: [] }
+          end
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+            observers: [prompt_observer], callback_scheduling: scheduling,
+            callback_wrapper: lambda { |invocation|
+              wrapper_contexts << OpenTelemetry::Context.current
+              invocation.call
+            },
+            hooks: { PreToolUse: [ClaudeAgentSDK::HookMatcher.new(hooks: [hook])] }, can_use_tool: permission,
+            mcp_servers: { tools: ClaudeAgentSDK.create_sdk_mcp_server(name: 'tools', tools: [tool]) }
+          )
+          prompt = [{ type: 'user', message: { role: 'user', content: 'hello' } }].each
+          context = { span: Object.new, baggage: { 'request' => "#{entrypoint}-#{scheduling}" } }
+
+          Async do |task|
+            task.with_timeout(2) do
+              OpenTelemetry::Context.with_current(context) do
+                if entrypoint == :query
+                  ClaudeAgentSDK.query(prompt: prompt, options: options, transport: transport) { |_message| nil }
+                else
+                  ClaudeAgentSDK::Client.open(prompt, options: options) { |client| client.receive_response { |_message| nil } }
+                end
+                expect(OpenTelemetry::Context.current).to equal(context)
+              end
+            end
+          end.wait
+
+          expect(responses.map { |response| response[:subtype] }).to eq(%w[success success success])
+          expect(responses.find { |response| response[:request_id] == 'callback_2' }.dig(:response, :mcp_response, :result, :isError)).to be false
+          expect(seen).to eq(prompt: context, hook: context, permission: context, tool: context)
+          expect(wrapper_contexts.size).to be >= 4
+          expect(wrapper_contexts).to all(eq(context))
+        end
+      end
+    end
+  end
+
   describe '#on_message with InitMessage' do
     let(:init_message) do
       ClaudeAgentSDK::InitMessage.new(
