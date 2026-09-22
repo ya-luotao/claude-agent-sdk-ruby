@@ -1470,6 +1470,41 @@ RSpec.describe ClaudeAgentSDK::Query do
       transport
     end
 
+    %i[thread inline].each do |scheduling|
+      %i[pending after_eof].each do |timing|
+        it "rejects #{scheduling} control requests on clean EOF (#{timing})" do
+          eof = Thread::Queue.new
+          transport = mock_transport
+          allow(transport).to receive(:read_messages) { eof.pop }
+          query = described_class.new(transport: transport, is_streaming_mode: true)
+          allow(query).to receive(:control_request_timeout_seconds).and_return(0.05)
+
+          Async do |task|
+            query.start
+            if timing == :pending
+              expect(transport).to receive(:write) { eof << true }
+            else
+              eof << true
+              query.instance_variable_get(:@task).wait
+              expect(transport).not_to receive(:write)
+            end
+
+            task.with_timeout(1) do
+              expect do
+                ClaudeAgentSDK::FiberBoundary.invoke(scheduling: scheduling) { query.initialize_protocol }
+              end.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Control stream ended/)
+            end
+            expect(query.instance_variable_get(:@pending_control_responses)).to be_empty
+            expect(query.instance_variable_get(:@pending_control_results)).to be_empty
+            # Clean EOF is still a normal end for the SDK message consumer.
+            expect { query.receive_messages { |_| nil } }.not_to raise_error
+          ensure
+            query.close
+          end.wait
+        end
+      end
+    end
+
     it 'supports control requests from a FiberBoundary worker thread (in-callback reentrancy)' do
       tq = Thread::Queue.new
       transport = queue_driven_transport(tq)
