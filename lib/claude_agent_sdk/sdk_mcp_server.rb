@@ -61,6 +61,8 @@ module ClaudeAgentSDK
   end
 
   def self.ruby_type_to_json_schema(type)
+    # Class#=== matches instances, not the class object used in { id: Integer }.
+    type = { String => :string, Integer => :integer, Float => :float, TrueClass => :boolean, FalseClass => :boolean }.fetch(type, type)
     case type
     when :string, String then { type: 'string' }
     when :integer, Integer then { type: 'integer' }
