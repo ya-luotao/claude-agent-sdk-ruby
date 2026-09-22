@@ -3,6 +3,7 @@
 require 'json'
 require 'securerandom'
 require 'fileutils'
+require 'tempfile'
 require_relative 'sessions'
 require_relative 'session_store'
 
@@ -135,17 +136,14 @@ module ClaudeAgentSDK
       )
 
       fork_path = File.join(project_dir, "#{forked_session_id}.jsonl")
-      io = nil
-      fd = IO.sysopen(fork_path, File::WRONLY | File::CREAT | File::EXCL, 0o600)
-      begin
-        io = IO.new(fd)
+      # Stage beside the destination, outside the *.jsonl browsing glob. A hard
+      # link publishes the closed, complete file atomically without overwriting
+      # an existing UUID (rename would replace it). Tempfile owns only the
+      # staging name, so failure cleanup never removes somebody else's session.
+      Tempfile.create(['.claude-fork-', '.tmp'], project_dir) do |io|
         io.write("#{lines.join("\n")}\n")
-      ensure
-        if io
-          io.close
-        else
-          IO.for_fd(fd).close rescue nil # rubocop:disable Style/RescueModifier
-        end
+        io.close
+        File.link(io.path, fork_path)
       end
 
       ForkSessionResult.new(session_id: forked_session_id)
