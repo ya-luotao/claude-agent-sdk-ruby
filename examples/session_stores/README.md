@@ -91,9 +91,25 @@ through the relevant items below.
 
 - Required IAM actions on the bucket/prefix: `s3:PutObject`, `s3:GetObject`,
   `s3:ListBucket`, `s3:DeleteObject`.
-- Part-file ordering uses the **client-side wall clock**. Multiple writer
-  instances with clock skew >1s may produce out-of-order `#load` results. Use
-  NTP or a single writer per session.
+- Ordering uses a durable `.sequence` object per transcript/subpath, updated
+  with S3 [`If-Match` / `If-None-Match` conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html).
+  Use a current `aws-sdk-s3` client and a backend supporting these conditions
+  and strong read-after-write consistency. This costs **one GET + two PUTs**
+  per uncontended append (sequence read/update + part upload), rather than one
+  PUT. Initial creation also lists existing parts to seed above legacy timestamps;
+  later appends do not scan parts. Conflicts re-read/retry up to eight times,
+  then raise for the batcher's normal error handling.
+- Sequential append order survives instance handoff and clock rollback.
+  Concurrent appends use **reservation order**, not upload-completion order.
+  Failed uploads leave gaps; reads during writes may omit unfinished uploads,
+  which appear in their reserved position if they later finish. There is no
+  transactional snapshot across uploads. UUID deduplication remains the
+  adapter author's responsibility as described above.
+- Existing part files remain readable. **Stop old writers before upgrading**;
+  mixing old and new writers is unsupported. Do not delete/expire `.sequence`
+  while writers are active, and quiesce writers before deleting a session.
+  The sequence object is internal: it is excluded from loads and listings,
+  and session deletion removes it along with the parts.
 - `#load` fetches parts with a bounded 16-way thread pool, but every `#append`
   still creates a new part — compact periodically if sessions accumulate
   thousands of parts (eager flush mode writes one part per frame).
@@ -128,8 +144,9 @@ s3://{bucket}/{prefix}{project_key}/{session_id}/part-{epochMs13}-{rand6}.jsonl
 ```
 
 Each `#append` writes a new part; `#load` lists, sorts, and concatenates them.
-The fixed-width 13-digit epoch-ms prefix makes lexical key order ==
-chronological order.
+The fixed-width 13-digit logical epoch-ms prefix makes lexical key order equal
+to durable reservation order. A sibling `.sequence` object coordinates all
+writer instances; see the cost, upgrade, and concurrency notes above.
 
 ```ruby
 require 'aws-sdk-s3'
