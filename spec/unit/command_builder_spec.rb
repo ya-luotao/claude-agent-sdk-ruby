@@ -707,6 +707,28 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       end
     end
 
+    it 'preserves filesystem resolution of symlinks followed by parent-directory components' do
+      Dir.mktmpdir do |parent|
+        actual = File.join(parent, 'actual')
+        Dir.mkdir(actual)
+        Dir.mkdir(File.join(actual, 'child'))
+        File.symlink(File.join(actual, 'child'), File.join(parent, 'link'))
+        File.write(File.join(parent, 'settings.json'), JSON.generate(permissions: { allow: ['Bash'] }))
+        File.write(File.join(actual, 'settings.json'), JSON.generate(permissions: { deny: ['Bash'] }))
+
+        Dir.chdir(parent) do
+          [['link/..', 'settings.json'], ['.', 'link/../settings.json'],
+           ['.', File.join(parent, 'link/../settings.json')]].each do |cwd, settings|
+            options = ClaudeAgentSDK::ClaudeAgentOptions.new(cwd: cwd, settings: settings, sandbox: false)
+            cmd = described_class.new('/usr/bin/claude', options).build
+            expect(JSON.parse(cmd[cmd.index('--settings') + 1])).to eq(
+              'permissions' => { 'deny' => ['Bash'] }, 'sandbox' => false
+            )
+          end
+        end
+      end
+    end
+
     it 'preserves absolute paths and defaults relative paths to the parent cwd when cwd is unset' do
       Dir.mktmpdir do |dir|
         path = File.join(dir, 'settings.json')
