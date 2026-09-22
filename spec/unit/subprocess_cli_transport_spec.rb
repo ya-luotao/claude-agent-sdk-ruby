@@ -1314,6 +1314,39 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       described_class.new('hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
     end
 
+    %i[stderr grace reap].each do |phase|
+      it "preserves an outer Async timeout during #{phase} and retains fallback ownership" do
+        transport = bare_transport
+        waiter = instance_double(Process::Waiter, pid: 4242, alive?: true)
+        transport.instance_variable_set(:@process, waiter)
+        described_class.register_active_process(waiter)
+        # Exercise the real close/teardown boundary without leaving a delayed
+        # termination worker holding mocks after the example ends.
+        expect(transport).to receive(:force_terminate_in_background).with(waiter)
+
+        Async do |task|
+          case phase
+          when :stderr
+            stderr_task = instance_double(Thread, alive?: true, kill: nil)
+            allow(stderr_task).to receive(:join) { task.sleep(10) }
+            transport.instance_variable_set(:@stderr_task, stderr_task)
+            allow(transport).to receive(:wait_process_with_timeout).and_raise(Async::TimeoutError)
+          when :grace
+            allow(transport).to receive(:wait_process_with_timeout) { task.sleep(10) }
+          when :reap
+            allow(transport).to receive(:wait_process_with_timeout).and_raise(Timeout::Error)
+            allow(Process).to receive(:kill)
+            allow(waiter).to receive(:value) { task.sleep(10) }
+          end
+
+          expect { task.with_timeout(0.01) { transport.close } }.to raise_error(Async::TimeoutError)
+        end.wait
+
+        expect(described_class.active_processes).to include(waiter)
+        expect(transport.instance_variable_get(:@process)).to be_nil
+      end
+    end
+
     it 'still TERMs the child when cancellation interrupts the graceful teardown' do
       waiter = instance_double(Process::Waiter, pid: 4242, alive?: true)
       transport = bare_transport

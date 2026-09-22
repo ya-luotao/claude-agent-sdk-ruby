@@ -431,6 +431,8 @@ module ClaudeAgentSDK
           @stderr_task.kill
           @stderr_task.join(1)
         rescue StandardError => e
+          raise if e.is_a?(Async::TimeoutError)
+
           cleanup_errors << "stderr thread: #{e.message}"
         end
       end
@@ -444,6 +446,8 @@ module ClaudeAgentSDK
         rescue IOError
           # Already closed, ignore
         rescue StandardError => e
+          raise if e.is_a?(Async::TimeoutError)
+
           cleanup_errors << "stdin: #{e.message}"
         end
         @stdin = nil
@@ -454,6 +458,8 @@ module ClaudeAgentSDK
       rescue IOError
         # Already closed, ignore
       rescue StandardError => e
+        raise if e.is_a?(Async::TimeoutError)
+
         cleanup_errors << "stdout: #{e.message}"
       end
 
@@ -462,6 +468,8 @@ module ClaudeAgentSDK
       rescue IOError
         # Already closed, ignore
       rescue StandardError => e
+        raise if e.is_a?(Async::TimeoutError)
+
         cleanup_errors << "stderr: #{e.message}"
       end
 
@@ -482,6 +490,8 @@ module ClaudeAgentSDK
             Process.kill('KILL', @process.pid)
             @process.value
           rescue StandardError => e
+            raise if e.is_a?(Async::TimeoutError)
+
             cleanup_errors << "force kill: #{e.message}"
           end
         rescue Errno::ESRCH
@@ -490,6 +500,10 @@ module ClaudeAgentSDK
       rescue Errno::ESRCH
         # Process already dead, ignore
       rescue StandardError => e
+        # An outer reactor deadline is cancellation, not a cleanup warning.
+        # Let close's ensure retain ownership and start fallback termination.
+        raise if e.is_a?(Async::TimeoutError)
+
         cleanup_errors << "process termination: #{e.message}"
       end
 
