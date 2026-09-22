@@ -25,6 +25,47 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       server = described_class.new(name: 'test', tools: [tool])
       expect(server.tools).to eq([tool])
     end
+
+    it 'rejects reserved top-level arguments when registering raw or convenience tool definitions' do
+      [
+        { server_context: :string },
+        { 'server_context' => :string },
+        { type: 'object', properties: { server_context: { type: 'string' } } },
+        { 'type' => 'object', 'properties' => { 'server_context' => { 'type' => 'string' } } }
+      ].each do |schema|
+        handler = ->(_) { raise 'must not invoke a rejected tool' }
+        tool = ClaudeAgentSDK::SdkMcpTool.new(name: 'lookup', description: 'Lookup', input_schema: schema, handler: handler)
+        expect { described_class.new(name: 'test', tools: [tool]) }
+          .to raise_error(ArgumentError, /lookup.*server_context.*reserved.*rename/i)
+
+        tool = ClaudeAgentSDK.create_tool('lookup', 'Lookup', schema, &handler)
+        expect { ClaudeAgentSDK.create_sdk_mcp_server(name: 'test', tools: [tool]) }
+          .to raise_error(ArgumentError, /lookup.*server_context.*reserved.*rename/i)
+      end
+    end
+
+    it 'preserves renamed and nested context arguments through actual tools/call dispatch' do
+      schema = {
+        type: 'object',
+        properties: {
+          request_context: { type: 'string' },
+          payload: { type: 'object', properties: { server_context: { type: 'string' } } }
+        },
+        required: %w[request_context payload]
+      }
+      received = []
+      tool = ClaudeAgentSDK.create_tool('lookup', 'Lookup', schema) do |args|
+        received << args
+        { content: [{ type: 'text', text: JSON.generate(args) }] }
+      end
+      server = described_class.new(name: 'test', tools: [tool])
+      arguments = { request_context: 'outer', payload: { server_context: 'nested' } }
+      response = server.handle_message(id: 1, method: 'tools/call', params: { name: 'lookup', arguments: arguments })
+
+      expect(response.dig(:result, :isError)).to be false
+      expect(JSON.parse(response.dig(:result, :content, 0, :text), symbolize_names: true)).to eq(arguments)
+      expect(received).to eq([arguments])
+    end
   end
 
   describe '#list_tools' do

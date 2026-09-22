@@ -41,6 +41,14 @@ end.wait
 
 If your schemas come from another library (e.g., [RubyLLM](https://github.com/crmne/ruby_llm)) that deep-stringifies keys, the SDK handles them transparently — both symbol-keyed and string-keyed schemas are accepted and normalized:
 
+**Reserved argument name:** do not use `server_context` as a top-level tool
+argument. The underlying MCP gem uses that keyword for injected request context
+and would overwrite the user value before your handler runs. Registering a tool
+whose input properties declare it raises `ArgumentError`, for both shorthand and
+pre-built schemas (including directly constructed `SdkMcpTool` objects). Rename
+it to something like `request_context`. Nested object properties named
+`server_context` are safe and remain supported.
+
 ```ruby
 # Symbol keys (standard Ruby)
 ClaudeAgentSDK.create_tool('save', 'Save a fact', {

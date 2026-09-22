@@ -376,6 +376,15 @@ module ClaudeAgentSDK
       # mode at call time — same pattern as prompt classes.
       sdk_server = self
       tools.map do |tool_def|
+        # The gem injects server_context AFTER expanding the tool arguments,
+        # overwriting a user value before our call method can recover it.
+        # Check at registration (including raw SdkMcpTool definitions), not in
+        # input_schema_value's permissive schema-error fallback.
+        schema = ClaudeAgentSDK.normalize_tool_schema(tool_def.input_schema)
+        if schema[:properties]&.key?(:server_context)
+          raise ArgumentError, "Tool '#{tool_def.name}' input property 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
+        end
+
         # Create a new class that extends MCP::Tool
         Class.new(MCP::Tool) do
           @tool_def = tool_def
