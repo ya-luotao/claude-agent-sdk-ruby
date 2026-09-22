@@ -600,7 +600,10 @@ module ClaudeAgentSDK
       File.open(path, File::WRONLY | File::APPEND) do |file|
         return false if file.stat.size.zero? # rubocop:disable Style/ZeroLengthPredicate
 
-        file.write(data)
+        # The final JSONL record need not have a newline (or may be truncated).
+        # Append the boundary and metadata together, without a racy read/check
+        # or requiring read access. Readers already ignore empty lines.
+        file.write("\n#{data}")
         true
       end
     rescue Errno::ENOENT, Errno::ENOTDIR
