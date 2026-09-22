@@ -506,6 +506,9 @@ module ClaudeAgentSDK
     end
 
     def load_settings_file(path)
+      # Match the CLI's path resolution when --settings is passed through
+      # without a sandbox merge: the subprocess runs in options.cwd.
+      path = File.expand_path(path, @options.cwd&.to_s || Dir.pwd)
       # Missing file: warn and continue with sandbox-only settings (Python
       # parity: logger.warning("Settings file not found: ...") and an empty
       # settings object). Raising here turned a misconfiguration the CLI

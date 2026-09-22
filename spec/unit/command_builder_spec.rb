@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'tmpdir'
 
 RSpec.describe ClaudeAgentSDK::CommandBuilder do
   subject(:cmd) { described_class.new('/usr/bin/claude', options).build }
@@ -685,6 +686,43 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
   end
 
   describe 'settings + sandbox merge' do
+    it 'merges the settings file relative to the CLI cwd, not the parent cwd' do
+      Dir.mktmpdir do |parent|
+        project = File.join(parent, 'project')
+        Dir.mkdir(project)
+        File.write(File.join(parent, 'settings.json'), JSON.generate(permissions: { allow: ['Bash'] }))
+        File.write(File.join(project, 'settings.json'), JSON.generate(permissions: { deny: ['Bash'] }))
+
+        Dir.chdir(parent) do
+          [project, 'project'].each do |cwd|
+            options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+              cwd: cwd, settings: 'settings.json', sandbox: { enabled: true }
+            )
+            cmd = described_class.new('/usr/bin/claude', options).build
+            expect(JSON.parse(cmd[cmd.index('--settings') + 1])).to eq(
+              'permissions' => { 'deny' => ['Bash'] }, 'sandbox' => { 'enabled' => true }
+            )
+          end
+        end
+      end
+    end
+
+    it 'preserves absolute paths and defaults relative paths to the parent cwd when cwd is unset' do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, 'settings.json')
+        File.write(path, JSON.generate(permissions: { deny: ['Write'] }))
+        Dir.chdir(dir) do
+          [[nil, 'settings.json'], [File.dirname(dir), path]].each do |cwd, settings|
+            options = ClaudeAgentSDK::ClaudeAgentOptions.new(cwd: cwd, settings: settings, sandbox: false)
+            cmd = described_class.new('/usr/bin/claude', options).build
+            expect(JSON.parse(cmd[cmd.index('--settings') + 1])).to eq(
+              'permissions' => { 'deny' => ['Write'] }, 'sandbox' => false
+            )
+          end
+        end
+      end
+    end
+
     it 'merges a SandboxSettings into an inline settings hash' do
       sandbox = ClaudeAgentSDK::SandboxSettings.new(enabled: true)
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
