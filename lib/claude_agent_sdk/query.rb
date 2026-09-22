@@ -6,6 +6,7 @@ require 'async'
 require 'async/queue'
 require 'async/condition'
 require 'securerandom'
+require 'timeout'
 require_relative 'transport'
 require_relative 'errors'
 require_relative 'cancellation_signal'
@@ -1041,20 +1042,18 @@ module ClaudeAgentSDK
         request: request
       }
 
-      writeln(JSON.generate(control_request))
-
-      begin
-        await_control_response(request_id, waiter, task, timeout_seconds, request[:subtype])
-        result = @pending_control_results[request_id]
-        raise result if result.is_a?(Exception)
-
-        result&.[](:response) || {}
-      ensure
-        # Always evict the entries so a late control_response (after timeout)
-        # or an Async::Stop propagating through wait does not leak state.
-        @pending_control_responses.delete(request_id)
-        @pending_control_results.delete(request_id)
+      await_control_response(request_id, waiter, task, timeout_seconds, request[:subtype]) do
+        writeln(JSON.generate(control_request))
       end
+      result = @pending_control_results[request_id]
+      raise result if result.is_a?(Exception)
+
+      result&.[](:response) || {}
+    ensure
+      # Registration, serialization, write and wait share one cleanup scope.
+      # In particular, failed or cancelled writes never retain a waiter.
+      @pending_control_responses.delete(request_id)
+      @pending_control_results.delete(request_id)
     end
 
     # Level-triggered wait: every signal site stores the result BEFORE
@@ -1068,22 +1067,27 @@ module ClaudeAgentSDK
     # Do NOT reimplement the reactor wait as a nested `Async do ... end.wait`
     # — that spawned a separate task and leaked the pending entries when an
     # Async::Stop propagated through `.wait` before cleanup ran.
+    # The yielded send runs inside the same deadline as the response wait.
     def await_control_response(request_id, waiter, task, timeout_seconds, subtype)
+      expired = -> { ControlRequestTimeoutError.new("Control request timeout: #{subtype}") }
       if task
-        begin
-          task.with_timeout(timeout_seconds) do
-            waiter.wait until @pending_control_results.key?(request_id)
-          end
-        rescue Async::TimeoutError
-          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}"
+        # A non-StandardError deadline escapes the transport's write rescue;
+        # only this deadline is translated, not an outer task's cancellation.
+        FiberBoundary.with_cooperative_timeout(task, timeout_seconds, on_timeout: expired) do
+          yield
+          waiter.wait until @pending_control_results.key?(request_id)
         end
       else
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
-        until @pending_control_results.key?(request_id)
-          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}" if remaining <= 0
-
-          waiter.wait(remaining)
+        # Only schedulerless callers use stdlib Timeout. Its default internal
+        # exception bypasses StandardError rescues inside the transport too;
+        # interrupt the caller rather than abandoning a still-writing worker.
+        begin
+          Timeout.timeout(timeout_seconds) do
+            yield
+            waiter.wait(nil) until @pending_control_results.key?(request_id)
+          end
+        rescue Timeout::Error
+          raise expired.call
         end
       end
     end
