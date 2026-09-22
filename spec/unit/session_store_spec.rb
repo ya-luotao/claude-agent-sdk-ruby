@@ -92,6 +92,50 @@ RSpec.describe ClaudeAgentSDK::InMemorySessionStore do
     let(:store) { described_class.new }
     let(:key) { { 'project_key' => 'proj', 'session_id' => 'sess' } }
 
+    it 'snapshots nested append input and mutable session key strings' do
+      input_key = key.transform_values(&:dup)
+      entries = [{ 'type' => 'user', 'customTitle' => +'Original',
+                   'message' => { 'content' => [{ 'type' => 'text', 'text' => +'Hello' }] } }]
+      store.append(input_key, entries)
+      mtime = store.list_sessions('proj').first['mtime']
+      entries.first['customTitle'].replace('Changed')
+      entries.first['message']['content'].first['text'].replace('Changed')
+      entries.first['message']['content'] << { 'type' => 'text', 'text' => 'Extra' }
+      input_key.each_value { |value| value.replace('changed-key') }
+
+      expect(store.load(key)).to eq([{ 'type' => 'user', 'customTitle' => 'Original',
+                                       'message' => { 'content' => [{ 'type' => 'text', 'text' => 'Hello' }] } }])
+      expect(store.list_session_summaries('proj').first['data']['custom_title']).to eq('Original')
+      expect(store.list_sessions('proj').first['mtime']).to eq(mtime)
+      store.append(key, [{ 'type' => 'assistant' }])
+      expect(store.list_session_summaries('proj').length).to eq(1)
+    end
+
+    %i[load get_entries].each do |method|
+      it "detaches nested JSON values returned by #{method}" do
+        store.append(key, [{ 'type' => 'user', 'message' => { 'content' => [+'Hello', nil, true, 3] } }])
+        mtime = store.list_sessions('proj').first['mtime']
+        result = store.public_send(method, key)
+        result.first['message']['content'].first.replace('Changed')
+        result.first['message']['content'] << false
+
+        expect(store.load(key)).to eq([{ 'type' => 'user', 'message' => { 'content' => ['Hello', nil, true, 3] } }])
+        expect(store.list_sessions('proj').first['mtime']).to eq(mtime)
+      end
+    end
+
+    it 'detaches summary strings, including its session id, from the transcript and index' do
+      store.append(key.transform_values(&:dup), [{ 'type' => 'user', 'customTitle' => +'Original' }])
+      mtime = store.list_sessions('proj').first['mtime']
+      summary = store.list_session_summaries('proj').first
+      summary['session_id'].replace('other-session')
+      summary['data']['custom_title'].replace('Changed')
+
+      expect(store.load(key).first['customTitle']).to eq('Original')
+      expect(store.list_session_summaries('proj').first).to include('session_id' => 'sess', 'mtime' => mtime)
+      expect(store.list_session_summaries('proj').first['data']['custom_title']).to eq('Original')
+    end
+
     it 'get_entries returns a copy of stored entries (empty when absent)' do
       expect(store.get_entries(key)).to eq([])
       store.append(key, [{ 'type' => 'user', 'uuid' => 'a' }])
