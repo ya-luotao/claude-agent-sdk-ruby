@@ -187,6 +187,20 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       end
     end
 
+    it 'preserves the parent when Client.open creates a reactor from synchronous code' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer])
+      context = { span: Object.new, baggage: { 'request' => 'synchronous' } }
+      OpenTelemetry::Context.with_current(context) do
+        ClaudeAgentSDK::Client.open(options: options) do |client|
+          client.receive_response { |_message| nil }
+        end
+        expect(OpenTelemetry::Context.current).to equal(context)
+      end
+
+      expect(created_spans.map(&:parent_context)).to eq([context])
+      expect(created_spans).to all(have_attributes(finished: true))
+    end
+
     it 'restores the destination context when a captured operation raises' do
       source = { span: Object.new, baggage: { 'request' => 'source' } }
       destination = { span: Object.new }
