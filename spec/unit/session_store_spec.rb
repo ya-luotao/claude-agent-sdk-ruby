@@ -11,6 +11,28 @@ RSpec.describe ClaudeAgentSDK::InMemorySessionStore do
   end
 
   describe 'conformance suite coverage' do
+    [
+      {},
+      { 'custom_title' => 'first' },
+      { 'created_at' => 1_704_067_202_000 },
+      { 'first_prompt' => 'later prompt' }
+    ].each do |bad_data|
+      it "rejects incorrect persisted summary content: #{bad_data.inspect}" do
+        broken = Class.new(described_class) do
+          define_method(:list_session_summaries) do |project|
+            super(project).map do |summary|
+              data = bad_data.empty? ? {} : summary['data'].merge(bad_data)
+              summary.merge('data' => data)
+            end
+          end
+        end
+
+        expect do
+          ClaudeAgentSDK::Testing.run_session_store_conformance(-> { broken.new })
+        end.to raise_error(ClaudeAgentSDK::Testing::ConformanceError, /summary data/)
+      end
+    end
+
     # M18: the naive one-row-per-append list_sessions previously passed all
     # contracts (only list_session_summaries was guarded against it) and then
     # showed N duplicate sessions in pickers.
