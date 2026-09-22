@@ -417,17 +417,17 @@ module ClaudeAgentSDK
 
     def build_session_info(file_path, head, tail, stat, project_path)
       # User-set title (customTitle) wins over AI-generated title (aiTitle).
-      # Head fallback covers short sessions where the title entry may not be in tail.
-      # Each candidate passes through presence so a blank value (e.g. a
-      # trailing title-clearing entry) falls through instead of short-circuiting.
+      # Consult the head only when the tail has no occurrence of that field.
+      # Normalize blanks AFTER choosing the latest occurrence: an explicit
+      # clearing entry must not resurrect an older title from the head.
       # Summary-chain fields use the top-level-verified scan: a raw byte scan
       # also matches these keys nested inside tool_use inputs, reporting tool
       # arguments as the session title/summary (and diverging from the store
       # fold, which reads top-level keys only).
-      custom_title = presence(extract_top_level_string_field(tail, 'customTitle', last: true)) ||
-                     presence(extract_top_level_string_field(head, 'customTitle', last: true)) ||
-                     presence(extract_top_level_string_field(tail, 'aiTitle', last: true)) ||
-                     presence(extract_top_level_string_field(head, 'aiTitle', last: true))
+      custom_title = presence(extract_top_level_string_field(tail, 'customTitle', last: true) ||
+                              extract_top_level_string_field(head, 'customTitle', last: true)) ||
+                     presence(extract_top_level_string_field(tail, 'aiTitle', last: true) ||
+                              extract_top_level_string_field(head, 'aiTitle', last: true))
       first_prompt = extract_first_prompt_from_head(head)
       # lastPrompt tail entry shows what the user was most recently doing.
       summary = custom_title ||

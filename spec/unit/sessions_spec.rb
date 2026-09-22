@@ -235,6 +235,38 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       end
     end
 
+    [
+      [{ customTitle: 'Old custom', aiTitle: 'AI title' }, { customTitle: '' }, 'AI title'],
+      [{ customTitle: 'Old custom', aiTitle: 'Old AI' }, { customTitle: '', aiTitle: '' }, nil],
+      [{ aiTitle: 'Old AI' }, { aiTitle: '' }, nil],
+      [{ customTitle: 'Old custom' }, { aiTitle: 'New AI' }, 'Old custom'],
+      [{ customTitle: 'Old custom', aiTitle: 'Old AI' }, { customTitle: 'New custom' }, 'New custom']
+    ].each do |head_titles, tail_titles, expected_title|
+      it "resolves long-file titles #{head_titles.inspect} then #{tail_titles.inspect}" do
+        Dir.mktmpdir do |dir|
+          sid = '12345678-1234-1234-1234-123456789abc'
+          file_path = File.join(dir, "#{sid}.jsonl")
+          entries = [
+            { type: 'user', uuid: 'u1', message: { content: 'Hello' } },
+            { type: 'custom-title', **head_titles },
+            { type: 'assistant', uuid: 'a1', message: { content: 'x' * 140_000 } },
+            { type: 'custom-title', **tail_titles }
+          ]
+          File.write(file_path, entries.map(&:to_json).join("\n"))
+          store = ClaudeAgentSDK::InMemorySessionStore.new
+          key = { 'project_key' => described_class.project_key_for_directory(dir), 'session_id' => sid }
+          store.append(key, entries.map { |entry| JSON.parse(entry.to_json) })
+
+          disk = described_class.read_session_lite(file_path, dir)
+          stored = described_class.get_session_info_from_store(session_store: store, session_id: sid, directory: dir)
+          [disk, stored].each do |info|
+            expect(info.custom_title).to eq(expected_title)
+            expect(info.summary).to eq(expected_title || 'Hello')
+          end
+        end
+      end
+    end
+
     it 'treats whitespace-only titles as blank too' do
       Dir.mktmpdir do |dir|
         file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
