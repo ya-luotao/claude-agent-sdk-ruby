@@ -180,7 +180,9 @@ module ClaudeAgentSDK
       result[:filesystem] = @filesystem.is_a?(SandboxFilesystemConfig) ? @filesystem.to_h : @filesystem if @filesystem
       result[:ignoreViolations] = @ignore_violations if @ignore_violations
       result[:enableWeakerNestedSandbox] = @enable_weaker_nested_sandbox unless @enable_weaker_nested_sandbox.nil?
-      result[:enableWeakerNetworkIsolation] = @enable_weaker_network_isolation unless @enable_weaker_network_isolation.nil?
+      unless @enable_weaker_network_isolation.nil?
+        result[:enableWeakerNetworkIsolation] = @enable_weaker_network_isolation
+      end
       result[:ripgrep] = @ripgrep if @ripgrep
       result
     end

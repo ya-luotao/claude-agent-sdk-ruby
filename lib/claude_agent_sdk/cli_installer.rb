@@ -174,7 +174,9 @@ module ClaudeAgentSDK
             File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o600) do |file|
               response.read_body do |chunk|
                 written += chunk.bytesize
-                raise CLIInstallError, "Download from #{url} exceeds the expected #{max_bytes} bytes" if over?(written, max_bytes)
+                if over?(written, max_bytes)
+                  raise CLIInstallError, "Download from #{url} exceeds the expected #{max_bytes} bytes"
+                end
 
                 file.write(chunk)
               end
@@ -260,7 +262,9 @@ module ClaudeAgentSDK
           end
 
           checksum = entry['checksum'].to_s.downcase
-          raise CLIInstallError, "#{url} has no valid sha256 checksum for #{platform}" unless checksum.match?(CHECKSUM_PATTERN)
+          unless checksum.match?(CHECKSUM_PATTERN)
+            raise CLIInstallError, "#{url} has no valid sha256 checksum for #{platform}"
+          end
 
           size = entry['size']
           { checksum: checksum, size: size.is_a?(Integer) && size.positive? ? size : nil }

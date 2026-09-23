@@ -39,7 +39,8 @@ module ClaudeAgentSDK
     # Client#query/#receive_messages/#receive_response/#connect (after
     # argument/configuration validation — usage errors such as 'Not
     # connected' or invalid options do not notify) — including errors raised
-    # by the user's own message block — before on_close where both fire. query() fires on_close even for connect-phase failures (its
+    # by the user's own message block — before on_close where both fire.
+    # query() fires on_close even for connect-phase failures (its
     # ensure always runs); a Client#connect failure before the handshake
     # completes fires on_error WITHOUT on_close (the session never opened).
     # Not notified (by design): errors raised by control-request methods

@@ -279,7 +279,9 @@ module ClaudeAgentSDK
     # callback ends). A bare `Rails.application.executor.wrap` deadlocks
     # under development code reloading in :thread mode.
     def callback_wrapper=(value)
-      raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})" unless value.nil? || value.respond_to?(:call)
+      unless value.nil? || value.respond_to?(:call)
+        raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})"
+      end
 
       @callback_wrapper = value
     end

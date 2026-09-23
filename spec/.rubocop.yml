@@ -1,0 +1,6 @@
+inherit_from: ../.rubocop.yml
+
+# Specs inline transcript entries, JSON-RPC payloads and expected messages as
+# one-line literals; wrapping those to lib's 120 columns hurts readability.
+Layout/LineLength:
+  Max: 160

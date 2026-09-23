@@ -67,7 +67,8 @@ module ClaudeAgentSDK
   # @api private
   def self.ruby_type_to_json_schema(type)
     # Class#=== matches instances, not the class object used in { id: Integer }.
-    type = { String => :string, Integer => :integer, Float => :float, TrueClass => :boolean, FalseClass => :boolean }.fetch(type, type)
+    type = { String => :string, Integer => :integer, Float => :float,
+             TrueClass => :boolean, FalseClass => :boolean }.fetch(type, type)
     case type
     when :string, String then { type: 'string' }
     when :integer, Integer then { type: 'integer' }
@@ -96,7 +97,7 @@ module ClaudeAgentSDK
   #
   # This class wraps the official MCP Ruby SDK and provides a simpler block-based
   # API for defining tools, resources, and prompts.
-  class SdkMcpServer
+  class SdkMcpServer # rubocop:disable Metrics/ClassLength -- one facade over MCP::Server tools, resources and prompts
     # The gem validates arguments before injecting its server_context keyword.
     # Guard actual keys here, independent of schema composition/$ref support,
     # and retain this guard even when schema validation falls back to permissive.
@@ -105,7 +106,8 @@ module ClaudeAgentSDK
     class ToolInputSchema < MCP::Tool::InputSchema
       def validate_arguments(arguments)
         if arguments.is_a?(Hash) && (arguments.key?(:server_context) || arguments.key?('server_context'))
-          raise ValidationError, "Tool argument 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
+          raise ValidationError,
+                "Tool argument 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
         end
 
         super
@@ -152,7 +154,9 @@ module ClaudeAgentSDK
     # Validated at set time so a non-callable fails here, not later as a
     # NoMethodError inside a tool dispatch.
     def callback_wrapper=(value)
-      raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})" unless value.nil? || value.respond_to?(:call)
+      unless value.nil? || value.respond_to?(:call)
+        raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})"
+      end
 
       @callback_wrapper = value
     end
@@ -419,7 +423,8 @@ module ClaudeAgentSDK
         # input_schema_value's permissive schema-error fallback.
         schema = ClaudeAgentSDK.normalize_tool_schema(tool_def.input_schema)
         if schema[:properties]&.key?(:server_context)
-          raise ArgumentError, "Tool '#{tool_def.name}' input property 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
+          raise ArgumentError, "Tool '#{tool_def.name}' input property 'server_context' is reserved by the MCP SDK; " \
+                               "rename it (e.g. 'request_context')"
         end
 
         # Create a new class that extends MCP::Tool

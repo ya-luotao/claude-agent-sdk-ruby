@@ -106,14 +106,6 @@ Style/FetchEnvVar:
     - 'spec/unit/client_spec.rb'
     - 'spec/unit/query_api_spec.rb'
 
-# Offense count: 15
-# This cop supports safe autocorrection (--autocorrect).
-Style/IfUnlessModifier:
-  Exclude:
-    - 'lib/claude_agent_sdk/query.rb'
-    - 'lib/claude_agent_sdk/sdk_mcp_server.rb'
-    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-
 # Offense count: 6
 # This cop supports safe autocorrection (--autocorrect).
 # Configuration parameters: Strict, AllowedNumbers, AllowedPatterns.
@@ -172,10 +164,3 @@ Style/SymbolProc:
 Style/WordArray:
   Exclude:
     - 'spec/unit/types_spec.rb'
-
-# Offense count: 7
-# This cop supports safe autocorrection (--autocorrect).
-# Configuration parameters: AllowHeredoc, AllowURI, AllowQualifiedName, URISchemes, IgnoreCopDirectives, AllowedPatterns, SplitStrings.
-# URISchemes: http, https
-Layout/LineLength:
-  Max: 181

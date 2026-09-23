@@ -245,7 +245,10 @@ module ClaudeAgentSDK
       return if @task
 
       parent = Async::Task.current?
-      raise CLIConnectionError, 'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})' unless parent
+      unless parent
+        raise CLIConnectionError,
+              'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})'
+      end
 
       @owning_scheduler = Fiber.scheduler
       # Async child fibers do not inherit OTel's fiber-local current context.
@@ -693,9 +696,7 @@ module ClaudeAgentSDK
           behavior: 'allow',
           updatedInput: response.updated_input || original_input
         }
-        if response.updated_permissions
-          result[:updatedPermissions] = response.updated_permissions.map(&:to_h)
-        end
+        result[:updatedPermissions] = response.updated_permissions.map(&:to_h) if response.updated_permissions
         result
       when PermissionResultDeny
         result = { behavior: 'deny', message: response.message }
@@ -1031,9 +1032,7 @@ module ClaudeAgentSDK
 
     def convert_hook_output_for_cli(hook_output)
       # Handle typed output objects
-      if hook_output.respond_to?(:to_h) && !hook_output.is_a?(Hash)
-        return hook_output.to_h
-      end
+      return hook_output.to_h if hook_output.respond_to?(:to_h) && !hook_output.is_a?(Hash)
 
       return {} unless hook_output.is_a?(Hash)
 

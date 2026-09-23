@@ -119,7 +119,9 @@ module ClaudeAgentSDK
     return options unless options.can_use_tool
 
     # can_use_tool and permission_prompt_tool_name are mutually exclusive
-    raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name' if options.permission_prompt_tool_name
+    if options.permission_prompt_tool_name
+      raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name'
+    end
 
     # Advisory: warn if other options shadow the callback. After the
     # ArgumentError above so invalid configs raise, not warn.
@@ -672,8 +674,12 @@ module ClaudeAgentSDK
     # the call site, not on first iteration. Mirrors Client#query: a bare Hash
     # responds to #each and would stream [key, value] pairs' to_s garbage to
     # the CLI; nil/Integer would hang forever waiting for input.
-    raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)' if prompt.is_a?(Hash)
-    raise ArgumentError, "prompt must be a String or respond to #each (got #{prompt.class})" unless prompt.is_a?(String) || prompt.respond_to?(:each)
+    if prompt.is_a?(Hash)
+      raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)'
+    end
+    unless prompt.is_a?(String) || prompt.respond_to?(:each)
+      raise ArgumentError, "prompt must be a String or respond to #each (got #{prompt.class})"
+    end
 
     return enum_for(:query, prompt: prompt, options: options, transport: transport) unless block
 
@@ -693,7 +699,9 @@ module ClaudeAgentSDK
     callback_wrapper = configured_options.callback_wrapper
     ClaudeAgentSDK.check_inline_isolation(callback_scheduling)
 
-    raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)' if transport && !transport.respond_to?(:connect)
+    if transport && !transport.respond_to?(:connect)
+      raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)'
+    end
 
     Async(&FiberBoundary.capture_otel_context do
       materialized = nil
@@ -708,7 +716,9 @@ module ClaudeAgentSDK
           # env/--resume only apply to the CLI subprocess (Python parity:
           # client.py skips materialization when a transport is supplied).
           materialized = SessionResume.materialize_resume_session(configured_options)
-          configured_options = SessionResume.apply_materialized_options(configured_options, materialized) if materialized
+          if materialized
+            configured_options = SessionResume.apply_materialized_options(configured_options, materialized)
+          end
 
           # Always use streaming mode with control protocol (matches Python
           # SDK). This sends agents via initialize request instead of CLI
@@ -783,8 +793,9 @@ module ClaudeAgentSDK
           # here kept the root reactor alive forever when the read loop died
           # while the user enumerator was still blocked (matches Python's
           # query.spawn_task(query.stream_input(prompt))).
-          observed_prompt = ClaudeAgentSDK.observing_prompt_stream(prompt, resolved_observers,
-                                                                   scheduling: callback_scheduling, wrapper: callback_wrapper)
+          observed_prompt = ClaudeAgentSDK.observing_prompt_stream(
+            prompt, resolved_observers, scheduling: callback_scheduling, wrapper: callback_wrapper
+          )
           query_handler.spawn_task { query_handler.stream_input(observed_prompt) }
         end
 
@@ -989,8 +1000,12 @@ module ClaudeAgentSDK
     def connect(prompt = nil)
       return if @connected
 
-      raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)' if prompt.is_a?(Hash)
-      raise ArgumentError, "prompt must be a String, an Enumerator, or nil (got #{prompt.class})" unless prompt.nil? || prompt.is_a?(String) || prompt.respond_to?(:each)
+      if prompt.is_a?(Hash)
+        raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)'
+      end
+      unless prompt.nil? || prompt.is_a?(String) || prompt.respond_to?(:each)
+        raise ArgumentError, "prompt must be a String, an Enumerator, or nil (got #{prompt.class})"
+      end
 
       # Validate and configure permission settings
       configured_options = ClaudeAgentSDK.configure_can_use_tool(@options)
@@ -1055,7 +1070,9 @@ module ClaudeAgentSDK
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
       # A bare Hash responds to #each and would silently iterate [key, value]
       # pairs (Python's async-for over a dict raises TypeError).
-      raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)' if prompt.is_a?(Hash)
+      if prompt.is_a?(Hash)
+        raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)'
+      end
 
       begin
         if prompt.is_a?(String)

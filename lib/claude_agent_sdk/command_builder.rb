@@ -235,7 +235,9 @@ module ClaudeAgentSDK
       # `--continue` and `--resume <id>` are mutually exclusive session-restore
       # modes. Passing both surfaces as a generic non-zero CLI exit, which is
       # painful to debug at the caller; raise early in the SDK stack instead.
-      raise ArgumentError, "continue_conversation and resume are mutually exclusive" if @options.continue_conversation && @options.resume
+      if @options.continue_conversation && @options.resume
+        raise ArgumentError, "continue_conversation and resume are mutually exclusive"
+      end
 
       cmd.push("--continue") if @options.continue_conversation
       # =-joined single tokens: the CLI declares `--resume [value]` with an
@@ -485,7 +487,9 @@ module ClaudeAgentSDK
         plugin_type = plugin_config[:type] || plugin_config["type"]
         plugin_path = plugin_config[:path] || plugin_config["path"]
 
-        raise ArgumentError, "Unsupported plugin type: #{plugin_type.inspect}" unless %w[local plugin].include?(plugin_type)
+        unless %w[local plugin].include?(plugin_type)
+          raise ArgumentError, "Unsupported plugin type: #{plugin_type.inspect}"
+        end
         next unless plugin_path
 
         cmd.push("--plugin-dir", plugin_path)
@@ -500,7 +504,9 @@ module ClaudeAgentSDK
 
     def append_extra_args(cmd)
       @options.extra_args.each do |flag, value|
-        raise ArgumentError, "Invalid extra_args flag name: #{flag.inspect} (expected lowercase kebab-case)" unless EXTRA_ARG_FLAG_REGEXP.match?(flag)
+        unless EXTRA_ARG_FLAG_REGEXP.match?(flag)
+          raise ArgumentError, "Invalid extra_args flag name: #{flag.inspect} (expected lowercase kebab-case)"
+        end
 
         if value.nil?
           cmd.push("--#{flag}")

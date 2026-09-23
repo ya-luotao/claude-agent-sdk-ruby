@@ -572,9 +572,7 @@ module ClaudeAgentSDK
       end
 
       # Log any cleanup errors (non-fatal)
-      if cleanup_errors.any?
-        warn "Claude SDK: Cleanup warnings: #{cleanup_errors.join(', ')}"
-      end
+      warn "Claude SDK: Cleanup warnings: #{cleanup_errors.join(', ')}" if cleanup_errors.any?
 
       self.class.deregister_active_process(@process)
     end

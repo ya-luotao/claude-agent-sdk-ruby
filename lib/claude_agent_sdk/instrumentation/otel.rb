@@ -157,15 +157,21 @@ module ClaudeAgentSDK
           'session.id' => message.session_id
         }.merge(@default_attributes)
 
-        attrs['claude_code.version'] = message.claude_code_version if message.respond_to?(:claude_code_version) && message.claude_code_version
+        if message.respond_to?(:claude_code_version) && message.claude_code_version
+          attrs['claude_code.version'] = message.claude_code_version
+        end
         attrs['claude_code.cwd'] = message.cwd if message.respond_to?(:cwd) && message.cwd
-        attrs['claude_code.permission_mode'] = message.permission_mode if message.respond_to?(:permission_mode) && message.permission_mode
+        if message.respond_to?(:permission_mode) && message.permission_mode
+          attrs['claude_code.permission_mode'] = message.permission_mode
+        end
 
         @root_span = @tracer.start_span('claude_agent.session', attributes: compact_attrs(attrs))
         @root_context = OpenTelemetry::Trace.context_with_span(@root_span)
 
         # Apply buffered prompt if on_user_prompt was called before InitMessage arrived
-        @root_span.set_attribute('input.value', truncate(@first_user_input)) if @first_user_input && !@first_user_input.empty?
+        return unless @first_user_input && !@first_user_input.empty?
+
+        @root_span.set_attribute('input.value', truncate(@first_user_input))
       end
 
       def handle_assistant(message)
@@ -235,7 +241,9 @@ module ClaudeAgentSDK
         # tokens (Anthropic's input_tokens excludes them; OpenInference's own
         # Anthropic instrumentation sums them in). gen_ai.usage.* keys keep
         # the raw exclusive values — Langfuse prices those additively.
-        prompt_tokens = (input_tokens || 0) + (cache_creation_tokens || 0) + (cache_read_tokens || 0) if input_tokens || cache_creation_tokens || cache_read_tokens
+        if input_tokens || cache_creation_tokens || cache_read_tokens
+          prompt_tokens = (input_tokens || 0) + (cache_creation_tokens || 0) + (cache_read_tokens || 0)
+        end
         total_tokens = (prompt_tokens || 0) + (output_tokens || 0) if prompt_tokens || output_tokens
 
         # Set trace output (last assistant response — shown in Langfuse UI)

@@ -56,8 +56,8 @@ module ClaudeAgentSDK
   # mode) and a cancelled append may remain permanently half-applied in the
   # store. The drop is surfaced (MirrorErrorMessage, batches_dropped?) and
   # the local transcript remains the source of truth; the
-  # dedupe-by-entry-uuid recommendation above stays advisory. The method is deliberately NOT defined here: the SDK probes
-  # `respond_to?(:callback_scheduling)` (see
+  # dedupe-by-entry-uuid recommendation above stays advisory. The method is
+  # deliberately NOT defined here: the SDK probes `respond_to?(:callback_scheduling)` (see
   # SessionStores.store_callback_scheduling), so pure duck-typed adapters
   # stay minimal, and an app can opt a third-party fiber-native adapter in
   # via a singleton method (`def store.callback_scheduling = :inline`).
@@ -351,7 +351,9 @@ module ClaudeAgentSDK
       second = parts[1]
 
       # Main transcript: <project_key>/<session_id>.jsonl
-      return { 'project_key' => project_key, 'session_id' => second.delete_suffix('.jsonl') } if parts.length == 2 && second.end_with?('.jsonl')
+      if parts.length == 2 && second.end_with?('.jsonl')
+        return { 'project_key' => project_key, 'session_id' => second.delete_suffix('.jsonl') }
+      end
 
       # Subagent transcript: <project_key>/<session_id>/subagents/.../agent-<id>.jsonl
       if parts.length >= 4

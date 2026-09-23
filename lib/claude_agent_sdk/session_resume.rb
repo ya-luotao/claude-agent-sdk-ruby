@@ -159,7 +159,9 @@ module ClaudeAgentSDK
         # so it can authenticate. Missing files are fine (API-key auth, etc.).
         copy_auth_files(tmp_base, options.env)
 
-        materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper) if SessionStore.implements?(store, :list_subkeys)
+        if SessionStore.implements?(store, :list_subkeys)
+          materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper)
+        end
       rescue Exception # rubocop:disable Lint/RescueException
         # Any failure after mkdtemp leaves tmp_base (which may already hold a
         # .credentials.json copy) on disk with no path for the caller to clean
@@ -365,7 +367,9 @@ module ClaudeAgentSDK
       write_redacted_credentials(creds_json, File.join(tmp_base, '.credentials.json'))
 
       claude_json_dir = caller_config_dir || home
-      copy_if_present(File.join(claude_json_dir, '.claude.json'), File.join(tmp_base, '.claude.json')) if claude_json_dir
+      if claude_json_dir
+        copy_if_present(File.join(claude_json_dir, '.claude.json'), File.join(tmp_base, '.claude.json'))
+      end
 
       # User settings carry apiKeyHelper (a fourth auth mechanism alongside
       # .credentials.json / Keychain / env vars) plus the user's env, hooks and
@@ -602,7 +606,8 @@ module ClaudeAgentSDK
           next
         end
 
-        sub_entries = with_timeout(timeout_s, "SessionStore#load for session #{session_id} subpath #{subpath}", scheduling, wrapper) do
+        sub_entries = with_timeout(timeout_s, "SessionStore#load for session #{session_id} subpath #{subpath}",
+                                   scheduling, wrapper) do
           store.load('project_key' => project_key, 'session_id' => session_id, 'subpath' => subpath)
         end
         next if sub_entries.nil? || sub_entries.empty?

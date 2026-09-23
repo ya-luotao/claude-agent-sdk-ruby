@@ -52,7 +52,11 @@ module ClaudeAgentSDK
       raise MessageParseError.new("Missing message field in user message", data: data) unless message_data
       # A non-Hash message (malformed CLI output) raised a raw TypeError from
       # message_data[:content] instead of the documented MessageParseError.
-      raise MessageParseError.new("Invalid message field in user message (expected Hash, got #{message_data.class})", data: data) unless message_data.is_a?(Hash)
+      unless message_data.is_a?(Hash)
+        raise MessageParseError.new(
+          "Invalid message field in user message (expected Hash, got #{message_data.class})", data: data
+        )
+      end
 
       content = message_data[:content]
       raise MessageParseError.new("Missing content in user message", data: data) unless content
@@ -87,11 +91,17 @@ module ClaudeAgentSDK
       message_data = data[:message]
       # A non-Hash message (malformed CLI output) raised a raw TypeError from
       # dig instead of the documented MessageParseError.
-      raise MessageParseError.new("Invalid message field in assistant message (expected Hash, got #{message_data.class})", data: data) unless message_data.is_a?(Hash)
+      unless message_data.is_a?(Hash)
+        raise MessageParseError.new(
+          "Invalid message field in assistant message (expected Hash, got #{message_data.class})", data: data
+        )
+      end
 
       content = message_data[:content]
       raise MessageParseError.new("Missing content in assistant message", data: data) unless content
-      raise MessageParseError.new("Invalid assistant content (expected Array, got #{content.class})", data: data) unless content.is_a?(Array)
+      unless content.is_a?(Array)
+        raise MessageParseError.new("Invalid assistant content (expected Array, got #{content.class})", data: data)
+      end
 
       content_blocks = parse_content_blocks(content, data)
       AssistantMessage.new(
@@ -196,7 +206,9 @@ module ClaudeAgentSDK
     # opaque TypeError/NoMethodError from `block[:type]` deep in parsing.
     def self.parse_content_blocks(content, data)
       content.map do |block|
-        raise MessageParseError.new("Invalid content block (expected Hash, got #{block.class})", data: data) unless block.is_a?(Hash)
+        unless block.is_a?(Hash)
+          raise MessageParseError.new("Invalid content block (expected Hash, got #{block.class})", data: data)
+        end
 
         parse_content_block(block)
       end
