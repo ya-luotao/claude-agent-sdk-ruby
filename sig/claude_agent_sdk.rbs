@@ -1,0 +1,231 @@
+# RBS signatures for the claude-agent-sdk public API.
+#
+# Scope: the 1.0 SemVer surface only, i.e. everything documented in docs/ and
+# every YARD object NOT tagged `@api private` (see CONTRIBUTING.md, "What is
+# public API"). Internals (Query, MessageParser, Sessions, FiberBoundary, ...)
+# deliberately have no signatures here, so typing them never freezes them.
+# Where a public signature has to mention an internal or third-party object,
+# it uses a narrow interface or `untyped` with a comment.
+#
+# Hash-key rule (docs/types.md#hash-keys): Hashes passed through from the
+# CLI's stream-JSON have Symbol keys spelled as on the wire (`wire_hash`);
+# transcripts read from disk or a SessionStore have String keys
+# (`transcript_hash`).
+#
+# One file per area: sig/claude_agent_sdk/*.rbs, with the value types under
+# sig/claude_agent_sdk/types/ mirroring lib/claude_agent_sdk/types/.
+module ClaudeAgentSDK
+  VERSION: String
+
+  # A Hash from the CLI's stream-JSON, passed through untouched: Symbol keys,
+  # spelled exactly as on the wire (camelCase stays camelCase).
+  type wire_hash = Hash[Symbol, untyped]
+
+  # A transcript entry / summary / subagent metadata Hash read from disk or a
+  # SessionStore: String keys, spelled as in the JSONL.
+  type transcript_hash = Hash[String, untyped]
+
+  # Every message `query` / `Client#receive_messages` yields (typed
+  # SystemMessage subclasses are included via SystemMessage).
+  type message = UserMessage
+               | AssistantMessage
+               | SystemMessage
+               | ResultMessage
+               | StreamEvent
+               | RateLimitEvent
+               | ConversationResetMessage
+               | ToolProgressMessage
+               | AuthStatusMessage
+               | ToolUseSummaryMessage
+               | PromptSuggestionMessage
+
+  # A prompt: a String, or anything iterable (an Enumerator, an Array, ...)
+  # of message Hashes / JSONL Strings (see Streaming). A bare Hash is
+  # rejected with ArgumentError.
+  type prompt = String | _Each[Hash[untyped, untyped] | String]
+
+  # Middleware around every user-callback dispatch
+  # (ClaudeAgentOptions#callback_wrapper): receives a zero-arg invocation, must
+  # call it and return its value.
+  interface _CallbackWrapper
+    def call: (_Invocation invocation) -> untyped
+  end
+
+  # The zero-arg invocation a callback wrapper receives.
+  interface _Invocation
+    def call: () -> untyped
+  end
+
+  # ---- One-shot queries ----
+
+  # Streams every message of a one-shot query to the block; without a block,
+  # returns an Enumerator (internal iteration only: #each / #first / #to_a,
+  # never #next).
+  def self.query: (prompt: prompt, ?options: ClaudeAgentOptions?, ?transport: _Transport?) { (message) -> void } -> void
+                | (prompt: prompt, ?options: ClaudeAgentOptions?, ?transport: _Transport?) -> Enumerator[message, void]
+
+  # Runs a query to completion and returns its final ResultMessage. The
+  # optional block observes every message (it cannot end the stream early).
+  def self.ask: (prompt prompt, ?options: ClaudeAgentOptions?, ?transport: _Transport?) ?{ (message) -> void } -> ResultMessage
+
+  # Runs a heavy block on a plain thread (a no-op hop outside a Fiber
+  # scheduler) and returns its value; exceptions propagate.
+  def self.offload: [T] () { () -> T } -> T
+
+  # ---- Global configuration (lib/claude_agent_sdk/configuration.rb) ----
+
+  def self.configure: [T] () { (Configuration config) -> T } -> T
+
+  def self.configuration: () -> Configuration
+
+  def self.reset_configuration: () -> Configuration
+
+  # The frozen snapshot set via `configuration.default_options=`.
+  def self.default_options: () -> Hash[Symbol | String, untyped]
+
+  # ---- SDK MCP servers (lib/claude_agent_sdk/sdk_mcp_server.rb) ----
+
+  def self.create_tool: (String | Symbol name, String description, Hash[untyped, untyped] input_schema, ?annotations: Hash[Symbol | String, untyped]?, ?meta: Hash[String | Symbol, untyped]?) { (wire_hash args) -> tool_result } -> SdkMcpTool
+
+  def self.create_resource: (uri: String, name: String, ?description: String?, ?mime_type: String?) { () -> Hash[Symbol | String, untyped] } -> SdkMcpResource
+
+  def self.create_prompt: (name: String, ?description: String?, ?arguments: Array[Hash[Symbol | String, untyped]]?) { (wire_hash args) -> Hash[Symbol | String, untyped] } -> SdkMcpPrompt
+
+  # Returns the `{ type: 'sdk', name:, instance: }` config Hash to put under
+  # ClaudeAgentOptions#mcp_servers.
+  def self.create_sdk_mcp_server: (name: String, ?version: String, ?tools: Array[SdkMcpTool], ?resources: Array[SdkMcpResource], ?prompts: Array[SdkMcpPrompt]) -> { type: String, name: String, instance: SdkMcpServer }
+
+  # ---- Sessions (local disk by default; pass session_store: to use a store) ----
+
+  # include_worktrees filters only on disk (nil reads as false there); with a
+  # session_store anything but the default true raises ArgumentError.
+  def self.list_sessions: (?directory: String?, ?limit: Integer?, ?offset: Integer, ?include_worktrees: bool?, ?session_store: _SessionStore?) -> Array[SDKSessionInfo]
+
+  def self.get_session_info: (session_id: String, ?directory: String?, ?session_store: _SessionStore?) -> SDKSessionInfo?
+
+  def self.get_session_messages: (session_id: String, ?directory: String?, ?limit: Integer?, ?offset: Integer, ?session_store: _SessionStore?) -> Array[SessionMessage]
+
+  def self.list_subagents: (session_id: String, ?directory: String?, ?session_store: _SessionStore?) -> Array[String]
+
+  def self.get_subagent_metadata: (session_id: String, agent_id: String, ?directory: String?, ?session_store: _SessionStore?) -> transcript_hash?
+
+  def self.get_subagent_messages: (session_id: String, agent_id: String, ?directory: String?, ?limit: Integer?, ?offset: Integer, ?session_store: _SessionStore?) -> Array[SessionMessage]
+
+  def self.rename_session: (session_id: String, title: String, ?directory: String?, ?session_store: _SessionStore?) -> void
+
+  def self.tag_session: (session_id: String, tag: String?, ?directory: String?, ?session_store: _SessionStore?) -> void
+
+  def self.delete_session: (session_id: String, ?directory: String?, ?session_store: _SessionStore?) -> void
+
+  def self.fork_session: (session_id: String, ?directory: String?, ?up_to_message_id: String?, ?title: String?, ?session_store: _SessionStore?) -> ForkSessionResult
+
+  # The SessionStore project_key for a directory (default: the cwd).
+  def self.project_key_for_directory: (?(String | Pathname)? directory) -> String
+
+  # Folds appended transcript entries into a running session summary; for
+  # SessionStore adapters to call from #append (see
+  # SessionStore#list_session_summaries).
+  def self.fold_session_summary: (transcript_hash? prev, session_key key, Array[transcript_hash] entries) -> session_summary
+
+  # Replays a local transcript into a store; batch_size (default 500, also
+  # for nil) is the number of entries per SessionStore#append.
+  def self.import_session_to_store: (session_id: String, session_store: _SessionStore, ?directory: String?, ?include_subagents: bool, ?batch_size: Integer?) -> void
+
+  # @deprecated Use .list_sessions with session_store:. Public (with a
+  #   one-time warning) through 1.x; removed in 2.0.
+  def self.list_sessions_from_store: (session_store: _SessionStore, ?directory: String?, ?limit: Integer?, ?offset: Integer) -> Array[SDKSessionInfo]
+
+  # @deprecated Use .get_session_info with session_store:.
+  def self.get_session_info_from_store: (session_store: _SessionStore, session_id: String, ?directory: String?) -> SDKSessionInfo?
+
+  # @deprecated Use .get_session_messages with session_store:.
+  def self.get_session_messages_from_store: (session_store: _SessionStore, session_id: String, ?directory: String?, ?limit: Integer?, ?offset: Integer) -> Array[SessionMessage]
+
+  # @deprecated Use .list_subagents with session_store:.
+  def self.list_subagents_from_store: (session_store: _SessionStore, session_id: String, ?directory: String?) -> Array[String]
+
+  # @deprecated Use .get_subagent_metadata with session_store:.
+  def self.get_subagent_metadata_from_store: (session_store: _SessionStore, session_id: String, agent_id: String, ?directory: String?) -> transcript_hash?
+
+  # @deprecated Use .get_subagent_messages with session_store:.
+  def self.get_subagent_messages_from_store: (session_store: _SessionStore, session_id: String, agent_id: String, ?directory: String?, ?limit: Integer?, ?offset: Integer) -> Array[SessionMessage]
+
+  # @deprecated Use .rename_session with session_store:.
+  def self.rename_session_via_store: (session_store: _SessionStore, session_id: String, title: String, ?directory: String?) -> void
+
+  # @deprecated Use .tag_session with session_store:.
+  def self.tag_session_via_store: (session_store: _SessionStore, session_id: String, tag: String?, ?directory: String?) -> void
+
+  # @deprecated Use .delete_session with session_store:.
+  def self.delete_session_via_store: (session_store: _SessionStore, session_id: String, ?directory: String?) -> void
+
+  # @deprecated Use .fork_session with session_store:.
+  def self.fork_session_via_store: (session_store: _SessionStore, session_id: String, ?directory: String?, ?up_to_message_id: String?, ?title: String?) -> ForkSessionResult
+
+  # Bidirectional, interactive sessions. Every method but #server_info and
+  # #disconnect raises CLIConnectionError before #connect.
+  class Client
+    def initialize: (?options: ClaudeAgentOptions?, ?transport_class: _TransportClass, ?transport_args: Hash[Symbol, untyped]) -> void
+
+    # Connects, yields the client, and always disconnects; returns the
+    # block's value.
+    def self.open: [T] (?prompt? prompt, ?options: ClaudeAgentOptions?, ?transport_class: _TransportClass, ?transport_args: Hash[Symbol, untyped]) { (Client client) -> T } -> T
+
+    # A String is sent as the first user message; an iterable prompt is
+    # streamed in the background as the session's input.
+    def connect: (?prompt? prompt) -> void
+
+    def query: (prompt prompt, ?session_id: String) -> void
+
+    def receive_messages: () { (message) -> void } -> void
+                        | () -> Enumerator[message, void]
+
+    # Like #receive_messages, but stops after the next ResultMessage.
+    def receive_response: () { (message) -> void } -> void
+                        | () -> Enumerator[message, void]
+
+    def interrupt: () -> void
+
+    def set_permission_mode: (String mode) -> void
+
+    # Ruby-style spelling of #set_permission_mode.
+    def permission_mode=: (String mode) -> void
+
+    def set_model: (String? model) -> void
+
+    # Ruby-style spelling of #set_model.
+    def model=: (String? model) -> void
+
+    def reconnect_mcp_server: (String server_name) -> void
+
+    def toggle_mcp_server: (String server_name, bool enabled) -> void
+
+    def stop_task: (String task_id) -> void
+
+    # `{ backgrounded: true | false }` with a tool_use_id, `{}` without.
+    def background_tasks: (?tool_use_id: String?) -> Hash[Symbol, bool]
+
+    def rewind_files: (String user_message_uuid) -> void
+
+    # The CLI's initialize response (wire_hash), or nil before #connect.
+    def server_info: () -> wire_hash?
+
+    def get_server_info: () -> wire_hash?
+
+    # Context-window usage breakdown, passed through from the CLI (wire_hash).
+    def get_context_usage: () -> wire_hash
+
+    # Ruby-style spelling of #get_context_usage.
+    def context_usage: () -> wire_hash
+
+    # MCP server connection status, passed through from the CLI (wire_hash:
+    # `mcp_status[:mcpServers]`); McpStatusResponse.parse gives a typed view.
+    def get_mcp_status: () -> wire_hash
+
+    # Ruby-style spelling of #get_mcp_status.
+    def mcp_status: () -> wire_hash
+
+    # Idempotent; safe after a failed #connect.
+    def disconnect: () -> void
+  end
+end

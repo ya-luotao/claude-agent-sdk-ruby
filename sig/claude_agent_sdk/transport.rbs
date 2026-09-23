@@ -1,0 +1,98 @@
+module ClaudeAgentSDK
+  # What `query(transport:)` and Client need from a transport. A custom
+  # transport may subclass Transport or be any object with these methods.
+  # read_messages must yield each stdout line parsed with
+  # `JSON.parse(line, symbolize_names: true)` (see docs/types.md#hash-keys).
+  # #close must be idempotent. (Transport#ready? is part of the abstract
+  # class but the SDK never calls it, so it is not required here.)
+  interface _Transport
+    def connect: () -> void
+
+    def write: (String data) -> void
+
+    def read_messages: () { (wire_hash message) -> void } -> void
+
+    def close: () -> void
+
+    def end_input: () -> void
+  end
+
+  # Client's transport_class: Client calls
+  # `transport_class.new(options, **transport_args)`.
+  interface _TransportClass
+    def new: (ClaudeAgentOptions options, **untyped transport_args) -> _Transport
+  end
+
+  # Abstract base for custom transports: every method raises
+  # NotImplementedError until overridden.
+  class Transport
+    def connect: () -> void
+
+    def write: (String data) -> void
+
+    def read_messages: () { (wire_hash message) -> void } -> void
+                     | () -> Enumerator[wire_hash, void]
+
+    def close: () -> void
+
+    def ready?: () -> bool
+
+    def end_input: () -> void
+  end
+
+  # The default transport: spawns the `claude` CLI and speaks stream-JSON
+  # over its stdin/stdout.
+  class SubprocessCLITransport < Transport
+    # The legacy two-argument form `new(prompt, options)` ignores prompt.
+    def initialize: (ClaudeAgentOptions options) -> void
+                  | (untyped prompt, ClaudeAgentOptions options) -> void
+
+    def connect: () -> void
+
+    def write: (String data) -> void
+
+    def read_messages: () { (wire_hash message) -> void } -> void
+                     | () -> Enumerator[wire_hash, void]
+
+    def close: () -> void
+
+    def ready?: () -> bool
+
+    def end_input: () -> void
+  end
+
+  # Builds the CLI argv SubprocessCLITransport would spawn (for custom
+  # transports that run the CLI elsewhere; see docs/client.md).
+  class CommandBuilder
+    def initialize: (String cli_path, ClaudeAgentOptions options) -> void
+
+    def build: () -> Array[String]
+  end
+
+  # Downloads a pinned Claude Code CLI into vendor/claude (Docker/CI deploys).
+  # Every failure raises CLIInstallError.
+  module CLIInstaller
+    # The CLI version this gem release is tested against.
+    PINNED_CLI_VERSION: String
+
+    # The directory vendor/claude resolves against (nil: the cwd at call
+    # time). An absolute, frozen path once set.
+    def self.root: () -> String?
+
+    def self.root=: ((String | Pathname)? path) -> (String | Pathname)?
+
+    # Absolute path of the default install directory.
+    def self.default_dir: () -> String
+
+    # Installs the CLI ('stable', 'latest' or a concrete version) and returns
+    # the absolute path of the binary. Idempotent and safe to run
+    # concurrently.
+    def self.install: (?version: String, ?dir: (String | Pathname)?) -> String
+
+    # Installs PINNED_CLI_VERSION.
+    def self.install_pinned: (?dir: (String | Pathname)?) -> String
+
+    # Path of an already-installed binary, or nil.
+    def self.installed_path: (?dir: (String | Pathname)?) -> String?
+  end
+end

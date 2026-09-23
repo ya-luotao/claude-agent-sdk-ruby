@@ -1,0 +1,105 @@
+module ClaudeAgentSDK
+  # Values of ClaudeAgentOptions#session_store_flush.
+  SESSION_STORE_FLUSH_MODES: Array[String]
+
+  # A SessionStore key. String keys: 'project_key' and 'session_id' always;
+  # 'subpath' (e.g. "subagents/agent-<id>") only for a subagent transcript.
+  type session_key = Hash[String, String?]
+
+  # A session summary as built by ClaudeAgentSDK.fold_session_summary:
+  # { 'session_id' => String, 'mtime' => Integer, 'data' => Hash[String, untyped] }.
+  type session_summary = Hash[String, untyped]
+
+  # The duck type ClaudeAgentOptions#session_store and the session functions'
+  # session_store: accept. Only #append and #load are required; an adapter
+  # need not subclass SessionStore. Keys and entries cross this boundary as
+  # String-keyed Hashes (docs/types.md#hash-keys).
+  #
+  # The SDK also probes (SessionStore.implements?) for these OPTIONAL methods
+  # and uses them when present — they cannot be expressed as optional
+  # interface members, so they are listed here:
+  #
+  #   def list_sessions: (String project_key) -> Array[{ 'session_id' => String, 'mtime' => Integer }]
+  #   def list_session_summaries: (String project_key) -> Array[session_summary]
+  #   def delete: (session_key key) -> void        # a main key cascades to its subkeys
+  #   def list_subkeys: (session_key key) -> Array[String]
+  #   def callback_scheduling: () -> (:thread | :inline)   # :inline = fiber-native adapter
+  #
+  # ClaudeAgentSDK::Testing.run_session_store_conformance checks an adapter
+  # against the behavioral contracts.
+  interface _SessionStore
+    # Mirrors a batch of transcript entries. Must be thread-safe per key and
+    # should dedupe by entry['uuid'].
+    def append: (session_key key, Array[transcript_hash] entries) -> void
+
+    # The full transcript for key, or nil when it was never written.
+    def load: (session_key key) -> Array[transcript_hash]?
+  end
+
+  # Optional base class for adapters. Its methods raise NotImplementedError,
+  # which marks an optional method as absent (see .implements?).
+  class SessionStore
+    # True when store overrides method rather than inheriting the
+    # NotImplementedError default (works for duck-typed adapters too).
+    def self.implements?: (untyped store, Symbol | String method) -> bool
+
+    def append: (session_key key, Array[transcript_hash] entries) -> void
+
+    def load: (session_key key) -> Array[transcript_hash]?
+
+    def list_sessions: (String project_key) -> Array[Hash[String, String | Integer]]
+
+    def list_session_summaries: (String project_key) -> Array[session_summary]
+
+    def delete: (session_key key) -> void
+
+    def list_subkeys: (session_key key) -> Array[String]
+  end
+
+  # In-memory SessionStore for tests and development; data is lost on exit.
+  # Implements every optional method.
+  class InMemorySessionStore < SessionStore
+    def initialize: () -> void
+
+    def append: (session_key key, Array[transcript_hash]? entries) -> void
+
+    def load: (session_key key) -> Array[transcript_hash]?
+
+    def list_sessions: (String project_key) -> Array[Hash[String, String | Integer]]
+
+    def list_session_summaries: (String project_key) -> Array[session_summary]
+
+    def delete: (session_key key) -> void
+
+    def list_subkeys: (session_key key) -> Array[String]
+
+    # Test helper: all entries for key ([] when absent).
+    def get_entries: (session_key key) -> Array[transcript_hash]
+
+    # Test helper: number of stored main transcripts.
+    def size: () -> Integer
+
+    # Test helper: removes everything.
+    def clear: () -> void
+  end
+
+  # Test helpers shipped for third-party SessionStore adapter authors.
+  module Testing
+    # Raised by run_session_store_conformance on the first violated contract.
+    class ConformanceError < StandardError
+    end
+
+    # The optional SessionStore methods skip_optional: accepts.
+    OPTIONAL_METHODS: Array[String]
+
+    # Asserts the SessionStore behavioral contracts against a fresh store
+    # from make_store (called once per contract). Raises ConformanceError on
+    # a violation; returns nil otherwise.
+    def self.run_session_store_conformance: (_StoreFactory make_store, ?skip_optional: Array[String | Symbol], ?check_uuid_dedupe: bool) -> nil
+
+    # Returns a fresh store per call.
+    interface _StoreFactory
+      def call: () -> _SessionStore
+    end
+  end
+end

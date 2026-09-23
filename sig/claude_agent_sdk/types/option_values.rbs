@@ -1,0 +1,245 @@
+module ClaudeAgentSDK
+  # Valid `display` values of the thinking configs.
+  THINKING_DISPLAY_VALUES: Array[String]
+
+  # The value types below are built by the caller and passed IN (inside
+  # ClaudeAgentOptions). Each constructor takes the attributes as keywords;
+  # the Hash form (String or camelCase keys, e.g. `klass.new(value.to_h)`)
+  # is accepted too. An unknown key warns once (raises ArgumentError from
+  # 1.0). Discriminators (`type`) are fixed by the class and read-only.
+
+  # Adaptive thinking: the model decides when and how much to think.
+  class ThinkingConfigAdaptive < Type
+    def initialize: (?display: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # "adaptive".
+    attr_reader type: String
+
+    attr_reader display: String?
+
+    # Raises ArgumentError unless nil or one of THINKING_DISPLAY_VALUES.
+    def display=: (String? value) -> String?
+  end
+
+  # Thinking with an explicit token budget.
+  class ThinkingConfigEnabled < Type
+    def initialize: (?budget_tokens: Integer?, ?display: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor budget_tokens: Integer?
+
+    # "enabled".
+    attr_reader type: String
+
+    attr_reader display: String?
+
+    # Raises ArgumentError unless nil or one of THINKING_DISPLAY_VALUES.
+    def display=: (String? value) -> String?
+  end
+
+  class ThinkingConfigDisabled < Type
+    def initialize: () -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # "disabled".
+    attr_reader type: String
+  end
+
+  # A subagent definition (ClaudeAgentOptions#agents values).
+  class AgentDefinition < Type
+    def initialize: (?description: String?, ?prompt: String?, ?tools: Array[String]?, ?disallowed_tools: Array[String]?, ?model: String?, ?skills: Array[String]?, ?memory: String?, ?mcp_servers: Array[String | Hash[Symbol | String, untyped]]?, ?initial_prompt: String?, ?max_turns: Integer?, ?background: bool?, ?effort: (String | Integer)?, ?permission_mode: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor description: String?
+
+    attr_accessor prompt: String?
+
+    attr_accessor tools: Array[String]?
+
+    attr_accessor disallowed_tools: Array[String]?
+
+    attr_accessor model: String?
+
+    attr_accessor skills: Array[String]?
+
+    attr_accessor memory: String?
+
+    # MCP server names, or inline server config Hashes.
+    attr_accessor mcp_servers: Array[String | Hash[Symbol | String, untyped]]?
+
+    attr_accessor initial_prompt: String?
+
+    attr_accessor max_turns: Integer?
+
+    attr_accessor background: bool?
+
+    attr_accessor effort: (String | Integer)?
+
+    attr_accessor permission_mode: String?
+  end
+
+  # A local plugin directory (ClaudeAgentOptions#plugins entries).
+  class SdkPluginConfig < Type
+    def initialize: (?path: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor path: String?
+
+    # "local".
+    attr_reader type: String
+
+    def to_h: () -> { type: String, path: String? }
+  end
+
+  class SandboxNetworkConfig < Type
+    def initialize: (?allowed_domains: Array[String]?, ?denied_domains: Array[String]?, ?allow_managed_domains_only: bool?, ?allow_unix_sockets: (bool | Array[String])?, ?allow_all_unix_sockets: bool?, ?allow_local_binding: bool?, ?allow_mach_lookup: Array[String]?, ?http_proxy_port: Integer?, ?socks_proxy_port: Integer?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor allowed_domains: Array[String]?
+
+    attr_accessor denied_domains: Array[String]?
+
+    attr_accessor allow_managed_domains_only: bool?
+
+    attr_accessor allow_unix_sockets: (bool | Array[String])?
+
+    attr_accessor allow_all_unix_sockets: bool?
+
+    attr_accessor allow_local_binding: bool?
+
+    attr_accessor allow_mach_lookup: Array[String]?
+
+    attr_accessor http_proxy_port: Integer?
+
+    attr_accessor socks_proxy_port: Integer?
+
+    # The camelCase settings form.
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class SandboxFilesystemConfig < Type
+    def initialize: (?allow_write: Array[String]?, ?deny_write: Array[String]?, ?deny_read: Array[String]?, ?allow_read: Array[String]?, ?allow_managed_read_paths_only: bool?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor allow_write: Array[String]?
+
+    attr_accessor deny_write: Array[String]?
+
+    attr_accessor deny_read: Array[String]?
+
+    attr_accessor allow_read: Array[String]?
+
+    attr_accessor allow_managed_read_paths_only: bool?
+
+    # The camelCase settings form.
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # Sandbox settings for isolated command execution
+  # (ClaudeAgentOptions#sandbox).
+  class SandboxSettings < Type
+    def initialize: (?enabled: bool?, ?fail_if_unavailable: bool?, ?auto_allow_bash_if_sandboxed: bool?, ?excluded_commands: Array[String]?, ?allow_unsandboxed_commands: bool?, ?network: (SandboxNetworkConfig | Hash[Symbol | String, untyped])?, ?filesystem: (SandboxFilesystemConfig | Hash[Symbol | String, untyped])?, ?ignore_violations: Hash[Symbol | String, Array[String]]?, ?enable_weaker_nested_sandbox: bool?, ?enable_weaker_network_isolation: bool?, ?ripgrep: Hash[Symbol | String, untyped]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor enabled: bool?
+
+    attr_accessor fail_if_unavailable: bool?
+
+    attr_accessor auto_allow_bash_if_sandboxed: bool?
+
+    attr_accessor excluded_commands: Array[String]?
+
+    attr_accessor allow_unsandboxed_commands: bool?
+
+    attr_accessor network: (SandboxNetworkConfig | Hash[Symbol | String, untyped])?
+
+    attr_accessor filesystem: (SandboxFilesystemConfig | Hash[Symbol | String, untyped])?
+
+    # e.g. { file: [...paths], network: [...hosts] }.
+    attr_accessor ignore_violations: Hash[Symbol | String, Array[String]]?
+
+    attr_accessor enable_weaker_nested_sandbox: bool?
+
+    attr_accessor enable_weaker_network_isolation: bool?
+
+    attr_accessor ripgrep: Hash[Symbol | String, untyped]?
+
+    # The camelCase settings form.
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # API-side task budget in tokens (ClaudeAgentOptions#task_budget).
+  class TaskBudget < Type
+    def initialize: (?total: Integer?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor total: Integer?
+
+    def to_h: () -> { total: Integer? }
+  end
+
+  # A system prompt loaded from a file.
+  class SystemPromptFile < Type
+    def initialize: (?path: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor path: String?
+
+    # "file".
+    attr_reader type: String
+
+    def to_h: () -> { type: String, path: String? }
+  end
+
+  # The Claude Code preset system prompt, optionally extended.
+  class SystemPromptPreset < Type
+    def initialize: (?preset: String?, ?append: String?, ?exclude_dynamic_sections: bool?, ?snapshot: bool?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # "preset".
+    attr_reader type: String
+
+    # e.g. "claude_code".
+    attr_accessor preset: String?
+
+    attr_accessor append: String?
+
+    attr_accessor exclude_dynamic_sections: bool?
+
+    # Whether the session keeps the system prompt recorded on its first
+    # request (nil: the CLI default).
+    attr_accessor snapshot: bool?
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # The object form of a String system prompt, so snapshot can be set.
+  class SystemPromptCustom < Type
+    def initialize: (?prompt: String?, ?snapshot: bool?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # "custom".
+    attr_reader type: String
+
+    attr_accessor prompt: String?
+
+    attr_accessor snapshot: bool?
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # A tools preset (ClaudeAgentOptions#tools).
+  class ToolsPreset < Type
+    def initialize: (?preset: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # "preset".
+    attr_reader type: String
+
+    # e.g. "claude_code".
+    attr_accessor preset: String?
+
+    def to_h: () -> { type: String, preset: String? }
+  end
+end

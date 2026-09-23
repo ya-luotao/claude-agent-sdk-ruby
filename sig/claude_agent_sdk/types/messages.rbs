@@ -1,0 +1,586 @@
+module ClaudeAgentSDK
+  # Possible AssistantMessage#error values (documentation, not validation).
+  ASSISTANT_MESSAGE_ERRORS: Array[String]
+
+  # task_notification statuses.
+  TASK_NOTIFICATION_STATUSES: Array[String]
+
+  # task_updated patch statuses.
+  TASK_UPDATED_STATUSES: Array[String]
+
+  # Statuses meaning a task has finished (both vocabularies).
+  TERMINAL_TASK_STATUSES: Array[String]
+
+  RATE_LIMIT_STATUSES: Array[String]
+
+  RATE_LIMIT_TYPES: Array[String]
+
+  # Message types are parsed from CLI output and stay lenient, so every
+  # attribute reads nil when the CLI did not send it (and on a hand-built
+  # instance). Hash attributes are passed through from the wire (wire_hash);
+  # see docs/types.md#hash-keys.
+
+  class UserMessage < Type
+    # A String prompt, or typed content blocks.
+    attr_accessor content: (String | Array[content_block])?
+
+    attr_accessor uuid: String?
+
+    attr_accessor parent_tool_use_id: String?
+
+    # Tool result data when the message is a tool response, as the CLI sent
+    # it (usually a wire_hash; some tools report a String or an Array).
+    attr_accessor tool_use_result: untyped
+
+    # Provenance of the message: `origin[:kind]` is always a String; nil when
+    # the CLI did not attribute it.
+    attr_accessor origin: wire_hash?
+
+    # Concatenated text ("" when there is none).
+    def text: () -> String
+
+    alias to_s text
+  end
+
+  class AssistantMessage < Type
+    attr_accessor content: Array[content_block]?
+
+    attr_accessor model: String?
+
+    attr_accessor parent_tool_use_id: String?
+
+    # One of ASSISTANT_MESSAGE_ERRORS (open set).
+    attr_accessor error: String?
+
+    attr_accessor usage: wire_hash?
+
+    attr_accessor message_id: String?
+
+    attr_accessor stop_reason: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor uuid: String?
+
+    # Concatenated text of the TextBlocks ("" when there is none).
+    def text: () -> String
+
+    alias to_s text
+  end
+
+  # A system message. Recognized subtypes are the typed subclasses below; any
+  # other subtype arrives as a bare SystemMessage whose #data holds the frame.
+  class SystemMessage < Type
+    attr_accessor subtype: String?
+
+    # The raw frame (defaults to the constructor's attributes Hash).
+    attr_accessor data: Hash[Symbol | String, untyped]?
+
+    def to_s: () -> String
+  end
+
+  # Emitted at session start and after /clear.
+  class InitMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    # Names of the available subagents.
+    attr_accessor agents: Array[String]?
+
+    attr_accessor api_key_source: String?
+
+    attr_accessor betas: Array[String]?
+
+    attr_accessor claude_code_version: String?
+
+    attr_accessor cwd: String?
+
+    attr_accessor tools: Array[String]?
+
+    attr_accessor mcp_servers: Array[wire_hash]?
+
+    attr_accessor model: String?
+
+    attr_accessor permission_mode: String?
+
+    attr_accessor slash_commands: Array[String]?
+
+    attr_accessor output_style: String?
+
+    attr_accessor skills: Array[String]?
+
+    # { name:, path: } wire_hashes.
+    attr_accessor plugins: Array[wire_hash]?
+
+    # "off", "cooldown" or "on".
+    attr_accessor fast_mode_state: String?
+  end
+
+  # Emitted after context compaction completes.
+  class CompactBoundaryMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_reader compact_metadata: CompactMetadata?
+
+    # A Hash is converted to CompactMetadata.
+    def compact_metadata=: (CompactMetadata | Hash[Symbol | String, untyped] | nil value) -> (CompactMetadata | Hash[Symbol | String, untyped] | nil)
+  end
+
+  class CompactMetadata < Type
+    attr_accessor pre_tokens: Integer?
+
+    attr_accessor post_tokens: Integer?
+
+    attr_accessor trigger: String?
+
+    attr_accessor custom_instructions: String?
+
+    attr_accessor preserved_segment: wire_hash?
+  end
+
+  class StatusMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor status: String?
+
+    attr_accessor permission_mode: String?
+  end
+
+  class APIRetryMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor attempt: Integer?
+
+    attr_accessor max_retries: Integer?
+
+    attr_accessor retry_delay_ms: Numeric?
+
+    attr_accessor error_status: Integer?
+
+    # The retry cause, as the CLI reports it (open set).
+    attr_accessor error: String?
+  end
+
+  class LocalCommandOutputMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor content: String?
+  end
+
+  # Emitted when a session_store mirror batch was dropped.
+  class MirrorErrorMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor error: String?
+
+    # The SessionStore key of the dropped batch.
+    attr_accessor key: session_key?
+  end
+
+  class HookStartedMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor hook_id: String?
+
+    attr_accessor hook_name: String?
+
+    attr_accessor hook_event: String?
+  end
+
+  class HookProgressMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor hook_id: String?
+
+    attr_accessor hook_name: String?
+
+    attr_accessor hook_event: String?
+
+    attr_accessor stdout: String?
+
+    attr_accessor stderr: String?
+
+    attr_accessor output: String?
+  end
+
+  class HookResponseMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor hook_id: String?
+
+    attr_accessor hook_name: String?
+
+    attr_accessor hook_event: String?
+
+    attr_accessor output: String?
+
+    attr_accessor stdout: String?
+
+    attr_accessor stderr: String?
+
+    attr_accessor exit_code: Integer?
+
+    # "success", "error" or "cancelled".
+    attr_accessor outcome: String?
+  end
+
+  class SessionStateChangedMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    # "idle", "running" or "requires_action".
+    attr_accessor state: String?
+  end
+
+  class FilesPersistedMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor files: Array[wire_hash]?
+
+    attr_accessor failed: Array[wire_hash]?
+
+    attr_accessor processed_at: String?
+  end
+
+  class ElicitationCompleteMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor mcp_server_name: String?
+
+    attr_accessor elicitation_id: String?
+  end
+
+  # Typed task usage (build one with TaskUsage.from_hash(message.usage)).
+  # Each field defaults to 0.
+  class TaskUsage < Type
+    attr_accessor total_tokens: Integer?
+
+    attr_accessor tool_uses: Integer?
+
+    attr_accessor duration_ms: Integer?
+  end
+
+  class TaskStartedMessage < SystemMessage
+    attr_accessor task_id: String?
+
+    attr_accessor description: String?
+
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor tool_use_id: String?
+
+    attr_accessor task_type: String?
+
+    attr_accessor workflow_name: String?
+
+    attr_accessor prompt: String?
+
+    attr_accessor subagent_type: String?
+
+    # true: background; false: foreground (the spawning call blocks); nil:
+    # not reported.
+    attr_accessor is_backgrounded: bool?
+
+    attr_accessor spawn_depth: Integer?
+
+    attr_accessor skip_transcript: bool?
+
+    attr_accessor ambient: bool?
+  end
+
+  class TaskProgressMessage < SystemMessage
+    attr_accessor task_id: String?
+
+    attr_accessor description: String?
+
+    # Raw usage (wire_hash); TaskUsage.from_hash gives a typed view.
+    attr_accessor usage: wire_hash?
+
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor tool_use_id: String?
+
+    attr_accessor last_tool_name: String?
+
+    attr_accessor summary: String?
+
+    attr_accessor subagent_type: String?
+  end
+
+  class TaskNotificationMessage < SystemMessage
+    attr_accessor task_id: String?
+
+    # One of TASK_NOTIFICATION_STATUSES.
+    attr_accessor status: String?
+
+    attr_accessor output_file: String?
+
+    attr_accessor summary: String?
+
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor tool_use_id: String?
+
+    # Raw usage (wire_hash); TaskUsage.from_hash gives a typed view.
+    attr_accessor usage: wire_hash?
+
+    attr_accessor reason: String?
+
+    attr_accessor resource_links: Array[wire_hash]?
+
+    attr_accessor skip_transcript: bool?
+
+    attr_accessor ambient: bool?
+  end
+
+  # A background task's lifecycle patch; each derived reader is nil when the
+  # patch does not mention its field.
+  class TaskUpdatedMessage < SystemMessage
+    # Never nil after construction ("" when absent).
+    attr_accessor task_id: String?
+
+    # The patch as received ({} when absent or not a Hash).
+    attr_reader patch: Hash[Symbol | String, untyped]
+
+    # Any value is accepted (a lifecycle event must never raise); the
+    # constructor replaces a non-Hash with {}.
+    def patch=: (untyped value) -> untyped
+
+    # patch[:status]: one of TASK_UPDATED_STATUSES.
+    attr_accessor status: String?
+
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor description: String?
+
+    attr_accessor error: String?
+
+    # Epoch milliseconds.
+    attr_accessor end_time: Integer?
+
+    attr_accessor total_paused_ms: Integer?
+
+    attr_accessor is_backgrounded: bool?
+  end
+
+  # The full set of live background tasks (REPLACE semantics).
+  class BackgroundTasksChangedMessage < SystemMessage
+    # { task_id:, task_type:, description:, ambient:? } wire_hashes.
+    attr_accessor tasks: Array[wire_hash]?
+
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+  end
+
+  # A tool call auto-denied without an interactive prompt (advisory).
+  class PermissionDeniedMessage < SystemMessage
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor tool_name: String?
+
+    attr_accessor tool_use_id: String?
+
+    attr_accessor agent_id: String?
+
+    attr_accessor decision_reason_type: String?
+
+    attr_accessor decision_reason: String?
+
+    attr_accessor message: String?
+  end
+
+  # The final message of a turn, with cost and usage.
+  class ResultMessage < Type
+    attr_accessor subtype: String?
+
+    attr_accessor duration_ms: Integer?
+
+    attr_accessor duration_api_ms: Integer?
+
+    attr_accessor is_error: bool?
+
+    attr_accessor num_turns: Integer?
+
+    attr_accessor session_id: String?
+
+    attr_accessor stop_reason: String?
+
+    attr_accessor total_cost_usd: Numeric?
+
+    attr_accessor usage: wire_hash?
+
+    # The final text result.
+    attr_accessor result: String?
+
+    # The structured output (with ClaudeAgentOptions#output_format): any JSON
+    # value, Symbol-keyed.
+    attr_accessor structured_output: untyped
+
+    # { model_name(Symbol) => usage wire_hash (camelCase keys) }.
+    attr_accessor model_usage: Hash[Symbol, wire_hash]?
+
+    # { tool_name:, tool_use_id:, tool_input: } wire_hashes.
+    attr_accessor permission_denials: Array[wire_hash]?
+
+    attr_accessor errors: Array[String]?
+
+    attr_accessor uuid: String?
+
+    attr_accessor fast_mode_state: String?
+
+    attr_accessor api_error_status: Integer?
+
+    attr_accessor terminal_reason: String?
+
+    attr_reader deferred_tool_use: DeferredToolUse?
+
+    # A Hash is converted to DeferredToolUse.
+    def deferred_tool_use=: (DeferredToolUse | Hash[Symbol | String, untyped] | nil value) -> (DeferredToolUse | Hash[Symbol | String, untyped] | nil)
+
+    # Provenance of the triggering user message (see UserMessage#origin).
+    attr_accessor origin: wire_hash?
+
+    # One line, e.g. "[result: success, 3 turns, 4.2s, $0.0120]".
+    def to_s: () -> String
+  end
+
+  # A partial-message stream event (ClaudeAgentOptions#include_partial_messages).
+  class StreamEvent < Type
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    # The raw API stream event.
+    attr_accessor event: wire_hash?
+
+    attr_accessor parent_tool_use_id: String?
+  end
+
+  class ToolProgressMessage < Type
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor tool_use_id: String?
+
+    attr_accessor tool_name: String?
+
+    attr_accessor parent_tool_use_id: String?
+
+    attr_accessor elapsed_time_seconds: Numeric?
+
+    attr_accessor task_id: String?
+  end
+
+  class AuthStatusMessage < Type
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor is_authenticating: bool?
+
+    attr_accessor output: (String | Array[String])?
+
+    attr_accessor error: String?
+  end
+
+  class ToolUseSummaryMessage < Type
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor summary: String?
+
+    attr_accessor preceding_tool_use_ids: Array[String]?
+  end
+
+  class PromptSuggestionMessage < Type
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor suggestion: String?
+  end
+
+  class RateLimitInfo < Type
+    # One of RATE_LIMIT_STATUSES.
+    attr_accessor status: String?
+
+    attr_accessor resets_at: Integer?
+
+    # One of RATE_LIMIT_TYPES.
+    attr_accessor rate_limit_type: String?
+
+    attr_accessor utilization: Numeric?
+
+    attr_accessor overage_status: String?
+
+    attr_accessor overage_resets_at: Integer?
+
+    attr_accessor overage_disabled_reason: String?
+
+    # The raw rate_limit_info payload ({} by default).
+    attr_accessor raw: Hash[Symbol | String, untyped]?
+  end
+
+  class RateLimitEvent < Type
+    attr_accessor uuid: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor raw_data: wire_hash?
+
+    # Never nil after construction.
+    attr_reader rate_limit_info: RateLimitInfo?
+
+    # A Hash is converted to RateLimitInfo (keeping it as #raw).
+    def rate_limit_info=: (RateLimitInfo | Hash[Symbol | String, untyped] | nil value) -> (RateLimitInfo | Hash[Symbol | String, untyped] | nil)
+
+    # The full raw event payload ({} when absent).
+    def data: () -> wire_hash
+  end
+
+  # Emitted when the conversation is replaced mid-connection (e.g. /clear).
+  class ConversationResetMessage < Type
+    # Id of the fresh conversation — NOT the session_id of later messages.
+    attr_accessor new_conversation_id: String?
+
+    attr_accessor uuid: String?
+
+    # The session that was reset.
+    attr_accessor session_id: String?
+  end
+end

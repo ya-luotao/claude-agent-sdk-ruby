@@ -1,0 +1,528 @@
+module ClaudeAgentSDK
+  # Every hook event name the CLI can send (keys of ClaudeAgentOptions#hooks).
+  HOOK_EVENTS: Array[String]
+
+  # The typed input a hook callback receives (UnknownHookInput for an event
+  # this SDK version does not model).
+  type hook_input = PreToolUseHookInput
+                  | PostToolUseHookInput
+                  | UserPromptSubmitHookInput
+                  | StopHookInput
+                  | SubagentStopHookInput
+                  | PostToolUseFailureHookInput
+                  | NotificationHookInput
+                  | SubagentStartHookInput
+                  | PermissionRequestHookInput
+                  | PreCompactHookInput
+                  | SessionStartHookInput
+                  | SessionEndHookInput
+                  | SetupHookInput
+                  | TeammateIdleHookInput
+                  | TaskCompletedHookInput
+                  | ConfigChangeHookInput
+                  | WorktreeCreateHookInput
+                  | WorktreeRemoveHookInput
+                  | StopFailureHookInput
+                  | PostCompactHookInput
+                  | PermissionDeniedHookInput
+                  | TaskCreatedHookInput
+                  | ElicitationHookInput
+                  | ElicitationResultHookInput
+                  | InstructionsLoadedHookInput
+                  | CwdChangedHookInput
+                  | FileChangedHookInput
+                  | UnknownHookInput
+
+  # A *HookSpecificOutput (SyncHookJSONOutput#hook_specific_output).
+  type hook_specific_output = SetupHookSpecificOutput
+                            | PreToolUseHookSpecificOutput
+                            | PostToolUseHookSpecificOutput
+                            | PostToolUseFailureHookSpecificOutput
+                            | UserPromptSubmitHookSpecificOutput
+                            | NotificationHookSpecificOutput
+                            | SubagentStartHookSpecificOutput
+                            | PermissionRequestHookSpecificOutput
+                            | SessionStartHookSpecificOutput
+                            | PermissionDeniedHookSpecificOutput
+                            | CwdChangedHookSpecificOutput
+                            | FileChangedHookSpecificOutput
+
+  # What a hook callback returns: a Hash (snake_case or camelCase keys), a
+  # typed output, or nil (treated as {}).
+  type hook_output = Hash[Symbol | String, untyped] | SyncHookJSONOutput | AsyncHookJSONOutput | nil
+
+  # A hook callback (HookMatcher#hooks entries). tool_use_id is nil for
+  # events without a tool call.
+  interface _HookCallback
+    def call: (hook_input input, String? tool_use_id, HookContext context) -> hook_output
+  end
+
+  # Routes one hook event to callbacks (ClaudeAgentOptions#hooks values).
+  class HookMatcher < Type
+    def initialize: (?matcher: String?, ?hooks: Array[_HookCallback]?, ?timeout: Numeric?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # Tool-name pattern (e.g. "Bash", "Write|Edit"); nil matches everything.
+    attr_accessor matcher: String?
+
+    # Never nil after construction ([] by default).
+    attr_accessor hooks: Array[_HookCallback]?
+
+    # Seconds.
+    attr_accessor timeout: Numeric?
+  end
+
+  # The context passed to a hook callback.
+  class HookContext < Type
+    attr_accessor signal: CancellationSignal?
+
+    attr_accessor request_id: String?
+  end
+
+  # Fields every hook input carries. Hook inputs are parsed from CLI output
+  # and stay lenient: a field the CLI did not send reads nil.
+  class BaseHookInput < Type
+    attr_accessor session_id: String?
+
+    attr_accessor transcript_path: String?
+
+    attr_accessor cwd: String?
+
+    attr_accessor permission_mode: String?
+
+    # The event name, fixed by the subclass (read-only).
+    attr_reader hook_event_name: String?
+  end
+
+  class PreToolUseHookInput < BaseHookInput
+    attr_accessor tool_name: String?
+
+    attr_accessor tool_input: wire_hash?
+
+    attr_accessor tool_use_id: String?
+
+    attr_accessor agent_id: String?
+
+    attr_accessor agent_type: String?
+  end
+
+  class PostToolUseHookInput < BaseHookInput
+    attr_accessor tool_name: String?
+
+    attr_accessor tool_input: wire_hash?
+
+    attr_accessor tool_response: untyped
+
+    attr_accessor tool_use_id: String?
+
+    attr_accessor agent_id: String?
+
+    attr_accessor agent_type: String?
+  end
+
+  class UserPromptSubmitHookInput < BaseHookInput
+    attr_accessor prompt: String?
+  end
+
+  class StopHookInput < BaseHookInput
+    attr_accessor stop_hook_active: bool?
+
+    attr_accessor last_assistant_message: String?
+
+    attr_accessor background_tasks: Array[wire_hash]?
+
+    attr_accessor session_crons: Array[wire_hash]?
+  end
+
+  class SubagentStopHookInput < BaseHookInput
+    attr_accessor stop_hook_active: bool?
+
+    attr_accessor agent_id: String?
+
+    attr_accessor agent_transcript_path: String?
+
+    attr_accessor agent_type: String?
+
+    attr_accessor last_assistant_message: String?
+
+    attr_accessor background_tasks: Array[wire_hash]?
+
+    attr_accessor session_crons: Array[wire_hash]?
+  end
+
+  class PostToolUseFailureHookInput < BaseHookInput
+    attr_accessor tool_name: String?
+
+    attr_accessor tool_input: wire_hash?
+
+    attr_accessor tool_use_id: String?
+
+    attr_accessor error: String?
+
+    attr_accessor is_interrupt: bool?
+
+    attr_accessor agent_id: String?
+
+    attr_accessor agent_type: String?
+  end
+
+  class NotificationHookInput < BaseHookInput
+    attr_accessor message: String?
+
+    attr_accessor title: String?
+
+    attr_accessor notification_type: String?
+  end
+
+  class SubagentStartHookInput < BaseHookInput
+    attr_accessor agent_id: String?
+
+    attr_accessor agent_type: String?
+  end
+
+  class PermissionRequestHookInput < BaseHookInput
+    attr_accessor tool_name: String?
+
+    attr_accessor tool_input: wire_hash?
+
+    attr_accessor permission_suggestions: Array[wire_hash]?
+
+    attr_accessor agent_id: String?
+
+    attr_accessor agent_type: String?
+  end
+
+  class PreCompactHookInput < BaseHookInput
+    attr_accessor trigger: String?
+
+    attr_accessor custom_instructions: String?
+  end
+
+  class SessionStartHookInput < BaseHookInput
+    attr_accessor source: String?
+
+    attr_accessor agent_type: String?
+
+    attr_accessor model: String?
+  end
+
+  class SessionEndHookInput < BaseHookInput
+    attr_accessor reason: String?
+  end
+
+  class SetupHookInput < BaseHookInput
+    attr_accessor trigger: String?
+  end
+
+  class TeammateIdleHookInput < BaseHookInput
+    attr_accessor teammate_name: String?
+
+    attr_accessor team_name: String?
+  end
+
+  class TaskCompletedHookInput < BaseHookInput
+    attr_accessor task_id: String?
+
+    attr_accessor task_subject: String?
+
+    attr_accessor task_description: String?
+
+    attr_accessor teammate_name: String?
+
+    attr_accessor team_name: String?
+  end
+
+  class ConfigChangeHookInput < BaseHookInput
+    attr_accessor source: String?
+
+    attr_accessor file_path: String?
+  end
+
+  class WorktreeCreateHookInput < BaseHookInput
+    attr_accessor name: String?
+  end
+
+  class WorktreeRemoveHookInput < BaseHookInput
+    attr_accessor worktree_path: String?
+  end
+
+  class StopFailureHookInput < BaseHookInput
+    attr_accessor error: String?
+
+    attr_accessor error_details: String?
+
+    attr_accessor last_assistant_message: String?
+  end
+
+  class PostCompactHookInput < BaseHookInput
+    attr_accessor trigger: String?
+
+    attr_accessor compact_summary: String?
+  end
+
+  class PermissionDeniedHookInput < BaseHookInput
+    attr_accessor tool_name: String?
+
+    attr_accessor tool_input: wire_hash?
+
+    attr_accessor tool_use_id: String?
+
+    attr_accessor reason: String?
+
+    attr_accessor agent_id: String?
+
+    attr_accessor agent_type: String?
+  end
+
+  class TaskCreatedHookInput < BaseHookInput
+    attr_accessor task_id: String?
+
+    attr_accessor task_subject: String?
+
+    attr_accessor task_description: String?
+
+    attr_accessor teammate_name: String?
+
+    attr_accessor team_name: String?
+  end
+
+  class ElicitationHookInput < BaseHookInput
+    attr_accessor mcp_server_name: String?
+
+    attr_accessor message: String?
+
+    attr_accessor mode: String?
+
+    attr_accessor url: String?
+
+    attr_accessor elicitation_id: String?
+
+    attr_accessor requested_schema: wire_hash?
+  end
+
+  class ElicitationResultHookInput < BaseHookInput
+    attr_accessor mcp_server_name: String?
+
+    attr_accessor elicitation_id: String?
+
+    attr_accessor mode: String?
+
+    attr_accessor action: String?
+
+    # The elicitation result as the CLI sent it; its shape depends on the
+    # mode (form: a wire_hash of field values, url: a token String).
+    attr_accessor content: untyped
+  end
+
+  class InstructionsLoadedHookInput < BaseHookInput
+    attr_accessor file_path: String?
+
+    attr_accessor memory_type: String?
+
+    attr_accessor load_reason: String?
+
+    attr_accessor globs: Array[String]?
+
+    attr_accessor trigger_file_path: String?
+  end
+
+  class CwdChangedHookInput < BaseHookInput
+    attr_accessor old_cwd: String?
+
+    attr_accessor new_cwd: String?
+  end
+
+  class FileChangedHookInput < BaseHookInput
+    attr_accessor file_path: String?
+
+    attr_accessor event: String?
+  end
+
+  class UnknownHookInput < BaseHookInput
+    attr_accessor raw_input: Hash[Symbol | String, untyped]?
+  end
+
+  # Hook outputs are built by the caller: keyword constructors (the Hash
+  # form is accepted too), unknown keys warn once (raise from 1.0), and
+  # hook_event_name is fixed by the class. #to_h is the camelCase wire form.
+
+  class SetupHookSpecificOutput < Type
+    def initialize: (?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class PreToolUseHookSpecificOutput < Type
+    def initialize: (?permission_decision: String?, ?permission_decision_reason: String?, ?updated_input: Hash[Symbol | String, untyped]?, ?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor permission_decision: String?
+
+    attr_accessor permission_decision_reason: String?
+
+    attr_accessor updated_input: Hash[Symbol | String, untyped]?
+
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class PostToolUseHookSpecificOutput < Type
+    def initialize: (?additional_context: String?, ?updated_mcp_tool_output: untyped, ?updated_tool_output: untyped) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    attr_accessor updated_mcp_tool_output: untyped
+
+    attr_accessor updated_tool_output: untyped
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class PostToolUseFailureHookSpecificOutput < Type
+    def initialize: (?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class UserPromptSubmitHookSpecificOutput < Type
+    def initialize: (?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class NotificationHookSpecificOutput < Type
+    def initialize: (?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class SubagentStartHookSpecificOutput < Type
+    def initialize: (?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class PermissionRequestHookSpecificOutput < Type
+    def initialize: (?decision: Hash[Symbol | String, untyped]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor decision: Hash[Symbol | String, untyped]?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class SessionStartHookSpecificOutput < Type
+    def initialize: (?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class PermissionDeniedHookSpecificOutput < Type
+    def initialize: (?retry: bool?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor retry: bool?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class CwdChangedHookSpecificOutput < Type
+    def initialize: (?watch_paths: Array[String]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor watch_paths: Array[String]?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class FileChangedHookSpecificOutput < Type
+    def initialize: (?watch_paths: Array[String]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor watch_paths: Array[String]?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # Defers the hook's decision (async: true by default).
+  class AsyncHookJSONOutput < Type
+    def initialize: (?async: bool?, ?async_timeout: Integer?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor async: bool?
+
+    # Milliseconds.
+    attr_accessor async_timeout: Integer?
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # A synchronous hook result (continue: true, suppress_output: false by
+  # default).
+  class SyncHookJSONOutput < Type
+    def initialize: (?continue: bool?, ?suppress_output: bool?, ?stop_reason: String?, ?decision: String?, ?system_message: String?, ?reason: String?, ?hook_specific_output: (hook_specific_output | Hash[Symbol | String, untyped])?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor continue: bool?
+
+    attr_accessor suppress_output: bool?
+
+    attr_accessor stop_reason: String?
+
+    # "block" (or nil).
+    attr_accessor decision: String?
+
+    attr_accessor system_message: String?
+
+    attr_accessor reason: String?
+
+    # A typed output, or the equivalent Hash (camelCase wire keys, sent as-is).
+    attr_accessor hook_specific_output: (hook_specific_output | Hash[Symbol | String, untyped])?
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+end

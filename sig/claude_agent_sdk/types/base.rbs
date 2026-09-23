@@ -1,0 +1,36 @@
+module ClaudeAgentSDK
+  # Base class of the SDK's value types (messages, content blocks, hook
+  # inputs/outputs, option values).
+  #
+  # Attribute names are accepted in several spellings — Symbol or String,
+  # snake_case or camelCase — by .new, #[] and #[]=. The camelCase readers
+  # (`msg.sessionId`) are public API too but are resolved dynamically
+  # (method_missing), so they have no static signature here: prefer the
+  # snake_case readers, or #[], in typed code.
+  class Type
+    # Returns object unchanged when it already is an instance, nil for nil,
+    # and otherwise builds one (leniently: unknown keys never warn or raise).
+    def self.wrap: (untyped object) -> instance?
+
+    # Builds an instance from a Hash (leniently); nil for anything else.
+    def self.from_hash: (untyped hash) -> instance?
+
+    # attributes: a Hash of attribute name => value (the keyword form
+    # `Klass.new(name: value)` passes the same Hash).
+    def initialize: (?Hash[Symbol | String, untyped]? attributes) -> void
+
+    # Reads an attribute; nil for a name the type does not define.
+    def []: (Symbol | String name) -> untyped
+
+    # Writes an attribute through its setter; returns value.
+    def []=: (Symbol | String name, untyped value) -> untyped
+
+    # The wire (CLI) form; types that are sent to the CLI override this.
+    def to_h: () -> Hash[Symbol, untyped]
+
+    # Bounded, credential-filtered, human-oriented rendering.
+    def inspect: () -> String
+
+    def to_s: () -> String
+  end
+end

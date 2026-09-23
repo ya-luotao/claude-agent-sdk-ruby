@@ -1,0 +1,66 @@
+module ClaudeAgentSDK
+  # Returned by ClaudeAgentSDK.fork_session.
+  class ForkSessionResult < Type
+    # The new (forked) session's id.
+    attr_accessor session_id: String?
+  end
+
+  # Session metadata returned by list_sessions / get_session_info. A plain
+  # class (not a Type): snake_case accessors only.
+  class SDKSessionInfo
+    attr_accessor session_id: String
+
+    attr_accessor summary: String
+
+    # Epoch milliseconds.
+    attr_accessor last_modified: Integer
+
+    # Bytes (nil for store-backed sessions).
+    attr_accessor file_size: Integer?
+
+    attr_accessor custom_title: String?
+
+    attr_accessor first_prompt: String?
+
+    attr_accessor git_branch: String?
+
+    attr_accessor cwd: String?
+
+    attr_accessor tag: String?
+
+    # Epoch milliseconds.
+    attr_accessor created_at: Integer?
+
+    def initialize: (session_id: String, summary: String, last_modified: Integer, ?file_size: Integer?, ?custom_title: String?, ?first_prompt: String?, ?git_branch: String?, ?cwd: String?, ?tag: String?, ?created_at: Integer?) -> void
+  end
+
+  # One message of a session transcript (get_session_messages /
+  # get_subagent_messages). A plain class (not a Type).
+  class SessionMessage
+    # "user" or "assistant".
+    attr_accessor type: String
+
+    attr_accessor uuid: String
+
+    attr_accessor session_id: String
+
+    # The raw API message, String keys as in the JSONL (docs/types.md#hash-keys).
+    attr_accessor message: transcript_hash?
+
+    # Subagent messages only: the Agent tool_use id that spawned it.
+    attr_accessor parent_tool_use_id: String?
+
+    # Nested subagent messages only: the spawning subagent's id.
+    attr_accessor parent_agent_id: String?
+
+    def initialize: (type: String, uuid: String, session_id: String, message: transcript_hash?, ?parent_tool_use_id: String?, ?parent_agent_id: String?) -> void
+
+    # Concatenated text ("" when there is none).
+    def text: () -> String
+
+    alias to_s text
+
+    # Typed content blocks ([] without array-of-blocks content).
+    def content_blocks: () -> Array[content_block]
+  end
+end

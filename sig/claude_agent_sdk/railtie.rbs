@@ -1,0 +1,10 @@
+module ClaudeAgentSDK
+  # Rails integration (lib/claude_agent_sdk/railtie.rb), loaded only when
+  # Rails::Railtie is defined. Declared without its Rails::Railtie superclass
+  # so these signatures validate without Rails' own.
+  class Railtie
+    # A callback_wrapper that runs SDK callbacks in the Rails executor,
+    # deadlock-free under development code reloading.
+    def self.callback_wrapper: () -> _CallbackWrapper
+  end
+end

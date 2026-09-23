@@ -1,0 +1,42 @@
+module ClaudeAgentSDK
+  # Base module for message observers (ClaudeAgentOptions#observers): include
+  # it and override the callbacks you need; each defaults to a no-op.
+  # Observer errors are rescued and never reach the pipeline.
+  module Observer
+    def on_user_prompt: (String prompt) -> void
+
+    def on_message: (message message) -> void
+
+    def on_error: (StandardError error) -> void
+
+    def on_close: () -> void
+  end
+
+  # Loaded by `require 'claude_agent_sdk/instrumentation'` (needs the
+  # opentelemetry-api gem).
+  module Instrumentation
+    # Emits OpenTelemetry spans (gen_ai.* + OpenInference conventions) for a
+    # session.
+    class OTelObserver
+      include Observer
+
+      TRACER_NAME: String
+
+      MAX_ATTRIBUTE_LENGTH: Integer
+
+      # default_attributes are added to every span. Attribute names usually
+      # contain dots, so they are commonly given as String keys
+      # (`new('user.id' => 'u1')`).
+      def initialize: (?tracer_name: String, **untyped default_attributes) -> void
+                    | (Hash[String | Symbol, untyped] default_attributes) -> void
+
+      def on_user_prompt: (String prompt) -> void
+
+      def on_message: (message message) -> void
+
+      def on_error: (StandardError error) -> void
+
+      def on_close: () -> void
+    end
+  end
+end

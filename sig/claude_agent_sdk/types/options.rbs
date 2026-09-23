@@ -1,0 +1,288 @@
+module ClaudeAgentSDK
+  SETTING_SOURCES: Array[String]
+
+  # Named ClaudeAgentOptions#effort levels (an Integer is accepted too).
+  EFFORT_LEVELS: Array[String]
+
+  SDK_BETAS: Array[String]
+
+  # ClaudeAgentOptions#system_prompt: a String, a typed config, or the
+  # equivalent Hash ({ type: 'preset' | 'custom' | 'file', ... }).
+  type system_prompt_config = String | SystemPromptPreset | SystemPromptCustom | SystemPromptFile | Hash[Symbol | String, untyped]
+
+  # ClaudeAgentOptions#thinking.
+  type thinking_config = ThinkingConfigAdaptive | ThinkingConfigEnabled | ThinkingConfigDisabled | Hash[Symbol | String, untyped]
+
+  # ClaudeAgentOptions#stderr: called with each stderr line of the CLI.
+  interface _StderrCallback
+    def call: (String line) -> void
+  end
+
+  # ClaudeAgentOptions#debug_stderr as an IO-like object.
+  interface _Puts
+    def puts: (*untyped) -> untyped
+  end
+
+  # Configuration for query / Client. Unknown option names raise
+  # ArgumentError (in .new, #[]= and #dup_with). Values set with
+  # ClaudeAgentSDK.configure are merged in as defaults.
+  #
+  # The container options (allowed_tools, env, mcp_servers, ...) and
+  # session_store_flush / load_timeout_ms are filled with their defaults by
+  # the constructor, so they are nil only when set to nil afterwards.
+  class ClaudeAgentOptions < Type
+    CALLBACK_SCHEDULING_MODES: Array[Symbol]
+
+    def initialize: (
+                      ?allowed_tools: Array[String]?,
+                      ?system_prompt: system_prompt_config?,
+                      ?mcp_servers: (Hash[String | Symbol, mcp_server_config] | String)?,
+                      ?permission_mode: String?,
+                      ?resume: String?,
+                      ?resume_session_at: String?,
+                      ?resume_drops_turn: String?,
+                      ?session_id: String?,
+                      ?max_turns: Integer?,
+                      ?disallowed_tools: Array[String]?,
+                      ?model: String?,
+                      ?permission_prompt_tool_name: String?,
+                      ?cwd: (String | Pathname)?,
+                      ?cli_path: (String | Pathname)?,
+                      ?settings: (String | Hash[Symbol | String, untyped])?,
+                      ?add_dirs: Array[String | Pathname]?,
+                      ?env: Hash[String | Symbol, String?]?,
+                      ?extra_args: Hash[String | Symbol, untyped]?,
+                      ?max_buffer_size: Integer?,
+                      ?stderr: _StderrCallback?,
+                      ?can_use_tool: _CanUseTool?,
+                      ?hooks: Hash[String | Symbol, Array[HookMatcher]?]?,
+                      ?user: (String | Integer)?,
+                      ?agents: Hash[String | Symbol, AgentDefinition | Hash[Symbol | String, untyped]]?,
+                      ?setting_sources: Array[String]?,
+                      ?skills: (String | Array[String])?,
+                      ?output_format: (Hash[Symbol | String, untyped] | String)?,
+                      ?max_budget_usd: Numeric?,
+                      ?max_thinking_tokens: Integer?,
+                      ?fallback_model: String?,
+                      ?advisor_model: String?,
+                      ?plugins: Array[SdkPluginConfig | Hash[Symbol | String, untyped]]?,
+                      ?debug_stderr: (_Puts | String)?,
+                      ?betas: Array[String]?,
+                      ?tools: (Array[String] | ToolsPreset | Hash[Symbol | String, untyped])?,
+                      ?sandbox: (SandboxSettings | Hash[Symbol | String, untyped] | bool)?,
+                      ?thinking: thinking_config?,
+                      ?effort: (String | Symbol | Integer)?,
+                      ?observers: Array[untyped]?,
+                      ?task_budget: (TaskBudget | Hash[Symbol | String, untyped])?,
+                      ?session_store: _SessionStore?,
+                      ?session_store_flush: (String | Symbol)?,
+                      ?load_timeout_ms: Numeric?,
+                      ?bare: bool?,
+                      ?fork_session: bool?,
+                      ?enable_file_checkpointing: bool?,
+                      ?include_partial_messages: bool?,
+                      ?continue_conversation: bool?,
+                      ?include_hook_events: bool?,
+                      ?strict_mcp_config: bool?,
+                      ?forward_subagent_text: bool?,
+                      ?agent_progress_summaries: bool?,
+                      ?callback_scheduling: (:thread | :inline | "thread" | "inline")?,
+                      ?callback_wrapper: _CallbackWrapper?
+                    ) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # A deep copy with changes applied (unknown names raise ArgumentError).
+    # Containers and option value types are copied; callables, SDK MCP server
+    # instances and store adapters keep their identity.
+    def dup_with: (**untyped changes) -> ClaudeAgentOptions
+
+    # Tool names always allowed ([] by default).
+    attr_accessor allowed_tools: Array[String]?
+
+    attr_accessor system_prompt: system_prompt_config?
+
+    # Server name => config ({} by default), or a path / JSON String passed
+    # to --mcp-config.
+    attr_accessor mcp_servers: (Hash[String | Symbol, mcp_server_config] | String)?
+
+    # One of PERMISSION_MODES.
+    attr_accessor permission_mode: String?
+
+    # Session id to resume.
+    attr_accessor resume: String?
+
+    # With #resume: truncate the resumed session after this message UUID.
+    attr_accessor resume_session_at: String?
+
+    # With #resume_session_at: the prompt UUID of the turn being discarded.
+    attr_accessor resume_drops_turn: String?
+
+    attr_accessor session_id: String?
+
+    attr_accessor max_turns: Integer?
+
+    # Tool names always denied ([] by default).
+    attr_accessor disallowed_tools: Array[String]?
+
+    attr_accessor model: String?
+
+    attr_accessor permission_prompt_tool_name: String?
+
+    attr_accessor cwd: (String | Pathname)?
+
+    attr_accessor cli_path: (String | Pathname)?
+
+    # A settings JSON String, a path to a settings file, or a Hash.
+    attr_accessor settings: (String | Hash[Symbol | String, untyped])?
+
+    attr_accessor add_dirs: Array[String | Pathname]?
+
+    # Extra environment for the CLI process ({} by default).
+    attr_accessor env: Hash[String | Symbol, String?]?
+
+    # Extra CLI flags: flag name (kebab-case, no leading --) => value, nil
+    # for a boolean flag ({} by default).
+    attr_accessor extra_args: Hash[String | Symbol, untyped]?
+
+    attr_accessor max_buffer_size: Integer?
+
+    attr_accessor stderr: _StderrCallback?
+
+    attr_accessor can_use_tool: _CanUseTool?
+
+    # Hook event name (see HOOK_EVENTS) => matchers.
+    attr_accessor hooks: Hash[String | Symbol, Array[HookMatcher]?]?
+
+    # User (name or uid) to run the CLI process as.
+    attr_accessor user: (String | Integer)?
+
+    attr_accessor agents: Hash[String | Symbol, AgentDefinition | Hash[Symbol | String, untyped]]?
+
+    # Entries of SETTING_SOURCES.
+    attr_accessor setting_sources: Array[String]?
+
+    # 'all', or the names of the skills to enable.
+    attr_accessor skills: (String | Array[String])?
+
+    # { type: 'json_schema', schema: {...} }, a bare schema Hash, or a JSON
+    # String.
+    attr_accessor output_format: (Hash[Symbol | String, untyped] | String)?
+
+    attr_accessor max_budget_usd: Numeric?
+
+    attr_accessor max_thinking_tokens: Integer?
+
+    attr_accessor fallback_model: String?
+
+    attr_accessor advisor_model: String?
+
+    attr_accessor plugins: Array[SdkPluginConfig | Hash[Symbol | String, untyped]]?
+
+    # An IO-like object (#puts) or a file path to append CLI stderr to.
+    attr_accessor debug_stderr: (_Puts | String)?
+
+    # Entries of SDK_BETAS.
+    attr_accessor betas: Array[String]?
+
+    # The base tool set: tool names, or a preset.
+    attr_accessor tools: (Array[String] | ToolsPreset | Hash[Symbol | String, untyped])?
+
+    # true / false are forwarded as-is (a bare toggle).
+    attr_accessor sandbox: (SandboxSettings | Hash[Symbol | String, untyped] | bool)?
+
+    attr_accessor thinking: thinking_config?
+
+    # One of EFFORT_LEVELS, or an Integer.
+    attr_accessor effort: (String | Symbol | Integer)?
+
+    # Observer instances, or factories (callables returning a fresh observer
+    # per query/session). Anything implementing none of the Observer methods
+    # is warned about and skipped, so the element type is left open.
+    attr_accessor observers: Array[untyped]?
+
+    attr_accessor task_budget: (TaskBudget | Hash[Symbol | String, untyped])?
+
+    # Mirrors transcripts to this store and enables resume from it.
+    attr_accessor session_store: _SessionStore?
+
+    # One of SESSION_STORE_FLUSH_MODES ('batched' by default).
+    attr_accessor session_store_flush: (String | Symbol)?
+
+    # Resume-materialization timeout (60_000 by default; 0 = immediate).
+    attr_accessor load_timeout_ms: Numeric?
+
+    # The boolean flags coerce any assigned value (nil stays nil where
+    # noted; "false", "0", "off", ... read as false). The predicate form
+    # (#bare?, ...) is a strict Boolean.
+
+    attr_reader bare: bool?
+
+    def bare=: (untyped value) -> bool?
+
+    def bare?: () -> bool
+
+    attr_reader fork_session: bool?
+
+    def fork_session=: (untyped value) -> bool?
+
+    def fork_session?: () -> bool
+
+    attr_reader enable_file_checkpointing: bool?
+
+    def enable_file_checkpointing=: (untyped value) -> bool?
+
+    def enable_file_checkpointing?: () -> bool
+
+    attr_reader include_partial_messages: bool?
+
+    def include_partial_messages=: (untyped value) -> bool?
+
+    def include_partial_messages?: () -> bool
+
+    attr_reader continue_conversation: bool?
+
+    def continue_conversation=: (untyped value) -> bool?
+
+    def continue_conversation?: () -> bool
+
+    attr_reader include_hook_events: bool?
+
+    def include_hook_events=: (untyped value) -> bool?
+
+    def include_hook_events?: () -> bool
+
+    attr_reader strict_mcp_config: bool?
+
+    def strict_mcp_config=: (untyped value) -> bool?
+
+    def strict_mcp_config?: () -> bool
+
+    # Forward subagent text and thinking blocks (false by default).
+    attr_reader forward_subagent_text: bool?
+
+    def forward_subagent_text=: (untyped value) -> bool?
+
+    def forward_subagent_text?: () -> bool
+
+    # Request model-generated progress summaries for subagent tasks (nil:
+    # unset, not sent).
+    attr_reader agent_progress_summaries: bool?
+
+    def agent_progress_summaries=: (untyped value) -> bool?
+
+    # Where user callbacks run (:thread by default). See the README's
+    # "Callback scheduling".
+    attr_reader callback_scheduling: (:thread | :inline)?
+
+    # A String is coerced to a Symbol; anything but :thread / :inline / nil
+    # raises ArgumentError.
+    def callback_scheduling=: ((:thread | :inline | "thread" | "inline")? value) -> (:thread | :inline | "thread" | "inline")?
+
+    # Middleware around every user-callback dispatch (nil: none). Rails:
+    # ClaudeAgentSDK::Railtie.callback_wrapper.
+    attr_reader callback_wrapper: _CallbackWrapper?
+
+    # Raises ArgumentError unless value is callable or nil.
+    def callback_wrapper=: (_CallbackWrapper? value) -> _CallbackWrapper?
+  end
+end

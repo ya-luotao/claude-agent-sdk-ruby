@@ -1,0 +1,14 @@
+module ClaudeAgentSDK
+  # Global defaults set via ClaudeAgentSDK.configure, merged under every
+  # ClaudeAgentOptions (per-call options win).
+  class Configuration
+    # A frozen snapshot of the configured defaults ({} when unset). Keys are
+    # ClaudeAgentOptions option names.
+    attr_reader default_options: Hash[Symbol | String, untyped]
+
+    def initialize: () -> void
+
+    # Stores a deep-frozen copy; nil resets to {}.
+    def default_options=: (Hash[Symbol | String, untyped]? value) -> Hash[Symbol | String, untyped]?
+  end
+end

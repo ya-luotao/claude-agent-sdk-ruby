@@ -1,0 +1,5 @@
+# Standard libraries these signatures reference, loaded by `rbs collection`
+# for projects that use this gem's sig/. Pathname is core from RBS 4; RBS 3
+# needs the stdlib signatures.
+dependencies:
+  - name: pathname

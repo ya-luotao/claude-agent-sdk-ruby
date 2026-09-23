@@ -1,0 +1,108 @@
+module ClaudeAgentSDK
+  PERMISSION_MODES: Array[String]
+
+  PERMISSION_UPDATE_DESTINATIONS: Array[String]
+
+  PERMISSION_BEHAVIORS: Array[String]
+
+  # What a can_use_tool callback returns.
+  type permission_result = PermissionResultAllow | PermissionResultDeny
+
+  # ClaudeAgentOptions#can_use_tool: decides whether a tool call may run.
+  # input is the tool input (wire_hash).
+  interface _CanUseTool
+    def call: (String tool_name, wire_hash input, ToolPermissionContext context) -> permission_result
+  end
+
+  class PermissionRuleValue < Type
+    def initialize: (?tool_name: String?, ?rule_content: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor tool_name: String?
+
+    attr_accessor rule_content: String?
+  end
+
+  # A permission change: a suggestion in ToolPermissionContext#suggestions,
+  # or an entry of PermissionResultAllow#updated_permissions.
+  class PermissionUpdate < Type
+    def initialize: (?type: String?, ?behavior: String?, ?mode: String?, ?directories: Array[String]?, ?destination: String?, ?rules: Array[PermissionRuleValue | Hash[Symbol | String, untyped]]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # "addRules", "replaceRules", "removeRules", "setMode",
+    # "addDirectories" or "removeDirectories".
+    attr_accessor type: String?
+
+    # One of PERMISSION_BEHAVIORS.
+    attr_accessor behavior: String?
+
+    # One of PERMISSION_MODES (for "setMode").
+    attr_accessor mode: String?
+
+    attr_accessor directories: Array[String]?
+
+    # One of PERMISSION_UPDATE_DESTINATIONS.
+    attr_accessor destination: String?
+
+    attr_reader rules: Array[PermissionRuleValue]?
+
+    # Hash entries (camelCase or snake_case keys) become PermissionRuleValue.
+    def rules=: (Array[PermissionRuleValue | Hash[Symbol | String, untyped]]? value) -> Array[PermissionRuleValue | Hash[Symbol | String, untyped]]?
+
+    # The wire form (camelCase keys).
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # The context passed to a can_use_tool callback.
+  class ToolPermissionContext < Type
+    attr_accessor signal: CancellationSignal?
+
+    # Identifies this permission request (not the tool invocation).
+    attr_accessor request_id: String?
+
+    # Never nil after construction ([] by default).
+    attr_accessor suggestions: Array[PermissionUpdate]?
+
+    attr_accessor tool_use_id: String?
+
+    attr_accessor agent_id: String?
+
+    attr_accessor title: String?
+
+    attr_accessor display_name: String?
+
+    attr_accessor description: String?
+
+    attr_accessor blocked_path: String?
+
+    attr_accessor decision_reason: String?
+  end
+
+  class PermissionResultAllow < Type
+    def initialize: (?updated_input: Hash[Symbol | String, untyped]?, ?updated_permissions: Array[PermissionUpdate | Hash[Symbol | String, untyped]]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # Replaces the tool input when set.
+    attr_accessor updated_input: Hash[Symbol | String, untyped]?
+
+    # PermissionUpdates, or the equivalent wire Hashes (sent via #to_h).
+    attr_accessor updated_permissions: Array[PermissionUpdate | Hash[Symbol | String, untyped]]?
+
+    # "allow".
+    attr_reader behavior: String
+  end
+
+  class PermissionResultDeny < Type
+    def initialize: (?message: String?, ?interrupt: bool?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # "" by default.
+    attr_accessor message: String?
+
+    # false by default; true also interrupts the turn.
+    attr_accessor interrupt: bool?
+
+    # "deny".
+    attr_reader behavior: String
+  end
+end
