@@ -1016,11 +1016,22 @@ module ClaudeAgentSDK
       @query_handler.set_permission_mode(mode)
     end
 
+    # Ruby-style spelling of #set_permission_mode: `client.permission_mode = 'plan'`.
+    # Delegates (rather than aliasing) so an override of #set_permission_mode applies to both.
+    def permission_mode=(mode)
+      set_permission_mode(mode)
+    end
+
     # Change the AI model during conversation
     # @param model [String, nil] Model name or nil for default
     def set_model(model)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
       @query_handler.set_model(model)
+    end
+
+    # Ruby-style spelling of #set_model: `client.model = 'claude-opus-5'`.
+    def model=(model)
+      set_model(model)
     end
 
     # Reconnect a failed MCP server
@@ -1094,11 +1105,23 @@ module ClaudeAgentSDK
       @query_handler.get_context_usage
     end
 
+    # Ruby-style spelling of #get_context_usage.
+    # @return [Hash] Context usage response
+    def context_usage
+      get_context_usage
+    end
+
     # Get current MCP server connection status (only works with streaming mode)
     # @return [Hash] MCP status information, including mcpServers list
     def get_mcp_status
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
       @query_handler.get_mcp_status
+    end
+
+    # Ruby-style spelling of #get_mcp_status.
+    # @return [Hash] MCP status information, including mcpServers list
+    def mcp_status
+      get_mcp_status
     end
 
     # Get server initialization info including available commands and output styles

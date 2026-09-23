@@ -397,6 +397,71 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(client.get_mcp_status).to eq({ mcpServers: [{ name: 'tools', status: 'connected' }] })
   end
 
+  describe 'Ruby-style aliases of the parity names' do
+    let(:query_handler) do
+      instance_double(
+        ClaudeAgentSDK::Query,
+        start: true, initialize_protocol: true, set_model: nil, set_permission_mode: nil,
+        get_context_usage: { totalTokens: 1200 }, get_mcp_status: { mcpServers: [] }
+      )
+    end
+
+    def connected_client
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+      described_class.new.tap(&:connect)
+    end
+
+    it '#model= sends the set_model control request and evaluates to the assigned value' do
+      client = connected_client
+
+      expect(client.model = 'claude-opus-5').to eq('claude-opus-5')
+      expect(query_handler).to have_received(:set_model).with('claude-opus-5')
+    end
+
+    it '#model= accepts nil (back to the default model), like #set_model' do
+      client = connected_client
+      client.model = nil
+
+      expect(query_handler).to have_received(:set_model).with(nil)
+    end
+
+    it '#permission_mode= sends the set_permission_mode control request' do
+      client = connected_client
+
+      expect(client.permission_mode = 'plan').to eq('plan')
+      expect(query_handler).to have_received(:set_permission_mode).with('plan')
+    end
+
+    it '#context_usage and #mcp_status return what the get_ forms return' do
+      client = connected_client
+
+      expect(client.context_usage).to eq(totalTokens: 1200)
+      expect(client.mcp_status).to eq(mcpServers: [])
+    end
+
+    it 'route through the parity methods, so an override of those applies to both spellings' do
+      client = connected_client
+      allow(client).to receive(:set_model)
+      allow(client).to receive(:get_mcp_status).and_return(:overridden)
+
+      client.model = 'haiku'
+
+      expect(client).to have_received(:set_model).with('haiku')
+      expect(client.mcp_status).to eq(:overridden)
+    end
+
+    it 'raise CLIConnectionError while not connected, like the parity names' do
+      client = described_class.new
+
+      expect { client.model = 'haiku' }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+      expect { client.permission_mode = 'plan' }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+      expect { client.context_usage }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+      expect { client.mcp_status }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
+    end
+  end
+
   it 'raises when requesting server info while not connected' do
     client = described_class.new
     expect { client.get_server_info }.to raise_error(ClaudeAgentSDK::CLIConnectionError)

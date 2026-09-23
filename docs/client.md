@@ -48,9 +48,10 @@ Async do
   client.connect
 
   client.interrupt                              # Send interrupt signal
-  client.set_permission_mode('acceptEdits')     # Change permission mode mid-conversation
-  client.set_model('claude-sonnet-5')           # Switch model mid-conversation
-  status = client.get_mcp_status                # Inspect MCP server status
+  client.permission_mode = 'acceptEdits'        # Change permission mode mid-conversation
+  client.model = 'claude-sonnet-5'              # Switch model mid-conversation (nil = default)
+  usage  = client.context_usage                 # Context window usage by category
+  status = client.mcp_status                    # Inspect MCP server status
   info   = client.get_server_info               # Inspect server init info
   client.reconnect_mcp_server('my-server')      # Reconnect a failed MCP server
   client.toggle_mcp_server('my-server', false)  # Enable/disable an MCP server
@@ -63,6 +64,18 @@ Async do
   client.disconnect
 end.wait
 ```
+
+The Ruby-style names above sit next to the Python SDK's spellings, and both work, so code ported from the Python docs runs unchanged:
+
+| Ruby style | Python-parity name |
+|------------|--------------------|
+| `client.model = 'haiku'` | `client.set_model('haiku')` |
+| `client.permission_mode = 'plan'` | `client.set_permission_mode('plan')` |
+| `client.context_usage` | `client.get_context_usage` |
+| `client.mcp_status` | `client.get_mcp_status` |
+| `client.server_info` | `client.get_server_info` |
+
+Each Ruby-style method calls its parity counterpart, so both send the same control request and raise `CLIConnectionError` when the client is not connected. The one exception is `server_info`, which reads the cached initialization result and returns `nil` instead of raising before `connect`. As with any Ruby setter, `client.model = 'haiku'` evaluates to `'haiku'`, not to the control response.
 
 ## Custom Transport
 
