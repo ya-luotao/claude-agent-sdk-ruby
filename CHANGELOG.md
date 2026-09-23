@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking: `Type#[]`, `#[]=` and camelCase methods reach attributes only.** A name that is not an attribute behaves like an undefined one: `msg[:to_h]` is `nil`, `#[]=` ignores it (raises on the strict types above), `msg.toH` raises `NoMethodError` and `respond_to?(:toH)` is `false`. Methods your own code adds to a subclass, mixin or instance still count as attributes.
 - **Breaking: store-backed resume failures raise `SessionStoreError` instead of `RuntimeError`.** The two SDK-raised `RuntimeError`s (store call failed, store call timed out) become `SessionStoreError`, and a `RuntimeError` raised by the adapter itself, which 0.37 let through unwrapped, is now wrapped too, so `rescue ClaudeSDKError` catches every resume-materialization failure. Code that rescued `RuntimeError` there must rescue `SessionStoreError`. The failure message now includes the adapter exception's class (`... failed during resume materialization: IOError: connection reset`).
 - `UPGRADING-1.0.md` ships in the gem and the YARD docs, linked from the README.
+- The deprecation warning printed by the ten `*_from_store` / `*_via_store` session functions, and their YARD and docs, now say they will be removed in **2.0**. 0.36 and 0.37 said 1.0, but they stay, deprecated, for all of 1.x ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)). Nothing else about them changes: each still works and still warns once per process.
 
 ## [0.37.0] - 2026-09-23
 

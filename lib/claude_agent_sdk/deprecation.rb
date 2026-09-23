@@ -35,7 +35,7 @@ module ClaudeAgentSDK
         return unless first
 
         begin
-          warn("ClaudeAgentSDK.#{name} is deprecated and will be removed in 1.0; " \
+          warn("ClaudeAgentSDK.#{name} is deprecated and will be removed in 2.0; " \
                "use ClaudeAgentSDK.#{replacement}", uplevel: 2)
         rescue StandardError
           nil

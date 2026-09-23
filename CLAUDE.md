@@ -99,7 +99,7 @@ Optional adapter for mirroring session transcripts to external storage (the subp
 
 `sessions.rb` / `session_resume.rb` / `session_mutations.rb` implement session listing (`SDKSessionInfo`), resume (can materialize the transcript from a SessionStore when the local file is absent), forking, and mutations.
 
-The public functions in `lib/claude_agent_sdk.rb` (`list_sessions`, `rename_session`, …) route on an optional `session_store:` — nil to the disk implementation (`Sessions.list_sessions`), a store to the store one (`Sessions.list_sessions_from_store`). The root-level `*_from_store` / `*_via_store` twins are deprecated shims (issue #126, removed in 1.0) that warn once via `Deprecation.warn_once` and call the store implementation directly.
+The public functions in `lib/claude_agent_sdk.rb` (`list_sessions`, `rename_session`, …) route on an optional `session_store:` — nil to the disk implementation (`Sessions.list_sessions`), a store to the store one (`Sessions.list_sessions_from_store`). The root-level `*_from_store` / `*_via_store` twins are deprecated shims (issue #126; kept through 1.x, removed in 2.0) that warn once via `Deprecation.warn_once` and call the store implementation directly.
 
 ### FiberBoundary (fiber safety)
 
