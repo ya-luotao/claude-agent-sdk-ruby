@@ -116,6 +116,10 @@ The OTel observer sets attributes using both `gen_ai.*` (OTel GenAI) and OpenInf
 | `claude_agent.generation` | `generation` | `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens`, `output.value` |
 | `claude_agent.tool.*` | `tool` | `tool.name`, `input.value`, `output.value` |
 
+`gen_ai.usage.cost` and `llm.cost.total` record the **increase** since the last observed `ResultMessage.total_cost_usd` in the connected session, rather than repeating that cumulative total on every turn's span. The baseline survives per-turn span resets and resets on close, a changed session ID (such as `/clear`), or a decreased counter. The original `ResultMessage` is unchanged.
+
+Missing costs omit both attributes without discarding the last known total; the next reported increment can therefore include an unreported or interrupted turn. The first observation uses the CLI's reported total. If a newer CLI restores historical spend on resume, that first span also includes it: a fresh observer cannot separate spend it never observed. These are CLI cost estimates, not billing records.
+
 Events (`api_retry`, `rate_limit`, `tool_progress`) are recorded on the root span.
 
 The `langfuse.observation.type` attribute is set on each span (`agent`/`generation`/`tool`) to enable Langfuse's **trace flow diagram** (DAG graph visualization).

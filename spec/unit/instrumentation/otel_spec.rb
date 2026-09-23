@@ -555,10 +555,10 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       )
     end
 
-    def result_message(result: nil)
+    def result_message(result: nil, total_cost_usd: 0.0, session_id: 'sess-1')
       ClaudeAgentSDK::ResultMessage.new(
         subtype: 'success', duration_ms: 1, duration_api_ms: 1, is_error: false,
-        num_turns: 1, session_id: 'sess-1', total_cost_usd: 0.0,
+        num_turns: 1, session_id: session_id, total_cost_usd: total_cost_usd,
         usage: { input_tokens: 1, output_tokens: 1 }, result: result
       )
     end
@@ -578,6 +578,75 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
 
     def session_spans
       created_spans.select { |s| s.name == 'claude_agent.session' }
+    end
+
+    it 'records only each increment of the cumulative cost across turns, including a zero-cost turn' do
+      [0.0045, 0.0135, 0.0135].each do |total|
+        observer.on_message(init_message)
+        observer.on_message(result_message(total_cost_usd: total))
+      end
+
+      %w[gen_ai.usage.cost llm.cost.total].each do |key|
+        costs = session_spans.map { |span| span.attributes.fetch(key) }
+        expect(costs).to match([be_within(1e-10).of(0.0045), be_within(1e-10).of(0.009), 0.0])
+        expect(costs.sum).to be_within(1e-10).of(0.0135)
+      end
+    end
+
+    it 'omits missing costs without losing the last known cumulative baseline' do
+      [nil, 0.0045, nil, 0.0135].each do |total|
+        observer.on_message(init_message)
+        observer.on_message(result_message(total_cost_usd: total))
+      end
+
+      %w[gen_ai.usage.cost llm.cost.total].each do |key|
+        expect(session_spans[0].attributes).not_to have_key(key)
+        expect(session_spans[2].attributes).not_to have_key(key)
+        expect(session_spans[1].attributes[key]).to eq(0.0045)
+        expect(session_spans[3].attributes[key]).to be_within(1e-10).of(0.009)
+      end
+    end
+
+    it 'starts a fresh cost baseline for a changed session ID, even when its total is higher' do
+      observer.on_message(init_message)
+      observer.on_message(result_message(total_cost_usd: 0.01))
+      reset_init = init_message.dup
+      reset_init.session_id = 'cleared-session'
+      observer.on_message(reset_init)
+      observer.on_message(result_message(total_cost_usd: 0.03, session_id: 'cleared-session'))
+
+      expect(session_spans.last.attributes['llm.cost.total']).to eq(0.03)
+    end
+
+    it 'starts a fresh baseline when a counter resets without a changed session ID' do
+      [0.07, 0.02, 0.03].each do |total|
+        observer.on_message(init_message)
+        observer.on_message(result_message(total_cost_usd: total))
+      end
+
+      expect(session_spans[1].attributes['llm.cost.total']).to eq(0.02)
+      expect(session_spans[2].attributes['llm.cost.total']).to be_within(1e-10).of(0.01)
+    end
+
+    it 'forgets cumulative cost on close when reusing an observer for the same session ID' do
+      observer.on_message(init_message)
+      observer.on_message(result_message(total_cost_usd: 0.01))
+      observer.on_close
+      observer.on_message(init_message)
+      observer.on_message(result_message(total_cost_usd: 0.03))
+
+      expect(session_spans.last.attributes['llm.cost.total']).to eq(0.03)
+    end
+
+    it 'retains the cost baseline when an interrupted trace is superseded without a result' do
+      observer.on_message(init_message)
+      observer.on_message(result_message(total_cost_usd: 0.0045))
+      observer.on_message(init_message)
+      observer.on_message(init_message)
+      observer.on_message(result_message(total_cost_usd: 0.0135))
+
+      expect(session_spans[1].attributes).not_to have_key('llm.cost.total')
+      expect(session_spans.last.attributes['llm.cost.total']).to be_within(1e-10).of(0.009)
     end
 
     it 'labels a later trace with its own prompt after a full lifecycle' do

@@ -53,6 +53,8 @@ module ClaudeAgentSDK
         @first_user_input = nil # first user prompt of the current trace
         @pending_prompt = nil # prompt that belongs to the NEXT trace (see on_user_prompt)
         @last_assistant_text = nil # capture last assistant text for trace output
+        @cost_session_id = nil
+        @last_total_cost_usd = nil
       end
 
       def on_user_prompt(prompt)
@@ -116,6 +118,8 @@ module ClaudeAgentSDK
         # end_trace/supersede resets by design — but the session is over now,
         # and a reused observer must not leak it into the next session.
         @pending_prompt = nil
+        @cost_session_id = nil
+        @last_total_cost_usd = nil
       end
 
       private
@@ -237,10 +241,11 @@ module ClaudeAgentSDK
         # Set trace output (last assistant response — shown in Langfuse UI)
         # ResultMessage.result has the final text; fall back to last tracked assistant text
         trace_output = message.result || @last_assistant_text
+        cost = cost_since_last_result(message)
 
         attrs = {
           # gen_ai conventions
-          'gen_ai.usage.cost' => message.total_cost_usd,
+          'gen_ai.usage.cost' => cost,
           # OpenInference conventions (Langfuse maps these to usage/cost);
           # prompt includes cache tokens so prompt_details.* are true subsets
           'llm.token_count.prompt' => prompt_tokens,
@@ -249,7 +254,7 @@ module ClaudeAgentSDK
           # OpenInference prompt-cache breakdown (cache_read/cache_write details)
           'llm.token_count.prompt_details.cache_read' => cache_read_tokens,
           'llm.token_count.prompt_details.cache_write' => cache_creation_tokens,
-          'llm.cost.total' => message.total_cost_usd,
+          'llm.cost.total' => cost,
           # Trace output (Langfuse shows this in the trace detail view)
           'output.value' => truncate(trace_output),
           # Session metadata
@@ -268,6 +273,20 @@ module ClaudeAgentSDK
         # reset must come AFTER trace_output consumed @last_assistant_text.
         finish_open_spans
         reset_session_buffers
+      end
+
+      # Results carry cumulative cost, but each init/result pair gets its
+      # own span. Keep this baseline across trace resets, not across close.
+      # /clear changes the session ID; a decreasing counter also starts a
+      # new baseline. Missing costs leave the last known total intact.
+      def cost_since_last_result(message)
+        total = message.total_cost_usd
+        return if total.nil?
+
+        previous = @last_total_cost_usd if @cost_session_id == message.session_id
+        @cost_session_id = message.session_id
+        @last_total_cost_usd = total
+        previous && total >= previous ? total - previous : total
       end
 
       def start_tool_span(block)
