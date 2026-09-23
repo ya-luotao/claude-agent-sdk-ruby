@@ -1,6 +1,6 @@
 # Types Reference
 
-See [lib/claude_agent_sdk/types.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types.rb) for complete type definitions.
+See [lib/claude_agent_sdk/types/](https://github.com/ya-luotao/claude-agent-sdk-ruby/tree/main/lib/claude_agent_sdk/types) for complete type definitions (one file per area; `types.rb` loads them all).
 
 ## Message Types
 
@@ -301,6 +301,32 @@ end
 | `SystemPromptCustom` | Custom system prompt configuration — the object form of a String prompt, so `snapshot` can be set alongside it |
 | `SystemPromptFile` | System prompt loaded from a file path |
 | `ToolsPreset` | Tools preset configuration for base tools selection |
+
+### Unknown Keys
+
+`ClaudeAgentOptions` raises `ArgumentError` on an unknown key. The value types you build and pass *in* used to drop a misspelled key silently; they now print a warning, once per class and key, pointing at your call:
+
+```
+app/agents/reviewer.rb:12: warning: ClaudeAgentSDK::HookMatcher: unknown attribute :matchr ignored; this will raise ArgumentError in 1.0 (known: hooks, matcher, timeout)
+```
+
+**In 1.0 the same call raises `ArgumentError`.** This covers `.new` and `#[]=` on:
+
+- option values: `AgentDefinition`, `SandboxSettings`, `SandboxNetworkConfig`, `SandboxFilesystemConfig`, `ThinkingConfigAdaptive` / `Enabled` / `Disabled`, `TaskBudget`, `SystemPromptPreset` / `Custom` / `File`, `ToolsPreset`, `SdkPluginConfig`, `McpStdioServerConfig`, `McpSSEServerConfig`, `McpHttpServerConfig`, `McpSdkServerConfig`
+- `HookMatcher` and hook outputs: `SyncHookJSONOutput`, `AsyncHookJSONOutput`, every `*HookSpecificOutput`
+- `PermissionResultAllow`, `PermissionResultDeny`, `PermissionUpdate`, `PermissionRuleValue`
+
+Accepted without a warning: Symbol or String keys, snake_case or camelCase spellings, and the fixed discriminator a type sets itself (`type`, `hook_event_name`, `behavior`), so `klass.new(value.to_h)` round-trips. Types the SDK parses from CLI output (messages, content blocks, hook inputs, `ToolPermissionContext`, the MCP status types) stay lenient, so a field added by a newer CLI never warns, and so does every construction through `.from_hash` or `.wrap`. The warning goes through `Kernel#warn`, so `-W0` or `$VERBOSE = nil` silences it.
+
+### Attributes Only
+
+`#[]`, `#[]=` and the camelCase readers (`msg[:session_id]`, `msg['sessionId']`, `msg.sessionId`) are public API for a type's **attributes**: the fields it declares, plus predicates such as `options.forkSession?`. Until now they reached any public method, so `msg[:to_h]` returned a Hash, `msg['freeze']` froze the message and `msg.toH` worked. Such a call still works in 0.37 but warns once per class and name:
+
+```
+app/jobs/sync.rb:8: warning: ClaudeAgentSDK::ResultMessage#[]: :to_h is not an attribute; Type#[] will only read attributes in 1.0
+```
+
+**In 1.0 a name that is not an attribute behaves like an undefined one:** `#[]` returns `nil`, `#[]=` ignores it (on the strict types above it raises `ArgumentError`), and a camelCase call raises `NoMethodError`. Call the method directly instead (`msg.to_h`). Undefined names already behave that way today and do not warn. `UserMessage#text` and `AssistantMessage#text` are convenience methods, not attributes.
 
 ## Constants
 

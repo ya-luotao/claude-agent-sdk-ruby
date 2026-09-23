@@ -226,7 +226,6 @@ Metrics/MethodLength:
     - 'lib/claude_agent_sdk/query.rb'
     - 'lib/claude_agent_sdk/sdk_mcp_server.rb'
     - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-    - 'lib/claude_agent_sdk/types.rb'
 
 # Offense count: 7
 # Configuration parameters: CountKeywordArgs, MaxOptionalParameters.
@@ -335,12 +334,6 @@ Style/IfUnlessModifier:
     - 'lib/claude_agent_sdk/sdk_mcp_server.rb'
     - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
 
-# Offense count: 4
-# This cop supports safe autocorrection (--autocorrect).
-Style/KeywordParametersOrder:
-  Exclude:
-    - 'lib/claude_agent_sdk/types.rb'
-
 # Offense count: 1
 # This cop supports safe autocorrection (--autocorrect).
 Style/MultilineIfModifier:
@@ -399,7 +392,7 @@ Style/RedundantBegin:
 # This cop supports safe autocorrection (--autocorrect).
 Style/RedundantSelf:
   Exclude:
-    - 'lib/claude_agent_sdk/types.rb'
+    - 'lib/claude_agent_sdk/types/options.rb'
 
 # Offense count: 3
 # This cop supports safe autocorrection (--autocorrect).
