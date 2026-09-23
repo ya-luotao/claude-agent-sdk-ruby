@@ -89,6 +89,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 - Hashes passed through from the live CLI stream (`origin`, `usage`, `model_usage`, hook `tool_input`, `can_use_tool` `input`, SDK MCP tool args, `mcp_status`) have **Symbol** keys spelled as on the wire: `tool_input[:command]`, `origin[:fromSession]`
 - Hashes read from transcripts or a SessionStore (`SessionMessage#message`, `get_subagent_metadata`, store keys/entries, `fold_session_summary`) have **String** keys: `meta['toolUseId']`
 - Use the one correct form; the wrong one silently returns `nil`. Typed objects also accept `msg[:session_id]`, `msg['sessionId']`, `msg.sessionId`; `msg[:x] = v` mutates the received object
+- Typed accessors (`msg[:x]`, camelCase readers) reach **attributes only**; call methods directly (`msg.to_h`, `msg.text`). Value types you construct (`HookMatcher`, `AgentDefinition`, `SandboxSettings`, MCP configs, permission results, hook outputs) warn once on an unknown key in 0.37 and raise `ArgumentError` from 1.0 — spell keys exactly; `ClaudeAgentOptions` already raises
 
 ## Where To Look For Exact Details
 - Locate the gem: `bundle show claude-agent-sdk`
