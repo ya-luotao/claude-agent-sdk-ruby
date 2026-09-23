@@ -20,6 +20,7 @@ require_relative 'claude_agent_sdk/session_resume'
 require_relative 'claude_agent_sdk/session_mutations'
 require_relative 'claude_agent_sdk/fiber_boundary'
 require_relative 'claude_agent_sdk/option_warnings'
+require_relative 'claude_agent_sdk/deprecation'
 # Rails apps only: Bundler.require runs after `require 'rails'`, so the
 # Railtie (rake tasks; the generator lives under lib/generators) is picked up
 # there and nowhere else.
@@ -295,93 +296,218 @@ module ClaudeAgentSDK
     val
   end
 
-  # List sessions for a directory (or all sessions)
-  # @param directory [String, nil] Working directory to list sessions for
+  # ---- Session browsing & mutation ----
+  #
+  # One function per operation. By default each reads or writes the local-disk
+  # transcripts under CLAUDE_CONFIG_DIR; pass +session_store:+ to operate on a
+  # SessionStore instead. The two paths differ in a few documented ways:
+  #
+  # - +directory: nil+ searches every project directory on disk, but means the
+  #   current working directory with a store (a SessionStore is keyed by
+  #   project_key and cannot enumerate projects — parity with the Python SDK).
+  # - +include_worktrees:+ exists only on disk (list_sessions); passing it
+  #   together with +session_store:+ raises ArgumentError.
+
+  # Sentinel default for list_sessions' include_worktrees: tells "not passed"
+  # (disk default true; accepted with a store) apart from an explicit value,
+  # which is rejected with a store instead of being silently ignored. An
+  # explicit nil keeps its existing disk meaning (falsy: no worktrees).
+  INCLUDE_WORKTREES_DEFAULT = Object.new.freeze
+  private_constant :INCLUDE_WORKTREES_DEFAULT
+
+  # List sessions for a directory (or all sessions), newest first.
+  # @param directory [String, nil] Working directory to list sessions for. On
+  #   disk, nil lists every project; with a session_store, nil means the
+  #   current working directory.
   # @param limit [Integer, nil] Maximum number of sessions to return
   # @param offset [Integer] Number of sessions to skip (for pagination)
-  # @param include_worktrees [Boolean] Whether to include git worktree sessions
+  # @param include_worktrees [Boolean] Disk only (default true): also list the
+  #   project's git worktree sessions. Raises ArgumentError with a session_store.
+  # @param session_store [SessionStore, nil] List from this store instead of
+  #   local disk. Uses the store's list_session_summaries when implemented,
+  #   else list_sessions + one load per listed session.
   # @return [Array<SDKSessionInfo>] Sessions sorted by last_modified descending
-  def self.list_sessions(directory: nil, limit: nil, offset: 0, include_worktrees: true)
+  # @raise [ArgumentError] if include_worktrees is given with a session_store,
+  #   or the store implements neither list_session_summaries nor list_sessions
+  def self.list_sessions(directory: nil, limit: nil, offset: 0, include_worktrees: INCLUDE_WORKTREES_DEFAULT,
+                         session_store: nil)
+    unless session_store.nil?
+      unless include_worktrees.equal?(INCLUDE_WORKTREES_DEFAULT)
+        raise ArgumentError, 'include_worktrees: applies only to local-disk listing; ' \
+                             'a session_store is keyed by project and has no worktrees'
+      end
+
+      return Sessions.list_sessions_from_store(session_store: session_store, directory: directory,
+                                               limit: limit, offset: offset)
+    end
+
+    include_worktrees = true if include_worktrees.equal?(INCLUDE_WORKTREES_DEFAULT)
     Sessions.list_sessions(directory: directory, limit: limit, offset: offset, include_worktrees: include_worktrees)
   end
 
   # Read metadata for a single session by ID (no full directory scan)
   # @param session_id [String] UUID of the session to look up
-  # @param directory [String, nil] Project directory path
-  # @return [SDKSessionInfo, nil] Session info, or nil if not found
-  def self.get_session_info(session_id:, directory: nil)
+  # @param directory [String, nil] Project directory path. On disk, nil
+  #   searches every project; with a session_store, nil means the current
+  #   working directory.
+  # @param session_store [SessionStore, nil] Read from this store instead of local disk
+  # @return [SDKSessionInfo, nil] Session info, or nil if not found / sidechain / no summary
+  def self.get_session_info(session_id:, directory: nil, session_store: nil)
+    unless session_store.nil?
+      return Sessions.get_session_info_from_store(session_store: session_store, session_id: session_id,
+                                                  directory: directory)
+    end
+
     Sessions.get_session_info(session_id: session_id, directory: directory)
   end
 
   # Get messages from a session transcript
   # @param session_id [String] The session UUID
-  # @param directory [String, nil] Working directory to search in
+  # @param directory [String, nil] Working directory to search in. On disk,
+  #   nil searches every project; with a session_store, nil means the current
+  #   working directory.
   # @param limit [Integer, nil] Maximum number of messages
   # @param offset [Integer] Number of messages to skip
+  # @param session_store [SessionStore, nil] Read from this store instead of local disk
   # @return [Array<SessionMessage>] Ordered messages from the session
-  def self.get_session_messages(session_id:, directory: nil, limit: nil, offset: 0)
+  def self.get_session_messages(session_id:, directory: nil, limit: nil, offset: 0, session_store: nil)
+    unless session_store.nil?
+      return Sessions.get_session_messages_from_store(session_store: session_store, session_id: session_id,
+                                                      directory: directory, limit: limit, offset: offset)
+    end
+
     Sessions.get_session_messages(session_id: session_id, directory: directory, limit: limit, offset: offset)
   end
 
-  # List subagent IDs recorded for a session on local disk
+  # List subagent IDs recorded for a session
   # @param session_id [String] The session UUID
-  # @param directory [String, nil] Working directory to search in
+  # @param directory [String, nil] Working directory to search in. On disk,
+  #   nil searches every project; with a session_store, nil means the current
+  #   working directory.
+  # @param session_store [SessionStore, nil] Read from this store instead of
+  #   local disk (the store must implement list_subkeys)
   # @return [Array<String>] Subagent IDs
-  def self.list_subagents(session_id:, directory: nil)
+  # @raise [ArgumentError] if the session_store does not implement list_subkeys
+  def self.list_subagents(session_id:, directory: nil, session_store: nil)
+    unless session_store.nil?
+      return Sessions.list_subagents_from_store(session_store: session_store, session_id: session_id,
+                                                directory: directory)
+    end
+
     Sessions.list_subagents(session_id: session_id, directory: directory)
   end
 
-  # Read a subagent's optional metadata (not live status) from local disk.
+  # Read a subagent's optional metadata (not live status). With a
+  # session_store, the last agent_metadata entry wins and its synthetic type
+  # marker is omitted.
   # @param session_id [String] The parent session UUID
   # @param agent_id [String] The subagent ID, without the agent- prefix
-  # @param directory [String, nil] Project directory to search in
+  # @param directory [String, nil] Project directory to search in. On disk,
+  #   nil searches every project; with a session_store, nil means the current
+  #   working directory.
+  # @param session_store [SessionStore, nil] Read from this store instead of local disk
   # @return [Hash{String => Object}, nil] CLI metadata, or nil if unavailable
-  def self.get_subagent_metadata(session_id:, agent_id:, directory: nil)
+  def self.get_subagent_metadata(session_id:, agent_id:, directory: nil, session_store: nil)
+    unless session_store.nil?
+      return Sessions.get_subagent_metadata_from_store(session_store: session_store, session_id: session_id,
+                                                       agent_id: agent_id, directory: directory)
+    end
+
     Sessions.get_subagent_metadata(session_id: session_id, agent_id: agent_id, directory: directory)
   end
 
-  # Read a subagent's conversation messages from local disk
+  # Read a subagent's conversation messages
   # @param session_id [String] The session UUID
   # @param agent_id [String] The subagent ID (without the agent- prefix)
-  # @param directory [String, nil] Working directory to search in
+  # @param directory [String, nil] Working directory to search in. On disk,
+  #   nil searches every project; with a session_store, nil means the current
+  #   working directory.
   # @param limit [Integer, nil] Maximum number of messages
   # @param offset [Integer] Number of messages to skip
+  # @param session_store [SessionStore, nil] Read from this store instead of local disk
   # @return [Array<SessionMessage>] Ordered messages from the subagent
-  def self.get_subagent_messages(session_id:, agent_id:, directory: nil, limit: nil, offset: 0)
+  def self.get_subagent_messages(session_id:, agent_id:, directory: nil, limit: nil, offset: 0, session_store: nil)
+    unless session_store.nil?
+      return Sessions.get_subagent_messages_from_store(session_store: session_store, session_id: session_id,
+                                                       agent_id: agent_id, directory: directory,
+                                                       limit: limit, offset: offset)
+    end
+
     Sessions.get_subagent_messages(session_id: session_id, agent_id: agent_id,
                                    directory: directory, limit: limit, offset: offset)
   end
 
-  # Rename a session by appending a custom-title entry
+  # Rename a session by appending a custom-title entry. With a session_store
+  # the entry is appended via SessionStore#append and carries a fresh uuid +
+  # timestamp (so uuid-deduping adapters treat it correctly).
   # @param session_id [String] UUID of the session to rename
   # @param title [String] New session title
-  # @param directory [String, nil] Project directory path
-  def self.rename_session(session_id:, title:, directory: nil)
+  # @param directory [String, nil] Project directory path (nil = cwd with a session_store)
+  # @param session_store [SessionStore, nil] Rename in this store instead of on local disk
+  # @raise [ArgumentError] if session_id is invalid or title is empty
+  # @raise [Errno::ENOENT] if the session is not found (nothing is written)
+  def self.rename_session(session_id:, title:, directory: nil, session_store: nil)
+    unless session_store.nil?
+      return SessionMutations.rename_session_via_store(session_store: session_store, session_id: session_id,
+                                                       title: title, directory: directory)
+    end
+
     SessionMutations.rename_session(session_id: session_id, title: title, directory: directory)
   end
 
   # Tag a session. Pass nil to clear the tag.
   # @param session_id [String] UUID of the session to tag
   # @param tag [String, nil] Tag string, or nil to clear
-  # @param directory [String, nil] Project directory path
-  def self.tag_session(session_id:, tag:, directory: nil)
+  # @param directory [String, nil] Project directory path (nil = cwd with a session_store)
+  # @param session_store [SessionStore, nil] Tag in this store instead of on local disk
+  # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
+  # @raise [Errno::ENOENT] if the session is not found (nothing is written)
+  def self.tag_session(session_id:, tag:, directory: nil, session_store: nil)
+    unless session_store.nil?
+      return SessionMutations.tag_session_via_store(session_store: session_store, session_id: session_id,
+                                                    tag: tag, directory: directory)
+    end
+
     SessionMutations.tag_session(session_id: session_id, tag: tag, directory: directory)
   end
 
-  # Delete a session by removing its JSONL file (hard delete).
+  # Delete a session (hard delete). On disk, removes its JSONL file and
+  # subagent directory, raising Errno::ENOENT if the session is not found.
+  # With a session_store, calls SessionStore#delete — a no-op when the store
+  # does not implement #delete (WORM/append-only backends); whether subagent
+  # subkeys are removed too depends on the store's cascade semantics.
   # @param session_id [String] UUID of the session to delete
-  # @param directory [String, nil] Project directory path
-  def self.delete_session(session_id:, directory: nil)
+  # @param directory [String, nil] Project directory path (nil = cwd with a session_store)
+  # @param session_store [SessionStore, nil] Delete from this store instead of local disk
+  # @raise [ArgumentError] if session_id is invalid
+  # @raise [Errno::ENOENT] on disk, if the session file cannot be found
+  def self.delete_session(session_id:, directory: nil, session_store: nil)
+    unless session_store.nil?
+      return SessionMutations.delete_session_via_store(session_store: session_store, session_id: session_id,
+                                                       directory: directory)
+    end
+
     SessionMutations.delete_session(session_id: session_id, directory: directory)
   end
 
-  # Fork a session into a new branch with fresh UUIDs.
+  # Fork a session into a new branch with fresh UUIDs. With a session_store
+  # the fork transform runs over the store's entries and the fork is appended
+  # to the same store.
   # @param session_id [String] UUID of the session to fork
-  # @param directory [String, nil] Project directory path
+  # @param directory [String, nil] Project directory path (nil = cwd with a session_store)
   # @param up_to_message_id [String, nil] Truncate the fork at this message UUID
   # @param title [String, nil] Custom title for the fork
+  # @param session_store [SessionStore, nil] Fork within this store instead of on local disk
   # @return [ForkSessionResult] Result containing the new session ID
-  def self.fork_session(session_id:, directory: nil, up_to_message_id: nil, title: nil)
+  # @raise [ArgumentError] if session_id/up_to_message_id is invalid or there are no messages
+  # @raise [Errno::ENOENT] if the source session is not found
+  def self.fork_session(session_id:, directory: nil, up_to_message_id: nil, title: nil, session_store: nil)
+    unless session_store.nil?
+      return SessionMutations.fork_session_via_store(session_store: session_store, session_id: session_id,
+                                                     directory: directory, up_to_message_id: up_to_message_id,
+                                                     title: title)
+    end
+
     SessionMutations.fork_session(session_id: session_id, directory: directory,
                                   up_to_message_id: up_to_message_id, title: title)
   end
@@ -406,81 +532,83 @@ module ClaudeAgentSDK
     SessionSummary.fold_session_summary(prev, key, entries)
   end
 
-  # List sessions from a SessionStore (store-backed counterpart to list_sessions).
-  # @param session_store [SessionStore] the store to read from
+  # ---- Deprecated store twins (removed in 1.0) ----
+  #
+  # Each forwards to the same implementation as before — not to the merged
+  # function, so a nil session_store keeps failing as it always did instead
+  # of silently reading local disk — after one warning per method per process.
+
+  # @deprecated Use {.list_sessions} with +session_store:+. Removed in 1.0.
   # @return [Array<SDKSessionInfo>] sorted by last_modified descending
   def self.list_sessions_from_store(session_store:, directory: nil, limit: nil, offset: 0)
+    Deprecation.warn_once(:list_sessions_from_store, 'list_sessions(session_store: store)')
     Sessions.list_sessions_from_store(session_store: session_store, directory: directory, limit: limit, offset: offset)
   end
 
-  # Read metadata for a single session from a SessionStore.
+  # @deprecated Use {.get_session_info} with +session_store:+. Removed in 1.0.
   # @return [SDKSessionInfo, nil]
   def self.get_session_info_from_store(session_store:, session_id:, directory: nil)
+    Deprecation.warn_once(:get_session_info_from_store, 'get_session_info(session_store: store, ...)')
     Sessions.get_session_info_from_store(session_store: session_store, session_id: session_id, directory: directory)
   end
 
-  # Read a session's conversation messages from a SessionStore.
+  # @deprecated Use {.get_session_messages} with +session_store:+. Removed in 1.0.
   # @return [Array<SessionMessage>]
   def self.get_session_messages_from_store(session_store:, session_id:, directory: nil, limit: nil, offset: 0)
+    Deprecation.warn_once(:get_session_messages_from_store, 'get_session_messages(session_store: store, ...)')
     Sessions.get_session_messages_from_store(session_store: session_store, session_id: session_id,
                                              directory: directory, limit: limit, offset: offset)
   end
 
-  # List subagent IDs for a session from a SessionStore (requires list_subkeys).
+  # @deprecated Use {.list_subagents} with +session_store:+. Removed in 1.0.
   # @return [Array<String>]
   def self.list_subagents_from_store(session_store:, session_id:, directory: nil)
+    Deprecation.warn_once(:list_subagents_from_store, 'list_subagents(session_store: store, ...)')
     Sessions.list_subagents_from_store(session_store: session_store, session_id: session_id, directory: directory)
   end
 
-  # Read the latest subagent metadata from a SessionStore, without its synthetic type marker.
+  # @deprecated Use {.get_subagent_metadata} with +session_store:+. Removed in 1.0.
   # @return [Hash{String => Object}, nil]
   def self.get_subagent_metadata_from_store(session_store:, session_id:, agent_id:, directory: nil)
+    Deprecation.warn_once(:get_subagent_metadata_from_store, 'get_subagent_metadata(session_store: store, ...)')
     Sessions.get_subagent_metadata_from_store(session_store: session_store, session_id: session_id,
                                               agent_id: agent_id, directory: directory)
   end
 
-  # Read a subagent's conversation messages from a SessionStore.
+  # @deprecated Use {.get_subagent_messages} with +session_store:+. Removed in 1.0.
   # @return [Array<SessionMessage>]
   def self.get_subagent_messages_from_store(session_store:, session_id:, agent_id:, directory: nil, limit: nil,
                                             offset: 0)
+    Deprecation.warn_once(:get_subagent_messages_from_store, 'get_subagent_messages(session_store: store, ...)')
     Sessions.get_subagent_messages_from_store(session_store: session_store, session_id: session_id,
                                               agent_id: agent_id, directory: directory, limit: limit, offset: offset)
   end
 
-  # Rename a session in a SessionStore (store-backed counterpart to
-  # rename_session). Appends a custom-title entry carrying a fresh uuid +
-  # timestamp via SessionStore#append.
-  # @raise [ArgumentError] if session_id is invalid or title is empty
-  # @raise [Errno::ENOENT] if the session is not found in the store (nothing is appended)
+  # @deprecated Use {.rename_session} with +session_store:+. Removed in 1.0.
   def self.rename_session_via_store(session_store:, session_id:, title:, directory: nil)
+    Deprecation.warn_once(:rename_session_via_store, 'rename_session(session_store: store, ...)')
     SessionMutations.rename_session_via_store(session_store: session_store, session_id: session_id,
                                               title: title, directory: directory)
   end
 
-  # Tag a session in a SessionStore (store-backed counterpart to tag_session).
-  # Pass nil to clear the tag.
-  # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
-  # @raise [Errno::ENOENT] if the session is not found in the store (nothing is appended)
+  # @deprecated Use {.tag_session} with +session_store:+. Removed in 1.0.
   def self.tag_session_via_store(session_store:, session_id:, tag:, directory: nil)
+    Deprecation.warn_once(:tag_session_via_store, 'tag_session(session_store: store, ...)')
     SessionMutations.tag_session_via_store(session_store: session_store, session_id: session_id,
                                            tag: tag, directory: directory)
   end
 
-  # Delete a session from a SessionStore (store-backed counterpart to
-  # delete_session). No-op when the store does not implement #delete
-  # (WORM/append-only backends).
-  # @raise [ArgumentError] if session_id is invalid
+  # @deprecated Use {.delete_session} with +session_store:+. Removed in 1.0.
   def self.delete_session_via_store(session_store:, session_id:, directory: nil)
+    Deprecation.warn_once(:delete_session_via_store, 'delete_session(session_store: store, ...)')
     SessionMutations.delete_session_via_store(session_store: session_store, session_id: session_id,
                                               directory: directory)
   end
 
-  # Fork a session in a SessionStore into a new branch with fresh UUIDs
-  # (store-backed counterpart to fork_session).
-  # @return [ForkSessionResult] result containing the new session ID
-  # @raise [ArgumentError] if session_id/up_to_message_id is invalid or there are no messages
-  # @raise [Errno::ENOENT] if the source session is not found in the store
+  # @deprecated Use {.fork_session} with +session_store:+. Removed in 1.0.
+  # @return [ForkSessionResult]
   def self.fork_session_via_store(session_store:, session_id:, directory: nil, up_to_message_id: nil, title: nil)
+    Deprecation.warn_once(:fork_session_via_store, 'fork_session(session_store: store, ...)')
     SessionMutations.fork_session_via_store(session_store: session_store, session_id: session_id,
                                             directory: directory, up_to_message_id: up_to_message_id, title: title)
   end
