@@ -1019,7 +1019,8 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       expect(span.attributes['llm.token_count.total']).to eq(2 + 11_648 + 26_069 + 4)
     end
 
-    it 'reads string-keyed usage from session transcripts' do
+    it 'reads string-keyed usage from session transcripts',
+       rbs_incompatible: 'builds a ResultMessage with a String-keyed usage Hash' do
       observer.on_message(init_message)
       observer.on_message(result_with_usage(
                             'input_tokens' => 1, 'output_tokens' => 1, 'cache_read_input_tokens' => 500

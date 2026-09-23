@@ -143,7 +143,7 @@ RSpec.describe 'Inline callback scheduling' do
       expect(ClaudeAgentSDK::ClaudeAgentOptions.new(callback_scheduling: 'inline').callback_scheduling).to eq(:inline)
     end
 
-    it 'rejects unknown modes loudly' do
+    it 'rejects unknown modes loudly', rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       expect { ClaudeAgentSDK::ClaudeAgentOptions.new(callback_scheduling: :fiber) }
         .to raise_error(ArgumentError, /callback_scheduling must be one of/)
       expect { ClaudeAgentSDK::ClaudeAgentOptions.new(callback_scheduling: 42) }

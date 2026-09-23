@@ -1,0 +1,216 @@
+module ClaudeAgentSDK
+  # McpServerStatus#status values.
+  MCP_SERVER_CONNECTION_STATUSES: Array[String]
+
+  # A ClaudeAgentOptions#mcp_servers value: a typed config, the Hash
+  # ClaudeAgentSDK.create_sdk_mcp_server returns, or any config Hash
+  # (Symbol or String keys).
+  type mcp_server_config = McpStdioServerConfig
+                         | McpSSEServerConfig
+                         | McpHttpServerConfig
+                         | McpSdkServerConfig
+                         | Hash[Symbol | String, untyped]
+
+  # ---- Typed view of Client#mcp_status (McpStatusResponse.parse) ----
+
+  class McpServerInfo < Type
+    attr_accessor name: String?
+
+    attr_accessor version: String?
+  end
+
+  class McpToolAnnotations < Type
+    attr_accessor read_only: bool?
+
+    attr_accessor destructive: bool?
+
+    attr_accessor open_world: bool?
+
+    def self.parse: (untyped data) -> McpToolAnnotations?
+  end
+
+  class McpToolInfo < Type
+    attr_accessor name: String?
+
+    attr_accessor description: String?
+
+    attr_reader annotations: McpToolAnnotations?
+
+    # A Hash is converted to McpToolAnnotations.
+    def annotations=: (McpToolAnnotations | Hash[Symbol | String, untyped] | nil value) -> (McpToolAnnotations | Hash[Symbol | String, untyped] | nil)
+
+    def self.parse: (untyped data) -> McpToolInfo?
+  end
+
+  # McpServerStatus#config for an SDK server.
+  class McpSdkServerConfigStatus < Type
+    attr_accessor name: String?
+
+    # "sdk".
+    attr_reader type: String
+
+    def to_h: () -> { type: String, name: String? }
+  end
+
+  # McpServerStatus#config for a claude.ai proxy server.
+  class McpClaudeAIProxyServerConfig < Type
+    attr_accessor url: String?
+
+    attr_accessor id: String?
+
+    # "claudeai-proxy".
+    attr_reader type: String
+
+    def to_h: () -> { type: String, url: String?, id: String? }
+  end
+
+  class McpServerStatus < Type
+    attr_accessor name: String?
+
+    # One of MCP_SERVER_CONNECTION_STATUSES.
+    attr_accessor status: String?
+
+    attr_accessor error: String?
+
+    attr_accessor scope: String?
+
+    attr_reader server_info: McpServerInfo?
+
+    # A typed config for SDK / claude.ai proxy servers; the raw wire_hash
+    # for any other type.
+    attr_reader config: (McpSdkServerConfigStatus | McpClaudeAIProxyServerConfig | wire_hash)?
+
+    attr_reader tools: Array[McpToolInfo]?
+
+    # A Hash is converted to McpServerInfo.
+    def server_info=: (McpServerInfo | Hash[Symbol | String, untyped] | nil value) -> (McpServerInfo | Hash[Symbol | String, untyped] | nil)
+
+    # Hash entries are converted to McpToolInfo.
+    def tools=: (Array[McpToolInfo | Hash[Symbol | String, untyped]]? value) -> Array[McpToolInfo | Hash[Symbol | String, untyped]]?
+
+    def config=: (McpSdkServerConfigStatus | McpClaudeAIProxyServerConfig | wire_hash | nil value) -> (McpSdkServerConfigStatus | McpClaudeAIProxyServerConfig | wire_hash | nil)
+
+    def self.parse: (untyped data) -> McpServerStatus?
+
+    # The typed config for a config wire_hash (nil for anything else).
+    def self.parse_config: (untyped config) -> (McpSdkServerConfigStatus | McpClaudeAIProxyServerConfig | wire_hash)?
+  end
+
+  # Typed view of the Client#mcp_status Hash:
+  # `McpStatusResponse.parse(client.mcp_status).mcp_servers`.
+  class McpStatusResponse < Type
+    attr_reader mcp_servers: Array[McpServerStatus]?
+
+    # Hash entries are converted to McpServerStatus.
+    def mcp_servers=: (Array[McpServerStatus | Hash[Symbol | String, untyped]]? value) -> Array[McpServerStatus | Hash[Symbol | String, untyped]]?
+
+    def self.parse: (untyped data) -> McpStatusResponse?
+  end
+
+  # ---- Server configs (ClaudeAgentOptions#mcp_servers values) ----
+  #
+  # Built by the caller: keyword constructors (the Hash form is accepted
+  # too), an unknown key raises ArgumentError, and `type` is fixed by the
+  # class.
+
+  class McpStdioServerConfig < Type
+    def initialize: (?command: String?, ?args: Array[String]?, ?env: Hash[String | Symbol, String]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor command: String?
+
+    attr_accessor args: Array[String]?
+
+    attr_accessor env: Hash[String | Symbol, String]?
+
+    # "stdio".
+    attr_reader type: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class McpSSEServerConfig < Type
+    def initialize: (?url: String?, ?headers: Hash[String | Symbol, String]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor url: String?
+
+    attr_accessor headers: Hash[String | Symbol, String]?
+
+    # "sse".
+    attr_reader type: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class McpHttpServerConfig < Type
+    def initialize: (?url: String?, ?headers: Hash[String | Symbol, String]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor url: String?
+
+    attr_accessor headers: Hash[String | Symbol, String]?
+
+    # "http".
+    attr_reader type: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # The typed form of the create_sdk_mcp_server Hash.
+  class McpSdkServerConfig < Type
+    def initialize: (?name: String?, ?instance: SdkMcpServer?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor name: String?
+
+    attr_accessor instance: SdkMcpServer?
+
+    # "sdk".
+    attr_reader type: String
+
+    def to_h: () -> { type: String, name: String?, instance: SdkMcpServer? }
+  end
+
+  # ---- SDK MCP definitions (ClaudeAgentSDK.create_tool / _resource / _prompt) ----
+
+  class SdkMcpTool < Type
+    attr_accessor name: String?
+
+    attr_accessor description: String?
+
+    # A JSON Schema Hash, or the shorthand `{ param: :string, ... }`.
+    attr_accessor input_schema: Hash[untyped, untyped]?
+
+    attr_accessor handler: _ToolHandler?
+
+    # MCP tool annotations (readOnlyHint, ..., maxResultSizeChars).
+    attr_accessor annotations: Hash[Symbol | String, untyped]?
+
+    # The tool's _meta.
+    attr_accessor meta: Hash[String | Symbol, untyped]?
+  end
+
+  class SdkMcpResource < Type
+    attr_accessor uri: String?
+
+    attr_accessor name: String?
+
+    attr_accessor description: String?
+
+    attr_accessor mime_type: String?
+
+    attr_accessor reader: _ResourceReader?
+  end
+
+  class SdkMcpPrompt < Type
+    attr_accessor name: String?
+
+    attr_accessor description: String?
+
+    # { name:, description:, required: } Hashes.
+    attr_accessor arguments: Array[Hash[Symbol | String, untyped]]?
+
+    attr_accessor generator: _PromptGenerator?
+  end
+end

@@ -44,7 +44,8 @@ RSpec.describe 'Type attribute access' do
 
   types.each do |klass|
     describe klass.name do
-      it 'declares every public reader and writer as an attribute, apart from the listed methods' do
+      it 'declares every public reader and writer as an attribute, apart from the listed methods',
+         rbs_incompatible: "enumerates public methods, which include the checker's wrapper aliases" do
         undeclared = klass.public_instance_methods.select do |method_name|
           owner = klass.instance_method(method_name).owner
           next false unless owner.is_a?(Class) && owner < ClaudeAgentSDK::Type
@@ -56,7 +57,8 @@ RSpec.describe 'Type attribute access' do
         expect(undeclared).to match_array(non_attribute_methods.fetch(klass.name, []))
       end
 
-      it 'reaches every attribute through #[], #[]= and camelCase without a warning' do
+      it 'reaches every attribute through #[], #[]= and camelCase without a warning',
+         rbs_incompatible: 'plants Object.new sentinels in every attribute' do
         instance = klass.new
         output = capture_stderr do
           klass.attribute_names.each do |name|

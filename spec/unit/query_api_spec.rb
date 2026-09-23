@@ -316,7 +316,8 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       described_class.query(prompt: 'hello', options: options, transport: fake) { |_m| nil }
     end
 
-    it 'rejects transports that do not respond to #connect' do
+    it 'rejects transports that do not respond to #connect',
+       rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       expect do
         described_class.query(prompt: 'hello', transport: Object.new) { |_m| nil }
       end.to raise_error(ArgumentError, /must respond to #connect/)
@@ -491,13 +492,15 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       end.to raise_error(ArgumentError, /got Hash/)
     end
 
-    it 'rejects prompts that are neither String nor each-able' do
+    it 'rejects prompts that are neither String nor each-able',
+       rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       expect do
         described_class.query(prompt: 42) { |_m| nil }
       end.to raise_error(ArgumentError, /must be a String or respond to #each \(got Integer\)/)
     end
 
-    it 'fails fast at the call site even without a block (before enum_for defers)' do
+    it 'fails fast at the call site even without a block (before enum_for defers)',
+       rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       expect { described_class.query(prompt: nil) }
         .to raise_error(ArgumentError, /got NilClass/)
     end

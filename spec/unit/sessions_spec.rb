@@ -379,7 +379,9 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       ['a blank first line before a sidechain entry', ['', sidechain_line], nil],
       ['an invalidly encoded first line before a main entry', ["\xFF\xFE garbage", main_line], 'Main']
     ].each do |label, lines, expected_summary|
-      it "classifies sidechain-ness identically on disk and store for #{label}" do
+      # The non-object line reaches the store as a non-Hash entry.
+      rbs = lines.first == '42' ? { rbs_incompatible: 'appends a non-Hash entry to the store' } : {}
+      it "classifies sidechain-ness identically on disk and store for #{label}", **rbs do
         Dir.mktmpdir do |dir|
           sid = '12345678-1234-1234-1234-123456789abc'
           file_path = File.join(dir, "#{sid}.jsonl")
@@ -1171,7 +1173,7 @@ RSpec.describe ClaudeAgentSDK::SessionMessage do
       expect(build(nil).text).to eq('')
     end
 
-    it 'returns "" when message is not a Hash' do
+    it 'returns "" when message is not a Hash', rbs_incompatible: 'builds a SessionMessage from a non-Hash message' do
       expect(build('raw string').text).to eq('')
     end
 
@@ -1195,7 +1197,8 @@ RSpec.describe ClaudeAgentSDK::SessionMessage do
       expect(build('content' => []).text).to eq('')
     end
 
-    it 'accepts symbol-keyed blocks as a fallback' do
+    it 'accepts symbol-keyed blocks as a fallback',
+       rbs_incompatible: 'builds a SessionMessage from a Symbol-keyed message' do
       msg = build(
         content: [
           { type: 'text', text: 'Sym' }
@@ -1216,7 +1219,7 @@ RSpec.describe ClaudeAgentSDK::SessionMessage do
       expect(build(nil).content_blocks).to eq([])
     end
 
-    it 'returns [] when message is not a Hash' do
+    it 'returns [] when message is not a Hash', rbs_incompatible: 'builds a SessionMessage from a non-Hash message' do
       expect(build(42).content_blocks).to eq([])
     end
 
@@ -1548,7 +1551,8 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
     # `123.empty?`) instead of getting the malformed-id answer. An invalidly
     # encoded String raised ArgumentError from the regexp match itself.
     [nil, 123, :sym, ['x'], "\xFFbad"].each do |bad|
-      it "treats session_id #{bad.inspect} like a malformed id on every disk reader" do
+      it "treats session_id #{bad.inspect} like a malformed id on every disk reader",
+         rbs_incompatible: 'passes out-of-signature input to test its rejection' do
         with_session_on_disk do |_subagents_dir, canonical|
           args = { session_id: bad, directory: canonical }
           expect(ClaudeAgentSDK.get_session_info(**args)).to be_nil
@@ -1559,7 +1563,8 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
         end
       end
 
-      it "treats agent_id #{bad.inspect} like a malformed id on the disk subagent readers" do
+      it "treats agent_id #{bad.inspect} like a malformed id on the disk subagent readers",
+         rbs_incompatible: 'passes out-of-signature input to test its rejection' do
         with_session_on_disk do |_subagents_dir, canonical|
           args = { session_id: uuid, agent_id: bad, directory: canonical }
           expect(ClaudeAgentSDK.get_subagent_metadata(**args)).to be_nil

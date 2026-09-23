@@ -80,7 +80,7 @@ RSpec.describe 'strict attributes on user-constructed types' do
     'McpStdioServerConfig' => { command: 'npx', args: %w[server], env: { 'TOKEN' => 'x' } },
     'McpSSEServerConfig' => { url: 'https://example.com/sse', headers: { 'Authorization' => 'Bearer x' } },
     'McpHttpServerConfig' => { url: 'https://example.com/mcp', headers: { 'Authorization' => 'Bearer x' } },
-    'McpSdkServerConfig' => { name: 'calc', instance: Object.new },
+    'McpSdkServerConfig' => { name: 'calc', instance: ClaudeAgentSDK::SdkMcpServer.new(name: 'calc') },
     'HookMatcher' => { matcher: 'Bash', hooks: [hook], timeout: 30 },
     'SetupHookSpecificOutput' => { additional_context: 'ctx' },
     'PreToolUseHookSpecificOutput' => {

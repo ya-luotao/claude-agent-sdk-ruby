@@ -66,6 +66,33 @@ jobs:
         if: runner.os == 'Linux'
         run: bundle exec rubocop
 
+      # The RBS signatures in sig/ must parse and resolve (every referenced
+      # type exists). Once per run: the result does not depend on the Ruby.
+      - name: Validate RBS signatures
+        if: runner.os == 'Linux' && matrix.ruby-version == '3.4'
+        run: bundle exec rake rbs:validate
+
+  # The suite again under rbs's runtime type checker (rake rbs:test): every
+  # call into a ClaudeAgentSDK class or module with a signature in sig/ is
+  # checked against it, so a signature that disagrees with the code fails
+  # here. Slower than the plain run, hence its own job. Examples tagged
+  # `rbs_incompatible:` (deliberately out-of-signature inputs) are skipped.
+  rbs-test:
+    name: rbs runtime type check (Ruby 3.4)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby 3.4
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+
+      - name: Run tests with RBS runtime type checking
+        run: bundle exec rake rbs:test
+
   # Dependency resolutions the main Gemfile can't reach: its RuboCop pin holds
   # json at 2.x. `latest` forces the newest allowed majors (json 3.x, mcp 1.x);
   # `floor` pins the oldest supported runtime dependencies, on the oldest and

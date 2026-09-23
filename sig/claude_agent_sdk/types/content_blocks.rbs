@@ -1,0 +1,79 @@
+module ClaudeAgentSDK
+  # A raw Hash inside a content block: Symbol keys on live messages, String
+  # keys on blocks parsed from a transcript (SessionMessage#content_blocks).
+  type block_hash = wire_hash | transcript_hash
+
+  # A content block of a UserMessage / AssistantMessage / SessionMessage.
+  type content_block = TextBlock
+                     | ThinkingBlock
+                     | ToolUseBlock
+                     | ToolResultBlock
+                     | ServerToolUseBlock
+                     | ServerToolResultBlock
+                     | UnknownBlock
+
+  class TextBlock < Type
+    attr_accessor text: String?
+
+    def to_s: () -> String
+  end
+
+  class ThinkingBlock < Type
+    attr_accessor thinking: String?
+
+    attr_accessor signature: String?
+  end
+
+  class ToolUseBlock < Type
+    attr_accessor id: String?
+
+    attr_accessor name: String?
+
+    attr_accessor input: block_hash?
+  end
+
+  class ToolResultBlock < Type
+    attr_accessor tool_use_id: String?
+
+    # A String, or an Array of content-block Hashes.
+    attr_accessor content: (String | Array[block_hash])?
+
+    attr_accessor is_error: bool?
+  end
+
+  # A server-side tool call (advisor, web_search, code_execution, ...).
+  class ServerToolUseBlock < Type
+    attr_accessor id: String?
+
+    attr_accessor name: String?
+
+    attr_accessor input: block_hash?
+  end
+
+  # The result of a server-side tool call. content is passed through from
+  # the API as-is and its shape depends on the tool.
+  class ServerToolResultBlock < Type
+    attr_accessor tool_use_id: String?
+
+    attr_accessor content: untyped
+
+    attr_accessor is_error: bool?
+  end
+
+  # A block type this SDK version does not model ("document", "image", ...):
+  # type is the original block type, data the raw block.
+  class UnknownBlock < Type
+    attr_accessor type: String?
+
+    attr_accessor data: block_hash?
+  end
+
+  # A tool call a PreToolUse hook deferred (ResultMessage#deferred_tool_use).
+  class DeferredToolUse < Type
+    attr_accessor id: String?
+
+    attr_accessor name: String?
+
+    attr_accessor input: block_hash?
+  end
+end

@@ -62,7 +62,7 @@ RSpec.describe 'Sessions API consolidation' do
   }
 
   cases.each do |name, (impl, twin, kwargs)|
-    describe ".#{name}" do
+    describe ".#{name}", rbs_incompatible: 'stubs the implementation to return an Object.new sentinel' do
       it 'uses the local-disk implementation when session_store is omitted' do
         disk_kwargs = name == :list_sessions ? kwargs.merge(include_worktrees: true) : kwargs
         expect(impl).to receive(name).with(**disk_kwargs).and_return(result)
@@ -86,7 +86,8 @@ RSpec.describe 'Sessions API consolidation' do
       end
     end
 
-    describe ".#{twin} (deprecated)" do
+    describe ".#{twin} (deprecated)",
+             rbs_incompatible: 'returns an Object.new sentinel; asserts the warning location' do
       it 'warns once per process, naming the replacement and the caller, and still returns the same result' do
         expect(impl).to receive(twin).with(session_store: store, **kwargs).twice.and_return(result)
 
@@ -143,7 +144,8 @@ RSpec.describe 'Sessions API consolidation' do
     $VERBOSE = verbose
   end
 
-  it 'keeps a deprecated twin failing on a nil store instead of falling back to local disk' do
+  it 'keeps a deprecated twin failing on a nil store instead of falling back to local disk',
+     rbs_incompatible: 'passes session_store: nil where a store is required' do
     expect(ClaudeAgentSDK::Sessions).not_to receive(:list_sessions)
     capture_stderr do
       expect { ClaudeAgentSDK.list_sessions_from_store(session_store: nil) }

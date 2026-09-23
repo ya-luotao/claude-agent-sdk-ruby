@@ -203,7 +203,8 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       expect(flag_value(cmd, '--setting-sources')).to eq('user,project')
     end
 
-    it 'raises a clear ArgumentError for invalid skills values' do
+    it 'raises a clear ArgumentError for invalid skills values',
+       rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       [:all, 'pdf', { name: 'pdf' }].each do |bad|
         options = ClaudeAgentSDK::ClaudeAgentOptions.new(skills: bad)
         expect { build(options) }.to raise_error(ArgumentError, /skills must be 'all' or an Array/)
@@ -261,7 +262,8 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
         end
       end
 
-      it 'rejects non-string entries with TypeError' do
+      it 'rejects non-string entries with TypeError',
+         rbs_incompatible: 'passes out-of-signature input to test its rejection' do
         expect_rejects(42, TypeError, /must be strings/)
       end
 
@@ -350,7 +352,8 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       expect(cmd).not_to include('--thinking-display')
     end
 
-    it 'raises a clear ArgumentError for enabled without budget_tokens and for garbage' do
+    it 'raises a clear ArgumentError for enabled without budget_tokens and for garbage',
+       rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       expect { build(ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: { type: 'enabled' })) }
         .to raise_error(ArgumentError, /requires budget_tokens/)
       expect { build(ClaudeAgentSDK::ClaudeAgentOptions.new(thinking: 'adaptive')) }
@@ -440,7 +443,7 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
         )
       end
 
-      it 'stringifies non-string values' do
+      it 'stringifies non-string values', rbs_incompatible: 'passes a Symbol where a String is expected' do
         options = ClaudeAgentSDK::ClaudeAgentOptions.new(
           resume: 'sess-source',
           resume_session_at: :"#{message_uuid}"
@@ -600,7 +603,8 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       expect(parsed['mcpServers']['api']).to eq('type' => 'http', 'url' => 'https://example.com/mcp', 'headers' => { 'X-Key' => 'v' })
     end
 
-    it 'strips :instance from typed McpSdkServerConfig objects' do
+    it 'strips :instance from typed McpSdkServerConfig objects',
+       rbs_incompatible: 'uses Object.new as the SDK MCP server instance' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
         mcp_servers: { 'calc' => ClaudeAgentSDK::McpSdkServerConfig.new(name: 'calc', instance: Object.new) }
       )

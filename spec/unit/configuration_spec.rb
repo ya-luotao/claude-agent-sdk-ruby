@@ -435,7 +435,8 @@ RSpec.describe ClaudeAgentSDK do
         expect(described_class.new.tools.to_h).to eq(type: 'preset', preset: 'claude_code')
       end
 
-      it 'keeps the identity of everything that is not an SDK value type' do
+      it 'keeps the identity of everything that is not an SDK value type',
+         rbs_incompatible: 'uses Object.new as server, observer and store' do
         server = Object.new
         hook = ->(_input, _id, _ctx) { {} }
         callback = ->(_tool, _input, _ctx) {}

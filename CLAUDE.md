@@ -123,5 +123,6 @@ Opt-in `ClaudeAgentOptions#callback_scheduling: :inline` (issue #47) skips the h
 - Hook inputs are typed classes inheriting from `BaseHookInput`; hook outputs use `to_h` for serialization with camelCase keys for CLI compatibility
 - `ClaudeAgentOptions` is the central config object (~30 fields); uses `dup_with` for immutable-style updates
 - `to_h` methods on config types convert Ruby snake_case to CLI camelCase (e.g., `auto_allow_bash_if_sandboxed` → `autoAllowBashIfSandboxed`)
+- RBS signatures for the public API (docs/ + YARD without `@api private`) live in `sig/` (`sig/claude_agent_sdk.rbs`; `sig/claude_agent_sdk/types/` mirrors `lib/claude_agent_sdk/types/`) and ship in the gem. Any public API change must update `sig/` in the same change and pass `bundle exec rake rbs:validate rbs:test` (the latter runs the suite under rbs's runtime type checker; examples that deliberately pass out-of-signature values carry `rbs_incompatible: '<reason>'` metadata and are skipped there). Never add signatures for `@api private` objects. Conventions: CONTRIBUTING.md, "RBS signatures"
 - Tests use `expect` syntax only (no `should`), `disable_monkey_patching!` enabled
 - Test helpers in `spec/support/test_helpers.rb` provide `sample_*` message fixtures and `mock_transport`

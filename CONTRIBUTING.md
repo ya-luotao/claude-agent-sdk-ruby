@@ -26,6 +26,8 @@ bundle exec rspec                               # unit suite (spec/, excluding s
 bundle exec rspec spec/unit/query_spec.rb:42    # one example
 COVERAGE=1 bundle exec rspec                    # with a simplecov report in coverage/
 bundle exec rubocop                             # lint
+bundle exec rake rbs:validate                   # the RBS signatures in sig/ parse and resolve
+bundle exec rake rbs:test                       # the suite under rbs's runtime type checker (slower)
 ```
 
 **Rails specs** (`spec/rails/`) load railties, which patch core classes, so they run in their own process against a Rails bundle:
@@ -47,14 +49,14 @@ PATH="$PWD/vendor/claude:$PATH" RUN_INTEGRATION=1 ANTHROPIC_API_KEY=... bundle e
 
 Run them when you change anything on the CLI wire protocol (the transport, `Query`, the control protocol, `CommandBuilder`). CI also runs them weekly, and on PRs that touch `cli_installer.rb`, against the pinned CLI version.
 
-CI runs the unit suite and RuboCop on Ruby 3.2, 3.3 and 3.4 (Linux), the unit suite on macOS, the dependency floor and latest legs, and the Rails specs on Rails 7.1 and 8. See [`.github/workflows/`](.github/workflows/).
+CI runs the unit suite and RuboCop on Ruby 3.2, 3.3 and 3.4 (Linux), the unit suite on macOS, the dependency floor and latest legs, and the Rails specs on Rails 7.1 and 8. The Ruby 3.4 Linux leg also runs `rake rbs:validate`, and a separate job runs `rake rbs:test`. See [`.github/workflows/`](.github/workflows/).
 
 ## Pull requests
 
 - **Keep each PR to one change.** A bug fix, a feature or a refactor, not all three. Say in the description why the change is needed and how you verified it.
 - **Bug reports and fixes come with a spec.** A failing spec that reproduces the bug is the most useful bug report there is. A fix PR should include one that fails before the fix and passes after.
 - **Add a CHANGELOG entry** under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for anything a gem user would notice (Added / Changed / Fixed / Deprecated). Internal-only changes can skip it.
-- **Update the docs** when you change public behavior: `docs/`, the README, and YARD comments on the methods you touched.
+- **Update the docs** when you change public behavior: `docs/`, the README, YARD comments on the methods you touched, and their RBS signatures in `sig/` (see [RBS signatures](#rbs-signatures-sig)).
 - `bundle exec rake` must pass. New code follows the existing conventions: plain classes with `attr_accessor` and keyword arguments, `to_h` emitting camelCase for the CLI, user callbacks dispatched through `FiberBoundary.invoke`, and RSpec's `expect` syntax.
 
 ### What is public API
@@ -75,6 +77,26 @@ module SomeInternalHelper
 - Every constant needs its own tag. A comment attaches only to the constant directly below it.
 - If a class is public but some of its methods aren't (as with `SubprocessCLITransport`), tag those methods one by one.
 - To check the result, run `bundle exec yard list` and confirm that the object you tagged is gone from the list.
+
+### RBS signatures (`sig/`)
+
+The gem ships [RBS](https://github.com/ruby/rbs) signatures for exactly that public surface: `sig/claude_agent_sdk.rbs` has the module functions, `Client` and the shared type aliases and interfaces, and `sig/claude_agent_sdk/` has one file per area, with `types/` mirroring `lib/claude_agent_sdk/types/`. When you add, change or remove something public, update its signature in the same PR:
+
+- **Only public objects get a signature.** Never add one for an `@api private` object, since that would freeze it. If a public signature has to mention an internal or third-party object, use a narrow interface or `untyped` with a comment saying why.
+- **Duck types are interfaces.** Transports (`_Transport`), session stores (`_SessionStore`, with the optional methods listed in its comment), and every user callback (`_CanUseTool`, `_HookCallback`, `_ToolHandler`, `_CallbackWrapper`, ...) are interfaces, so any object with the right methods fits, including a `Method` or a custom class. A proc type (`^(...) -> ...`) would accept only a `Proc`.
+- **Follow the Hash-key rule** in [docs/types.md](docs/types.md#hash-keys): use `wire_hash` (`Hash[Symbol, untyped]`) for a Hash passed through from the CLI stream and `transcript_hash` (`Hash[String, untyped]`) for transcript and store data.
+- **Type attributes are nilable.** A `Type` can be built empty, and the SDK parses CLI output leniently, so an attribute reads `nil` whenever the CLI did not send it.
+- **Use `void` for a return value the docs don't promise.** It keeps the return value out of the contract, and the runtime checker skips it.
+- **Deprecated methods keep their signature** until they are removed, marked with a `# @deprecated` comment.
+
+Then run both checks:
+
+```bash
+bundle exec rake rbs:validate   # every file parses, every referenced type exists
+bundle exec rake rbs:test       # the suite again, with every call into a signed class or module type-checked
+```
+
+`rbs:test` loads `rbs/test/setup` into the spec run, so a signature that disagrees with what the code actually receives or returns fails the example that made the call. Some examples pass values outside the signatures on purpose: bad input that must be rejected, `Object.new` sentinels, a stubbed internal that returns a placeholder, or an assertion on a warning's `file:line` (the checker's wrapper frames change it). Tag those with `rbs_incompatible: '<reason>'` so `rbs:test` skips them, and fix the signature instead whenever the value is one a user could legitimately pass.
 
 ### Porting from the Python SDK
 

@@ -739,7 +739,7 @@ RSpec.describe ClaudeAgentSDK, '.create_tool' do
     expect(tool.handler).to be_a(Proc)
   end
 
-  it 'requires a block' do
+  it 'requires a block', rbs_incompatible: 'calls create_tool without its required block' do
     expect { described_class.create_tool('test', 'Test', {}) }
       .to raise_error(ArgumentError, /Block required/)
   end
@@ -826,7 +826,8 @@ RSpec.describe ClaudeAgentSDK, '.create_sdk_mcp_server' do
 end
 
 RSpec.describe ClaudeAgentSDK, '.extract_sdk_mcp_servers' do
-  it 'extracts live instances from hash and typed sdk configs, ignoring other server types' do
+  it 'extracts live instances from hash and typed sdk configs, ignoring other server types',
+     rbs_incompatible: 'uses Object.new as the SDK MCP server instance' do
     server = Object.new
     servers = described_class.extract_sdk_mcp_servers(
       hash_sdk: { type: 'sdk', name: 'a', instance: server },

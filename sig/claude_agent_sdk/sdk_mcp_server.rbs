@@ -1,0 +1,76 @@
+module ClaudeAgentSDK
+  # What an SDK MCP tool handler returns: a String (sent as one text block),
+  # or a Hash with a :content Array of MCP content blocks plus optional
+  # :is_error / :structured_content.
+  type tool_result = String | Hash[Symbol | String, untyped]
+
+  # An SDK MCP tool handler (the block given to ClaudeAgentSDK.create_tool).
+  # args is the tools/call arguments Hash (wire_hash).
+  interface _ToolHandler
+    def call: (wire_hash args) -> tool_result
+  end
+
+  # An SDK MCP resource reader: returns a Hash with a :contents Array.
+  interface _ResourceReader
+    def call: () -> Hash[Symbol | String, untyped]
+  end
+
+  # An SDK MCP prompt generator: returns a Hash with a :messages Array.
+  interface _PromptGenerator
+    def call: (Hash[Symbol | String, untyped] args) -> Hash[Symbol | String, untyped]
+  end
+
+  # An in-process MCP server (built by ClaudeAgentSDK.create_sdk_mcp_server).
+  # The list_*/call_*/read_*/get_* methods invoke it directly, outside a
+  # session.
+  class SdkMcpServer
+    attr_reader name: String
+
+    attr_reader version: String
+
+    attr_reader tools: Array[SdkMcpTool]
+
+    attr_reader resources: Array[SdkMcpResource]
+
+    attr_reader prompts: Array[SdkMcpPrompt]
+
+    # The underlying server object from the `mcp` gem (MCP::Server); not
+    # typed here so the signatures don't depend on that gem's.
+    attr_reader mcp_server: untyped
+
+    # Where handlers run on DIRECT invocations (a session dispatch uses the
+    # session's own mode). Defaults to :thread.
+    attr_reader callback_scheduling: :thread | :inline
+
+    # Wrapper for DIRECT invocations (a session dispatch uses the session's).
+    attr_reader callback_wrapper: _CallbackWrapper?
+
+    # A String is coerced to a Symbol; anything but :thread / :inline raises
+    # ArgumentError.
+    def callback_scheduling=: (:thread | :inline | "thread" | "inline" value) -> (:thread | :inline | "thread" | "inline")
+
+    # Raises ArgumentError unless value is callable or nil.
+    def callback_wrapper=: (_CallbackWrapper? value) -> _CallbackWrapper?
+
+    def initialize: (name: String, ?version: String, ?tools: Array[SdkMcpTool], ?resources: Array[SdkMcpResource], ?prompts: Array[SdkMcpPrompt]) -> void
+
+    # Tool definitions: { name:, description:, inputSchema:, annotations:?, _meta:? }.
+    def list_tools: () -> Array[Hash[Symbol, untyped]]
+
+    # Runs the tool's handler. Failures come back in-band with isError: true
+    # (a String handler result is wrapped into a text block).
+    def call_tool: (String name, Hash[Symbol | String, untyped] arguments) -> Hash[Symbol | String, untyped]
+
+    def list_resources: () -> Array[Hash[Symbol, untyped]]
+
+    # Raises when the resource does not exist or its reader returns no
+    # :contents.
+    def read_resource: (String uri) -> Hash[Symbol | String, untyped]
+
+    def list_prompts: () -> Array[Hash[Symbol, untyped]]
+
+    # Raises when the prompt does not exist or its generator returns no
+    # :messages.
+    def get_prompt: (String name, ?Hash[Symbol | String, untyped] arguments) -> Hash[Symbol | String, untyped]
+  end
+end

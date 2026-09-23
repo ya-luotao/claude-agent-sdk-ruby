@@ -1228,7 +1228,8 @@ RSpec.describe ClaudeAgentSDK::Query do
 
   describe '#parse_hook_input' do
     %w[Stop SubagentStop].each do |event|
-      it "preserves #{event} background snapshots, including unknown fields and nil versus empty" do
+      it "preserves #{event} background snapshots, including unknown fields and nil versus empty",
+         rbs_incompatible: 'parses a String-keyed hook payload (the wire form is Symbol-keyed)' do
         query = described_class.new(transport: mock_transport, is_streaming_mode: true)
         tasks = [{ id: 'bg-1', type: 'subagent', status: 'running', agent_type: 'reviewer', future: false }]
         crons = [{ id: 'cron-2', schedule: '*/5 * * * *', prompt: 'Check' }]

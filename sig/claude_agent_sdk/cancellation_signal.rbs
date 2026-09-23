@@ -1,0 +1,14 @@
+module ClaudeAgentSDK
+  # Delivered as ToolPermissionContext#signal and HookContext#signal. It is
+  # cancelled when the CLI cancels the request (or the session closes), so a
+  # long-running callback can stop early.
+  class CancellationSignal
+    def initialize: () -> void
+
+    def cancelled?: () -> bool
+
+    # Blocks until cancelled or until timeout seconds pass; returns
+    # #cancelled?.
+    def wait: (?timeout: (Integer | Float)?) -> bool
+  end
+end

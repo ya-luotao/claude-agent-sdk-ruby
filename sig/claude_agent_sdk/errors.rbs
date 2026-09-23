@@ -1,0 +1,86 @@
+module ClaudeAgentSDK
+  # Base exception for all Claude SDK errors.
+  class ClaudeSDKError < StandardError
+  end
+
+  # Raised when unable to connect to Claude Code (also: "Not connected").
+  class CLIConnectionError < ClaudeSDKError
+  end
+
+  # Raised when the control protocol does not respond in time.
+  class ControlRequestTimeoutError < CLIConnectionError
+  end
+
+  # Raised when Claude Code is not found or not installed.
+  class CLINotFoundError < CLIConnectionError
+    def initialize: (?String message, ?cli_path: (String | Pathname)?) -> void
+  end
+
+  # Raised when CLIInstaller cannot install the CLI binary.
+  class CLIInstallError < ClaudeSDKError
+  end
+
+  # Raised by the local-disk session APIs when the Claude config directory
+  # cannot be located.
+  class ConfigDirError < ClaudeSDKError
+  end
+
+  # Raised by Client#connect, ClaudeAgentSDK.query and .ask when resuming
+  # from ClaudeAgentOptions#session_store fails (a store call raised or
+  # exceeded load_timeout_ms). #cause holds the adapter's own exception.
+  class SessionStoreError < ClaudeSDKError
+  end
+
+  # Raised when the CLI process fails.
+  class ProcessError < ClaudeSDKError
+    attr_reader exit_code: Integer?
+
+    attr_reader stderr: String?
+
+    def initialize: (String message, ?exit_code: Integer?, ?stderr: String?) -> void
+  end
+
+  # Raised when the CLI exits non-zero after an error result. Every
+  # structured field is type-narrowed (nil unless the payload held the
+  # documented type); #data holds the payload as the CLI sent it.
+  class ResultError < ProcessError
+    attr_reader subtype: String?
+
+    attr_reader errors: Array[String]
+
+    attr_reader result: String?
+
+    attr_reader api_error_status: Integer?
+
+    attr_reader terminal_reason: String?
+
+    attr_reader session_id: String?
+
+    attr_reader data: Hash[Symbol | String, untyped]
+
+    attr_reader original_error: ProcessError?
+
+    # The exception text a `result` payload produces (any payload is
+    # accepted; a non-Hash reads as empty).
+    def self.error_text: (untyped data) -> String
+
+    def initialize: (String message, ?data: untyped, ?exit_code: Integer?, ?stderr: String?, ?original_error: ProcessError?) -> void
+  end
+
+  # Raised when a stdout line from the CLI is not valid JSON.
+  class CLIJSONDecodeError < ClaudeSDKError
+    attr_reader line: String
+
+    attr_reader original_error: Exception
+
+    def initialize: (String line, Exception original_error) -> void
+  end
+
+  # Raised when a CLI message cannot be parsed into a typed message.
+  class MessageParseError < ClaudeSDKError
+    # The offending payload, as received.
+    attr_reader data: untyped
+
+    def initialize: (String message, ?data: untyped) -> void
+  end
+end

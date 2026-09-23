@@ -158,6 +158,8 @@ module ClaudeAgentSDK
     # `seen` holds the Types/containers on the current rendering path (not
     # every one rendered so far), so a shared-but-acyclic value still renders
     # in full wherever it appears.
+    #
+    # @api private
     def inspect_with(depth, seen)
       return "#<#{inspect_class_name} …>" if depth > INSPECT_MAX_DEPTH || seen.key?(self)
 

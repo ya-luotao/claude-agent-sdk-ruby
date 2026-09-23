@@ -1,0 +1,15 @@
+module ClaudeAgentSDK
+  # Builders for streaming input: a prompt that is an Enumerator of JSONL
+  # user messages.
+  module Streaming
+    # One JSON-encoded user message, newline-terminated. content is a String
+    # or an Array of content-block Hashes.
+    def self.user_message: (String | Array[Hash[Symbol | String, untyped]] content, ?session_id: String, ?parent_tool_use_id: String?) -> String
+
+    def self.from_array: (_Each[String | Array[Hash[Symbol | String, untyped]]] messages, ?session_id: String) -> Enumerator[String, void]
+
+    # The block receives an Enumerator::Yielder; each value it yields becomes
+    # one user message.
+    def self.from_block: (?session_id: String) { (Enumerator::Yielder yielder) -> void } -> Enumerator[String, void]
+  end
+end
