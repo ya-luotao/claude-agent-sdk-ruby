@@ -52,7 +52,10 @@ module ClaudeAgentSDK
   # reactor; a declared-inline adapter accepts that a scheduler-opaque
   # blocking call would stall it AND escape the cooperative deadline.
   # Outside a reactor the hard bound applies even to inline-declared
-  # adapters — the timeout guarantee is never lost.
+  # adapters — the timeout guarantee is never lost. Even inside one, the
+  # cooperative deadline only bounds the cancellation request: cleanup in
+  # the cancelled block's ensure runs unbounded afterwards (see
+  # .with_cooperative_timeout).
   #
   # The thread hop severs `break`/`return`/`next` from the surrounding method,
   # so SDK loops yielding user callbacks must keep loop control outside the
@@ -212,8 +215,15 @@ module ClaudeAgentSDK
         return with_cooperative_timeout(task, timeout, on_timeout: expired) { body.call }
       end
 
-      thread = Thread.new(&capture_otel_context(&body))
-      thread.report_on_exception = false
+      work = capture_otel_context(&body)
+      thread = Thread.new do
+        # The caller re-raises the failure via #value, so the default report
+        # would be a duplicate stderr dump. Set as the thread's FIRST
+        # statement: assigning it from the caller after Thread.new races a
+        # body that raises before the caller gets scheduled again.
+        Thread.current.report_on_exception = false
+        work.call
+      end
       return thread.value if timeout.nil?
       raise JoinTimeout, "timed out after #{timeout}s" unless thread.join(timeout)
 
@@ -240,6 +250,22 @@ module ClaudeAgentSDK
     # Wrapper composition is the caller's choice — +block+ runs verbatim
     # inside the timeout scope (.invoke composes the callback wrapper into
     # its body beforehand; the hook path composes it inside the block).
+    #
+    # CONTRACT: the deadline bounds the cancellation REQUEST, not the
+    # block's completion (issue #71). The cancellation is delivered exactly
+    # once, at the block's next suspension point; from there the block's
+    # rescue/ensure clauses run to completion on the reactor fiber with no
+    # further deadline, and +on_timeout+ is raised only after they return.
+    # Fiber-aware cleanup (scheduler-visible IO, sleep, Async primitives)
+    # delays just this callback and whoever awaits it — siblings keep
+    # running. Scheduler-opaque cleanup — file fsync, non-fiber-aware
+    # drivers, a GVL-holding C extension — stalls the whole reactor for its
+    # duration, and no deadline can interrupt it. Deliberately not "fixed":
+    # a live fiber stack cannot be migrated to a thread, and a second
+    # deadline could only interrupt cooperative cleanup (abandoning locks /
+    # transactions) while still not touching opaque blocking. Callers that
+    # need a bounded wait use :thread scheduling (hard Thread#join bound);
+    # inline callbacks keep their cleanup fiber-aware.
     # @api private
     def with_cooperative_timeout(task, timeout, on_timeout:, &block)
       cancellation = Class.new(InlineCancellation)

@@ -55,14 +55,6 @@ module ClaudeAgentSDK
     #   end
     def self.from_block(session_id: 'default', &block)
       Enumerator.new do |yielder|
-        collector = Object.new
-        def collector.yield(content)
-          @content = content
-        end
-        def collector.content
-          @content
-        end
-
         inner_enum = Enumerator.new(&block)
         inner_enum.each do |content|
           yielder << user_message(content, session_id: session_id)

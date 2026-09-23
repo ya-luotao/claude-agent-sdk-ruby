@@ -64,6 +64,23 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
     File.read(File.join(dir, 'VERSION')).lines[1].to_s.strip
   end
 
+  # Yield until the block is truthy or +timeout+ seconds pass; returns whether
+  # it became truthy. Thread.pass (not sleep) keeps the wait purely a poll.
+  def eventually?(timeout: 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    until yield
+      return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+
+      Thread.pass
+    end
+    true
+  end
+
+  # True while +thread+ is parked inside File#flock (its innermost frame).
+  def blocked_in_flock?(thread)
+    thread.backtrace_locations&.first&.base_label == 'flock'
+  end
+
   describe '.default_dir' do
     it 'resolves vendor/claude against the current working directory at call time' do
       Dir.chdir(tmp_dir) do
@@ -558,16 +575,23 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
       stub_http
       downloads = 0
       counter_mutex = Mutex.new
+      threads = []
+      contended = nil
       allow(http).to receive(:download_to) do |_url, path, **|
         counter_mutex.synchronize { downloads += 1 }
-        sleep 0.15 # keep the lock held long enough for the other thread to contend
+        # Hold the lock until the other installer is observably blocked in
+        # flock (bounded poll) rather than sleeping and hoping it got there.
+        # Without the lock the other thread would reach its own download
+        # instead: the poll times out and downloads ends up 2.
+        contended = eventually? { threads.any? { |t| !t.equal?(Thread.current) && blocked_in_flock?(t) } }
         File.binwrite(path, binary_body)
         path
       end
 
-      threads = Array.new(2) { Thread.new { described_class.install(dir: tmp_dir) } }
+      2.times { threads << Thread.new { described_class.install(dir: tmp_dir) } }
       threads.each { |thread| expect(thread.join(20)).not_to be_nil }
 
+      expect(contended).to be true
       expect(downloads).to eq(1)
       expect(threads.map(&:value)).to all(eq(binary_path))
       expect(recorded_checksum).to eq(checksum)

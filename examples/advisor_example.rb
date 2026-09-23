@@ -30,8 +30,8 @@ puts "=== Advisor Example ==="
 puts "\n--- Example 1: Haiku main + Opus advisor ---"
 
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  model: 'haiku',
-  advisor_model: 'opus', # alias or full model ID, e.g. 'claude-opus-5'
+  model: 'claude-haiku-4-5',
+  advisor_model: 'claude-opus-5', # full model ID, or an alias such as 'opus'
   allowed_tools: ['Read', 'Glob'],
   max_turns: 5
 )
@@ -68,8 +68,8 @@ puts "\n--- Example 2: Client session with advisor ---"
 Async do
   client = ClaudeAgentSDK::Client.new(
     options: ClaudeAgentSDK::ClaudeAgentOptions.new(
-      model: 'sonnet',
-      advisor_model: 'opus'
+      model: 'claude-sonnet-5',
+      advisor_model: 'claude-opus-5'
     )
   )
 

@@ -1,0 +1,21 @@
+# frozen_string_literal: true
+
+# CI dependency leg: the NEWEST majors the gemspec allows (see the `deps` job
+# in .github/workflows/ci.yml). The main Gemfile can never resolve these —
+# its RuboCop pin holds json at 2.x — so this Gemfile loads the gem through
+# `path:` (runtime dependencies only, no dev/RuboCop deps) and runs rspec
+# alone; lint stays on the main leg.
+#
+# The explicit majors below make the resolution fail loudly if a transitive
+# cap ever drags one back, instead of silently re-testing the default leg.
+# The 0.33.1 hotfix (mcp <= 0.19 + json 3.x) was exactly the combination CI
+# never resolved.
+
+source 'https://rubygems.org'
+
+gem 'claude-agent-sdk', path: '..'
+
+gem 'json', '>= 3.0'
+gem 'mcp', '>= 1.0'
+
+gem 'rspec', '~> 3.0'

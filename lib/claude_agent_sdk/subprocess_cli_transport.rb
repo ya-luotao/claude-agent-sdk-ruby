@@ -152,18 +152,25 @@ module ClaudeAgentSDK
       end
       return cli if cli && !cli.empty? && File.executable?(cli)
 
-      # Try common locations
+      # Try common locations. The home-relative ones are skipped when no
+      # usable home exists (see #home_dir), so a HOME-less container still
+      # reaches the actionable CLINotFoundError below.
+      home = home_dir
+      under_home = ->(rel) { File.join(home, rel) if home }
       locations = [
-        File.join(Dir.home, '.claude/local/claude'),  # Claude Code default install location
-        File.join(Dir.home, '.npm-global/bin/claude'),
+        under_home.call('.claude/local/claude'), # Claude Code default install location
+        under_home.call('.npm-global/bin/claude'),
         '/usr/local/bin/claude',
-        File.join(Dir.home, '.local/bin/claude'),
-        File.join(Dir.home, 'node_modules/.bin/claude'),
-        File.join(Dir.home, '.yarn/bin/claude')
-      ]
+        under_home.call('.local/bin/claude'),
+        under_home.call('node_modules/.bin/claude'),
+        under_home.call('.yarn/bin/claude')
+      ].compact
 
       locations.each do |path|
-        return path if File.exist?(path) && File.file?(path)
+        # Same test as the CLAUDE_CLI_PATH branch: a non-executable file here
+        # would otherwise be accepted and fail at spawn with a raw EACCES
+        # instead of CLINotFoundError's install instructions.
+        return path if File.file?(path) && File.executable?(path)
       end
 
       raise CLINotFoundError.new(
@@ -314,6 +321,11 @@ module ClaudeAgentSDK
       return unless @stderr
 
       @stderr.each_line("\n", @max_buffer_size + 1) do |line|
+        # Scrubbed at read time like stdout frames and the version probe: the
+        # CLI (or a tool it runs) can emit invalid UTF-8 on stderr, and an
+        # invalid string handed to the callback or kept for ProcessError#stderr
+        # raises later in the user's encoding work (JSON logging/exporters).
+        line = line.scrub unless line.valid_encoding?
         line_str = line.chomp
         next if line_str.empty?
 
@@ -352,6 +364,7 @@ module ClaudeAgentSDK
       return unless @stderr
 
       @stderr.each_line("\n", @max_buffer_size + 1) do |line|
+        line = line.scrub unless line.valid_encoding? # see #handle_stderr
         line_str = line.chomp
         next if line_str.empty?
 
@@ -375,8 +388,8 @@ module ClaudeAgentSDK
         # interpreter exit (the at_exit reaper fires only then, TERM only).
         # Nothing here may suspend: a synchronous TERM plus a plain
         # background thread for the KILL escalation. On this path the
-        # process deliberately STAYS in the at_exit registry as a second
-        # safety net; the normal path deregisters in teardown_process.
+        # process stays in the at_exit registry until the fallback confirms
+        # it was reaped; the normal path deregisters in teardown_process.
         force_terminate_in_background(process) unless process_teardown_complete
 
         # Snapshot-then-nil BEFORE the best-effort pipe close below: once the
@@ -524,21 +537,36 @@ module ClaudeAgentSDK
     # pid-reuse-safe: while the waiter thread reports alive (not yet reaped),
     # the pid cannot have been recycled.
     def force_terminate_in_background(process, grace_seconds: 2)
-      return unless process&.alive?
+      return unless process
+
+      unless process.alive?
+        self.class.deregister_active_process(process)
+        return
+      end
 
       pid = process.pid
       begin
         Process.kill('TERM', pid)
+      rescue Errno::ESRCH
+        # The child exited before TERM; its waiter may still be reaping.
       rescue StandardError
-        return # ESRCH: already gone; EPERM: not ours to signal
+        return # EPERM etc.: retain the live child in the at_exit registry.
       end
 
       Thread.new do
-        sleep grace_seconds
         begin
-          Process.kill('KILL', pid) if process.alive?
+          unless process.join(grace_seconds)
+            begin
+              Process.kill('KILL', pid) if process.alive?
+            rescue Errno::ESRCH
+              # Still wait for the waiter when exit raced the signal.
+            end
+            process.join(grace_seconds)
+          end
         rescue StandardError
-          nil # died inside the grace window
+          nil # best-effort; retain ownership if termination/reaping failed
+        ensure
+          self.class.deregister_active_process(process) unless process.alive?
         end
       end
     end
@@ -811,6 +839,20 @@ module ClaudeAgentSDK
         @recent_stderr << line
         @recent_stderr.shift if @recent_stderr.size > RECENT_STDERR_LINES_LIMIT
       end
+    end
+
+    # The home directory for the well-known install probes, or nil when none
+    # is usable. Dir.home raises ArgumentError when HOME is unset and the uid
+    # has no passwd entry (docker --user in a minimal image), and returns an
+    # empty or relative HOME verbatim — probing under "" or a relative path
+    # would check files that are not where the user's install lives (and a
+    # relative hit would be spawned from options.cwd, i.e. a different file).
+    # SessionResume.home_dir applies the same rule.
+    def home_dir
+      home = Dir.home
+      home if File.absolute_path?(home)
+    rescue ArgumentError
+      nil
     end
   end
 end

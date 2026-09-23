@@ -23,10 +23,12 @@ RSpec.describe 'SessionStore-backed reads' do
       'sessionId' => session_id, 'message' => { 'content' => text } }
   end
 
+  # No sleep between appends: InMemorySessionStore stamps strictly increasing
+  # mtimes per append (asserted in session_store_spec), so append order IS
+  # recency order regardless of clock resolution.
   def seed_two_sessions
     store.append({ 'project_key' => project_key, 'session_id' => sid1 },
                  [user_entry(sid1, 'First prompt', '2024-01-01T00:00:00.000Z')])
-    sleep 0.002 # ensure distinct, ordered mtimes
     store.append({ 'project_key' => project_key, 'session_id' => sid2 },
                  [user_entry(sid2, 'Second prompt', '2024-01-02T00:00:00.000Z')])
   end
