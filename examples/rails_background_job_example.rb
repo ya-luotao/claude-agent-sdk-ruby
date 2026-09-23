@@ -15,7 +15,6 @@
 
 require 'bundler/setup'
 require 'claude_agent_sdk'
-require 'async'
 
 # Simulated ActiveRecord model for chat sessions
 class ChatSession
@@ -84,9 +83,7 @@ class ChatAgentJob
     )
     puts "[User Message] #{user_message[:id]}: #{message_content}"
 
-    Async do
-      execute_claude_query(session, message_content)
-    end.wait
+    execute_claude_query(session, message_content)
 
     puts "[Job Completed] Session: #{session_id}"
 
@@ -105,12 +102,12 @@ class ChatAgentJob
 
   private
 
+  # Client.open connects, yields the client and always disconnects, also when
+  # the block raises (the job's rescue clauses above then see the original
+  # error). It starts its own reactor when there is none, so the job needs no
+  # Async { }.wait wrapper. Leave the block early with `next`, not `break`.
   def execute_claude_query(session, message_content)
-    options = build_options(session)
-    client = ClaudeAgentSDK::Client.new(options: options)
-
-    begin
-      client.connect
+    ClaudeAgentSDK::Client.open(options: build_options(session)) do |client|
       puts "[Connected] Resuming: #{session.claude_session_id || 'new session'}"
 
       # Query without session_id when resuming (uses resume option instead)
@@ -118,11 +115,8 @@ class ChatAgentJob
       client.query(message_content, session_id: query_session_id)
 
       process_response(client, session)
-
-    ensure
-      client.disconnect
-      puts "[Disconnected]"
     end
+    puts '[Disconnected]'
   end
 
   def build_options(session)

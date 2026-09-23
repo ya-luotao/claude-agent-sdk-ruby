@@ -13,7 +13,6 @@
 
 require 'bundler/setup'
 require 'claude_agent_sdk'
-require 'async'
 
 # Simulated ActionCable broadcast (in real Rails, use ActionCable.server.broadcast)
 module ChatChannel
@@ -98,12 +97,14 @@ class ChatExecutor
       resume: resume_session_id # Resume existing session if provided
     )
 
-    client = ClaudeAgentSDK::Client.new(options: options)
     result_session_id = nil
     final_content = ''
 
-    begin
-      client.connect
+    # Client.open connects, yields the client and always disconnects, also
+    # when the block raises. It starts its own reactor when there is none, so
+    # a job needs no Async { }.wait wrapper. Its value is the block's; leave
+    # the block early with `next`, not `break`.
+    ClaudeAgentSDK::Client.open(options: options) do |client|
       client.query(prompt, session_id: session_id)
 
       client.receive_response do |message|
@@ -111,71 +112,47 @@ class ChatExecutor
         when ClaudeAgentSDK::AssistantMessage
           # Broadcast thinking blocks (for extended thinking)
           MessageExtractor.extract_thinking(message).each do |thinking|
-            ChatChannel.broadcast_thinking(@chat_id,
-              content: thinking,
-              message_id: @message_id
-            )
+            ChatChannel.broadcast_thinking(@chat_id, content: thinking, message_id: @message_id)
           end
 
           # Broadcast tool uses
           MessageExtractor.extract_tool_uses(message).each do |tool|
             ChatChannel.broadcast_tool_use(@chat_id,
-              tool_name: tool[:name],
-              tool_input: tool[:input],
-              message_id: @message_id
-            )
+                                           tool_name: tool[:name],
+                                           tool_input: tool[:input],
+                                           message_id: @message_id)
           end
 
           # Broadcast text content
           unless message.text.empty?
-            ChatChannel.broadcast_chunk(@chat_id,
-              content: message.text,
-              message_id: @message_id
-            )
+            ChatChannel.broadcast_chunk(@chat_id, content: message.text, message_id: @message_id)
           end
 
         when ClaudeAgentSDK::SystemMessage
           # Handle system events (e.g., context compaction)
           status = message.data&.dig(:status)
-          if status
-            ChatChannel.broadcast_to(@chat_id, {
-              type: 'system',
-              status: status
-            })
-          end
+          ChatChannel.broadcast_to(@chat_id, { type: 'system', status: status }) if status
 
         when ClaudeAgentSDK::ResultMessage
           result_session_id = message.session_id
           final_content = message.result || ''
 
           ChatChannel.broadcast_complete(@chat_id,
-            content: final_content,
-            message_id: @message_id,
-            duration_ms: message.duration_ms,
-            cost_usd: message.total_cost_usd
-          )
+                                         content: final_content,
+                                         message_id: @message_id,
+                                         duration_ms: message.duration_ms,
+                                         cost_usd: message.total_cost_usd)
         end
       end
-
-      { session_id: result_session_id, content: final_content }
-
-    rescue ClaudeAgentSDK::CLINotFoundError => e
-      ChatChannel.broadcast_error(@chat_id,
-        error: 'Claude CLI not installed',
-        message_id: @message_id
-      )
-      raise
-
-    rescue ClaudeAgentSDK::ProcessError => e
-      ChatChannel.broadcast_error(@chat_id,
-        error: "Process error: #{e.message}",
-        message_id: @message_id
-      )
-      raise
-
-    ensure
-      client.disconnect
     end
+
+    { session_id: result_session_id, content: final_content }
+  rescue ClaudeAgentSDK::CLINotFoundError
+    ChatChannel.broadcast_error(@chat_id, error: 'Claude CLI not installed', message_id: @message_id)
+    raise
+  rescue ClaudeAgentSDK::ProcessError => e
+    ChatChannel.broadcast_error(@chat_id, error: "Process error: #{e.message}", message_id: @message_id)
+    raise
   end
 
   private
@@ -196,22 +173,20 @@ end
 
 # Demo execution
 if __FILE__ == $PROGRAM_NAME
-  Async do
-    puts "=== Rails ActionCable Integration Example ===\n\n"
+  puts "=== Rails ActionCable Integration Example ===\n\n"
 
-    chat_id = 'chat_123'
-    message_id = 'msg_456'
+  chat_id = 'chat_123'
+  message_id = 'msg_456'
 
-    executor = ChatExecutor.new(chat_id: chat_id, message_id: message_id)
+  executor = ChatExecutor.new(chat_id: chat_id, message_id: message_id)
 
-    puts "Sending query to Claude with ActionCable streaming...\n\n"
+  puts "Sending query to Claude with ActionCable streaming...\n\n"
 
-    result = executor.execute(
-      "What are the benefits of using ActionCable in Rails? Be concise."
-    )
+  result = executor.execute(
+    'What are the benefits of using ActionCable in Rails? Be concise.'
+  )
 
-    puts "\n=== Execution Complete ==="
-    puts "Session ID: #{result[:session_id]}"
-    puts "Final content length: #{result[:content].length} characters"
-  end.wait
+  puts "\n=== Execution Complete ==="
+  puts "Session ID: #{result[:session_id]}"
+  puts "Final content length: #{result[:content].length} characters"
 end

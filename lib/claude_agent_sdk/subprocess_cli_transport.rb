@@ -2,7 +2,6 @@
 
 require 'json'
 require 'open3'
-require 'set'
 require 'timeout'
 require_relative 'transport'
 require_relative 'errors'
@@ -689,7 +688,7 @@ module ClaudeAgentSDK
       # Ignore
     end
 
-    def read_messages(&block)
+    def read_messages(&)
       return enum_for(:read_messages) unless block_given?
 
       raise CLIConnectionError, 'Not connected' unless @process && @stdout

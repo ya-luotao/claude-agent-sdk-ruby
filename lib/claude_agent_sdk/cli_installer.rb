@@ -191,13 +191,13 @@ module ClaudeAgentSDK
           raise CLIInstallError, "Failed to fetch #{url}: #{e.class}: #{e.message}"
         end
 
-        def follow_redirect(uri, response, redirects_left, &block)
+        def follow_redirect(uri, response, redirects_left, &)
           raise CLIInstallError, "Too many redirects while fetching #{uri}" if redirects_left <= 0
 
           location = response['location'].to_s
           raise CLIInstallError, "Redirect from #{uri} is missing a Location header" if location.empty?
 
-          with_response(URI.join(uri.to_s, location), redirects_left - 1, &block)
+          with_response(URI.join(uri.to_s, location), redirects_left - 1, &)
         end
       end
     end
