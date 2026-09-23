@@ -2,8 +2,10 @@
 
 1.0 is 0.37 plus three breaking changes. 0.37 already warns about each of the
 first two at the exact call site, so **if your app runs on 0.37 without SDK
-warnings, the first two changes will not affect it on 1.0**. The third changes
-which exception class you rescue.
+warnings, the first two changes will not affect it on 1.0**, with one silent
+exception: `respond_to?` on a camelCase name that is not an attribute
+(`msg.respond_to?(:toH)`) answered `true` on 0.37 without a warning and answers
+`false` on 1.0. The third change is to which exception class you rescue.
 
 | Area | 0.37 | 1.0 |
 |------|------|-----|
@@ -25,9 +27,12 @@ which exception class you rescue.
    printed once per process per class and key (or per method), so fix what
    you find and run again until the output is empty.
 4. Fix each hit as described below.
-5. Search for `rescue RuntimeError` around code that resumes from a
-   `session_store:` (`query`, `ask`, `Client#connect`, `Client.open`) and
-   change it to rescue `ClaudeAgentSDK::SessionStoreError`.
+5. Around code that resumes from a `session_store:` (`query`, `ask`,
+   `Client#connect`, `Client.open`), search for `rescue RuntimeError` and for
+   rescues of your adapter's own exception classes that inherit from
+   `RuntimeError` (for example `Net::ReadTimeout`, a `Timeout::Error`, which is
+   a `RuntimeError`). In 1.0 these arrive wrapped: rescue
+   `ClaudeAgentSDK::SessionStoreError` and inspect `#cause` for the original.
 6. Upgrade: `gem 'claude-agent-sdk', '~> 1.0'`.
 
 ## Unknown keys raise `ArgumentError`
@@ -53,8 +58,9 @@ outputs (`SyncHookJSONOutput`, `AsyncHookJSONOutput`, every
 
 **Fix:** correct the key, or remove it if the type never had it. Symbol and
 String keys, snake_case and camelCase all still work, and so does a type's own
-discriminator (`type`, `hook_event_name`, `behavior`), so `klass.new(value.to_h)`
-round-trips. For a Hash you did not write yourself (deserialized from the CLI,
+discriminator (`type`, `hook_event_name`, `behavior`), so on types that define
+their own `#to_h` (the MCP server configs, `SandboxSettings`, the system prompt
+types, the hook outputs, ...) `klass.new(value.to_h)` round-trips. For a Hash you did not write yourself (deserialized from the CLI,
 a queue or a database), use `.from_hash` or `.wrap`: both stay lenient and
 ignore unknown keys. Types the SDK parses from CLI output (messages, content
 blocks, hook inputs) are not affected.
@@ -108,7 +114,7 @@ No breaking changes within 1.x to the public API: everything documented in
 YARD docs that is not tagged `@api private`. `@api private` objects (`Query`,
 `MessageParser`, `FiberBoundary`, the `Sessions*` modules, ...) stay callable
 but can change in any release. See
-[CONTRIBUTING.md](CONTRIBUTING.md#what-is-public-api).
+[CONTRIBUTING.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/CONTRIBUTING.md#what-is-public-api).
 
 A removal is first deprecated in a minor release with a one-time warning that
 names the replacement, and happens in the next major.

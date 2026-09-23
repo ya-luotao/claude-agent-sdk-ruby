@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-1.0 ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)): three breaking changes, the first two of which 0.37 warns about at the call site. **Read [UPGRADING-1.0.md](UPGRADING-1.0.md) before upgrading** and run your suite on 0.37 with warnings visible first: an app that runs on 0.37 without SDK warnings is unaffected by those two.
+1.0 ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)): three breaking changes, the first two of which 0.37 warns about at the call site. **Read [UPGRADING-1.0.md](UPGRADING-1.0.md) before upgrading** and run your suite on 0.37 with warnings visible first: an app that runs on 0.37 without SDK warnings is unaffected by those two, except that `respond_to?` on a camelCase non-attribute (`msg.respond_to?(:toH)`) silently answered `true` on 0.37 and answers `false` now.
 
 ### Added
 - **`ClaudeAgentSDK::SessionStoreError`** (a `ClaudeSDKError`), raised by `query`, `ask` and `Client#connect` when resuming from `session_store:` fails: a store call (`#load`, `#list_sessions`, `#list_subkeys`) raised or exceeded `load_timeout_ms` while the SDK materialized the transcript. The message names the store call, and `#cause` holds the adapter's exception (or the timeout). Documented in `docs/errors.md` and `docs/sessions.md`.

@@ -395,7 +395,7 @@ This covers `.new` and `#[]=` on:
 
 A nested value is checked as its own type: `PermissionUpdate.new(rules: [{ rule_contnt: 'x' }])` raises naming `PermissionRuleValue`.
 
-Accepted: Symbol or String keys, snake_case or camelCase spellings, and the fixed discriminator a type sets itself (`type`, `hook_event_name`, `behavior`), so `klass.new(value.to_h)` round-trips. Types the SDK parses from CLI output (messages, content blocks, hook inputs, `ToolPermissionContext`, the MCP status types) stay lenient, so a field added by a newer CLI is ignored rather than raising, and so does every construction through `.from_hash` or `.wrap`. Use those two for data you did not write yourself, such as a Hash deserialized from the CLI or from storage.
+Accepted: Symbol or String keys, snake_case or camelCase spellings, and the fixed discriminator a type sets itself (`type`, `hook_event_name`, `behavior`), so on a type that defines its own `#to_h` (the MCP server configs, `SandboxSettings`, the system prompt types, the hook outputs, ...) `klass.new(value.to_h)` round-trips. Types the SDK parses from CLI output (messages, content blocks, hook inputs, `ToolPermissionContext`, the MCP status types) stay lenient, so a field added by a newer CLI is ignored rather than raising, and so does every construction through `.from_hash` or `.wrap`. Use those two for data you did not write yourself, such as a Hash deserialized from the CLI or from storage.
 
 (0.37 printed a one-time warning here and ignored the key; 1.0 raises. See [UPGRADING-1.0.md](../UPGRADING-1.0.md).)
 
