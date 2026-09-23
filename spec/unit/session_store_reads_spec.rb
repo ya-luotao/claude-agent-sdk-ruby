@@ -172,6 +172,122 @@ RSpec.describe 'SessionStore-backed reads' do
       expect(by_id[good].summary).to eq('survivor')
       expect(by_id[bad].summary).to eq('') # degraded row kept, empty summary
     end
+
+    # Issue #66: adapters backed by SQL timestamps naturally report mtime as an
+    # ISO-8601 String. `-String` is String#-@ (frozen-string dedup), so the
+    # old sort silently ordered such listings OLDEST first, and mixed
+    # Integer/String listings raised ArgumentError.
+    describe 'adapter mtime coercion (issue #66)' do
+      let(:iso_sids) { Array.new(3) { SecureRandom.uuid } }
+
+      def seed_controlled(cstore, mtimes, summary_mtimes: {})
+        mtimes.each do |sid, mtime|
+          cstore.append({ 'project_key' => project_key, 'session_id' => sid },
+                        [user_entry(sid, "prompt #{sid}", '2024-01-01T00:00:00.000Z')])
+          cstore.listing_mtimes[sid] = mtime
+        end
+        summary_mtimes.each { |sid, mtime| cstore.summary_mtimes[sid] = mtime }
+      end
+
+      [false, true].each do |with_summaries|
+        path = with_summaries ? 'summary fast path' : 'list_sessions slow path'
+
+        it "orders ISO-8601 String mtimes newest first on the #{path}" do
+          cstore = controlled_mtime_store(with_summaries: with_summaries)
+          oldest, middle, newest = iso_sids
+          mtimes = { middle => '2024-06-01T00:00:00.000Z', oldest => '2024-01-01T00:00:00.000Z',
+                     newest => '2024-12-01T00:00:00.000Z' }
+          seed_controlled(cstore, mtimes, summary_mtimes: with_summaries ? mtimes : {})
+
+          infos = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir)
+          expect(infos.map(&:session_id)).to eq([newest, middle, oldest])
+          # limit must cut the OLDEST, not the newest.
+          expect(ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir, limit: 1)
+                   .map(&:session_id)).to eq([newest])
+        end
+
+        it "orders mixed Integer/String mtimes chronologically on the #{path}" do
+          cstore = controlled_mtime_store(with_summaries: with_summaries)
+          oldest, middle, newest = iso_sids
+          mtimes = { oldest => Time.iso8601('2024-01-01T00:00:00Z').to_i * 1000,
+                     middle => '2024-06-01T00:00:00.000Z',
+                     newest => (Time.iso8601('2024-12-01T00:00:00Z').to_i * 1000).to_s }
+          seed_controlled(cstore, mtimes, summary_mtimes: with_summaries ? mtimes : {})
+
+          infos = nil
+          expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir) }
+            .not_to raise_error
+          expect(infos.map(&:session_id)).to eq([newest, middle, oldest])
+        end
+      end
+
+      it 'compares an epoch-Integer sidecar against an ISO-String listing mtime for staleness' do
+        cstore = controlled_mtime_store(with_summaries: true)
+        stale, fresh = iso_sids
+        seed_controlled(cstore,
+                        { stale => '2024-06-01T00:00:00.000Z', fresh => '2024-03-01T00:00:00.000Z' },
+                        summary_mtimes: { stale => Time.iso8601('2024-01-01T00:00:00Z').to_i * 1000,
+                                          fresh => Time.iso8601('2024-03-01T00:00:00Z').to_i * 1000 })
+        # A title appended after the stale sidecar was written: only a re-fold
+        # from source (the stale path) can see it.
+        cstore.frozen_summaries = true
+        cstore.append({ 'project_key' => project_key, 'session_id' => stale },
+                      [{ 'type' => 'custom-title', 'customTitle' => 'Renamed later' }])
+
+        infos = nil
+        expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir) }
+          .not_to raise_error
+        expect(infos.map(&:session_id)).to eq([stale, fresh])
+        expect(infos.first.summary).to eq('Renamed later') # re-folded, not the stale sidecar
+      end
+    end
+
+    # Issue #78: sort_by is not stable, so equal mtimes (coarse adapter clocks,
+    # bulk imports) ordered arbitrarily between calls and offset/limit paging
+    # could skip or repeat sessions. Ties break by session_id ascending.
+    describe 'deterministic tiebreak for equal mtimes (issue #78)' do
+      let(:tied_sids) { Array.new(5) { SecureRandom.uuid } }
+
+      [false, true].each do |with_summaries|
+        path = with_summaries ? 'summary fast path' : 'list_sessions slow path'
+
+        it "pages equal-mtime sessions by session_id with no skips or repeats on the #{path}" do
+          cstore = controlled_mtime_store(with_summaries: with_summaries)
+          tied_sids.each do |sid|
+            cstore.append({ 'project_key' => project_key, 'session_id' => sid },
+                          [user_entry(sid, 'tied', '2024-01-01T00:00:00.000Z')])
+            cstore.listing_mtimes[sid] = 1_700_000_000_000
+            cstore.summary_mtimes[sid] = 1_700_000_000_000 if with_summaries
+          end
+
+          full1 = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir).map(&:session_id)
+          full2 = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir).map(&:session_id)
+          expect(full1).to eq(tied_sids.sort)
+          expect(full2).to eq(full1) # stable across calls despite the adapter reordering its rows
+
+          pages = [0, 2, 4].flat_map do |off|
+            ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir, limit: 2, offset: off)
+                          .map(&:session_id)
+          end
+          expect(pages).to eq(tied_sids.sort)
+        end
+      end
+
+      it 'breaks ties after coercion, so equal instants in different shapes order by session_id' do
+        cstore = controlled_mtime_store(with_summaries: false)
+        a, b = tied_sids.first(2).sort
+        ms = Time.iso8601('2024-01-01T00:00:00Z').to_i * 1000
+        cstore.append({ 'project_key' => project_key, 'session_id' => b }, [user_entry(b, 'b', '2024-01-01T00:00:00Z')])
+        cstore.append({ 'project_key' => project_key, 'session_id' => a }, [user_entry(a, 'a', '2024-01-01T00:00:00Z')])
+        cstore.listing_mtimes[b] = ms
+        cstore.listing_mtimes[a] = '2024-01-01T00:00:00.000Z'
+
+        2.times do
+          expect(ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir).map(&:session_id))
+            .to eq([a, b])
+        end
+      end
+    end
   end
 
   describe '.get_session_info_from_store' do
@@ -390,6 +506,72 @@ RSpec.describe 'SessionStore-backed reads' do
     end
   end
 
+  # Issue #74: a non-String id used to reach `match?`/`empty?` and raise a deep
+  # NoMethodError; it now gets exactly the answer a malformed id gets.
+  # Issue #79: agent_id is synthesized into the store subpath
+  # `subagents/agent-<agent_id>`, so a malformed one ('/', '..', '%', NUL)
+  # must be rejected before any adapter call can see it.
+  describe 'id validation at the API boundary (issues #74, #79)' do
+    # A load-only store recording every key the SDK hands it.
+    let(:recorder) do
+      Class.new do
+        attr_reader :keys
+
+        def initialize = @keys = []
+        def append(_key, _entries) = nil
+
+        def load(key)
+          @keys << key
+          nil
+        end
+      end.new
+    end
+
+    [nil, 123, :sym, ['x']].each do |bad|
+      it "treats session_id #{bad.inspect} like a malformed id on every store reader" do
+        args = { session_store: recorder, session_id: bad, directory: dir }
+        expect(ClaudeAgentSDK.get_session_info_from_store(**args)).to be_nil
+        expect(ClaudeAgentSDK.get_session_messages_from_store(**args)).to eq([])
+        expect(ClaudeAgentSDK.list_subagents_from_store(**args)).to eq([])
+        expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args, agent_id: 'abc')).to be_nil
+        expect(ClaudeAgentSDK.get_subagent_messages_from_store(**args, agent_id: 'abc')).to eq([])
+        expect(recorder.keys).to be_empty
+      end
+
+      it "raises ArgumentError (not NoMethodError) for session_id #{bad.inspect} on import_session_to_store" do
+        expect { ClaudeAgentSDK.import_session_to_store(session_id: bad, session_store: recorder, directory: dir) }
+          .to raise_error(ArgumentError, /Invalid session_id/)
+      end
+
+      it "treats agent_id #{bad.inspect} like a malformed id on the store subagent readers" do
+        args = { session_store: recorder, session_id: sid1, agent_id: bad, directory: dir }
+        expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args)).to be_nil
+        expect(ClaudeAgentSDK.get_subagent_messages_from_store(**args)).to eq([])
+        expect(recorder.keys).to be_empty
+      end
+    end
+
+    ['', '.', '..', '../x', 'a/b', 'a\\b', 'x%2Fy', "a\u0000b", 'a b', "abc\n"].each do |bad|
+      it "never synthesizes a store subpath from the malformed agent_id #{bad.inspect}" do
+        args = { session_store: recorder, session_id: sid1, agent_id: bad, directory: dir }
+        expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args)).to be_nil
+        expect(ClaudeAgentSDK.get_subagent_messages_from_store(**args)).to eq([])
+        expect(recorder.keys).to be_empty
+      end
+    end
+
+    # Shapes the CLI actually writes (hex ids, prefixed prompt-suggestion /
+    # compaction ids) must keep resolving.
+    %w[a1b2c3d a0123456789abcdef aprompt_suggestion-1a2b3c acompact-4d5e6f agent_1 v1.2].each do |ok|
+      it "still reads the well-formed agent_id #{ok.inspect}" do
+        ClaudeAgentSDK.get_subagent_messages_from_store(session_store: recorder, session_id: sid1,
+                                                        agent_id: ok, directory: dir)
+        expect(recorder.keys).to eq([{ 'project_key' => project_key, 'session_id' => sid1,
+                                       'subpath' => "subagents/agent-#{ok}" }])
+      end
+    end
+  end
+
   # A store implementing only append/load/list_sessions (no summaries/subkeys),
   # to exercise the slow path and the missing-list_subkeys guard.
   def list_only_store
@@ -492,6 +674,54 @@ RSpec.describe 'SessionStore-backed reads' do
 
       def list_session_summaries(_project_key) = []
     end.new
+  end
+
+  # A store whose listing (and optionally summary-sidecar) mtimes are set
+  # directly by the spec, so adapter-shaped values — ISO-8601 Strings, mixed
+  # types, ties — can be exercised. list_sessions rotates its row order on
+  # every call, like an adapter query without ORDER BY, so a sort without a
+  # total order shows up as cross-call instability instead of passing by
+  # accident of insertion order. Summaries are folded from the stored
+  # entries at call time unless frozen_summaries is set, in which case the
+  # sidecar keeps the fold captured when it was frozen (a stale sidecar).
+  def controlled_mtime_store(with_summaries:)
+    cstore = Class.new(ClaudeAgentSDK::SessionStore) do
+      attr_reader :listing_mtimes, :summary_mtimes, :data
+
+      def initialize
+        super
+        @data = {}
+        @listing_mtimes = {}
+        @summary_mtimes = {}
+        @calls = 0
+        @frozen = nil
+      end
+
+      def frozen_summaries=(value)
+        @frozen = value ? @data.transform_values(&:dup) : nil
+      end
+
+      def append(key, entries)
+        (@data[key['session_id']] ||= []).concat(entries)
+      end
+
+      def load(key) = @data[key['session_id']]&.dup
+
+      def list_sessions(_project_key)
+        @calls += 1
+        @listing_mtimes.map { |sid, mtime| { 'session_id' => sid, 'mtime' => mtime } }.rotate(@calls)
+      end
+
+      def summary_rows
+        source = @frozen || @data
+        @summary_mtimes.map do |sid, mtime|
+          ClaudeAgentSDK::SessionSummary.fold_session_summary(nil, { 'session_id' => sid }, source.fetch(sid, []))
+                                        .merge('mtime' => mtime)
+        end.rotate(@calls)
+      end
+    end.new
+    cstore.define_singleton_method(:list_session_summaries) { |_project_key| summary_rows } if with_summaries
+    cstore
   end
 
   # A non-conformant store whose list_subkeys returns nil (rather than []).

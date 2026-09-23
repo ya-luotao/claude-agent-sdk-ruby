@@ -126,12 +126,12 @@ module ClaudeAgentSDK
       )
     end
 
-    # Python's `x or None`: nil for nil/empty-string, else the value.
+    # Python's `x or None`, delegating to the disk path's Sessions.presence
+    # so both summary paths share ONE definition of blank (whitespace-only
+    # included). A local copy that only rejected "" let the store path list
+    # a session under an invisible whitespace summary the disk path hid.
     def presence(val)
-      return nil if val.nil?
-      return nil if val.is_a?(String) && val.empty?
-
-      val
+      Sessions.presence(val)
     end
 
     # Replicate Sessions#extract_first_prompt_from_head for a single parsed
