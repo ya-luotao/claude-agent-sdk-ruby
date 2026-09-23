@@ -29,11 +29,13 @@ module ClaudeAgentSDK
   #     options: ClaudeAgentOptions.new(model: 'opus')  # overrides default
   #   )
   #
-  # Assignment stores a frozen deep copy of the Hash (containers and typed
-  # option values such as SandboxSettings are copied; procs, observers, SDK
-  # MCP server instances and store adapters keep identity). To change the
-  # defaults, assign a new Hash — in-place mutation of the stored one raises
-  # FrozenError, and later changes to the Hash you passed in have no effect.
+  # Assignment stores a frozen deep copy of the Hash (containers, typed
+  # option values such as SandboxSettings, and mutable Strings are copied;
+  # procs, observers, SDK MCP server instances and store adapters keep
+  # identity). To change the defaults, assign a new Hash — in-place mutation
+  # of the stored one (including `<<` on one of its Strings) raises
+  # FrozenError, and later changes to the Hash or Strings you passed in have
+  # no effect.
   class Configuration
     # The configured defaults: a frozen snapshot (see class docs).
     #
@@ -64,15 +66,18 @@ module ClaudeAgentSDK
 
     private
 
-    # Mirrors Type.deep_dup_for_options' recursion: freeze the containers and
-    # option value copies it produced (and their nested state), never a leaf
-    # it returned by identity — freezing an SdkMcpServer or a store adapter
-    # would break it.
+    # Mirrors Type.deep_dup_for_options' recursion: freeze the containers,
+    # option value copies and String copies it produced (and their nested
+    # state), never a leaf it returned by identity — freezing an
+    # SdkMcpServer or a store adapter would break it. A String reaching here
+    # is either the copier's own copy or was already frozen, so freezing it
+    # never touches a caller's mutable String.
     def deep_freeze(value)
       case value
       when Hash then value.each_value { |v| deep_freeze(v) }
       when Array then value.each { |v| deep_freeze(v) }
       when Type::OptionValue then value.instance_variables.each { |ivar| deep_freeze(value.instance_variable_get(ivar)) }
+      when String then nil # nothing nested; fall through to freeze the copy
       else return value
       end
       value.freeze

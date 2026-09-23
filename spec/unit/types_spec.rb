@@ -1117,6 +1117,40 @@ RSpec.describe ClaudeAgentSDK do
         expect(base.plugins.first.path).to eq('/p')
       end
 
+      # Strings were identity leaves, so a caller-built (unfrozen) model,
+      # allowed_tools entry, env value or SystemPromptPreset#append mutated
+      # in place on a variant changed the base too. Frozen Strings (literals
+      # under frozen_string_literal) are immutable and keep identity.
+      it 'copies mutable Strings so in-place mutation on a variant cannot touch the base' do
+        base = described_class.new(
+          model: +'sonnet', allowed_tools: [+'Read'], env: { 'A' => +'1' },
+          system_prompt: ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: +'base')
+        )
+        variant = base.dup_with(max_turns: 2)
+
+        expect(variant.model).not_to be(base.model)
+        expect(variant.model).not_to be_frozen
+        variant.model << '-x'
+        variant.allowed_tools.first << 'x'
+        variant.env['A'] << 'x'
+        variant.system_prompt.append << 'x'
+
+        expect(base.model).to eq('sonnet')
+        expect(base.allowed_tools).to eq(['Read'])
+        expect(base.env).to eq('A' => '1')
+        expect(base.system_prompt.append).to eq('base')
+        expect(variant.model).to eq('sonnet-x')
+      end
+
+      it 'keeps frozen Strings by identity across dup_with' do
+        model = 'sonnet' # frozen literal
+        base = described_class.new(model: model, allowed_tools: ['Read'])
+        variant = base.dup_with(max_turns: 2)
+
+        expect(variant.model).to be(model)
+        expect(variant.allowed_tools.first).to be(base.allowed_tools.first)
+      end
+
       it 'keeps identity of instances, callables, observers and adapters inside typed values across dup_with' do
         server = Object.new
         hook = ->(_input, _id, _ctx) { {} }

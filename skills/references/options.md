@@ -19,7 +19,7 @@ end
 Notes:
 - `ClaudeAgentOptions.new(...)` still overrides defaults you pass explicitly.
 - Hash options like `env` and `mcp_servers` merge with configured defaults.
-- Assignment stores a frozen deep copy: change defaults by assigning a new Hash (in-place mutation of `config.default_options` raises `FrozenError`, and later changes to the Hash you passed have no effect).
+- Assignment stores a frozen deep copy (containers, typed values and Strings included): change defaults by assigning a new Hash. In-place mutation of `config.default_options` raises `FrozenError`, and later changes to the Hash, typed objects or Strings you passed have no effect. Sessions get mutable copies of the containers and typed values but keep the snapshot's frozen Strings, so reassign `options.model = ...` rather than `options.model << ...`.
 - Typed values in defaults (`SandboxSettings`, `SystemPromptPreset`, `AgentDefinition`, ...) are copied into every `ClaudeAgentOptions`, as they are by `dup_with`, so one session can never change another session's (or the defaults') settings. Procs, observers, SDK MCP server instances and store adapters keep their identity.
 
 ## Core knobs

@@ -119,12 +119,18 @@ module ClaudeAgentSDK
       end
     end
 
-    # Recurse into Hash/Array containers and option value types; every other
-    # leaf keeps object identity (observer factories, callbacks, SDK MCP
-    # server instances must not be duped). Rebuild containers via dup.clear
-    # (never Hash#to_h / Array#map) to preserve container SUBCLASSES: to_h
-    # flattens e.g. Rails' HashWithIndifferentAccess into a plain Hash,
-    # silently breaking symbol lookups on the copy (config[:type] == 'sdk' → nil).
+    # Recurse into Hash/Array containers and option value types, and copy
+    # mutable (unfrozen) Strings — a caller-built prompt, model or
+    # allowed_tools entry is as much shared state as an Array, and `str <<
+    # 'x'` on one copy would otherwise change every other. A frozen String
+    # (any literal under frozen_string_literal) is immutable and keeps
+    # identity. Every other leaf keeps object identity (observer factories,
+    # callbacks, SDK MCP server instances must not be duped). Rebuild
+    # containers via dup.clear (never Hash#to_h / Array#map) to preserve
+    # container SUBCLASSES: to_h flattens e.g. Rails'
+    # HashWithIndifferentAccess into a plain Hash, silently breaking symbol
+    # lookups on the copy (config[:type] == 'sdk' → nil). Hash keys need no
+    # copy: Ruby already stores a dup'd, frozen copy of an unfrozen String key.
     def self.deep_dup_for_options(value)
       case value
       when Hash
@@ -136,6 +142,7 @@ module ClaudeAgentSDK
         value.each { |v| copy << deep_dup_for_options(v) }
         copy
       when Type then value.dup_for_options
+      when String then value.frozen? ? value : value.dup # #dup keeps subclass and encoding
       else value
       end
     end
@@ -2249,15 +2256,18 @@ module ClaudeAgentSDK
       defaults = ClaudeAgentSDK.default_options
       return attributes unless defaults.any?
 
-      # Start from configured defaults. Container values and typed option
+      # Start from configured defaults. Container values, typed option
       # values (SandboxSettings, SystemPromptPreset, AgentDefinition, ...)
-      # are recursively copied (Type.deep_dup_for_options) so per-instance
-      # mutation (options.allowed_tools << 'Bash', options.sandbox.enabled =
-      # false) can never corrupt the global defaults or reach another
-      # session; other leaves (Strings, Procs, SdkMcpServer instances, store
-      # adapters) intentionally keep identity. The stored defaults are a
-      # frozen snapshot (Configuration#default_options=), and the copy is
-      # what makes each session's values mutable again.
+      # and mutable Strings are recursively copied (Type.deep_dup_for_options)
+      # so per-instance mutation (options.allowed_tools << 'Bash',
+      # options.sandbox.enabled = false) can never corrupt the global
+      # defaults or reach another session; other leaves (frozen Strings,
+      # Procs, SdkMcpServer instances, store adapters) intentionally keep
+      # identity. The stored defaults are a frozen snapshot
+      # (Configuration#default_options=), and the copy is what makes each
+      # session's containers and values mutable again — its Strings stay the
+      # snapshot's frozen ones, so `options.model << 'x'` fails loudly rather
+      # than reaching other sessions; reassign instead.
       result = {}
       defaults.each { |key, value| result[option_key(key)] = Type.deep_dup_for_options(value) }
       attributes.each do |key, value|

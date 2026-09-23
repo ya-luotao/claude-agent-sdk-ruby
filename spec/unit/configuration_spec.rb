@@ -536,6 +536,64 @@ RSpec.describe ClaudeAgentSDK do
         expect(stored[:observers].first).to equal(factory)
       end
 
+      # Strings were identity leaves: a caller-built (unfrozen) prompt, model
+      # or allowed_tools entry stayed one object shared by the source, the
+      # snapshot and every session, so `str << 'x'` on any of them changed all.
+      it 'copies mutable Strings, so mutating the source after configure reaches neither the snapshot nor sessions' do
+        model = +'sonnet'
+        tool = +'Read'
+        append = +'base'
+        preset = ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: append)
+        ClaudeAgentSDK.configure do |c|
+          c.default_options = { model: model, allowed_tools: [tool], system_prompt: preset, env: { 'A' => +'1' } }
+        end
+        stored = ClaudeAgentSDK.default_options
+
+        model << '-mutated'
+        tool.replace('Bash')
+        append << ' mutated'
+        preset.append = +'reassigned'
+
+        expect(stored[:model]).to eq('sonnet')
+        expect(stored[:allowed_tools]).to eq(['Read'])
+        expect(stored[:system_prompt].append).to eq('base')
+        expect(described_class.new.model).to eq('sonnet')
+        expect(described_class.new.allowed_tools).to eq(['Read'])
+        expect(described_class.new.system_prompt.append).to eq('base')
+        expect(described_class.new.env['A']).to eq('1')
+        # The caller's Strings are copied, never frozen.
+        expect(model).not_to be_frozen
+        expect(append).not_to be_frozen
+      end
+
+      it 'freezes the Strings in the snapshot, so a session copy cannot change other sessions through them' do
+        ClaudeAgentSDK.configure do |c|
+          c.default_options = {
+            model: +'sonnet', allowed_tools: [+'Read'],
+            system_prompt: ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: +'base'),
+            env: { 'A' => +'1' }
+          }
+        end
+        stored = ClaudeAgentSDK.default_options
+        o1 = described_class.new
+
+        expect(stored[:model]).to be_frozen
+        expect(stored[:allowed_tools].first).to be_frozen
+        expect(stored[:system_prompt].append).to be_frozen
+        expect(stored[:env]['A']).to be_frozen
+        expect { o1.model << 'x' }.to raise_error(FrozenError)
+        expect { o1.allowed_tools.first << 'x' }.to raise_error(FrozenError)
+        expect { o1.system_prompt.append << 'x' }.to raise_error(FrozenError)
+        expect { o1.env['A'] << 'x' }.to raise_error(FrozenError)
+        # Reassignment (the supported way to vary a session) stays local to it.
+        o1.model = 'opus'
+        o1.allowed_tools[0] = 'Bash'
+        o1.system_prompt.append = 'session'
+        expect(described_class.new.model).to eq('sonnet')
+        expect(described_class.new.allowed_tools).to eq(['Read'])
+        expect(described_class.new.system_prompt.append).to eq('base')
+      end
+
       it 'starts frozen and treats a nil assignment as no defaults' do
         expect(ClaudeAgentSDK.default_options).to be_frozen
         expect { ClaudeAgentSDK.configuration.default_options[:model] = 'opus' }.to raise_error(FrozenError)
