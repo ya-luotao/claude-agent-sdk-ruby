@@ -37,7 +37,9 @@ Gem::Specification.new do |spec|
     []
   end
   spec.files = if tracked.empty?
-                 Dir.glob(['lib/**/*.rb', 'docs/**/*.md', 'README.md', 'LICENSE', 'CHANGELOG.md'], base: __dir__)
+                 # .rake: the Railtie's tasks; .tt: the Rails generator's templates.
+                 Dir.glob(['lib/**/*.{rb,rake,tt}', 'docs/**/*.md', 'README.md', 'LICENSE', 'CHANGELOG.md'],
+                          base: __dir__)
                else
                  tracked
                end

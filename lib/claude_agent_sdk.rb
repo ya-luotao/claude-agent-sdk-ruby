@@ -20,6 +20,10 @@ require_relative 'claude_agent_sdk/session_resume'
 require_relative 'claude_agent_sdk/session_mutations'
 require_relative 'claude_agent_sdk/fiber_boundary'
 require_relative 'claude_agent_sdk/option_warnings'
+# Rails apps only: Bundler.require runs after `require 'rails'`, so the
+# Railtie (rake tasks; the generator lives under lib/generators) is picked up
+# there and nowhere else.
+require_relative 'claude_agent_sdk/railtie' if defined?(Rails::Railtie)
 require 'async'
 require 'securerandom'
 

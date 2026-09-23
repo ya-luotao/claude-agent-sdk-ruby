@@ -32,6 +32,14 @@ RSpec.describe 'require surface' do
     expect(status.exitstatus).to eq(0), "instrumentation entry point must load the SDK core: #{err}"
   end
 
+  it 'does not load Rails or the Railtie outside a Rails app' do
+    # The Railtie is required only `if defined?(Rails::Railtie)`; a plain
+    # require must stay exactly as Rails-free as before it existed.
+    code = "require 'claude_agent_sdk'; exit(defined?(ClaudeAgentSDK::Railtie) || defined?(Rails) ? 1 : 0)"
+    _out, err, status = run_ruby(code)
+    expect(status.exitstatus).to eq(0), "a non-Rails require must load neither Rails nor the Railtie: #{err}"
+  end
+
   it 'lets the configuration file be required on its own' do
     # default_options= deep-copies through Type.deep_dup_for_options; a
     # standalone require of configuration.rb must bring that in itself.
