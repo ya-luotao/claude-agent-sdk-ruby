@@ -129,13 +129,16 @@ module ClaudeAgentSDK
     # containers via dup.clear (never Hash#to_h / Array#map) to preserve
     # container SUBCLASSES: to_h flattens e.g. Rails'
     # HashWithIndifferentAccess into a plain Hash, silently breaking symbol
-    # lookups on the copy (config[:type] == 'sdk' → nil). Hash keys need no
-    # copy: Ruby already stores a dup'd, frozen copy of an unfrozen String key.
+    # lookups on the copy (config[:type] == 'sdk' → nil). Hash keys: Ruby
+    # already stores a dup'd, frozen copy of an unfrozen plain String key, but
+    # not of a String SUBCLASS key, so those are copied (and frozen, as keys
+    # should be) here. A compare_by_identity Hash is left keyed by the
+    # caller's objects: copying a key would break the caller's own lookups.
     def self.deep_dup_for_options(value)
       case value
       when Hash
         copy = value.dup.clear
-        value.each { |k, v| copy[k] = deep_dup_for_options(v) }
+        value.each { |k, v| copy[option_hash_key(k, value)] = deep_dup_for_options(v) }
         copy
       when Array
         copy = value.dup.clear
@@ -146,6 +149,13 @@ module ClaudeAgentSDK
       else value
       end
     end
+
+    def self.option_hash_key(key, hash)
+      return key unless key.is_a?(String) && !key.frozen? && !hash.compare_by_identity?
+
+      key.dup.freeze
+    end
+    private_class_method :option_hash_key
 
     private
 

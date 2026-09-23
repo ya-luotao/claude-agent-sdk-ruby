@@ -566,6 +566,22 @@ RSpec.describe ClaudeAgentSDK do
         expect(append).not_to be_frozen
       end
 
+      # Ruby dups+freezes an unfrozen plain String key on insert, but not a
+      # String SUBCLASS key: mutating the caller's key object re-keyed the
+      # snapshot's entry.
+      it 'copies mutable String-subclass Hash keys into the snapshot' do
+        key_class = Class.new(String)
+        key = key_class.new('A')
+        ClaudeAgentSDK.configure { |c| c.default_options = { env: { key => '1' } } }
+
+        key.replace('B')
+
+        expect(ClaudeAgentSDK.default_options[:env].keys).to eq(['A'])
+        expect(ClaudeAgentSDK.default_options[:env].keys.first).to be_frozen
+        expect(described_class.new.env['A']).to eq('1')
+        expect(key).not_to be_frozen
+      end
+
       it 'freezes the Strings in the snapshot, so a session copy cannot change other sessions through them' do
         ClaudeAgentSDK.configure do |c|
           c.default_options = {
