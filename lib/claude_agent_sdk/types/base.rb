@@ -1,17 +1,8 @@
 # frozen_string_literal: true
 
-require_relative '../deprecation'
-
 module ClaudeAgentSDK
   # Base class for all types.
   class Type
-    # What a strict type (see .strict_attributes) does with an unknown
-    # attribute: :warn (once per class and key) through 0.x, :raise from 1.0.
-    UNKNOWN_ATTRIBUTE_ACTION = :warn
-
-    LENIENT_KEY = :__claude_agent_sdk_lenient_attributes
-    private_constant :UNKNOWN_ATTRIBUTE_ACTION, :LENIENT_KEY
-
     # Lenient, like every parse path: never warns or raises on an unknown key.
     def self.wrap(object)
       return object if object.is_a?(self)
@@ -26,52 +17,6 @@ module ClaudeAgentSDK
 
       lenient { new(hash) }
     end
-
-    # Declares a type the user constructs and passes IN (option values, hook
-    # matchers and outputs, permission results and updates). Constructing
-    # one directly (.new or #[]=) with a key that is neither a setter nor a
-    # public reader warns once per class and key — a typo would otherwise be
-    # dropped silently — and raises ArgumentError from 1.0. Types the SDK
-    # parses from CLI output stay lenient so a newer CLI's extra fields never
-    # break an older SDK; so does every construction through .from_hash or
-    # .wrap. Inherited by subclasses.
-    #
-    # @api private
-    def self.strict_attributes
-      @strict_attributes = true
-    end
-
-    # @api private
-    def self.strict_attributes?
-      @strict_attributes || (superclass <= Type && superclass.strict_attributes?)
-    end
-
-    # The attribute names (snake_case) a strict type accepts: its setters
-    # plus its public readers, so the discriminator a type sets itself
-    # (+type+, +hook_event_name+, +behavior+) — which its own #to_h emits —
-    # round-trips silently. Type's own methods (#to_h, #inspect, ...) are
-    # not attributes.
-    #
-    # @api private
-    def self.known_attribute_names
-      public_instance_methods.filter_map do |method_name|
-        owner = instance_method(method_name).owner
-        next unless owner.is_a?(Class) && owner < Type && !Type.public_method_defined?(method_name, false)
-
-        method_name.to_s.delete_suffix('=') if method_name.match?(/\A[a-z_]\w*=?\z/)
-      end.uniq.sort
-    end
-
-    # Runs the block with the strict-attribute check off on this fiber, for
-    # the SDK's own parse paths (CLI payloads and their nested values).
-    def self.lenient
-      previous = Thread.current[LENIENT_KEY]
-      Thread.current[LENIENT_KEY] = true
-      yield
-    ensure
-      Thread.current[LENIENT_KEY] = previous
-    end
-    private_class_method :lenient
 
     def initialize(attributes = {})
       assign_attributes(attributes) if attributes
@@ -339,59 +284,6 @@ module ClaudeAgentSDK
       false
     end
 
-    # Allow camelCase attribute access
-    def method_missing(method_name, ...)
-      normalized = normalize_name(method_name)
-
-      if normalized != method_name.to_s && respond_to?(normalized)
-        public_send(normalized, ...)
-      else
-        super
-      end
-    end
-
-    def respond_to_missing?(method_name, include_private = false)
-      normalized = normalize_name(method_name)
-      (normalized != method_name.to_s && respond_to?(normalized)) || super
-    end
-
-    def assign_attributes(attributes)
-      raise ArgumentError, "When assigning attributes, you must pass a hash as an argument, #{attributes.inspect} passed." unless attributes.respond_to?(:each_pair)
-
-      return if attributes.empty?
-
-      attributes.each_pair { |name, value| assign_attribute(name, value) }
-    end
-
-    def assign_attribute(name, value)
-      normalized = normalize_name(name)
-      setter = :"#{normalized}="
-      if respond_to?(setter)
-        public_send(setter, value)
-      elsif self.class.strict_attributes? && !Thread.current[LENIENT_KEY] &&
-            !self.class.known_attribute_names.include?(normalized)
-        unknown_attribute(name, normalized)
-      end
-    end
-
-    def unknown_attribute(name, normalized)
-      klass = self.class
-      class_name = klass.name || klass.inspect
-      known = klass.known_attribute_names.join(', ')
-      raise ArgumentError, "#{class_name}: unknown attribute #{name.inspect} (known: #{known})" if UNKNOWN_ATTRIBUTE_ACTION == :raise
-
-      Deprecation.warn_once_at_caller(
-        [:unknown_attribute, klass, normalized],
-        "#{class_name}: unknown attribute #{name.inspect} ignored; " \
-        "this will raise ArgumentError in 1.0 (known: #{known})"
-      )
-    end
-
-    def read_attribute(name)
-      getter = normalize_name(name)
-      public_send(getter) if respond_to?(getter)
-    end
-
     def normalize_name(name)
       name = name.to_s.dup
       name.gsub!(/(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z\d])(?=[A-Z])/, "_")
@@ -424,3 +316,5 @@ module ClaudeAgentSDK
     end
   end
 end
+
+require_relative 'attributes'

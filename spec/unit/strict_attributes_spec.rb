@@ -145,7 +145,7 @@ RSpec.describe 'strict attributes on user-constructed types' do
         expect(first).to start_with("#{__FILE__}:#{__LINE__ - 3}: warning: ")
         expect(first).to include("ClaudeAgentSDK::#{name}: unknown attribute :bogus_key ignored; " \
                                  'this will raise ArgumentError in 1.0 (known: ')
-        expect(first).to include(klass.known_attribute_names.join(', '))
+        expect(first).to include(klass.attribute_names.join(', '))
         expect(again).to be_empty
       end
 
@@ -243,7 +243,7 @@ RSpec.describe 'strict attributes on user-constructed types' do
   end
 
   context 'when the 1.0 switch is flipped to :raise' do
-    before { stub_const('ClaudeAgentSDK::Type::UNKNOWN_ATTRIBUTE_ACTION', :raise) }
+    before { stub_const('ClaudeAgentSDK::Type::ENFORCE_ATTRIBUTES', true) }
 
     it 'raises ArgumentError naming the known attributes' do
       expect { ClaudeAgentSDK::HookMatcher.new(matchr: 'Bash') }
