@@ -1130,7 +1130,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         "stray warning line\n" \
         "{\"type\":\"result\",\"subtype\":\"success\"}\n"
       )
-      fake_process = instance_double(Process::Waiter, value: instance_double(Process::Status, exitstatus: 0, signaled?: false))
+      fake_process = instance_double(Process::Waiter, alive?: false, value: instance_double(Process::Status, exitstatus: 0, signaled?: false))
       transport.instance_variable_set(:@stdout, stdout)
       transport.instance_variable_set(:@process, fake_process)
 
@@ -1146,7 +1146,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     let(:transport) { described_class.new('hi', options) }
 
     def wire_stdout(text)
-      fake_process = instance_double(Process::Waiter, value: instance_double(Process::Status, exitstatus: 0, signaled?: false))
+      fake_process = instance_double(Process::Waiter, alive?: false, value: instance_double(Process::Status, exitstatus: 0, signaled?: false))
       transport.instance_variable_set(:@stdout, StringIO.new(text))
       transport.instance_variable_set(:@process, fake_process)
     end
@@ -1183,7 +1183,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     let(:transport) { described_class.new('hi', options) }
 
     def wire(stdout_text, status)
-      fake_process = instance_double(Process::Waiter, value: status)
+      fake_process = instance_double(Process::Waiter, alive?: false, value: status)
       transport.instance_variable_set(:@stdout, StringIO.new(stdout_text))
       transport.instance_variable_set(:@process, fake_process)
     end
@@ -1259,6 +1259,573 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
   end
 
+  describe '#write — cancellation mid-frame poisons the transport (#80)' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+    # Larger than any pipe buffer (64 KB on Linux and macOS), so a writer with
+    # no reader parks INSIDE IO#write with part of the frame already on the
+    # pipe — the exact state a cancellation lands in.
+    let(:payload) { "{\"type\":\"user\",\"pad\":\"#{'x' * 1_000_000}\"}\n" }
+
+    def wire_pipe(transport, alive: true)
+      r, w = IO.pipe
+      w.sync = true
+      transport.instance_variable_set(:@stdin, w)
+      transport.instance_variable_set(:@process, instance_double(Process::Waiter, alive?: alive))
+      transport.instance_variable_set(:@ready, true)
+      [r, w]
+    end
+
+    # Everything currently buffered in the pipe, without blocking.
+    def drain(reader)
+      bytes = +''
+      loop { bytes << reader.read_nonblock(1 << 20) }
+    rescue IO::WaitReadable, EOFError
+      bytes
+    end
+
+    # Async runs a child task until its first suspension point before
+    # returning from #async, so the writer is already parked in IO#write on
+    # the full pipe when this returns — no sleep needed for ordering.
+    def park_reactor_writer(task, transport, payload, caught)
+      writer = task.async do
+        transport.write(payload)
+      rescue Exception => e # rubocop:disable Lint/RescueException -- the cancellation class under test is not a StandardError
+        caught << e
+        raise
+      end
+      expect(writer).not_to be_finished
+      writer
+    end
+
+    it 'marks the transport unusable, re-raises the original cancellation, and fails later writes fast' do
+      r, w = wire_pipe(transport)
+      caught = []
+
+      Async do |task|
+        writer = park_reactor_writer(task, transport, payload, caught)
+        writer.stop
+        writer.wait
+
+        # The cancellation class itself must propagate (query.rb rescues
+        # Async::Stop; converting it would break cancellation), and it is
+        # not a StandardError — the old `rescue StandardError` never saw it.
+        expect(caught.size).to eq(1)
+        expect(caught.first).not_to be_a(StandardError)
+        expect(transport.ready?).to be(false)
+
+        # A partial frame really did land: some bytes, but not the whole payload.
+        landed = drain(r).bytesize
+        expect(landed).to be_between(1, payload.bytesize - 1)
+
+        # Next write from the reactor fails fast without touching the pipe.
+        expect { transport.write("{\"type\":\"user\"}\n") }.to raise_error(
+          ClaudeAgentSDK::CLIConnectionError,
+          /interrupted by #{Regexp.escape(caught.first.class.name)}.*partial frame/
+        )
+        expect(drain(r)).to be_empty
+      ensure
+        writer&.stop
+      end.wait
+
+      # ...and from a FiberBoundary-style plain thread.
+      from_thread = Thread.new do
+        transport.write("{\"type\":\"user\"}\n")
+      rescue StandardError => e
+        e
+      end.value
+      expect(from_thread).to be_a(ClaudeAgentSDK::CLIConnectionError)
+      expect(from_thread.message).to match(/possible partial frame/)
+      expect(drain(r)).to be_empty
+    ensure
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'poisons on a cooperative inline timeout (InlineCancellation) and still surfaces the timeout' do
+      r, w = wire_pipe(transport)
+      expired = -> { ClaudeAgentSDK::FiberBoundary::JoinTimeout.new('write timed out') }
+
+      Async do |task|
+        expect do
+          ClaudeAgentSDK::FiberBoundary.with_cooperative_timeout(task, 0.05, on_timeout: expired) do
+            transport.write(payload)
+          end
+        end.to raise_error(ClaudeAgentSDK::FiberBoundary::JoinTimeout)
+
+        expect(transport.ready?).to be(false)
+        expect(drain(r).bytesize).to be_between(1, payload.bytesize - 1)
+        expect { transport.write("{}\n") }.to raise_error(
+          ClaudeAgentSDK::CLIConnectionError,
+          /interrupted by ClaudeAgentSDK::FiberBoundary::InlineCancellation: possible partial frame/
+        )
+      end.wait
+    ensure
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'still converts ordinary IO failures into CLIConnectionError' do
+      r, w = wire_pipe(transport)
+      w.close
+
+      expect { transport.write("{}\n") }.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Failed to write to process stdin/)
+      expect(transport.ready?).to be(false)
+    ensure
+      r&.close unless r&.closed?
+    end
+
+    it 'leaves no in-flight writer registered after a completed write' do
+      r, w = wire_pipe(transport)
+      transport.write("{}\n")
+
+      expect(transport.instance_variable_get(:@inflight_writers)).to be_empty
+      expect(drain(r)).to eq("{}\n")
+    ensure
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'keeps concurrent frames from fibers and a thread intact on a lagging reader' do
+      # Guards the CRuby property the fix relies on (IO#write is call-atomic
+      # on a sync IO), so poisoning only has to handle cancellation.
+      r, w = wire_pipe(transport)
+      frames = Array.new(3) { |i| "{\"id\":#{i},\"pad\":\"#{i.to_s * 300_000}\"}\n" }
+      lines = Queue.new
+      reader = Thread.new { 3.times { lines << r.gets } }
+
+      thread_writer = Thread.new { transport.write(frames[2]) }
+      Async do |task|
+        frames.first(2).map { |frame| task.async { transport.write(frame) } }.each(&:wait)
+      end.wait
+      thread_writer.join
+      reader.join
+
+      received = Array.new(3) { lines.pop }
+      expect(received).to match_array(frames)
+    ensure
+      [r, w].each { |io| io&.close unless io&.closed? } # unblocks any straggler below
+      thread_writer&.join(5)
+      reader&.join(5)
+    end
+  end
+
+  describe 'stdin shutdown with a writer parked mid-frame (#80)' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+    let(:payload) { "{\"pad\":\"#{'x' * 1_000_000}\"}\n" }
+    # Deadline for the shutdown call itself. Not a StandardError: the old
+    # close/end_input paths `rescue StandardError` around IO#close, so an
+    # Async::TimeoutError there was swallowed and a hang looked like a pass.
+    let(:hang) { Class.new(Exception) } # rubocop:disable Lint/InheritException
+
+    # The child looks alive while the writer starts (write refuses a dead
+    # process) and exited once close runs, so teardown skips the grace wait.
+    def wire_pipe(transport)
+      r, w = IO.pipe
+      w.sync = true
+      alive = true
+      waiter = instance_double(Process::Waiter)
+      allow(waiter).to receive(:alive?) { alive }
+      transport.instance_variable_set(:@stdin, w)
+      transport.instance_variable_set(:@process, waiter)
+      transport.instance_variable_set(:@ready, true)
+      [r, w, -> { alive = false }]
+    end
+
+    # Async runs a child task until its first suspension point before
+    # returning from #async, so the writer is parked in IO#write on the full
+    # pipe (the payload exceeds any pipe buffer) when this returns.
+    def park_fiber_writer(task, transport, payload, caught)
+      writer = task.async do
+        transport.write(payload)
+      rescue Exception => e # rubocop:disable Lint/RescueException -- whatever wakes it is under test
+        caught << e
+      end
+      expect(writer).not_to be_finished
+      writer
+    end
+
+    # A FiberBoundary-worker-style plain thread parked in IO#write. Gated on
+    # a status condition, not a timer: the only place the writer can block
+    # is the fd wait on the full pipe (the stdin lock is uncontended).
+    def park_thread_writer(transport, payload, outcome)
+      writer = Thread.new do
+        transport.write(payload)
+        outcome << :completed
+      rescue StandardError => e
+        outcome << e
+      end
+      Thread.pass until !writer.alive? || writer.status == 'sleep'
+      expect(writer).to be_alive
+      writer
+    end
+
+    def expect_woken_with_connection_error(writer, caught)
+      expect(writer).to be_finished
+      expect(caught.size).to eq(1)
+      expect(caught.first).to be_a(ClaudeAgentSDK::CLIConnectionError)
+      expect(caught.first.message).to include('stdin closed while a write was in progress')
+    end
+
+    it '#close wakes a reactor writer parked in IO#write with the documented CLIConnectionError' do
+      r, w, child_exited = wire_pipe(transport)
+      caught = []
+
+      Async do |task|
+        writer = park_fiber_writer(task, transport, payload, caught)
+
+        # Closing the fd does NOT wake a fiber parked in write on the async
+        # selector (probed on Ruby 3.2/3.3/3.4) — close has to wake it. The
+        # writer gets an IOError like a thread writer would, not Async::Stop:
+        # its task (possibly the caller's own) is not cancelled.
+        child_exited.call
+        task.with_timeout(5, hang) { transport.close }
+
+        expect_woken_with_connection_error(writer, caught)
+        expect(w).to be_closed
+        expect(transport.instance_variable_get(:@stdin)).to be_nil
+        expect(transport.instance_variable_get(:@inflight_writers)).to be_empty
+      ensure
+        writer&.stop
+      end.wait
+    ensure
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
+    # Two fiber writers: the second is queued on IO#write's internal lock
+    # behind the first. Waking the lock holder first let its unlock schedule
+    # the queued writer (scheduler.unblock); after that writer was woken and
+    # unwound, the stale wakeup cut its NEXT suspension short. A sleep
+    # after the error exposes it (only a lower bound is asserted, so a slow
+    # runner can't make this flaky).
+    it '#end_input wakes queued fiber writers without leaving a stale wakeup behind' do
+      r, w, = wire_pipe(transport)
+      caught = []
+      after_error = []
+
+      Async do |task|
+        first = park_fiber_writer(task, transport, payload, caught)
+        second = task.async do
+          transport.write(payload)
+        rescue ClaudeAgentSDK::CLIConnectionError => e
+          caught << e
+          started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          sleep 0.3
+          after_error << (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started)
+        end
+        expect(second).not_to be_finished
+
+        task.with_timeout(5, hang) { transport.end_input }
+        second.wait
+
+        expect(first).to be_finished
+        expect(caught.size).to eq(2)
+        expect(caught).to all(be_a(ClaudeAgentSDK::CLIConnectionError))
+        expect(after_error.size).to eq(1)
+        expect(after_error.first).to be >= 0.25
+      ensure
+        first&.stop
+        second&.stop
+      end.wait
+    ensure
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
+    it '#close returns on the reactor while a plain (FiberBoundary worker) thread is parked in IO#write' do
+      r, w, child_exited = wire_pipe(transport)
+      outcome = Queue.new
+      writer = park_thread_writer(transport, payload, outcome)
+
+      # On Ruby 3.3+/3.4 a reactor-side IO#close waits for threads blocked on
+      # the fd via a scheduler sleep the writer's wakeup never resumes —
+      # close hung the reactor forever. It must return and unblock the writer.
+      child_exited.call
+      Async do |task|
+        task.with_timeout(5, hang) { transport.close }
+      end.wait
+
+      expect(outcome.pop).to be_a(ClaudeAgentSDK::CLIConnectionError)
+      expect(w).to be_closed
+    ensure
+      writer&.join(5)
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
+    it '#end_input returns on the reactor while a plain thread is parked in IO#write' do
+      r, w, = wire_pipe(transport)
+      outcome = Queue.new
+      writer = park_thread_writer(transport, payload, outcome)
+
+      Async do |task|
+        task.with_timeout(5, hang) { transport.end_input }
+      end.wait
+
+      expect(outcome.pop).to be_a(ClaudeAgentSDK::CLIConnectionError)
+      expect(w).to be_closed
+      expect(transport.instance_variable_get(:@stdin)).to be_nil
+    ensure
+      writer&.join(5)
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
+    it '#end_input wakes a reactor writer parked in IO#write' do
+      r, w, = wire_pipe(transport)
+      caught = []
+
+      Async do |task|
+        writer = park_fiber_writer(task, transport, payload, caught)
+        task.with_timeout(5, hang) { transport.end_input }
+
+        expect_woken_with_connection_error(writer, caught)
+        expect(w).to be_closed
+      ensure
+        writer&.stop
+      end.wait
+    ensure
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
+    context 'when the close itself is cancelled before its stdin step' do
+      # Cancellation landing in teardown's first suspension point (the
+      # stderr-drain join) — #close's ensure must still release the writer.
+      before do
+        allow(transport).to receive(:teardown_process).and_raise(Async::Stop, 'close cancelled')
+      end
+
+      it 'wakes a parked reactor writer and closes stdin from the ensure' do
+        r, w, child_exited = wire_pipe(transport)
+        caught = []
+
+        Async do |task|
+          writer = park_fiber_writer(task, transport, payload, caught)
+          child_exited.call
+          expect { transport.close }.to raise_error(Async::Stop)
+
+          expect_woken_with_connection_error(writer, caught)
+          expect(w).to be_closed
+        ensure
+          writer&.stop
+        end.wait
+      ensure
+        [r, w].each { |io| io&.close unless io&.closed? }
+      end
+
+      it 'does not block on a parked plain-thread writer, and still unblocks it' do
+        r, w, child_exited = wire_pipe(transport)
+        outcome = Queue.new
+        writer = park_thread_writer(transport, payload, outcome)
+        child_exited.call
+
+        Async do |task|
+          task.with_timeout(5, hang) do
+            expect { transport.close }.to raise_error(Async::Stop)
+          end
+        end.wait
+
+        # The detached helper's close interrupts the writer.
+        expect(outcome.pop).to be_a(ClaudeAgentSDK::CLIConnectionError)
+      ensure
+        writer&.join(5)
+        [r, w].each { |io| io&.close unless io&.closed? }
+      end
+    end
+  end
+
+  describe '#read_messages — bounded wait for exit after stdout EOF (#73)' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+
+    before do
+      stub_const("#{described_class}::EOF_EXIT_GRACE_SECONDS", 0.2)
+      stub_const("#{described_class}::EOF_TERM_GRACE_SECONDS", 0.2)
+    end
+
+    # A real child that releases its stdout (EOF for the reader) and then
+    # keeps running — the pathological CLI the bound exists for. reopen, not
+    # close: IO#close on fd 0-2 leaves the kernel descriptor open. +prelude+
+    # runs BEFORE the reopen: the grace period starts at EOF, so setup such
+    # as a TERM trap must already be in place on a slow runner.
+    def spawn_child(script, prelude: '')
+      stdin, stdout, stderr, waiter = Open3.popen3(
+        RbConfig.ruby, '--disable-gems', '-e', "#{prelude}STDOUT.reopen(File::NULL); #{script}"
+      )
+      stdin.close
+      transport.instance_variable_set(:@stdout, stdout)
+      transport.instance_variable_set(:@process, waiter)
+      # As #connect does, so the forced-exit path's deregistration is observable.
+      described_class.register_active_process(waiter)
+      [stdout, stderr, waiter]
+    end
+
+    # Runs read_messages on a thread so an unbounded wait (the bug) fails the
+    # example instead of hanging the suite; the value is the raised error.
+    def read_to_end(transport)
+      @runner = Thread.new do
+        transport.read_messages { |m| m }
+        nil
+      rescue StandardError => e
+        e
+      end
+      expect(@runner.join(10)).not_to be_nil, 'read_messages never returned after stdout EOF'
+      @runner.value
+    end
+
+    def reap(stdout, stderr, waiter)
+      if waiter&.alive?
+        begin
+          Process.kill('KILL', waiter.pid)
+        rescue StandardError
+          nil
+        end
+      end
+      waiter&.join(5)
+      @runner&.join(5)
+      [stdout, stderr].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'escalates TERM then KILL for a child that ignores TERM, surfacing a ProcessError like the signal path' do
+      stdout, stderr, waiter = spawn_child('sleep', prelude: 'trap("TERM") {}; ')
+
+      error = read_to_end(transport)
+      expect(error).to be_a(ClaudeAgentSDK::ProcessError)
+      expect(error.exit_code).to eq(-9)
+      expect(error.message).to include('did not exit within 0.2s of closing stdout')
+      expect(waiter).not_to be_alive
+      expect(described_class.active_processes).not_to include(waiter)
+    ensure
+      reap(stdout, stderr, waiter)
+    end
+
+    it 'TERMs a child that keeps running after stdout EOF and reports the signal' do
+      stdout, stderr, waiter = spawn_child('sleep')
+
+      error = read_to_end(transport)
+      expect(error).to be_a(ClaudeAgentSDK::ProcessError)
+      expect(error.exit_code).to eq(-15)
+      expect(waiter).not_to be_alive
+    ensure
+      reap(stdout, stderr, waiter)
+    end
+
+    it 'waits without blocking the reactor when the read loop runs in a task' do
+      stdout, stderr, waiter = spawn_child('sleep')
+      ticks = 0
+
+      error = nil
+      Async do |task|
+        ticker = task.async do
+          loop do
+            ticks += 1
+            task.yield
+          end
+        end
+        task.with_timeout(10) do
+          transport.read_messages { |m| m }
+        rescue ClaudeAgentSDK::ProcessError => e
+          error = e
+        end
+      ensure
+        ticker&.stop
+      end.wait
+
+      expect(error&.exit_code).to eq(-15)
+      expect(ticks).to be > 1
+    ensure
+      reap(stdout, stderr, waiter)
+    end
+
+    # A child stuck in uninterruptible kernel I/O survives even KILL: the last
+    # wait is bounded too, and the unreaped child stays in the at-exit
+    # registry instead of read_messages blocking forever on #value.
+    it 'raises instead of blocking when the child cannot be reaped even after KILL' do
+      waiter = instance_double(Process::Waiter, pid: 4242, alive?: true)
+      expect(waiter).not_to receive(:value)
+      allow(Process).to receive(:kill)
+      transport.instance_variable_set(:@stdout, StringIO.new(''))
+      transport.instance_variable_set(:@process, waiter)
+      described_class.register_active_process(waiter)
+
+      error = read_to_end(transport)
+
+      expect(error).to be_a(ClaudeAgentSDK::ProcessError)
+      expect(error.message).to include('could not be reaped even after SIGKILL')
+      expect(Process).to have_received(:kill).with('TERM', 4242)
+      expect(Process).to have_received(:kill).with('KILL', 4242)
+      expect(described_class.active_processes).to include(waiter)
+    ensure
+      described_class.deregister_active_process(waiter)
+    end
+
+    it 'does not signal a child that exits on its own within the grace period' do
+      # A generous grace here: interpreter exit + reap must fit inside it even
+      # on a slow CI runner, or the example would signal a healthy child.
+      stub_const("#{described_class}::EOF_EXIT_GRACE_SECONDS", 5)
+      expect(Process).not_to receive(:kill)
+      stdout, stderr, waiter = spawn_child('exit 0')
+
+      expect(read_to_end(transport)).to be_nil
+    ensure
+      reap(stdout, stderr, waiter)
+    end
+  end
+
+  describe '#read_messages — truncated final frame at clean EOF (#89)' do
+    let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
+    let(:transport) { described_class.new('hi', options) }
+
+    def wire(stdout)
+      status = instance_double(Process::Status, exitstatus: 0, signaled?: false)
+      stdout = StringIO.new(stdout) if stdout.is_a?(String)
+      transport.instance_variable_set(:@stdout, stdout)
+      transport.instance_variable_set(:@process, instance_double(Process::Waiter, alive?: false, value: status))
+    end
+
+    it 'raises CLIJSONDecodeError for a newline-less partial frame after delivering the complete ones' do
+      wire("{\"type\":\"system\"}\n{\"type\":\"result\",\"sub")
+
+      messages = []
+      expect { transport.read_messages { |m| messages << m } }
+        .to raise_error(ClaudeAgentSDK::CLIJSONDecodeError) do |e|
+          expect(e.line).to eq('{"type":"result","sub')
+          expect(e.original_error.message).to include('without a terminating newline')
+        end
+      expect(messages.map { |m| m[:type] }).to eq(['system'])
+    end
+
+    it 'still delivers a complete final frame that lacks its trailing newline' do
+      wire("{\"type\":\"system\"}\n{\"type\":\"result\"}")
+
+      messages = []
+      expect { transport.read_messages { |m| messages << m } }.not_to raise_error
+      expect(messages.map { |m| m[:type] }).to eq(%w[system result])
+    end
+
+    it 'ignores whitespace-only trailing bytes' do
+      wire("{\"type\":\"system\"}\n  \n\t ")
+
+      messages = []
+      expect { transport.read_messages { |m| messages << m } }.not_to raise_error
+      expect(messages.map { |m| m[:type] }).to eq(['system'])
+    end
+
+    it 'stays silent when close() cuts the read short mid-frame' do
+      stdout = instance_double(IO)
+      allow(stdout).to receive(:each_line) do |*_args, &blk|
+        blk.call("{\"type\":\"result\",\"sub")
+        raise IOError, 'stream closed in another thread'
+      end
+      wire(stdout)
+
+      expect { transport.read_messages { |m| m } }.not_to raise_error
+    end
+
+    it 'prefers the process exit error when the CLI died mid-frame' do
+      status = instance_double(Process::Status, exitstatus: nil, signaled?: true, termsig: 9)
+      transport.instance_variable_set(:@stdout, StringIO.new("{\"type\":\"result\",\"sub"))
+      transport.instance_variable_set(:@process, instance_double(Process::Waiter, alive?: false, value: status))
+
+      expect { transport.read_messages { |m| m } }.to raise_error(ClaudeAgentSDK::ProcessError)
+    end
+  end
+
   describe '#read_messages — process double-wait handling' do
     let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
     let(:transport) { described_class.new('hi', options) }
@@ -1268,7 +1835,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     # waitpid and the exception leaked out of read_messages.
     it 'tolerates Errno::ECHILD from @process.value (process already waited)' do
       stdout = StringIO.new("{\"type\":\"system\"}\n")
-      waiter = instance_double(Process::Waiter)
+      waiter = instance_double(Process::Waiter, alive?: false)
       allow(waiter).to receive(:value).and_raise(Errno::ECHILD)
       transport.instance_variable_set(:@stdout, stdout)
       transport.instance_variable_set(:@process, waiter)
