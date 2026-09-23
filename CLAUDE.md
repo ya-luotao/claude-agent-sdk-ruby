@@ -77,7 +77,7 @@ Only active in streaming/Client mode. Uses `Async::Condition` for request-respon
 - **Outbound requests** (SDK → CLI): `send_control_request` writes JSON, waits on condition, returns response
 - **Inbound requests** (CLI → SDK): `handle_control_request` dispatches to `can_use_tool`, `hook_callback`, or `mcp_message` handlers, writes response back
 
-The outbound waiter protocol (register before write, registration atomic with the stream-error check, slot checked before every wait, level-triggered `ThreadWaiter`) is model-checked by `formal/tla/ControlProtocol.tla`; keep it in step with `send_control_request` / `await_control_response`.
+The outbound waiter protocol (execution mode detected before the write, registration atomic with the stream-error check, slot checked before every wait, level-triggered `ThreadWaiter`) is model-checked by `formal/tla/ControlProtocol.tla`; keep it in step with `send_control_request` / `await_control_response`.
 
 ### Observer / Instrumentation
 

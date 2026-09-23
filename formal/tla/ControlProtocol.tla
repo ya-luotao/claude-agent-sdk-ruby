@@ -15,8 +15,10 @@
 (* terminates trivially. The question is whether a sender ever NEEDS it.   *)
 (*                                                                         *)
 (* Switches (all TRUE = shipped design):                                   *)
-(*   REGISTER_BEFORE_WRITE  pending entry exists before the request is     *)
-(*                          written                                        *)
+(*   DETECT_MODE_BEFORE_WRITE  pick the waiter (Condition / ThreadWaiter)  *)
+(*                          before writing; FALSE = the pre-420ee09 code,  *)
+(*                          where Async::Task.current raised on a worker   *)
+(*                          thread AFTER the request was written           *)
 (*   ATOMIC_REGISTRATION    stream-error check + registration under one    *)
 (*                          mutex, shared with the EOF snapshot            *)
 (*   CHECK_SLOT_FIRST       `waiter.wait until slot.key?` (vs. a bare wait) *)
@@ -25,7 +27,7 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS REGISTER_BEFORE_WRITE, ATOMIC_REGISTRATION,
+CONSTANTS DETECT_MODE_BEFORE_WRITE, ATOMIC_REGISTRATION,
           CHECK_SLOT_FIRST, LEVEL_TRIGGERED
 
 Senders == {1, 2}
@@ -78,9 +80,6 @@ Signal(s) ==
     ELSE /\ woken' = IF spc[s] = "parked" THEN [woken EXCEPT ![s] = TRUE] ELSE woken
          /\ UNCHANGED tokens
 
-AfterRegister == IF REGISTER_BEFORE_WRITE THEN "write" ELSE "wait"
-AfterWrite    == IF REGISTER_BEFORE_WRITE THEN "wait" ELSE "register"
-
 -----------------------------------------------------------------------------
 (* Sender                                                                   *)
 
@@ -89,10 +88,10 @@ Start(s) ==
   /\ spc[s] = "idle"
   /\ IF streamErr
        THEN Finish(s, "err")
-       ELSE IF ATOMIC_REGISTRATION /\ REGISTER_BEFORE_WRITE
+       ELSE IF ATOMIC_REGISTRATION
               THEN /\ registered' = registered \cup {s}
                    /\ Goto(s, "write") /\ UNCHANGED outcome
-              ELSE /\ Goto(s, IF REGISTER_BEFORE_WRITE THEN "register" ELSE "write")
+              ELSE /\ Goto(s, "register")
                    /\ UNCHANGED <<registered, outcome>>
   /\ UNCHANGED <<slot, tokens, woken, written, answered, unread, delivered,
                  cliGone, streamErr, snapshot>>
@@ -100,7 +99,7 @@ Start(s) ==
 Register(s) ==
   /\ spc[s] = "register"
   /\ registered' = registered \cup {s}
-  /\ Goto(s, AfterRegister)
+  /\ Goto(s, "write")
   /\ UNCHANGED <<slot, tokens, woken, written, answered, unread, delivered,
                  cliGone, streamErr, snapshot, outcome>>
 
@@ -109,9 +108,18 @@ Register(s) ==
 Write(s) ==
   /\ spc[s] = "write"
   /\ written' = written \cup {s}
-  /\ Goto(s, AfterWrite)
+  /\ Goto(s, IF ~DETECT_MODE_BEFORE_WRITE /\ Kind(s) = "thread" THEN "detect" ELSE "wait")
   /\ UNCHANGED <<registered, slot, tokens, woken, answered, unread, delivered,
                  cliGone, streamErr, snapshot, outcome>>
+
+\* Pre-fix only: `Async::Task.current` after the write raises "No async task
+\* available!" on a worker thread; the `ensure` evicts the pending entry, so
+\* the CLI's eventual answer is dropped by the key? guard.
+Detect(s) ==
+  /\ spc[s] = "detect"
+  /\ Finish(s, "raised")
+  /\ UNCHANGED <<slot, tokens, woken, written, answered, unread, delivered,
+                 cliGone, streamErr, snapshot>>
 
 \* `until @pending_control_results.key?(id)` -- the check. A fiber parks in
 \* the same step (no suspension point); a thread parks in a separate one.
@@ -190,7 +198,7 @@ Broadcast(r) ==
   /\ UNCHANGED <<spc, registered, written, answered, unread, delivered,
                  cliGone, streamErr, outcome>>
 
-SenderStep(s) == Start(s) \/ Register(s) \/ Write(s) \/ Wait(s) \/ Park(s) \/ Wake(s)
+SenderStep(s) == Start(s) \/ Register(s) \/ Write(s) \/ Detect(s) \/ Wait(s) \/ Park(s) \/ Wake(s)
 ReaderStep == Eof \/ \E r \in Senders : ReadResponse(r) \/ Broadcast(r)
 
 Next ==
@@ -218,6 +226,11 @@ EverySenderFinishes == \A s \in Senders : <>(spc[s] = "done")
 \* ended": if the CLI answered in time, the caller gets the answer.
 DeliveredMeansAnswered ==
   \A s \in Senders : (outcome[s] = "err") => (s \notin delivered)
+
+\* No half-executed request: a control method that fails locally (rather
+\* than with the CLI's answer or the stream's end) never reached the CLI.
+NoHalfExecutedRequest ==
+  \A s \in Senders : (outcome[s] = "raised") => (s \notin written)
 
 \* Reachability (EXPECTED to be violated): both outcomes really occur.
 NobodyGetsAResponse == \A s \in Senders : outcome[s] # "resp"

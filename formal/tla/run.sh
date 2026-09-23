@@ -56,21 +56,21 @@ fi
 
 # config => "pass", or the property TLC must report as violated
 EXPECTED=(
-  cli_installer/good.cfg               pass
-  cli_installer/good_big.cfg           pass
-  cli_installer/bug_order.cfg          NeverLoseWorkingInstall
-  cli_installer/bug_resolve.cfg        NoDowngrade
-  cli_installer/bug_sweep.cfg          LiveDownloadsIntact
-  cli_installer/reach_upgrade.cfg      NoUpgradeEverHappens
-  cli_installer/reach_crash.cfg        NoCrashLeftovers
-  cli_installer/reach_mismatch.cfg     NoRecordedButNotRenamed
-  control_protocol/good.cfg            pass
-  control_protocol/bug_write_first.cfg DeliveredMeansAnswered
-  control_protocol/bug_nonatomic.cfg   EverySenderFinishes
-  control_protocol/bug_nocheck.cfg     EverySenderFinishes
-  control_protocol/bug_edge_thread.cfg EverySenderFinishes
-  control_protocol/reach_resp.cfg      NobodyGetsAResponse
-  control_protocol/reach_err.cfg       NobodyGetsAnError
+  cli_installer/good.cfg                       pass
+  cli_installer/good_big.cfg                   pass
+  cli_installer/bug_order.cfg                  NeverLoseWorkingInstall
+  cli_installer/bug_resolve.cfg                NoDowngrade
+  cli_installer/bug_sweep.cfg                  LiveDownloadsIntact
+  cli_installer/reach_upgrade.cfg              NoUpgradeEverHappens
+  cli_installer/reach_crash.cfg                NoCrashLeftovers
+  cli_installer/reach_mismatch.cfg             NoRecordedButNotRenamed
+  control_protocol/good.cfg                    pass
+  control_protocol/bug_detect_after_write.cfg  NoHalfExecutedRequest
+  control_protocol/bug_nonatomic.cfg           EverySenderFinishes
+  control_protocol/bug_nocheck.cfg             EverySenderFinishes
+  control_protocol/bug_edge_thread.cfg         EverySenderFinishes
+  control_protocol/reach_resp.cfg              NobodyGetsAResponse
+  control_protocol/reach_err.cfg               NobodyGetsAnError
 )
 
 failures=0
@@ -84,9 +84,9 @@ for ((k = 0; k < ${#EXPECTED[@]}; k += 2)); do
     got=${got:-error}
   fi
   if [[ $got == "$want" ]]; then
-    printf 'ok    %-38s %s\n' "$cfg" "$got"
+    printf 'ok    %-44s %s\n' "$cfg" "$got"
   else
-    printf 'FAIL  %-38s expected %s, got %s\n' "$cfg" "$want" "$got"
+    printf 'FAIL  %-44s expected %s, got %s\n' "$cfg" "$want" "$got"
     [[ $got == error ]] && grep -E 'Error|error' <<<"$out" | head -5 | sed 's/^/        /'
     failures=$((failures + 1))
   fi
