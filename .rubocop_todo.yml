@@ -90,28 +90,6 @@ Naming/AccessorMethodName:
     - 'lib/claude_agent_sdk.rb'
     - 'lib/claude_agent_sdk/query.rb'
 
-# Offense count: 1
-# This cop supports safe autocorrection (--autocorrect).
-# Configuration parameters: EnforcedStyle, SingleLineConditionsOnly, IncludeTernaryExpressions.
-# SupportedStyles: assign_to_condition, assign_inside_condition
-Style/ConditionalAssignment:
-  Exclude:
-    - 'lib/claude_agent_sdk/query.rb'
-
-# Offense count: 4
-# This cop supports safe autocorrection (--autocorrect).
-# Configuration parameters: AllowedVars, DefaultToNil.
-Style/FetchEnvVar:
-  Exclude:
-    - 'spec/unit/client_spec.rb'
-    - 'spec/unit/query_api_spec.rb'
-
-# Offense count: 6
-# This cop supports safe autocorrection (--autocorrect).
-# Configuration parameters: Strict, AllowedNumbers, AllowedPatterns.
-Style/NumericLiterals:
-  MinDigits: 6
-
 # Offense count: 2
 # This cop supports unsafe autocorrection (--autocorrect-all).
 # Configuration parameters: EnforcedStyle, AllowedCompactTypes.
@@ -119,20 +97,6 @@ Style/NumericLiterals:
 Style/RaiseArgs:
   Exclude:
     - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-
-# Offense count: 5
-# This cop supports safe autocorrection (--autocorrect).
-Style/RedundantBegin:
-  Exclude:
-    - 'lib/claude_agent_sdk/query.rb'
-    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-    - 'spec/unit/query_spec.rb'
-
-# Offense count: 1
-# This cop supports safe autocorrection (--autocorrect).
-Style/RedundantSelf:
-  Exclude:
-    - 'lib/claude_agent_sdk/types/options.rb'
 
 # Offense count: 22
 # This cop supports unsafe autocorrection (--autocorrect-all).
@@ -150,10 +114,3 @@ Style/SymbolProc:
   Exclude:
     - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
 
-# Offense count: 12
-# This cop supports safe autocorrection (--autocorrect).
-# Configuration parameters: EnforcedStyle, MinSize, WordRegex.
-# SupportedStyles: percent, brackets
-Style/WordArray:
-  Exclude:
-    - 'spec/unit/types_spec.rb'

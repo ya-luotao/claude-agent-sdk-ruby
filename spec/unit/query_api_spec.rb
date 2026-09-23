@@ -5,7 +5,7 @@ require 'securerandom'
 
 RSpec.describe ClaudeAgentSDK, '.query' do
   it 'passes entrypoint via transport env without mutating global ENV' do
-    original_entrypoint = ENV['CLAUDE_CODE_ENTRYPOINT']
+    original_entrypoint = ENV.fetch('CLAUDE_CODE_ENTRYPOINT', nil)
     ENV.delete('CLAUDE_CODE_ENTRYPOINT')
 
     captured_options = nil
@@ -46,7 +46,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     expect(captured_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
     expect(captured_options.env['EXTRA']).to eq('1')
     expect(options.env['CLAUDE_CODE_ENTRYPOINT']).to be_nil
-    expect(ENV['CLAUDE_CODE_ENTRYPOINT']).to be_nil
+    expect(ENV.fetch('CLAUDE_CODE_ENTRYPOINT', nil)).to be_nil
   ensure
     if original_entrypoint.nil?
       ENV.delete('CLAUDE_CODE_ENTRYPOINT')

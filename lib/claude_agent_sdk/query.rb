@@ -349,14 +349,12 @@ module ClaudeAgentSDK
           # nothing keeps running after close; bare Async do may root at the
           # reactor and leak past shutdown.
           handler_task = Async::Task.current.async(&FiberBoundary.capture_otel_context do
-            begin
-              handle_control_request(message)
-            ensure
-              # Identity-guarded: if the CLI ever reused an in-flight request
-              # id, the later handler owns the slot and must stay cancellable.
-              if request_id && @inflight_control_request_tasks[request_id].equal?(Async::Task.current)
-                @inflight_control_request_tasks.delete(request_id)
-              end
+            handle_control_request(message)
+          ensure
+            # Identity-guarded: if the CLI ever reused an in-flight request
+            # id, the later handler owns the slot and must stay cancellable.
+            if request_id && @inflight_control_request_tasks[request_id].equal?(Async::Task.current)
+              @inflight_control_request_tasks.delete(request_id)
             end
           end)
           # A handler that never suspends (MCP metadata, unsupported-subtype
@@ -394,11 +392,7 @@ module ClaudeAgentSDK
               @first_result_received = true
               @first_result_condition.signal
             end
-            if message[:is_error]
-              @last_error_result = message
-            else
-              @last_error_result = nil
-            end
+            @last_error_result = message[:is_error] ? message : nil
           elsif !(msg_type == 'system' && message[:subtype] == 'session_state_changed')
             # Anything other than the post-turn session_state_changed marker
             # means the conversation moved on; a ProcessError now is a fresh
@@ -544,11 +538,12 @@ module ClaudeAgentSDK
       waiter = @pending_control_responses[request_id]
       return unless waiter
 
-      if response[:subtype] == 'error'
-        @pending_control_results[request_id] = StandardError.new(response[:error] || 'Unknown error')
-      else
-        @pending_control_results[request_id] = response
-      end
+      @pending_control_results[request_id] =
+        if response[:subtype] == 'error'
+          StandardError.new(response[:error] || 'Unknown error')
+        else
+          response
+        end
 
       # Signal that response is ready. INVARIANT: the result slot above
       # MUST be written before this signal — senders check the slot before
@@ -1173,7 +1168,7 @@ module ClaudeAgentSDK
           jsonrpc: '2.0',
           id: message[:id],
           error: {
-            code: -32601,
+            code: -32_601,
             message: "Server '#{server_name}' not found"
           }
         }
@@ -1204,14 +1199,14 @@ module ClaudeAgentSDK
         {
           jsonrpc: '2.0',
           id: message[:id],
-          error: { code: -32601, message: "Method '#{method}' not found" }
+          error: { code: -32_601, message: "Method '#{method}' not found" }
         }
       end
     rescue StandardError => e
       {
         jsonrpc: '2.0',
         id: message[:id],
-        error: { code: -32603, message: e.message }
+        error: { code: -32_603, message: e.message }
       }
     ensure
       dispatch_scope&.close

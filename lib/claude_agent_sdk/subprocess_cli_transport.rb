@@ -605,20 +605,18 @@ module ClaudeAgentSDK
       end
 
       Thread.new do
-        begin
-          unless process.join(grace_seconds)
-            begin
-              Process.kill('KILL', pid) if process.alive?
-            rescue Errno::ESRCH
-              # Still wait for the waiter when exit raced the signal.
-            end
-            process.join(grace_seconds)
+        unless process.join(grace_seconds)
+          begin
+            Process.kill('KILL', pid) if process.alive?
+          rescue Errno::ESRCH
+            # Still wait for the waiter when exit raced the signal.
           end
-        rescue StandardError
-          nil # best-effort; retain ownership if termination/reaping failed
-        ensure
-          self.class.deregister_active_process(process) unless process.alive?
+          process.join(grace_seconds)
         end
+      rescue StandardError
+        nil # best-effort; retain ownership if termination/reaping failed
+      ensure
+        self.class.deregister_active_process(process) unless process.alive?
       end
     end
 

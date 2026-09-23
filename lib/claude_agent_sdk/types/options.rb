@@ -99,7 +99,7 @@ module ClaudeAgentSDK
     end
 
     def dup_with(**changes)
-      new_options = self.dup
+      new_options = dup
       # A shallow #dup shares nested containers and typed option values, so
       # mutating a derived copy (e.g. `variant.allowed_tools << 'Bash'` or
       # `variant.sandbox.enabled = false`) would bleed into the base and every

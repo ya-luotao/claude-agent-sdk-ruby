@@ -880,11 +880,9 @@ RSpec.describe ClaudeAgentSDK::Query do
 
       error = nil
       Async do
-        begin
-          query.send(:handle_hook_callback, request_data)
-        rescue StandardError => e
-          error = e
-        end
+        query.send(:handle_hook_callback, request_data)
+      rescue StandardError => e
+        error = e
       end.wait
       expect(error).to be_a(Async::TimeoutError)
     end
