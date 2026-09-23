@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Rails integration: `ClaudeAgentSDK::Railtie`**, loaded only when Rails is (`require_relative 'claude_agent_sdk/railtie' if defined?(Rails::Railtie)`, which Bundler.require satisfies in a Rails app); non-Rails processes load nothing new. It contributes a rake task and installs nothing into callback dispatch.
+- **`bin/rails generate claude_agent_sdk:install`** — writes `config/initializers/claude_agent_sdk.rb` (commented `model` / `permission_mode` / `cli_path` / OpenTelemetry defaults, `callback_wrapper: ClaudeAgentSDK::Railtie.callback_wrapper` enabled), appends `/vendor/claude/` to `.gitignore` once (any existing spelling counts), and prints the next steps.
+- **`claude_agent_sdk:install_cli` rake task** — `CLIInstaller.install_pinned` into `Rails.root/vendor/claude`, or `install(version:)` with `VERSION=x.y.z|stable|latest`; prints the installed path. It does not boot the app, so it runs in a Docker build step. Outside Rails, `require 'claude_agent_sdk/tasks'` in a Rakefile provides the same task (loading only `CLIInstaller`), installing under the working directory.
+- **`ClaudeAgentSDK::Railtie.callback_wrapper`** — a `callback_wrapper` that runs SDK callbacks in `Rails.application.executor` (so ActiveRecord connections check back in), except where that deadlocks: with code reloading enabled or `config.allow_concurrency = false` it calls the callback outside the executor and releases the thread's ActiveRecord connections itself; when the executor is already active on the callback's context (`:inline` scheduling) it calls straight through. Supports Rails 7.1+.
+- CI: a `rails` job runs the Rails integration specs (`spec/rails`, in their own process via `rspec --options spec/rails/.rspec`) against Rails 7.1 on Ruby 3.2 and the latest Rails 8 on Ruby 3.4 (`gemfiles/rails_7_1.gemfile`, `gemfiles/rails_8.gemfile`). The default `bundle exec rspec` run excludes `spec/rails`.
+
+### Changed
+- `docs/rails.md` opens with a getting-started path (gem → generator → `install_cli` → first job), and its ActionCable, session-resumption and background-job examples use `ClaudeAgentSDK::Client.open` instead of hand-rolled `Async { connect … ensure disconnect }.wait`. README and gemspec description lead with the Rails integration.
+
+### Fixed
+- **The Rails `callback_wrapper` previously recommended in docs/rails.md, `->(inv) { Rails.application.executor.wrap { inv.call } }`, can deadlock in development.** With code reloading enabled, the request or job calling the SDK holds a share of the reload interlock while it waits for a callback running on its own thread (the default `:thread` scheduling); if a reload is requested meanwhile — e.g. after the agent edits an app file — the reloader queues for the exclusive lock and the callback's `executor.wrap` queues behind it, forever. With `config.allow_concurrency = false` the same wrapper blocks on the executor's monitor every time. The guide (and the `callback_wrapper` API docs and skill reference) now recommend `ClaudeAgentSDK::Railtie.callback_wrapper`; replace the bare lambda with it in existing initializers.
+
 ## [0.34.0] - 2026-09-23
 
 The September 2026 audit campaign: 17 fixes from the final audit pass plus the 28 AUDIT-2026-09-22 issues (#66–#93). A few fixes tighten behaviour that was silently wrong — read **Changed** before upgrading.

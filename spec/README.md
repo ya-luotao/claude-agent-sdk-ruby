@@ -51,6 +51,15 @@ Unit tests verify individual components in isolation:
 RUN_INTEGRATION=1 ANTHROPIC_API_KEY=... bundle exec rspec spec/integration/real_cli_integration_spec.rb
 ```
 
+### Rails Integration Tests (`spec/rails/`)
+
+Railtie, `claude_agent_sdk:install_cli` rake task, install generator and `Railtie.callback_wrapper`. They load railties/ActiveSupport, which patch core classes process-wide, so the root `.rspec` excludes `spec/rails` from the default run; they run in their own process against a Rails bundle, with `spec/rails/.rspec` replacing the root options:
+
+```bash
+BUNDLE_GEMFILE=gemfiles/rails_8.gemfile bundle exec rspec --options spec/rails/.rspec    # latest Rails 8
+BUNDLE_GEMFILE=gemfiles/rails_7_1.gemfile bundle exec rspec --options spec/rails/.rspec  # Rails 7.1 floor
+```
+
 ### Test Helpers (`spec/support/`)
 
 - **test_helpers.rb** - Shared test fixtures and helper methods used across test files
