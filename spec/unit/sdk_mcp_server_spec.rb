@@ -331,8 +331,17 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       expect(result[:content].first[:text]).to include('Error')
     end
 
+    it 'wraps a String return as a single text block' do
+      tool = ClaudeAgentSDK.create_tool('greet', 'Greet', { name: :string }) { |args| "Hello, #{args[:name]}!" }
+
+      server = described_class.new(name: 'test', tools: [tool])
+      result = server.call_tool('greet', { name: 'Ada' })
+
+      expect(result).to eq(content: [{ type: 'text', text: 'Hello, Ada!' }])
+    end
+
     it 'returns an in-band isError result if handler returns invalid format' do
-      handler = ->(_) { 'invalid' } # Should return hash with :content
+      handler = ->(_) { 42 } # Should return a String or a Hash with :content
 
       tool = ClaudeAgentSDK::SdkMcpTool.new(
         name: 'bad',

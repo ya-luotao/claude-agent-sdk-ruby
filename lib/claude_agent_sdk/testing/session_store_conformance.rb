@@ -360,7 +360,7 @@ module ClaudeAgentSDK
     # Fetch summaries, asserting on the RAW rows before collapsing into a hash:
     # a store returning one row per append (every historical fold version)
     # would otherwise pass — and then surface duplicate sessions from
-    # list_sessions_from_store.
+    # list_sessions(session_store:).
     def summaries_by_id(store, project, expected_ids, message)
       rows = Array(store.list_session_summaries(project))
       assert_eq(rows.map { |s| s['session_id'] }.sort, expected_ids.sort, message)

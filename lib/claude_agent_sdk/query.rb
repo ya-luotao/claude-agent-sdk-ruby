@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'json'
-require 'set'
 require 'async'
 require 'async/queue'
 require 'async/condition'
@@ -271,11 +270,11 @@ module ClaudeAgentSDK
     # Fine for the current one-shot call sites (max two tasks per Query); do
     # not route per-request work (control handlers, per-turn streams) through
     # this without adding completion-based removal.
-    def spawn_task(&block)
+    def spawn_task(&)
       parent = Async::Task.current?
       raise CLIConnectionError, 'Query#spawn_task must be called inside an Async{} block' unless parent
 
-      task = parent.async(&FiberBoundary.capture_otel_context(&block))
+      task = parent.async(&FiberBoundary.capture_otel_context(&))
       @child_tasks << task
       task
     end

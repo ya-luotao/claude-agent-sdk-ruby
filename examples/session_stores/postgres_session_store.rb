@@ -121,7 +121,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
     # Single round-trip INSERT with a FIXED five bind params regardless of batch
     # size (matching the Python reference's unnest): a multi-row VALUES list at
     # 5 params per entry would hit Postgres's 65,535 bind-parameter protocol
-    # limit at >13,107 entries — e.g. fork_session_via_store appends the whole
+    # limit at >13,107 entries — e.g. fork_session(session_store:) appends the whole
     # forked transcript in one call. unnest + WITH ORDINALITY preserves array
     # order, so the bigserial `seq` is assigned in append order and #load's
     # ORDER BY seq replays entries faithfully.

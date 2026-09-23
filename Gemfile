@@ -8,6 +8,7 @@ gemspec
 gem 'rake', '~> 13.0'
 gem 'rspec', '~> 3.0'
 gem 'rubocop', '~> 1.87.0' # pin minor so local matches CI (Gemfile.lock is gitignored)
+gem 'simplecov', '~> 0.22', require: false # only loaded when COVERAGE=1 (see spec/spec_helper.rb)
 gem 'yard', '~> 0.9'
 
 # Optional group: only activated when explicitly requested (e.g. from an

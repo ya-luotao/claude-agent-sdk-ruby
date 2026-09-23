@@ -4,6 +4,7 @@ require 'mcp'
 
 module ClaudeAgentSDK
   # Recursively convert all hash keys to symbols
+  # @api private
   def self.deep_symbolize_keys(obj)
     case obj
     when Hash then obj.transform_keys(&:to_sym).transform_values { |v| deep_symbolize_keys(v) }
@@ -15,6 +16,7 @@ module ClaudeAgentSDK
   # Like deep_symbolize_keys, but also converts Symbol VALUES to strings so a
   # prebuilt schema written with symbols ({ type: :object, ... }) emits clean
   # wire-format JSON Schema.
+  # @api private
   def self.deep_normalize_schema(obj)
     case obj
     when Hash then obj.transform_keys(&:to_sym).transform_values { |v| deep_normalize_schema(v) }
@@ -34,6 +36,7 @@ module ClaudeAgentSDK
   # mangled into nonsense parameter lists ("additionalProperties" as a
   # required string param). A $ref-only schema without type: 'object' remains
   # indistinguishable from a params hash — declare the type alongside $ref.
+  # @api private
   def self.prebuilt_json_schema?(schema)
     return false unless schema.is_a?(Hash)
 
@@ -47,6 +50,7 @@ module ClaudeAgentSDK
   # Single source of truth for tool input schemas: prebuilt schemas are
   # normalized (symbol keys, string values); simple { name: :type } hashes
   # become a full JSON Schema with every param required (string keys).
+  # @api private
   def self.normalize_tool_schema(schema)
     return deep_normalize_schema(schema) if prebuilt_json_schema?(schema)
 
@@ -60,6 +64,7 @@ module ClaudeAgentSDK
     { type: 'object', properties: {} }
   end
 
+  # @api private
   def self.ruby_type_to_json_schema(type)
     # Class#=== matches instances, not the class object used in { id: Integer }.
     type = { String => :string, Integer => :integer, Float => :float, TrueClass => :boolean, FalseClass => :boolean }.fetch(type, type)
@@ -70,6 +75,17 @@ module ClaudeAgentSDK
     when :boolean, TrueClass, FalseClass then { type: 'boolean' }
     else { type: 'string' } # Default fallback
     end
+  end
+
+  # Internal: expand a tool handler's String shorthand into a single text
+  # block. Every other value passes through untouched — Hash results behave
+  # exactly as before, and any other non-Hash value still gets the "must
+  # return a hash" diagnostic from the caller. Applied inside the callback
+  # dispatch at both tools/call paths, so a callback_wrapper sees the
+  # expanded Hash.
+  # @api private
+  def self.normalize_tool_result(result)
+    result.is_a?(String) ? { content: [{ type: 'text', text: result }] } : result
   end
 
   # SDK MCP Server - wraps official MCP::Server with block-based API
@@ -274,7 +290,7 @@ module ClaudeAgentSDK
       # exit / Interrupt from the handler propagate (never an isError
       # result): see FiberBoundary.invoke_callback.
       result = FiberBoundary.invoke_callback(scheduling: scheduling, wrapper: wrapper) do
-        tool.handler.call(arguments)
+        ClaudeAgentSDK.normalize_tool_result(tool.handler.call(arguments))
       end
 
       # Guard before flexible_fetch: it raises on non-Hash inputs.
@@ -463,7 +479,7 @@ module ClaudeAgentSDK
               # StandardError) to Query#handle_control_request, which
               # answers with an isError result and then re-raises them.
               result = FiberBoundary.invoke_callback(scheduling: scheduling, wrapper: wrapper) do
-                @tool_def.handler.call(args)
+                ClaudeAgentSDK.normalize_tool_result(@tool_def.handler.call(args))
               end
 
               # Guard BEFORE flexible_fetch: on a non-Hash it raises
@@ -582,18 +598,26 @@ module ClaudeAgentSDK
   # @param name [String] Unique identifier for the tool
   # @param description [String] Human-readable description
   # @param input_schema [Hash] Schema defining input parameters
-  # @param handler [Proc] Block that implements the tool logic
+  # @param handler [Proc] Block that implements the tool logic. It returns a
+  #   String, sent to Claude as a single text block, or a Hash with a
+  #   +:content+ Array of MCP content blocks plus optional +:is_error+ /
+  #   +:structured_content+. Use the Hash form for error results, structured
+  #   output, images, or several blocks.
   # @return [SdkMcpTool] Tool definition
   #
-  # @example Simple tool
+  # @example Simple tool (a String return becomes one text block)
+  #   tool = create_tool('greet', 'Greet a user', { name: :string }) do |args|
+  #     "Hello, #{args[:name]}!"
+  #   end
+  #
+  # @example The same tool in the Hash form
   #   tool = create_tool('greet', 'Greet a user', { name: :string }) do |args|
   #     { content: [{ type: 'text', text: "Hello, #{args[:name]}!" }] }
   #   end
   #
   # @example Tool with multiple parameters
   #   tool = create_tool('add', 'Add two numbers', { a: :number, b: :number }) do |args|
-  #     result = args[:a] + args[:b]
-  #     { content: [{ type: 'text', text: "Result: #{result}" }] }
+  #     "Result: #{args[:a] + args[:b]}"
   #   end
   #
   # @example Tool with error handling

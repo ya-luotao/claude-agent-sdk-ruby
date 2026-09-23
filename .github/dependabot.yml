@@ -1,0 +1,12 @@
+# GitHub Actions only. Ruby dependencies are deliberately not tracked here:
+# Gemfile.lock is gitignored (gem convention), and the runtime floors are
+# pinned by hand in claude-agent-sdk.gemspec and checked by CI's deps job.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ['*']

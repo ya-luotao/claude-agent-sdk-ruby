@@ -2,7 +2,6 @@
 
 require 'json'
 require 'open3'
-require 'set'
 require 'timeout'
 require_relative 'transport'
 require_relative 'errors'
@@ -689,7 +688,7 @@ module ClaudeAgentSDK
       # Ignore
     end
 
-    def read_messages(&block)
+    def read_messages(&)
       return enum_for(:read_messages) unless block_given?
 
       raise CLIConnectionError, 'Not connected' unless @process && @stdout
@@ -1050,18 +1049,10 @@ module ClaudeAgentSDK
       end
     end
 
-    # The home directory for the well-known install probes, or nil when none
-    # is usable. Dir.home raises ArgumentError when HOME is unset and the uid
-    # has no passwd entry (docker --user in a minimal image), and returns an
-    # empty or relative HOME verbatim — probing under "" or a relative path
-    # would check files that are not where the user's install lives (and a
-    # relative hit would be spawned from options.cwd, i.e. a different file).
-    # SessionResume.home_dir applies the same rule.
+    # The (parent's) home directory for the well-known install probes, or nil
+    # when none is usable — see Sessions.home_dir, the one definition.
     def home_dir
-      home = Dir.home
-      home if File.absolute_path?(home)
-    rescue ArgumentError
-      nil
+      Sessions.home_dir
     end
   end
 end

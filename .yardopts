@@ -2,6 +2,7 @@
 --output-dir doc
 --protected
 --no-private
+--hide-api private
 lib/**/*.rb
 -
 README.md

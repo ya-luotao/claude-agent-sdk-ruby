@@ -14,7 +14,7 @@ greet_tool = ClaudeAgentSDK.create_tool(
   'greet', 'Greet a user', { name: :string },
   annotations: { title: 'Greeter', readOnlyHint: true }
 ) do |args|
-  { content: [{ type: 'text', text: "Hello, #{args[:name]}!" }] }
+  "Hello, #{args[:name]}!"
 end
 
 server = ClaudeAgentSDK.create_sdk_mcp_server(
@@ -36,6 +36,27 @@ Async do
   client.disconnect
 end.wait
 ```
+
+## Handler Return Values
+
+A handler returns either a String or a Hash:
+
+- **A String** is sent to Claude as a single text block. `"Hello, Alice!"` is shorthand for `{ content: [{ type: 'text', text: "Hello, Alice!" }] }`.
+- **A Hash** gives full control over the MCP result. `:content` (required) is an Array of MCP content blocks, so a tool can return several text blocks, images (`{ type: 'image', data: base64, mimeType: 'image/png' }`) and so on. Set `is_error: true` to tell Claude the call failed, and `structured_content:` to attach machine-readable output. Keys may be Symbols or Strings, and camelCase `isError` / `structuredContent` work too.
+
+```ruby
+ClaudeAgentSDK.create_tool('lookup_order', 'Look up an order', { id: :string }) do |args|
+  order = Order.find_by(number: args[:id])
+  next { content: [{ type: 'text', text: "No order #{args[:id]}" }], is_error: true } unless order
+
+  {
+    content: [{ type: 'text', text: "Order #{order.number}: #{order.status}" }],
+    structured_content: { number: order.number, status: order.status }
+  }
+end
+```
+
+Any other return value (`nil`, an Integer, an Array, ...) is reported to Claude as an `isError: true` result saying the tool must return a hash with a `:content` key.
 
 ## Pre-built JSON Schemas
 
@@ -80,15 +101,14 @@ ClaudeAgentSDK.create_tool('save', 'Save a fact', {
 
 ```ruby
 add_tool = ClaudeAgentSDK.create_tool('add', 'Add two numbers', { a: :number, b: :number }) do |args|
-  result = args[:a] + args[:b]
-  { content: [{ type: 'text', text: "#{args[:a]} + #{args[:b]} = #{result}" }] }
+  "#{args[:a]} + #{args[:b]} = #{args[:a] + args[:b]}"
 end
 
 divide_tool = ClaudeAgentSDK.create_tool('divide', 'Divide numbers', { a: :number, b: :number }) do |args|
   if args[:b] == 0
     { content: [{ type: 'text', text: 'Error: Division by zero' }], is_error: true }
   else
-    { content: [{ type: 'text', text: "Result: #{args[:a] / args[:b]}" }] }
+    "Result: #{args[:a] / args[:b]}"
   end
 end
 

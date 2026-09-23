@@ -1,5 +1,20 @@
 # frozen_string_literal: true
 
+# Coverage (COVERAGE=1; CI's main Ruby 3.4 leg). Must start before the SDK is
+# required. simplecov lives only in the main Gemfile, so the floor/latest/rails
+# bundles never load it. track_files lists lib files the main suite never
+# requires too (railtie.rb and the rake tasks run only on the rails leg, which
+# does not collect coverage), so untested files show up at 0% instead of
+# silently dropping out of the report.
+if ENV['COVERAGE'] == '1'
+  require 'simplecov'
+  SimpleCov.start do
+    enable_coverage :branch
+    add_filter '/spec/'
+    track_files 'lib/**/*.rb'
+  end
+end
+
 require 'claude_agent_sdk'
 
 # Load test helpers

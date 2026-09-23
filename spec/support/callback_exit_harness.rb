@@ -47,8 +47,8 @@ module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-co
       $stdout.flush
     end
 
-    def read_messages(&block)
-      @messages.each(&block)
+    def read_messages(&)
+      @messages.each(&)
     end
   end
 

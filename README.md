@@ -75,14 +75,23 @@ The block runs on a plain thread, so ActiveRecord calls inside it just work. [do
 ```ruby
 require 'claude_agent_sdk'
 
-ClaudeAgentSDK.query(prompt: "What is 2 + 2?") do |message|
+puts ClaudeAgentSDK.ask("What is 2 + 2?").result
+```
+
+`ask` runs the whole conversation and returns the final `ResultMessage`: `#result` is the answer, and the same object carries `total_cost_usd`, `usage`, `session_id` and `structured_output` (`puts` on it prints a summary such as `[result: success, 1 turn, 2.1s, $0.0031]`). It takes the same prompt and `options:` as `query()`, and given a block it also yields every message as it arrives:
+
+```ruby
+result = ClaudeAgentSDK.ask("Explain Ruby's GVL in three sentences") do |message|
   puts message.text if message.is_a?(ClaudeAgentSDK::AssistantMessage)
 end
+puts result
 ```
+
+It raises the same errors as `query()` (see [docs/errors.md](docs/errors.md)), plus `CLIConnectionError` if the stream ends without a result.
 
 ### `query()` — one-shot and streaming
 
-`query()` runs a single conversation and yields each response message to the block.
+`query()` runs a single conversation and yields each response message to the block. Reach for it over `ask` when you handle the messages yourself, or want to stop early with `break`.
 
 ```ruby
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
@@ -145,7 +154,7 @@ Tools are Ruby blocks that run in-process, with no subprocess or IPC between Cla
 
 ```ruby
 greet = ClaudeAgentSDK.create_tool('greet', 'Greet a user', { name: :string }) do |args|
-  { content: [{ type: 'text', text: "Hello, #{args[:name]}!" }] }
+  "Hello, #{args[:name]}!"
 end
 
 server = ClaudeAgentSDK.create_sdk_mcp_server(name: 'my-tools', tools: [greet])
@@ -156,7 +165,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
-Arguments are validated against the tool's JSON Schema before your handler runs, and handler exceptions are reported back to the model in-band so it can self-correct. See [docs/mcp-servers.md](docs/mcp-servers.md) for resources, prompts, mixed SDK + external servers, and schema details.
+A String return is sent to Claude as a single text block. Return a Hash instead (`{ content: [...], is_error: true }`) to flag an error, attach `structured_content:`, or send several content blocks or images. Arguments are validated against the tool's JSON Schema before your handler runs, and handler exceptions are reported back to the model in-band so it can self-correct. See [docs/mcp-servers.md](docs/mcp-servers.md) for resources, prompts, mixed SDK + external servers, and schema details.
 
 ### Hooks and permission callbacks
 
@@ -247,11 +256,11 @@ RUN_INTEGRATION=1 bundle exec rspec  # also run the real-CLI integration suite (
 BUNDLE_GEMFILE=gemfiles/rails_8.gemfile bundle exec rspec --options spec/rails/.rspec  # Rails integration specs
 ```
 
-CI runs the suite and RuboCop on Ruby 3.2, 3.3, and 3.4, and the Rails specs against Rails 7.1 and 8. See [spec/README.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/spec/README.md) for the test layout.
+CI runs the suite and RuboCop on Ruby 3.2, 3.3, and 3.4 on Linux, the suite on macOS, and the Rails specs against Rails 7.1 and 8; a weekly job runs the integration suite against the pinned CLI. See [CONTRIBUTING.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/CONTRIBUTING.md) for the development setup and [spec/README.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/spec/README.md) for the test layout.
 
 ## Contributing
 
-Bug reports and pull requests are welcome on [GitHub](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues). Please include a failing spec with bug reports where possible, and keep pull requests focused on one change. Releases follow [Semantic Versioning](https://semver.org/) and are recorded in the [CHANGELOG](CHANGELOG.md).
+Bug reports and pull requests are welcome on [GitHub](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues). Please include a failing spec with bug reports where possible, and keep pull requests focused on one change; [CONTRIBUTING.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/CONTRIBUTING.md) has the details. Report security vulnerabilities privately, as described in [SECURITY.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/SECURITY.md). Releases follow [Semantic Versioning](https://semver.org/) and are recorded in the [CHANGELOG](CHANGELOG.md).
 
 ## License
 

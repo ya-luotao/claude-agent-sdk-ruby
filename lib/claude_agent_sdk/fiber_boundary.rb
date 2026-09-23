@@ -376,10 +376,10 @@ module ClaudeAgentSDK
     # need a bounded wait use :thread scheduling (hard Thread#join bound);
     # inline callbacks keep their cleanup fiber-aware.
     # @api private
-    def with_cooperative_timeout(task, timeout, on_timeout:, &block)
+    def with_cooperative_timeout(task, timeout, on_timeout:, &)
       cancellation = Class.new(InlineCancellation)
       begin
-        task.with_timeout(timeout, cancellation, &block)
+        task.with_timeout(timeout, cancellation, &)
       rescue cancellation
         raise on_timeout.call
       end

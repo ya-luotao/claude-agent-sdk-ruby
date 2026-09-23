@@ -6,12 +6,23 @@ module ClaudeAgentSDK
   # `require 'rails'`), so non-Rails processes never see it.
   #
   # Deliberately minimal: it contributes the `claude_agent_sdk:*` rake tasks
-  # and nothing else. It installs nothing into callback dispatch — the
-  # generated initializer (`bin/rails g claude_agent_sdk:install`) opts in
-  # to {.callback_wrapper} explicitly, where it is visible and removable.
+  # and anchors CLI discovery to the app root, nothing else. It installs
+  # nothing into callback dispatch — the generated initializer
+  # (`bin/rails g claude_agent_sdk:install`) opts in to {.callback_wrapper}
+  # explicitly, where it is visible and removable.
   class Railtie < ::Rails::Railtie
     rake_tasks do
       load File.expand_path('tasks/claude_agent_sdk.rake', __dir__)
+    end
+
+    # Find the vendored CLI under Rails.root/vendor/claude whatever the
+    # process cwd — a daemonized worker or a job runner started elsewhere
+    # would otherwise look under its own cwd and fall through to PATH.
+    # Runs before config/initializers, so an app initializer can still set
+    # CLIInstaller.root (or nil, for the cwd) itself; a root set earlier,
+    # e.g. in config/application.rb, is left alone.
+    initializer 'claude_agent_sdk.cli_installer_root', before: :load_config_initializers do |app|
+      ClaudeAgentSDK::CLIInstaller.root ||= app.root
     end
 
     # A `callback_wrapper` (see ClaudeAgentOptions#callback_wrapper) that

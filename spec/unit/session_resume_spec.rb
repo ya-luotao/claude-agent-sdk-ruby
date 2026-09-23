@@ -147,6 +147,53 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       FileUtils.remove_entry(target) if target && File.directory?(target)
     end
 
+    # Issue #120: CLAUDE_CONFIG_DIR was already resolved as the child sees it,
+    # but the home was always the parent's — so with options.env HOME set, the
+    # seeded ~/.claude/... and ~/.claude.json came from a different home than
+    # the CLI would have used.
+    it "seeds from the child's HOME when options.env sets one" do
+      ENV.delete('CLAUDE_CONFIG_DIR')
+      child_home = Dir.mktmpdir
+      target = Dir.mktmpdir
+      FileUtils.mkdir_p(File.join(child_home, '.claude'))
+      File.write(File.join(child_home, '.claude', '.credentials.json'),
+                 JSON.generate('claudeAiOauth' => { 'accessToken' => 'child' }))
+      File.write(File.join(child_home, '.claude', 'settings.json'), JSON.generate('apiKeyHelper' => 'child-helper'))
+      File.write(File.join(child_home, '.claude.json'), JSON.generate('child' => true))
+      allow(described_class).to receive(:read_keychain_credentials).and_return(nil)
+      allow(described_class).to receive(:read_if_present).and_call_original
+
+      described_class.send(:copy_auth_files, target, 'HOME' => child_home)
+
+      expect(JSON.parse(File.read(File.join(target, '.credentials.json')))['claudeAiOauth']['accessToken'])
+        .to eq('child')
+      expect(JSON.parse(File.read(File.join(target, 'settings.json')))['apiKeyHelper']).to eq('child-helper')
+      expect(JSON.parse(File.read(File.join(target, '.claude.json')))).to eq('child' => true)
+      parent_default = File.join(Dir.home, '.claude')
+      expect(described_class).not_to have_received(:read_if_present)
+        .with(File.join(parent_default, '.credentials.json'))
+    ensure
+      FileUtils.remove_entry(child_home) if child_home && File.directory?(child_home)
+      FileUtils.remove_entry(target) if target && File.directory?(target)
+    end
+
+    it "treats a relative or explicitly unset HOME in options.env as no home for the child" do
+      ENV.delete('CLAUDE_CONFIG_DIR')
+      target = Dir.mktmpdir
+      allow(described_class).to receive(:read_keychain_credentials).and_return(nil)
+      allow(described_class).to receive(:read_if_present).and_call_original
+      allow(described_class).to receive(:copy_if_present).and_call_original
+
+      [{ 'HOME' => 'relative/home' }, { 'HOME' => '' }, { HOME: nil }].each do |env|
+        described_class.send(:copy_auth_files, target, env.merge('ANTHROPIC_API_KEY' => 'sk-test'))
+      end
+
+      expect(described_class).not_to have_received(:read_if_present)
+      expect(described_class).not_to have_received(:copy_if_present)
+    ensure
+      FileUtils.remove_entry(target) if target && File.directory?(target)
+    end
+
     context 'without a resolvable home directory (#82)' do
       around do |example|
         previous_home = ENV.fetch('HOME', nil) # rubocop:disable Style/EnvHome -- raw value; nil when unset
@@ -433,6 +480,44 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
         expect(mat.resume_session_id).to eq(new_sid)
       ensure
         mat&.cleanup
+      end
+    end
+
+    # Issue #121 (2): --continue sorted by coerced mtime only, so equal mtimes
+    # (coarse adapter clocks, bulk imports) resumed whichever session the
+    # adapter happened to list first. Same key as the listings after #78:
+    # newest first, then session_id ascending.
+    it 'for continue_conversation breaks equal-mtime ties by session_id, like the listings' do
+      sids = Array.new(4) { SecureRandom.uuid }
+      sids.each { |s| store.append({ 'project_key' => project_key, 'session_id' => s }, [entry("p #{s}")]) }
+      tied_store = Class.new(ClaudeAgentSDK::SessionStore) do
+        attr_accessor :order
+
+        def initialize(inner)
+          super()
+          @inner = inner
+        end
+
+        def append(key, entries) = @inner.append(key, entries)
+        def load(key) = @inner.load(key)
+
+        def list_sessions(_project_key)
+          order.map { |sid| { 'session_id' => sid, 'mtime' => 1_700_000_000_000 } }
+        end
+      end.new(store)
+
+      [sids.sort.reverse, sids.sort.rotate(1), sids.sort.rotate(2), sids.sort].each do |order|
+        tied_store.order = order
+        mat = described_class.materialize_resume_session(
+          ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: tied_store, continue_conversation: true, cwd: cwd)
+        )
+        begin
+          expect(mat.resume_session_id).to eq(sids.min)
+          expect(ClaudeAgentSDK.list_sessions_from_store(session_store: tied_store, directory: cwd).first.session_id)
+            .to eq(mat.resume_session_id)
+        ensure
+          mat&.cleanup
+        end
       end
     end
 

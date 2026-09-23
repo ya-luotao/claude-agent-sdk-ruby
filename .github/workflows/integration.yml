@@ -1,0 +1,86 @@
+# Real-CLI integration run: installs the CLI pinned by
+# CLIInstaller::PINNED_CLI_VERSION and runs spec/integration against it with
+# live, budget-capped API calls (each example sets max_budget_usd).
+#
+# Triggers: weekly, on demand, and on PRs that touch the installer (which is
+# where cli-pin-bump.yml moves the pin), so a CLI bump is checked against the
+# real binary before it merges.
+#
+# Requires an ANTHROPIC_API_KEY repository secret. Without it the job skips
+# with a notice instead of failing. Fork and Dependabot PRs never receive
+# secrets, so they always take the skip path; so do pin-bump PRs opened with
+# the default GITHUB_TOKEN, which don't trigger workflows at all (see
+# cli-pin-bump.yml; dispatch this workflow on that branch instead).
+name: Integration (real CLI)
+
+on:
+  schedule:
+    # Mondays; scheduled workflows are auto-disabled after 60 days without
+    # repo activity — workflow_dispatch stays available.
+    - cron: '41 7 * * 1'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - lib/claude_agent_sdk/cli_installer.rb
+      - spec/integration/**
+      - .github/workflows/integration.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-cli:
+    name: real CLI (pinned version, Ruby 3.4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # secrets.* can't appear in an `if:`, so a step checks for the key and
+      # the rest of the job keys off its output.
+      - name: Check for ANTHROPIC_API_KEY
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice title=Integration run skipped::The ANTHROPIC_API_KEY secret is not available (not configured, or a fork/Dependabot PR). Add it as a repository secret to enable this run."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+
+      - name: Set up Ruby 3.4
+        if: steps.gate.outputs.run == 'true'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+
+      # The plain-Rakefile task (Rakefile requires claude_agent_sdk/tasks),
+      # i.e. CLIInstaller.install_pinned into vendor/claude. The specs look
+      # the CLI up on PATH and skip without it, so put it there and fail
+      # loudly here if it doesn't run.
+      - name: Install pinned Claude Code CLI
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          bundle exec rake claude_agent_sdk:install_cli
+          echo "$GITHUB_WORKSPACE/vendor/claude" >> "$GITHUB_PATH"
+
+      - name: Show CLI version
+        if: steps.gate.outputs.run == 'true'
+        run: claude --version
+
+      - name: Run integration specs
+        if: steps.gate.outputs.run == 'true'
+        env:
+          RUN_INTEGRATION: '1'
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bundle exec rspec spec/integration

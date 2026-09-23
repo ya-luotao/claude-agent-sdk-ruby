@@ -9,6 +9,15 @@ Fix:
 - Install Claude Code CLI (Node.js required), or vendor a pinned binary with `ClaudeAgentSDK::CLIInstaller.install_pinned` (0.34.0+; installs the CLI version the gem release was tested against, `CLIInstaller::PINNED_CLI_VERSION`) or `CLIInstaller.install(version: 'x.y.z')` for a concrete pin of your own (`'stable'`, the default, and `'latest'` are floating dist-tags that re-resolve on every install). Downloads into `vendor/claude/`; discovery prefers it over `PATH` — since 0.30.0.
 - If the CLI is installed in a non-standard path, set `ClaudeAgentSDK::ClaudeAgentOptions#cli_path` (see `references/options.md`) or the `CLAUDE_CLI_PATH` environment variable.
 
+## Session APIs fail in a container without a home directory
+
+Symptoms:
+- `ClaudeAgentSDK::ConfigDirError` from `list_sessions`, `get_session_*`, `rename_session` and the other local-disk session APIs
+- With a `session_store`, a `MirrorErrorMessage` (nil `key`) per turn saying the Claude config directory is unknown
+
+Fix:
+- The host has no usable home (`HOME` unset with no passwd entry, as under `docker --user` in a minimal image, or an empty/relative `HOME`), so the default `~/.claude` cannot be located. Set `CLAUDE_CONFIG_DIR` in the environment (or in `options.env` for the subprocess and the transcript mirror).
+
 ## Control requests timing out
 
 Symptoms:

@@ -51,9 +51,10 @@ module ClaudeAgentSDK
     BINARY_NAME = 'claude'
     VERSION_FILE = 'VERSION'
     LOCK_FILE = '.install.lock'
-    # Relative to Dir.pwd, resolved at CALL time by .default_dir — an absolute
-    # constant would freeze the working directory as of require time, which is
-    # wrong for anything that chdirs (Rake tasks, bin/setup, test suites).
+    # Relative to .root (Dir.pwd when unset), resolved at CALL time by
+    # .default_dir — an absolute constant would freeze the working directory
+    # as of require time, which is wrong for anything that chdirs (Rake
+    # tasks, bin/setup, test suites).
     DEFAULT_DIR = File.join('vendor', 'claude')
     # Response caps. The dist-tag endpoints return a bare version string and
     # manifests are a few KB; anything larger is a misrouted response, not
@@ -191,13 +192,13 @@ module ClaudeAgentSDK
           raise CLIInstallError, "Failed to fetch #{url}: #{e.class}: #{e.message}"
         end
 
-        def follow_redirect(uri, response, redirects_left, &block)
+        def follow_redirect(uri, response, redirects_left, &)
           raise CLIInstallError, "Too many redirects while fetching #{uri}" if redirects_left <= 0
 
           location = response['location'].to_s
           raise CLIInstallError, "Redirect from #{uri} is missing a Location header" if location.empty?
 
-          with_response(URI.join(uri.to_s, location), redirects_left - 1, &block)
+          with_response(URI.join(uri.to_s, location), redirects_left - 1, &)
         end
       end
     end
@@ -309,10 +310,39 @@ module ClaudeAgentSDK
     end
 
     class << self
-      # Absolute path of the default install directory, resolved against the
-      # current working directory each time it is asked for.
+      # The directory DEFAULT_DIR is resolved against, or nil (the default)
+      # for the current working directory at call time.
+      #
+      # Set it when the process cwd is not the project root — a daemonized
+      # worker, a job runner started from /, a systemd unit without
+      # WorkingDirectory — so .default_dir, and with it .installed_path and
+      # SubprocessCLITransport's discovery of the vendored binary, still
+      # point at <root>/vendor/claude. The Rails Railtie sets it to
+      # Rails.root unless something already has.
+      #
+      # Safe to read from any thread without a lock: the value is a single
+      # frozen String reference (or nil), replaced whole by .root=, so a
+      # reader sees either the old root or the new one, never a partial one.
+      #
+      # @return [String, nil] an absolute path, or nil
+      attr_reader :root
+
+      # @param path [String, Pathname, nil] the project root. A relative path
+      #   is absolutized against the working directory NOW, once, so a later
+      #   chdir cannot move it. nil restores the Dir.pwd default.
+      # @raise [ArgumentError] for an empty path (which would silently pin
+      #   the current working directory)
+      def root=(path)
+        raise ArgumentError, 'CLIInstaller.root must be a non-empty path or nil' if path&.to_s&.empty?
+
+        @root = path && File.expand_path(path).freeze
+      end
+
+      # Absolute path of the default install directory: vendor/claude under
+      # .root, or under the current working directory (resolved each time it
+      # is asked for) while .root is unset.
       def default_dir
-        File.expand_path(DEFAULT_DIR, Dir.pwd)
+        File.expand_path(DEFAULT_DIR, root || Dir.pwd)
       end
 
       # Install the CLI into +dir+ and return the absolute path of the binary.

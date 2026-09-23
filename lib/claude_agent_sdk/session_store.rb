@@ -94,13 +94,13 @@ module ClaudeAgentSDK
     end
 
     # List sessions for a project_key as [{ 'session_id', 'mtime' }]. Optional —
-    # if unimplemented, list_sessions_from_store raises.
+    # if unimplemented, list_sessions(session_store:) raises.
     def list_sessions(_project_key)
       raise NotImplementedError
     end
 
     # Return incrementally-maintained summaries for all sessions in one call.
-    # Optional — if unimplemented, list_sessions_from_store falls back to
+    # Optional — if unimplemented, list_sessions(session_store:) falls back to
     # list_sessions + per-session load.
     def list_session_summaries(_project_key)
       raise NotImplementedError
@@ -396,27 +396,37 @@ module ClaudeAgentSDK
             '(checkpoints are local-disk only and would diverge from the mirrored transcript)'
     end
 
-    # Path to the rel-from base where session transcripts live, honoring a
-    # CLAUDE_CONFIG_DIR override passed to the subprocess via options.env.
-    # Mirrors Sessions#config_dir but consults an explicit env override first.
+    # Path to the rel-from base where the CLI subprocess writes session
+    # transcripts: its CLAUDE_CONFIG_DIR, else ~/.claude under the home the
+    # CHILD sees. Mirrors Sessions#config_dir but resolves both through the
+    # options.env passed to the subprocess.
     #
     # Presence is detected by KEY, not value: the transport treats an explicit
     # nil value as "unset the var for the child", so the CLI then writes under
     # the default ~/.claude — not under the parent's CLAUDE_CONFIG_DIR. Empty
-    # strings get the same treatment (the Node CLI treats "" as unset).
+    # strings get the same treatment (the Node CLI treats "" as unset). A HOME
+    # in options.env likewise moves that default (see Sessions.home_dir).
+    #
+    # Returns nil when the default is needed but there is no usable home
+    # (#120). This runs at connect for every session with a session_store, so
+    # raising (as Sessions.config_dir does) would abort a fresh session over
+    # its secondary copy; the TranscriptMirrorBatcher instead reports the
+    # frames it cannot key as MirrorErrorMessage.
     def projects_dir(env_override = nil)
-      if env_override.respond_to?(:key?) &&
-         (env_override.key?('CLAUDE_CONFIG_DIR') || env_override.key?(:CLAUDE_CONFIG_DIR))
-        override = env_override['CLAUDE_CONFIG_DIR'] || env_override[:CLAUDE_CONFIG_DIR]
-        override = nil if override.respond_to?(:empty?) && override.empty?
-        # NFC like Python's _get_projects_dir(env_override) — a decomposed
-        # Unicode override would otherwise mismatch the NFC paths used for
-        # the mirror's projects-dir prefix comparison and drop every frame.
-        override = override.unicode_normalize(:nfc) if override
-        return File.join(override || File.expand_path('~/.claude'), 'projects')
-      end
+      override = if env_override.respond_to?(:key?) &&
+                    (env_override.key?('CLAUDE_CONFIG_DIR') || env_override.key?(:CLAUDE_CONFIG_DIR))
+                   env_override['CLAUDE_CONFIG_DIR'] || env_override[:CLAUDE_CONFIG_DIR]
+                 else
+                   ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+                 end
+      override = nil if override.respond_to?(:empty?) && override.empty?
+      # NFC like Python's _get_projects_dir(env_override) — a decomposed
+      # Unicode override would otherwise mismatch the NFC paths used for
+      # the mirror's projects-dir prefix comparison and drop every frame.
+      return File.join(override.unicode_normalize(:nfc), 'projects') if override
 
-      File.join(Sessions.config_dir, 'projects')
+      home = Sessions.home_dir(env_override)
+      home && File.join(home, '.claude', 'projects').unicode_normalize(:nfc)
     end
   end
 end
