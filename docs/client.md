@@ -4,29 +4,38 @@
 
 ## Basic Usage
 
+`Client.open` connects, yields the client, and always disconnects when the block exits (exceptions propagate after the disconnect). It returns the block's value, and creates an `async` reactor if it isn't already running inside one.
+
 ```ruby
 require 'claude_agent_sdk'
-require 'async'
 
-Async do
-  client = ClaudeAgentSDK::Client.new
+ClaudeAgentSDK::Client.open do |client|
+  client.query("What is the capital of France?")
 
-  begin
-    client.connect
-    client.query("What is the capital of France?")
-
-    client.receive_response do |msg|
-      case msg
-      when ClaudeAgentSDK::AssistantMessage
-        puts msg.text
-      when ClaudeAgentSDK::ResultMessage
-        puts "Cost: $#{msg.total_cost_usd}" if msg.total_cost_usd
-      end
+  client.receive_response do |msg|
+    case msg
+    when ClaudeAgentSDK::AssistantMessage
+      puts msg.text
+    when ClaudeAgentSDK::ResultMessage
+      puts "Cost: $#{msg.total_cost_usd}" if msg.total_cost_usd
     end
-  ensure
-    client.disconnect
   end
-end.wait
+end
+```
+
+Called outside a reactor, `break` inside the `Client.open` block raises `LocalJumpError` (the client still disconnects), so return a value from the block instead. `break` inside `receive_response` / `receive_messages` is fine. It stops the iteration.
+
+If your code already runs inside an `Async` reactor and you want to manage the connection yourself, call `connect` and `disconnect` directly:
+
+```ruby
+client = ClaudeAgentSDK::Client.new
+begin
+  client.connect
+  client.query("What is the capital of France?")
+  client.receive_response { |msg| puts msg }
+ensure
+  client.disconnect
+end
 ```
 
 ## Advanced Features

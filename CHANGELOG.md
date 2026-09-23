@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **`ClaudeAgentOptions#inspect` filters `env` values** to `"[FILTERED]"` (keys stay visible), since `env` usually carries `ANTHROPIC_API_KEY` and options end up in logs. The options object is not modified. Typed `SystemMessage` subclasses (`InitMessage`, ...) leave the raw `@data` frame out of `#inspect`, since it repeats their attributes; a bare `SystemMessage` keeps it. Nothing sent to the CLI changes: wire output still goes through `#to_h`.
+- The README's `Client` section and the basic example in `docs/client.md` now lead with `Client.open`, which creates the reactor and always disconnects, instead of the `Async do … begin … ensure client.disconnect end.wait` boilerplate. The manual `connect` / `disconnect` form is still shown for code already running inside an `Async` reactor. No API changes.
 
 ## [0.34.0] - 2026-09-23
 
