@@ -1518,6 +1518,53 @@ module ClaudeAgentSDK
       # Final mirror flush BEFORE stopping the read task, so the last turn's
       # entries reach the store. #close on the batcher never raises.
       @transcript_mirror_batcher&.close
+      # A close can be called from inside one of the tasks it stops:
+      #   - an inline callback (callback_scheduling: :inline) runs on a
+      #     control-request handler task that is a CHILD of the read task,
+      #     so the read task's unwind (`stopped!` -> `stop_children`)
+      #     cascades straight back into this fiber as Async::Stop from
+      #     inside `@task.stop` (issue #81);
+      #   - a streaming-input enumerator is iterated ON the reactor inside
+      #     a spawn_task child tracked in @child_tasks, so
+      #     `@child_tasks.each(&:stop)` stops the CURRENT task — a direct
+      #     raise (Async::Task#stop on `current?`), no cascade needed.
+      # Either way the Stop used to unwind close_now before the transport
+      # and @close_requests were closed. `defer_stop` makes both the
+      # cascade and the self-stop set a flag instead of raising
+      # (Async::Task#stop checks the deferral before the current?/deliver
+      # branch), so the whole teardown section runs to completion; the
+      # deferred stop is then raised on exit of the block, after the
+      # invariant "close returned/raised => transport closed, waiters
+      # released, close requests closed" already holds. The caller's task
+      # still ends — it belongs to a stopped tree — so its Client#disconnect
+      # surfaces as Async::Stop (Python parity: a hook that awaits
+      # disconnect() gets CancelledError). Applied ONLY inside the trees of
+      # the tasks being stopped: the reactor-side caller (Client#disconnect
+      # from the connect task, the close watcher) and foreign threads keep
+      # the plain path, unchanged.
+      #
+      # The deferred Stop SUPERSEDES anything the teardown raises: async
+      # raises it from defer_stop's ensure with an explicit `cause:`, so a
+      # transport #close error would vanish from the chain entirely. Warn
+      # before it is lost. (An inline hook's cooperative timeout landing
+      # while the teardown is suspended is superseded the same way; harmless,
+      # the handler is ending anyway.)
+      if (caller_task = task_inside_stopped_trees)
+        caller_task.defer_stop do
+          stop_tasks_and_close_transport
+        rescue StandardError => e
+          warn "Claude SDK: close from inside a stopping task failed during teardown: #{e.class}: #{e.message}"
+          raise
+        end
+      else
+        stop_tasks_and_close_transport
+      end
+    end
+
+    # The teardown section that must run to completion once the read and
+    # child tasks are being stopped — see close_now for why a caller inside
+    # one of their trees wraps it in defer_stop.
+    def stop_tasks_and_close_transport
       # Stop tracked child tasks (e.g. stream_input) before the read task and
       # transport so a parked input stream can never keep the reactor alive
       # (mirrors Python close() cancelling _child_tasks).
@@ -1535,11 +1582,39 @@ module ClaudeAgentSDK
 
         warn "Claude SDK: skipped stopping tasks during off-reactor close: #{e.message}"
       end
-      @transport.close
-      # Release a still-parked close watcher: pop returns nil and it exits
-      # without serving. Any foreign-thread close arriving after this point
-      # falls back to a direct close (safe — the fibers are now dead).
-      @close_requests.close
+      begin
+        @transport.close
+      ensure
+        # Release a still-parked close watcher: pop returns nil and it exits
+        # without serving. Any foreign-thread close arriving after this point
+        # falls back to a direct close (safe — the fibers are now dead).
+        # In the ensure because transport.close can suspend (process reap)
+        # and a deadline delivered there — e.g. an inline hook's cooperative
+        # timeout, which defer_stop does not cover — must not strand the
+        # watcher; this close has no suspension point of its own.
+        @close_requests.close
+      end
+    end
+
+    # The current Async task when it is one of the tasks close_now stops —
+    # the read task or a tracked child task (stream_input) — or a descendant
+    # of one (a control-request handler running an inline callback); nil
+    # otherwise, including on a foreign thread (no task) and for the close
+    # watcher / connect task, which are siblings of those tasks.
+    def task_inside_stopped_trees
+      task = Async::Task.current?
+      return nil unless task
+
+      roots = [@task, *@child_tasks].compact
+      return nil if roots.empty?
+
+      node = task
+      while node
+        return task if roots.any? { |root| root.equal?(node) }
+
+        node = node.parent
+      end
+      nil
     end
 
     # Hand the close to the reactor and wait for completion. Polls watcher

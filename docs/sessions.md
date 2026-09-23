@@ -299,6 +299,16 @@ Declaring `:inline` means the calls run in place on the reactor fiber under a
   The drop is surfaced like every dropped batch — `MirrorErrorMessage` on
   the stream, `batches_dropped?` on the batcher — and the local transcript
   remains the source of truth, so nothing is lost from the session itself.
+- The timeout bounds the cancellation **request**, not the call's
+  completion: the cancellation is delivered once, at the next suspension
+  point, and the adapter's `ensure` / rescue cleanup then runs unbounded on
+  the reactor fiber before the timeout is reported. Fiber-aware cleanup
+  (closing an async client, releasing an async lock) delays only that call;
+  scheduler-opaque cleanup — an `fsync`, a non-fiber-aware driver's
+  disconnect, a GVL-holding C extension — stalls the whole reactor for its
+  duration, and no deadline can interrupt it. Keep inline cleanup
+  fiber-aware, or leave the adapter on the default thread hop when a hard
+  bound on the whole call matters more than fiber affinity.
 
 Anything other than `:thread`/`:inline` raises `ArgumentError` when the
 session is set up; without a reactor the hard thread-hop bound still applies

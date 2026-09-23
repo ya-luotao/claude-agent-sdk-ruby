@@ -1058,6 +1058,19 @@ module ClaudeAgentSDK
     end
 
     # Disconnect from Claude
+    #
+    # Callable from inside a user callback (tool handler / hook /
+    # can_use_tool). With the default `callback_scheduling: :thread` the
+    # callback runs on a worker thread: the close is marshalled to the
+    # reactor, returns normally once the teardown completed, and the
+    # callback's return value is dropped (its reactor task was stopped). With
+    # `:inline` the callback's task is a child of the read task being
+    # stopped, so once the teardown has completed the deferred Async::Stop
+    # unwinds the callback — disconnect raises rather than returns there;
+    # ensure blocks run, `rescue StandardError` does not see it. The same
+    # holds, in every scheduling mode, for a streaming-input enumerator that
+    # calls disconnect: it is iterated on the reactor inside a task the close
+    # stops, so it unwinds with Async::Stop once the teardown has completed.
     def disconnect
       if @connected
         ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close,
