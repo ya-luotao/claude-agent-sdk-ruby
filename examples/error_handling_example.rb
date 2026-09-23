@@ -78,52 +78,75 @@ puts "\n" + "=" * 50 + "\n"
 # Example 2: Error handling with retry logic
 puts "\n--- Example 2: Error Handling with Retry ---"
 
-def query_with_retry(prompt, max_retries: 3, base_delay: 1)
-  retries = 0
-  success = false
+# A failed run ends with an is_error ResultMessage, after which the CLI exits
+# non-zero; the SDK raises that exit as ResultError, carrying the result's
+# payload. So the retry decision belongs in `rescue`, not in the message
+# block: an AssistantMessage error is informational, the exception decides.
+#
+# Worth retrying: API failures that are transient by nature — 429 (rate
+# limited), 529 (overloaded) and other 5xx server errors. Everything else
+# fails the same way on every attempt — 4xx such as 401 (authentication) or
+# 400 (invalid request), and non-API results such as error_max_turns,
+# error_during_execution or a refused resume (no api_error_status) — so it is
+# re-raised immediately.
+RETRYABLE_API_STATUSES = [429, 529].freeze
 
-  while retries < max_retries && !success
-    puts "Attempt #{retries + 1}/#{max_retries}..."
+def retryable_result_error?(error)
+  status = error.api_error_status
+  return false if status.nil?
+
+  RETRYABLE_API_STATUSES.include?(status) || (500..599).cover?(status)
+end
+
+def query_with_retry(prompt, max_retries: 3, base_delay: 1)
+  attempt = 0
+  begin
+    attempt += 1
+    puts "Attempt #{attempt}/#{max_retries}..."
 
     ClaudeAgentSDK.query(prompt: prompt) do |message|
       case message
       when ClaudeAgentSDK::AssistantMessage
         if message.error
-          case message.error
-          when 'rate_limit'
-            delay = base_delay * (2**retries)
-            puts "Rate limited. Waiting #{delay}s before retry..."
-            sleep(delay)
-            retries += 1
-          when 'server_error'
-            delay = base_delay * (2**retries)
-            puts "Server error. Waiting #{delay}s before retry..."
-            sleep(delay)
-            retries += 1
-          when 'authentication_failed', 'billing_error'
-            puts "Non-retryable error: #{message.error}"
-            display_error(message.error)
-            return false
-          else
-            puts "Error: #{message.error}"
-            retries += 1
-          end
+          puts "Assistant reported: #{message.error}"
+          display_error(message.error)
         else
           message.content.each do |block|
             puts block.text if block.is_a?(ClaudeAgentSDK::TextBlock)
           end
         end
-      when ClaudeAgentSDK::ResultMessage
-        success = !message.is_error
       end
     end
-  end
+    true
+  # ResultError subclasses ProcessError, so it must be rescued first.
+  rescue ClaudeAgentSDK::ResultError => e
+    raise unless retryable_result_error?(e) && attempt < max_retries
 
-  success
+    delay = base_delay * (2**(attempt - 1))
+    puts "Transient API error (HTTP #{e.api_error_status}). Retrying in #{delay}s..."
+    sleep(delay)
+    retry
+  rescue ClaudeAgentSDK::ProcessError => e
+    # A bare non-zero exit with no error result behind it (the CLI crashed or
+    # was killed): nothing says it will recur, so retry it — bounded by
+    # max_retries, since a misconfiguration would fail identically each time.
+    raise if attempt >= max_retries
+
+    delay = base_delay * (2**(attempt - 1))
+    puts "CLI exited with code #{e.exit_code}. Retrying in #{delay}s..."
+    sleep(delay)
+    retry
+  end
 end
 
-result = query_with_retry("What is 1 + 1?")
-puts result ? "Query succeeded!" : "Query failed after retries"
+begin
+  query_with_retry("What is 1 + 1?")
+  puts "Query succeeded!"
+rescue ClaudeAgentSDK::ResultError => e
+  puts "Query failed (#{e.subtype || 'error result'}): #{e.message}"
+rescue ClaudeAgentSDK::ProcessError => e
+  puts "Query failed after retries: #{e.message}"
+end
 
 puts "\n" + "=" * 50 + "\n"
 

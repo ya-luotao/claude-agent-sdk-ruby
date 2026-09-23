@@ -235,10 +235,10 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       old_sid = SecureRandom.uuid
       new_sid = SecureRandom.uuid
       side_sid = SecureRandom.uuid
+      # InMemorySessionStore stamps strictly increasing mtimes per append
+      # (session_store_spec), so append order is mtime order — no sleeps.
       store.append({ 'project_key' => project_key, 'session_id' => old_sid }, [entry('old')])
-      sleep 0.002
       store.append({ 'project_key' => project_key, 'session_id' => new_sid }, [entry('new')])
-      sleep 0.002
       # Newest by mtime, but a sidechain — must be skipped.
       store.append({ 'project_key' => project_key, 'session_id' => side_sid }, [entry('side', 'isSidechain' => true)])
 
@@ -260,7 +260,6 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       main_sid = SecureRandom.uuid
       side_sid = SecureRandom.uuid
       store.append({ 'project_key' => project_key, 'session_id' => main_sid }, [entry('main')])
-      sleep 0.002
       store.append({ 'project_key' => project_key, 'session_id' => side_sid }, [entry('side', 'isSidechain' => true)])
 
       loads = []
