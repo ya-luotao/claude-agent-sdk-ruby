@@ -211,16 +211,16 @@ module ClaudeAgentSDK
       end
 
       raise CLINotFoundError.new(
-        "Claude Code not found. Install with:\n" \
-        "  npm install -g @anthropic-ai/claude-code\n" \
-        "\nIf already installed locally, try:\n" \
-        '  export PATH="$HOME/node_modules/.bin:$PATH"' \
-        "\n\nOr provide the path via ClaudeAgentOptions:\n" \
-        "  ClaudeAgentOptions.new(cli_path: '/path/to/claude')" \
-        "\n\nFor hermetic deploys (Docker/CI), vendor a pinned CLI into the project:\n" \
-        "  ClaudeAgentSDK::CLIInstaller.install_pinned  # installs #{CLIInstaller::PINNED_CLI_VERSION}" \
-        "\n\nOr point the SDK at an existing binary:\n" \
-        "  export #{CLI_PATH_ENV_VAR}=/path/to/claude"
+        "Claude Code not found. Install with:\n  " \
+        "npm install -g @anthropic-ai/claude-code\n" \
+        "\nIf already installed locally, try:\n  " \
+        'export PATH="$HOME/node_modules/.bin:$PATH"' \
+        "\n\nOr provide the path via ClaudeAgentOptions:\n  " \
+        "ClaudeAgentOptions.new(cli_path: '/path/to/claude')" \
+        "\n\nFor hermetic deploys (Docker/CI), vendor a pinned CLI into the project:\n  " \
+        "ClaudeAgentSDK::CLIInstaller.install_pinned  # installs #{CLIInstaller::PINNED_CLI_VERSION}" \
+        "\n\nOr point the SDK at an existing binary:\n  " \
+        "export #{CLI_PATH_ENV_VAR}=/path/to/claude"
       )
     end
 

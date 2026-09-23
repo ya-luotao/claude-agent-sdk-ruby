@@ -1145,6 +1145,7 @@ module ClaudeAgentSDK
     # Send interrupt signal
     def interrupt
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.interrupt
     end
 
@@ -1152,6 +1153,7 @@ module ClaudeAgentSDK
     # @param mode [String] Permission mode ('default', 'acceptEdits', 'bypassPermissions')
     def set_permission_mode(mode)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.set_permission_mode(mode)
     end
 
@@ -1165,6 +1167,7 @@ module ClaudeAgentSDK
     # @param model [String, nil] Model name or nil for default
     def set_model(model)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.set_model(model)
     end
 
@@ -1177,6 +1180,7 @@ module ClaudeAgentSDK
     # @param server_name [String] Name of the MCP server to reconnect
     def reconnect_mcp_server(server_name)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.reconnect_mcp_server(server_name)
     end
 
@@ -1185,6 +1189,7 @@ module ClaudeAgentSDK
     # @param enabled [Boolean] Whether to enable or disable
     def toggle_mcp_server(server_name, enabled)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.toggle_mcp_server(server_name, enabled)
     end
 
@@ -1192,6 +1197,7 @@ module ClaudeAgentSDK
     # @param task_id [String] The ID of the task to stop
     def stop_task(task_id)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.stop_task(task_id)
     end
 
@@ -1217,6 +1223,7 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if tool_use_id is neither nil nor a non-empty String
     def background_tasks(tool_use_id: nil)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.background_tasks(tool_use_id: tool_use_id)
     end
 
@@ -1226,6 +1233,7 @@ module ClaudeAgentSDK
     # @param user_message_uuid [String] The UUID of the UserMessage to rewind to
     def rewind_files(user_message_uuid)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.rewind_files(user_message_uuid)
     end
 
@@ -1241,6 +1249,7 @@ module ClaudeAgentSDK
     # @return [Hash] Context usage response
     def get_context_usage
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.get_context_usage
     end
 
@@ -1254,6 +1263,7 @@ module ClaudeAgentSDK
     # @return [Hash] MCP status information, including mcpServers list
     def get_mcp_status
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.get_mcp_status
     end
 
@@ -1267,6 +1277,7 @@ module ClaudeAgentSDK
     # @return [Hash] Server info
     def get_server_info
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       server_info
     end
 

@@ -1441,6 +1441,7 @@ module ClaudeAgentSDK
       wrote_message = false
       stream.each do |message|
         break if @closed
+
         serialized = message.is_a?(Hash) ? JSON.generate(message) : message.to_s
         writeln(serialized)
         wrote_message = true
