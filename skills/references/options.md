@@ -175,7 +175,7 @@ store = ClaudeAgentSDK::InMemorySessionStore.new # or a custom adapter
 # Mirror while streaming
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   session_store: store,
-  session_store_flush: 'batched', # default; 'eager' flushes every frame
+  session_store_flush: 'batched', # default; 'eager' flushes each frame once the store is free (backlog coalesces)
   load_timeout_ms: 60_000         # bounds each store call during resume materialization
 )
 

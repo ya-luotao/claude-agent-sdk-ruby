@@ -274,6 +274,57 @@ RSpec.describe 'Fiber-native SessionStore adapters' do
       expect(store.load(key).first['uuid']).to eq('a')
     end
 
+    # Issue #84 in :inline mode: the append parks the drain task's own fiber
+    # (not a worker thread), and the read loop must still keep ingesting
+    # without spawning a drain task per frame.
+    it 'keeps one background drain in flight and coalesces the backlog' do
+      started = Thread::Queue.new
+      gate = Thread::Queue.new
+      appended = []
+      live = 0
+      max_live = 0
+      store = inline_store_class do |_k, entries|
+        live += 1
+        max_live = [max_live, live].max
+        started.push(true)
+        gate.pop # scheduler-aware: parks only this fiber
+        appended.concat(entries)
+      ensure
+        live -= 1
+      end.new
+
+      n = 50
+      live_drains = 0
+      max_live_drains = 0
+      max_live_during_ingest = nil
+      Async do |task|
+        task.with_timeout(10) do
+          b = ClaudeAgentSDK::TranscriptMirrorBatcher.new(store: store, projects_dir: projects, on_error: on_error,
+                                                          max_pending_entries: 0, max_pending_bytes: 0)
+          allow(b).to receive(:drain).and_wrap_original do |original|
+            live_drains += 1
+            max_live_drains = [max_live_drains, live_drains].max
+            original.call
+          ensure
+            live_drains -= 1
+          end
+
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'u0' }])
+          started.pop
+          (1...n).each { |i| b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => "u#{i}" }]) }
+          max_live_during_ingest = max_live_drains
+
+          gate.close
+          b.close
+        end
+      end.wait
+
+      expect(max_live_during_ingest).to eq(1)
+      expect(max_live).to eq(1)
+      expect(appended.map { |e| e['uuid'] }).to eq(Array.new(n) { |i| "u#{i}" })
+      expect(errors).to be_empty
+    end
+
     it 'rejects an invalid callback_scheduling declaration at construction' do
       bad = ClaudeAgentSDK::InMemorySessionStore.new
       def bad.callback_scheduling = :bogus

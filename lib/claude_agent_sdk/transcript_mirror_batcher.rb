@@ -18,6 +18,12 @@ module ClaudeAgentSDK
   # background flush). This keeps adapter latency off the hot path during
   # model streaming.
   #
+  # At most ONE background drain task is live at a time. Frames arriving
+  # while it is busy stay in the pending buffer, and the drainer picks them up
+  # as one coalesced append when its current one completes — so a store slower
+  # than the frame rate costs buffered entries, never a task (plus detached
+  # batch) per frame, and #enqueue never suspends the read loop.
+  #
   # Adapter failures are retried (MIRROR_APPEND_MAX_ATTEMPTS total) with short
   # backoff; timeouts are not retried since the in-flight call may still land.
   # Failures never raise — the local-disk transcript is already durable, so the
@@ -25,17 +31,19 @@ module ClaudeAgentSDK
   # (which surfaces them as a MirrorErrorMessage). Adapters should dedupe by
   # entry["uuid"] when present, since a retried batch may overlap a prior write.
   #
-  # The semaphore serializes appends, but a #send that exceeds send_timeout is
-  # abandoned (its worker thread keeps running) and the next drain proceeds, so
-  # two #append calls for the SAME key can briefly overlap. SessionStore#append
-  # must be thread-safe per key (see that method's contract). For adapters
-  # declaring `callback_scheduling -> :inline` the timed-out call is instead
-  # cancelled cooperatively (interrupted at its next suspension point, ensure
-  # runs) — but only on the adapter's own fiber; work the adapter offloaded
-  # may still land, so timeouts are not retried in either mode and the
-  # cancelled append may remain permanently HALF-applied in the store. The
-  # drop is surfaced (MirrorErrorMessage, batches_dropped?); the local
-  # transcript remains the source of truth.
+  # The semaphore serializes appends (FIFO, and every drain detaches its batch
+  # immediately before queueing on it, so append order matches enqueue order),
+  # but a #send that exceeds send_timeout is abandoned (its worker thread keeps
+  # running) and the next drain proceeds, so two #append calls for the SAME
+  # key can briefly overlap. SessionStore#append must be thread-safe per key
+  # (see that method's contract). For adapters declaring
+  # `callback_scheduling -> :inline` the timed-out call is instead cancelled
+  # cooperatively (interrupted at its next suspension point, ensure runs) —
+  # but only on the adapter's own fiber; work the adapter offloaded may still
+  # land, so timeouts are not retried in either mode and the cancelled append
+  # may remain permanently HALF-applied in the store. The drop is surfaced
+  # (MirrorErrorMessage, batches_dropped?); the local transcript remains the
+  # source of truth.
   class TranscriptMirrorBatcher
     # Eager-flush thresholds (exposed for tests).
     MAX_PENDING_ENTRIES = 500
@@ -72,6 +80,12 @@ module ClaudeAgentSDK
       @pending = []
       @pending_entries = 0
       @pending_bytes = 0
+      # True while the background drain task is live; #enqueue spawns another
+      # only once it has exited (see #schedule_background_drain).
+      @background_drain_live = false
+      # Set when #close starts; from then on anything still in @pending counts
+      # as dropped (see #batches_dropped?).
+      @closed = false
       # Batches that exhausted retries (or could not be keyed) and never
       # reached the store. Written only under @lock; read cross-thread by
       # #batches_dropped? (a plain Integer read is safe under the GVL).
@@ -86,12 +100,24 @@ module ClaudeAgentSDK
     # mirror copy is incomplete. Consulted at teardown by the resume-from-store
     # cleanup so the materialized temp dir (which then holds the only copy of
     # the dropped turns) is preserved instead of deleted.
+    #
+    # Frames still buffered once #close has started count too. Query#close
+    # stops the read task (the background drainer's parent) right after
+    # #close returns, so a frame the read loop enqueued during the close
+    # window — or any below-threshold frame after it — is never appended.
+    # The old per-frame drain detached it into a parked task whose
+    # cancellation counted it; with coalescing it stays in @pending, so it is
+    # accounted here. Evaluated lazily: frames the drainer still manages to
+    # deliver before the check are not drops, and nothing past #close has to
+    # run for a stranded frame to be counted. (A plain ivar/Array#empty? read
+    # is safe cross-thread under the GVL, like @dropped_batches.)
     def batches_dropped?
-      @dropped_batches.positive?
+      @dropped_batches.positive? || (@closed && !@pending.empty?)
     end
 
     # Buffer a frame; schedule an eager background flush if thresholds are
-    # exceeded. Synchronous and fire-and-forget.
+    # exceeded and no background drain is already live (a live one will pick
+    # this frame up). Synchronous and fire-and-forget.
     #
     # +entries+ are deep-stringified because the transport parses CLI output
     # with symbolized keys, but SessionStore entries are opaque JSON blobs that
@@ -109,12 +135,10 @@ module ClaudeAgentSDK
       @pending << { file_path: file_path, entries: entries }
       @pending_entries += entries.length
       @pending_bytes += size
-      return unless @pending_entries > @max_pending_entries || @pending_bytes > @max_pending_bytes
+      return unless over_threshold?
 
       task = Async::Task.current?
-      # Fire-and-forget on the reactor; @lock in #drain serializes against any
-      # in-flight flush so append ordering holds. #drain never raises.
-      task ? task.async { drain } : drain
+      task ? schedule_background_drain(task) : drain
     end
 
     # Flush all pending entries, serialized after any in-flight eager flush.
@@ -122,14 +146,49 @@ module ClaudeAgentSDK
       drain
     end
 
-    # Final flush before teardown. Never raises.
+    # Final flush before teardown. Never raises. Bounded: it waits behind at
+    # most the in-flight append, and frames arriving after it detached are
+    # not chased (they count as dropped unless delivered; #batches_dropped?).
     def close
+      @closed = true
       flush
     rescue StandardError => e
       warn "Claude SDK: TranscriptMirrorBatcher close flush failed: #{e.message}"
     end
 
     private
+
+    def over_threshold?
+      @pending_entries > @max_pending_entries || @pending_bytes > @max_pending_bytes
+    end
+
+    # Fire-and-forget on the reactor. The drainer loops until the buffer is
+    # back under the thresholds, so while it is live every later frame is
+    # simply buffered and coalesced into its next #drain — live background
+    # tasks <= 1 and detached batches <= 1 + one per #flush / #close caller
+    # parked on @lock, independent of frame rate and store latency.
+    #
+    # No lost wakeup: the loop's final over_threshold? check and the ensure
+    # clearing the flag run with no suspension point between them, so an
+    # #enqueue that saw the flag set is always observed by that check.
+    # Every drainer (this one, #flush, #close) keeps detach-then-acquire, so
+    # detach order == @lock FIFO order and append ordering holds. #drain
+    # never raises.
+    def schedule_background_drain(task)
+      return if @background_drain_live
+
+      @background_drain_live = true
+      task.async do
+        drain while over_threshold?
+      ensure
+        @background_drain_live = false
+      end
+    rescue StandardError
+      # Task#async raises synchronously (e.g. FinishedError) before the block
+      # runs; don't let a stuck flag disable background drains for good.
+      @background_drain_live = false
+      raise
+    end
 
     # Detach the pending buffer, await any prior flush, then send. Detaching
     # before acquiring the lock lets #enqueue keep accumulating into a fresh
