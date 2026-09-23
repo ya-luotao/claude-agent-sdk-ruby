@@ -20,12 +20,6 @@ Gemspec/RequireMFA:
   Exclude:
     - 'claude-agent-sdk.gemspec'
 
-# Offense count: 1
-# Configuration parameters: Severity.
-Gemspec/RequiredRubyVersion:
-  Exclude:
-    - 'claude-agent-sdk.gemspec'
-
 # Offense count: 6
 # This cop supports safe autocorrection (--autocorrect).
 # Configuration parameters: EnforcedStyle, IndentationWidth.

@@ -188,8 +188,8 @@ module ClaudeAgentSDK
   #
   # @example Inside an inline-mode tool handler
   #   ClaudeAgentSDK.offload { blocking_db_call }
-  def self.offload(&block)
-    FiberBoundary.invoke(&block)
+  def self.offload(&)
+    FiberBoundary.invoke(&)
   end
 
   # Guards the once-per-process flag below: two sessions connecting

@@ -293,8 +293,8 @@ module ClaudeAgentSDK
     # thread-hop bound still applies. The session's callback_wrapper
     # composes inside the bound (see FiberBoundary.invoke); a wrapper-raised
     # error surfaces like a store error, with the same context message.
-    def with_timeout(timeout_s, what, scheduling = :thread, wrapper = nil, &block)
-      FiberBoundary.invoke(timeout: timeout_s, scheduling: scheduling, wrapper: wrapper, &block)
+    def with_timeout(timeout_s, what, scheduling = :thread, wrapper = nil, &)
+      FiberBoundary.invoke(timeout: timeout_s, scheduling: scheduling, wrapper: wrapper, &)
     rescue FiberBoundary::JoinTimeout
       raise "#{what} timed out after #{(timeout_s * 1000).to_i}ms during resume materialization"
     rescue RuntimeError
