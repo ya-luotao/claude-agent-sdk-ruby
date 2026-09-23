@@ -19,6 +19,11 @@ module ClaudeAgentSDK
     CLI_PATH_ENV_VAR = 'CLAUDE_CLI_PATH'
     VERSION_CHECK_TIMEOUT_SECONDS = 2 # mirrors Python's anyio.fail_after(2)
     RECENT_STDERR_LINES_LIMIT = 20
+    # After stdout EOF the child has closed (or lost) its last stdout handle,
+    # so it is normally already exiting; a CLI still running this long
+    # afterwards is wedged and gets the same TERM -> KILL ladder as #close.
+    EOF_EXIT_GRACE_SECONDS = 5
+    EOF_TERM_GRACE_SECONDS = 2
 
     # Track live CLI subprocesses so we can terminate them when the parent Ruby
     # process exits. Mirrors the Python (PR #916, a `set[Process]`) and
@@ -110,6 +115,17 @@ module ClaudeAgentSDK
       # close can nil @stdin between write's readiness check and the actual
       # @stdin.write call, producing NoMethodError on nil.
       @stdin_mutex = Mutex.new
+      # Writers holding a live @stdin snapshot (inside #write's IO call),
+      # keyed by Fiber.current, valued by that fiber's Fiber.scheduler (nil
+      # for a plain thread). Inserted in #write's snapshot critical section,
+      # so once stdin is detached under @stdin_mutex the registry holds
+      # exactly the writers that can still touch the IO; deletes and reads
+      # are single GVL-atomic Hash calls and take no lock (a lock in #write's
+      # ensure could suspend a writer mid-unwind). Consulted when stdin is
+      # closed: closing the fd neither wakes a fiber parked in IO#write nor
+      # lets a reactor-side IO#close return while a plain thread is parked
+      # there — see #wake_parked_fiber_writers / #close_stdin_io.
+      @inflight_writers = {}
     end
 
     # Probe order (first hit wins):
@@ -407,9 +423,24 @@ module ClaudeAgentSDK
           # Cancellation can land before teardown_process reached the pipe
           # closes. stdout/stderr are read ends (close never blocks); stdin's
           # implicit flush is a no-op in practice because #write flushes
-          # after every write. Best-effort: an IO that is already closed or
-          # fails to close is left to GC, which the nil-ing above enables.
-          [stdin_io, stdout_io, stderr_io].each do |io|
+          # after every write. A fiber writer still parked on it is woken
+          # first — a scheduler hand-off (like close_now's child-task stops)
+          # that resumes this fiber one reactor tick later; a second
+          # cancellation landing there only skips the closes below, which
+          # GC then finishes (termination already ran above). A plain
+          # thread parked there makes close_stdin_io use a detached thread
+          # (wait: false), so the close itself never blocks. Best-effort:
+          # an IO that is already closed or fails to close is left to GC,
+          # which the nil-ing above enables.
+          if stdin_io
+            begin
+              wake_parked_fiber_writers
+              close_stdin_io(stdin_io, wait: false)
+            rescue StandardError
+              nil
+            end
+          end
+          [stdout_io, stderr_io].each do |io|
             io&.close
           rescue StandardError
             nil
@@ -437,20 +468,12 @@ module ClaudeAgentSDK
         end
       end
 
-      # Close stdin under the same lock that guards write — otherwise a
-      # concurrent writer (callbacks running on FiberBoundary threads) can
-      # see @stdin nilled mid-write and hit NoMethodError on nil.
-      @stdin_mutex.synchronize do
-        begin
-          @stdin&.close
-        rescue IOError
-          # Already closed, ignore
-        rescue StandardError => e
-          raise if e.is_a?(Async::TimeoutError)
+      begin
+        shutdown_stdin
+      rescue StandardError => e
+        raise if e.is_a?(Async::TimeoutError)
 
-          cleanup_errors << "stdin: #{e.message}"
-        end
-        @stdin = nil
+        cleanup_errors << "stdin: #{e.message}"
       end
 
       begin
@@ -544,19 +567,30 @@ module ClaudeAgentSDK
     end
 
     # Wait for the spawned process to exit, up to +timeout_seconds+. Polls
-    # @process.alive? rather than using stdlib Timeout.timeout, which raises
+    # process.alive? rather than using stdlib Timeout.timeout, which raises
     # across threads via Thread#raise and corrupts Async fiber-scheduler state
     # (close is always called inside an Async task). Yields to the current
     # Async task when one is active so the reactor keeps running.
-    def wait_process_with_timeout(timeout_seconds)
+    def wait_process_with_timeout(timeout_seconds, process = @process)
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
       task = defined?(Async::Task) ? Async::Task.current? : nil
-      while @process.alive?
+      while process.alive?
         raise Timeout::Error if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
         task ? task.sleep(0.05) : sleep(0.05)
       end
-      @process.value
+      process.value
+    end
+
+    # Polls (via #wait_process_with_timeout) instead of
+    # Process::Waiter#join(timeout): under a Fiber scheduler Ruby 3.2's
+    # Thread#join ignores its timeout and never returns for a live thread
+    # (probed on 3.2.0; 3.3/3.4 honor it).
+    def process_exited_within?(process, seconds)
+      wait_process_with_timeout(seconds, process)
+      true
+    rescue Timeout::Error
+      false
     end
 
     def write(data)
@@ -573,9 +607,17 @@ module ClaudeAgentSDK
       # underlying stream and Ruby raises IOError("stream closed in another
       # thread") inside @stdin.write — the rescue below converts that into a
       # standard CLIConnectionError so callers see a clean shutdown error.
+      # A fiber parked here is NOT woken by that close, though (the async
+      # selector never learns the fd went away), so close wakes it with the
+      # same IOError via the registry below — see #wake_parked_fiber_writers.
+      writer = Fiber.current
       stdin = @stdin_mutex.synchronize do
         raise CLIConnectionError, 'ProcessTransport is not ready for writing' unless @ready && @stdin
 
+        # Registered in the same critical section as the snapshot, so a
+        # stdin detach (which nils @stdin under this lock) sees every writer
+        # that still holds the IO.
+        @inflight_writers[writer] = Fiber.scheduler
         @stdin
       end
 
@@ -586,25 +628,37 @@ module ClaudeAgentSDK
         @ready = false
         @exit_error = CLIConnectionError.new("Failed to write to process stdin: #{e}")
         raise @exit_error
+      rescue Exception => e # rubocop:disable Lint/RescueException -- cancellation is not a StandardError and must keep its class
+        # Cancellation (Async::Stop, InlineCancellation, a private deadline
+        # class) delivered while parked inside IO#write on a full pipe: the
+        # bytes already written stay on the pipe and nothing distinguishes
+        # an aborted frame from a complete one, so the next well-formed
+        # frame would be appended to a partial one and desync the protocol
+        # for the rest of the session. Poison the transport and re-raise the
+        # ORIGINAL exception: query.rb rescues Async::Stop by class, and
+        # cancellation semantics depend on it propagating unchanged.
+        # Recovery is a new session. Plain stores, like the StandardError
+        # branch above — no lock, so nothing here can suspend mid-unwind.
+        # (A writer already queued on IO#write's internal lock still
+        # appends its frame after the partial one; the session is dead
+        # either way, and every later write fails fast on @exit_error.)
+        @ready = false
+        @exit_error ||= CLIConnectionError.new(
+          "stdin write interrupted by #{exception_class_name(e)}: possible partial frame"
+        )
+        raise
+      ensure
+        @inflight_writers.delete(writer)
       end
     end
 
     def end_input
-      # Under @stdin_mutex like write/close (the transport's documented
-      # locking protocol; Python's end_input takes _write_lock too). The
-      # nil-guard must live INSIDE the critical section or the TOCTOU
-      # returns. NOTE: non-reentrant — close() inlines its own stdin
-      # handling and must never delegate here.
-      @stdin_mutex.synchronize do
-        return unless @stdin
-
-        begin
-          @stdin.close
-        rescue StandardError
-          # Ignore
-        end
-        @stdin = nil
-      end
+      # Same path as #close's stdin step: detach under @stdin_mutex (the
+      # transport's documented locking protocol; Python's end_input takes
+      # _write_lock too), then wake and close outside it.
+      shutdown_stdin
+    rescue StandardError
+      # Ignore
     end
 
     def read_messages(&block)
@@ -613,6 +667,10 @@ module ClaudeAgentSDK
       raise CLIConnectionError, 'Not connected' unless @process && @stdout
 
       json_buffer = ''
+      # True only when stdout reached EOF on its own. When the loop is cut
+      # short by close() (IOError) a partial trailing frame is expected and
+      # is not reported.
+      clean_eof = false
 
       begin
         # The limit bounds per-read allocation: a line longer than
@@ -677,6 +735,7 @@ module ClaudeAgentSDK
             next
           end
         end
+        clean_eof = true
       rescue IOError
         # Stream closed
       rescue StopIteration
@@ -686,10 +745,28 @@ module ClaudeAgentSDK
       # Check process completion. @process may already be nil (close() ran
       # concurrently and reset it) or already waited on (Errno::ECHILD on
       # double-wait). Both are non-fatal — the message loop just exits.
+      # Snapshot: a concurrent close() nils @process mid-wait.
+      process = @process
       returncode = nil
       termsig = nil
+      forced_exit = false
       begin
-        status = @process&.value
+        # Bounded wait. The unbounded #value parked the read loop forever
+        # behind a CLI that closed stdout and then hung — no 'end' ever
+        # reached query()/receive_response. Past the grace period escalate
+        # like #close (TERM, then KILL) and report it as an error below: a
+        # child that outlives its stdout is wedged, whatever its exit code.
+        # The poll parks only this task (task.sleep) on a reactor.
+        if process && !process_exited_within?(process, EOF_EXIT_GRACE_SECONDS)
+          forced_exit = true
+          begin
+            Process.kill('TERM', process.pid)
+            Process.kill('KILL', process.pid) unless process_exited_within?(process, EOF_TERM_GRACE_SECONDS)
+          rescue Errno::ESRCH
+            # Exited between the check and the signal; value below is final.
+          end
+        end
+        status = process&.value
         # exitstatus is nil when the child died from a signal (OOM-kill
         # SIGKILL, SIGSEGV, ...) — that end-of-stream is a TRUNCATED response,
         # not a clean success. Python surfaces it as a negative returncode.
@@ -707,21 +784,47 @@ module ClaudeAgentSDK
       # #close still sees @process (left set here) for its termination logic.
       self.class.deregister_active_process(@process)
 
-      if termsig || (returncode && returncode != 0)
+      if forced_exit || termsig || (returncode && returncode != 0)
         # Wait briefly for stderr thread to finish draining
         @stderr_task&.join(1)
 
         stderr_text = @recent_stderr_mutex.synchronize { @recent_stderr.last(10).join("\n") }
         stderr_text = 'No stderr output captured' if stderr_text.empty?
 
+        message =
+          if forced_exit
+            "Command did not exit within #{EOF_EXIT_GRACE_SECONDS}s of closing stdout; terminated by the SDK" +
+              (termsig ? " with signal #{termsig}" : '')
+          elsif termsig
+            "Command terminated by signal #{termsig}"
+          else
+            "Command failed with exit code #{returncode}"
+          end
+
         @exit_error = ProcessError.new(
-          termsig ? "Command terminated by signal #{termsig}" : "Command failed with exit code #{returncode}",
+          message,
           # Negative-signal exit_code mirrors Python's subprocess returncode.
           exit_code: termsig ? -termsig : returncode,
           stderr: stderr_text
         )
         raise @exit_error
       end
+
+      # A clean exit with a newline-less partial frame still buffered: the
+      # CLI (or whatever sits between it and us) cut a message short. The
+      # in-loop parse never sees it complete, so it used to be dropped
+      # silently — a missing ResultMessage with no error. Report it like
+      # the over-cap path does; a bare whitespace tail is not a frame, and
+      # once a concurrent #close has reset the transport (process nil) the
+      # stream was torn down deliberately and a cut-off tail is expected.
+      return unless clean_eof && process && !json_buffer.strip.empty?
+
+      raise CLIJSONDecodeError.new(
+        json_buffer,
+        StandardError.new(
+          "stdout ended mid-frame: #{json_buffer.bytesize} bytes buffered without a terminating newline"
+        )
+      )
     end
 
     def check_claude_version
@@ -801,6 +904,93 @@ module ClaudeAgentSDK
       rescue StandardError
         # already closed
       end
+    end
+
+    # Detach stdin under the same lock that guards #write's readiness
+    # check-and-snapshot — a concurrent writer (reactor fiber, or callback
+    # on a FiberBoundary thread) either sees nil (raises not-ready) or is
+    # already registered with its own snapshot — then wake and close
+    # OUTSIDE the lock: waking hands control to the writer, whose unwinding
+    # must not find the lock held, and the close may join a helper thread.
+    # Detach before waking, so no writer can start after the wake. Caller
+    # must NOT hold @stdin_mutex (non-reentrant). Raises what IO#close
+    # raises, except IOError (already closed).
+    def shutdown_stdin
+      stdin_io = @stdin_mutex.synchronize do
+        io = @stdin
+        @stdin = nil
+        io
+      end
+      return unless stdin_io
+
+      wake_parked_fiber_writers
+      close_stdin_io(stdin_io)
+    end
+
+    # Raise IOError into writer fibers of THIS thread's scheduler that are
+    # parked inside the stdin IO call (a full pipe: the CLI stopped
+    # reading). Closing the fd does not wake them — the async selector never
+    # learns the fd went away, so the writer stayed parked forever (Ruby
+    # 3.2/3.3/3.4, probed) and on Ruby 3.2 a close from another thread even
+    # delivered the IOError into the scheduler loop itself. The injected
+    # IOError is exactly what a plain-thread writer gets from the close, so
+    # both unwind through #write's StandardError branch into
+    # CLIConnectionError — the documented shutdown behavior. (Not
+    # Task#stop: that would cancel the writer's whole task, which may be
+    # the caller's own.) Scheduler#raise is the hand-off Task#stop and
+    # task timeouts use: the writer runs its unwinding now and this fiber
+    # resumes on the next reactor tick. Residual: a writer on another
+    # thread's reactor — or any fiber writer when stdin is closed off-reactor
+    # (e.g. Query's schedulerless fallback close) — cannot be reached from
+    # here: it stays parked on 3.3/3.4, and on 3.2 the close crashes its
+    # reactor with that IOError. The SDK's own writers share close's reactor.
+    def wake_parked_fiber_writers
+      scheduler = Fiber.scheduler
+      return unless scheduler
+
+      # to_a: one GVL-atomic snapshot — iterating the live Hash would let a
+      # concurrent insert raise in the writer.
+      @inflight_writers.to_a.each do |fiber, owner|
+        next unless owner.equal?(scheduler) && !fiber.equal?(Fiber.current) && fiber.alive?
+
+        scheduler.raise(fiber, IOError, 'stdin closed while a write was in progress')
+      rescue FiberError
+        # Finished (or resumed) meanwhile — nothing to wake.
+      end
+    end
+
+    # Close the stdin write end without stalling the reactor. On Ruby 3.3+
+    # IO#close waits for threads blocked on the fd; called from a scheduler
+    # fiber that wait is a scheduler sleep the blocked thread's wakeup never
+    # resumes, so a FiberBoundary worker parked in #write on a full pipe
+    # hung close — and the whole reactor — forever (probed on 3.3.9 and
+    # 3.4.5; 3.2 does not wait). A plain helper thread has no scheduler:
+    # its close interrupts the parked writer (IOError "stream closed in
+    # another thread") and returns. Used only on a reactor with a
+    # plain-thread writer still registered; everything else closes inline.
+    # +wait+ false detaches the helper for #close's cancellation ensure,
+    # which must not block. Raises what IO#close raises, except IOError
+    # (already closed); a helper's own failure is dropped (best-effort).
+    def close_stdin_io(io, wait: true)
+      if Fiber.scheduler && @inflight_writers.value?(nil)
+        helper = Thread.new do
+          io.close
+        rescue StandardError
+          nil
+        end
+        helper.join if wait
+      else
+        io.close
+      end
+    rescue IOError
+      # Already closed, ignore
+    end
+
+    # An anonymous per-invocation cancellation class (FiberBoundary's
+    # cooperative timeouts, Query's private deadline) has no name; report
+    # its nearest named ancestor instead of "#<Class:0x...>".
+    def exception_class_name(error)
+      error.class.name || error.class.ancestors.find(&:name).name
     end
 
     # Append a stderr line to the recent-stderr ring, dropping the oldest

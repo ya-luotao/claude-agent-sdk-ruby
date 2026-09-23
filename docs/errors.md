@@ -138,11 +138,11 @@ end
 | Error | Description |
 |-------|-------------|
 | `ClaudeSDKError` | Base error for all SDK errors |
-| `CLIConnectionError` | Connection issues |
+| `CLIConnectionError` | Connection issues — including every write after a stdin write was cancelled mid-frame (the connection is unusable from then on — reconnect) |
 | `ControlRequestTimeoutError` | Control protocol timeout (configurable via env var) |
 | `CLINotFoundError` | Claude Code not installed |
-| `ProcessError` | Process failed (includes `exit_code` and `stderr`) |
-| `CLIJSONDecodeError` | JSON parsing issues |
+| `ProcessError` | Process failed (includes `exit_code` and `stderr`) — also raised when the CLI is still running 5s after closing stdout and the SDK had to terminate it |
+| `CLIJSONDecodeError` | JSON parsing issues — including stdout ending mid-frame (a truncated final message; `line` holds the partial frame) |
 | `MessageParseError` | Message parsing issues |
 
 See [lib/claude_agent_sdk/errors.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/errors.rb) for all error types.
