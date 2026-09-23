@@ -526,6 +526,39 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
   end
 
   describe '#handle_json' do
+    [
+      [String, 'string', 'hello', 42],
+      [Integer, 'integer', 42, '42'],
+      [Float, 'number', 1.5, '1.5'],
+      [TrueClass, 'boolean', true, 'true'],
+      [FalseClass, 'boolean', false, 'false'],
+      [:string, 'string', 'hello', 42],
+      [:integer, 'integer', 42, '42'],
+      [:float, 'number', 1.5, '1.5'],
+      [:number, 'number', 1.5, '1.5'],
+      [:boolean, 'boolean', false, 'false']
+    ].each do |type, json_type, valid, invalid|
+      it "advertises and validates #{type.inspect} shorthand through tools/call" do
+        received = []
+        tool = ClaudeAgentSDK.create_tool('echo', 'Echo value', { value: type }) do |args|
+          received << args
+          { content: [{ type: 'text', text: JSON.generate(args) }] }
+        end
+        server = described_class.new(name: 'test', tools: [tool])
+        expect(server.list_tools.first.dig(:inputSchema, :properties, :value, :type)).to eq(json_type)
+
+        [valid, invalid].each do |value|
+          request = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: { value: value } } }
+          response = JSON.parse(server.handle_json(JSON.generate(request)), symbolize_names: true)
+          expect(response.dig(:result, :isError)).to eq(value == invalid)
+          next if value == invalid
+
+          expect(JSON.parse(response.dig(:result, :content, 0, :text))).to eq('value' => valid)
+        end
+        expect(received).to eq([{ value: valid }])
+      end
+    end
+
     it 'exposes correct schema via MCP tools/list for string-keyed schemas' do
       tool = ClaudeAgentSDK::SdkMcpTool.new(
         name: 'save_memory',
