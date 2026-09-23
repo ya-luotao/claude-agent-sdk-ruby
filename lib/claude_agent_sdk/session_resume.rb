@@ -204,44 +204,60 @@ module ClaudeAgentSDK
         loaded = load_candidate(store, project_key, sid, timeout_s, scheduling, wrapper)
         next if loaded.nil?
 
-        first = loaded[1][0]
-        next if first.is_a?(Hash) && first['isSidechain'] == true
-
         encoded = encode_candidate(loaded)
-        return encoded if encoded
+        next if encoded.nil?
+
+        # Classify from the first entry that is actually written (the first
+        # surviving object), not the raw head: a poisoned or non-Hash first
+        # entry would otherwise hide the isSidechain flag the rest carry and
+        # --continue would resume a subagent. Same rule as the disk reader.
+        head = encoded[2]
+        next if head && head['isSidechain'] == true
+
+        return encoded
       end
       nil
     end
 
-    # [session_id, entries] -> [session_id, jsonl_lines], or nil when no entry
-    # survives encoding. Encoding happens BEFORE the temp dir exists so a
-    # session whose entries are all unusable behaves exactly like an empty one:
-    # --resume falls through to the normal spawn path and --continue moves on to
-    # the next candidate.
+    # [session_id, entries] -> [session_id, jsonl_lines, head], or nil when no
+    # entry survives encoding; head is the first surviving Hash entry (nil if
+    # none). Encoding happens BEFORE the temp dir exists so a session whose
+    # entries are all unusable behaves exactly like an empty one: --resume
+    # falls through to the normal spawn path and --continue moves on to the
+    # next candidate.
     def encode_candidate(loaded)
       return nil if loaded.nil?
 
       session_id, entries = loaded
-      lines = encode_jsonl_lines(entries, "session #{session_id}")
-      lines.empty? ? nil : [session_id, lines]
+      what = "session #{session_id}"
+      head = nil
+      lines = entries.filter_map do |entry|
+        line = encode_entry(entry, what)
+        head ||= entry if line && entry.is_a?(Hash)
+        line
+      end
+      lines.empty? ? nil : [session_id, lines, head]
     end
 
-    # Encode store entries as compact JSON lines, skipping any entry that
-    # cannot be serialized (NaN/Infinity, invalid UTF-8, circular or
-    # over-deep nesting — JSON::NestingError is a ParserError, hence the
-    # JSONError rescue). Entries are opaque adapter pass-through, so one
-    # poisoned entry must not abort the whole resume: like an unusable sidecar
-    # on the disk side, an unusable entry is treated as absent (with a
-    # warning naming its uuid when it has one).
+    # Encode entries as JSON lines, dropping unserializable ones (see encode_entry).
     def encode_jsonl_lines(entries, what)
-      entries.filter_map do |entry|
-        JSON.generate(entry)
-      rescue JSON::JSONError => e
-        uuid = entry.is_a?(Hash) ? entry['uuid'] : nil
-        warn "Claude SDK: [SessionStore] resume: skipping unserializable entry#{" uuid=#{uuid.inspect}" if uuid} " \
-             "in #{what} (#{e.class}: #{e.message})"
-        nil
-      end
+      entries.filter_map { |entry| encode_entry(entry, what) }
+    end
+
+    # Encode one store entry as a compact JSON line, or nil (with a warning
+    # naming its uuid when it has one) if it cannot be serialized:
+    # NaN/Infinity, invalid UTF-8, circular or over-deep nesting —
+    # JSON::NestingError is a ParserError, hence the JSONError rescue. Entries
+    # are opaque adapter pass-through, so one poisoned entry must not abort
+    # the whole resume: like an unusable sidecar on the disk side, an unusable
+    # entry is treated as absent.
+    def encode_entry(entry, what)
+      JSON.generate(entry)
+    rescue JSON::JSONError => e
+      uuid = entry.is_a?(Hash) ? entry['uuid'] : nil
+      warn "Claude SDK: [SessionStore] resume: skipping unserializable entry#{" uuid=#{uuid.inspect}" if uuid} " \
+           "in #{what} (#{e.class}: #{e.message})"
+      nil
     end
 
     # session_id => true for sessions the summary sidecar marks as sidechains;
@@ -755,6 +771,7 @@ module ClaudeAgentSDK
                          :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
                          :resolve_dir, :read_if_present, :chmod_owner_only, :copy_if_present, :env_value,
                          :strip_settings_for_resume, :parse_settings_bytes, :mask_surrogate_escapes,
-                         :redacted_credentials, :encode_candidate, :encode_jsonl_lines, :encode_agent_metadata
+                         :redacted_credentials, :encode_candidate, :encode_jsonl_lines, :encode_entry,
+                         :encode_agent_metadata
   end
 end

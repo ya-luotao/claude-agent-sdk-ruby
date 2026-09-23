@@ -451,6 +451,33 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
         end
       end
 
+      # The sidechain check must classify from the first SURVIVING object entry:
+      # reading the raw head let a poisoned (or non-Hash) first entry hide the
+      # isSidechain flag carried by the rest, so --continue resumed a subagent.
+      {
+        'an unserializable Hash' => { 'uuid' => 'poison-head', 'x' => Float::NAN },
+        'an unserializable non-Hash' => Float::INFINITY,
+        'a serializable non-Hash' => 'not-an-object'
+      }.each do |label, head|
+        it "for continue_conversation still skips a sidechain whose first entry is #{label}" do
+          main = SecureRandom.uuid
+          side = [head, entry('side', 'isSidechain' => true), entry('side2', 'isSidechain' => true)]
+          fixed = fixed_store_class.new(main => good, sid => side) # sid is newest
+
+          mat = nil
+          expect do
+            mat = described_class.materialize_resume_session(
+              ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: fixed, continue_conversation: true, cwd: cwd)
+            )
+          end.to output(anything).to_stderr
+          begin
+            expect(mat.resume_session_id).to eq(main)
+          ensure
+            mat&.cleanup
+          end
+        end
+      end
+
       it 'skips unserializable subagent entries and an unserializable metadata sidecar' do
         fixed = fixed_store_class.new(
           { sid => good },
