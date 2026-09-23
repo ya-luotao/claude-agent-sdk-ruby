@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Every SDK type now prints its fields.** `Type#inspect` lists the non-nil attributes (`#<ClaudeAgentSDK::ResultMessage subtype="success" num_turns=3 total_cost_usd=0.012 ...>`) instead of a bare object address, and `#to_s` falls back to it, so the README's `puts message` is readable for every message type. The output is bounded for logging: Strings past 80 characters are truncated with a count of what was cut, Arrays and Hashes show their first five entries plus a count of the rest, nesting past two levels (and any reference cycle) collapses to a placeholder, and objects that only have `Kernel#inspect` (SDK MCP server instances, store adapters, observers) show as `#<ClassName>` rather than dumping their state. Callbacks (`can_use_tool`, hooks, `callback_wrapper`, ...) render from their source location, e.g. `#<Proc(lambda) permissions.rb:17>`, never through their own `#inspect`, so a raising or oversized override cannot break or flood a log line.
+- **One-line `to_s` for results and system messages.** `ResultMessage#to_s` prints `[result: success, 3 turns, 4.2s, $0.0120]` (missing fields omitted; an error result appends its `errors`), `SystemMessage#to_s` prints `[system: init]`, and `TextBlock#to_s` returns its text. `UserMessage` / `AssistantMessage` keep printing their text.
+
+### Changed
+- **`#inspect` filters credential-bearing attributes** to `"[FILTERED]"` (Hash keys stay visible): `ClaudeAgentOptions#env` (usually carries `ANTHROPIC_API_KEY`), `McpStdioServerConfig#env`, and `McpHttpServerConfig` / `McpSSEServerConfig#headers`, since these objects end up in logs. The objects are not modified. Type subclasses declare such attributes with `inspect_filtered :name`. Typed `SystemMessage` subclasses (`InitMessage`, ...) leave the raw `@data` frame out of `#inspect`, since it repeats their attributes; a bare `SystemMessage` keeps it. Nothing sent to the CLI changes: wire output still goes through `#to_h`.
+- The README's `Client` section and the basic example in `docs/client.md` now lead with `Client.open`, which creates the reactor and always disconnects, instead of the `Async do … begin … ensure client.disconnect end.wait` boilerplate. The manual `connect` / `disconnect` form is still shown for code already running inside an `Async` reactor. No API changes.
+- **Gem metadata names its maintainer** (`authors: ["ya-luotao"]`, with a contact email) instead of "Community Contributors". The stale `IMPLEMENTATION.md` is removed, and the past audit reports move from the repository root to `docs/history/`, which is not packaged with the gem.
+
 ## [0.34.0] - 2026-09-23
 
 The September 2026 audit campaign: 17 fixes from the final audit pass plus the 28 AUDIT-2026-09-22 issues (#66–#93). A few fixes tighten behaviour that was silently wrong — read **Changed** before upgrading.

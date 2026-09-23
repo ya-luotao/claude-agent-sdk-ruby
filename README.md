@@ -84,23 +84,31 @@ end
 
 ### `Client` — bidirectional sessions
 
-`Client` keeps a session open so you can send follow-up queries, interrupt, switch models, and use hooks, permission callbacks, and custom tools. It runs inside an [`async`](https://github.com/socketry/async) block; blocking calls yield automatically, no `await` needed.
+`Client` keeps a session open so you can send follow-up queries, interrupt, switch models, and use hooks, permission callbacks, and custom tools. `Client.open` connects, yields the client, and always disconnects when the block exits, even on an exception. It returns the block's value.
 
 ```ruby
 require 'claude_agent_sdk'
-require 'async'
 
-Async do
-  client = ClaudeAgentSDK::Client.new
+ClaudeAgentSDK::Client.open do |client|
+  client.query("What is the capital of France?")
+  client.receive_response { |msg| puts msg }
 
-  begin
-    client.connect
-    client.query("What is the capital of France?")
-    client.receive_response { |msg| puts msg }
-  ensure
-    client.disconnect
-  end
-end.wait
+  client.query("And of Germany?")
+  client.receive_response { |msg| puts msg }
+end
+```
+
+`Client.open` creates an [`async`](https://github.com/socketry/async) reactor when there isn't one; blocking calls yield automatically, no `await` needed. Called outside a reactor, `break` inside the block raises `LocalJumpError` (the client still disconnects), so return a value instead. Code that is already running inside an `Async` reactor can also manage the lifecycle by hand:
+
+```ruby
+client = ClaudeAgentSDK::Client.new
+begin
+  client.connect
+  client.query("What is the capital of France?")
+  client.receive_response { |msg| puts msg }
+ensure
+  client.disconnect
+end
 ```
 
 See [docs/client.md](docs/client.md) for `interrupt`, mid-session model and permission switching, MCP status, and custom transports.
