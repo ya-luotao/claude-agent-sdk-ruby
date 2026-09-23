@@ -28,6 +28,13 @@ For everything else, open the matching `docs/` subpage:
 
 ## Minimal skeletons
 
+Final answer only (returns the ResultMessage; `#result` is the text):
+```ruby
+require 'claude_agent_sdk'
+
+puts ClaudeAgentSDK.ask("What is 2 + 2?").result
+```
+
 One-shot query:
 ```ruby
 require 'claude_agent_sdk'

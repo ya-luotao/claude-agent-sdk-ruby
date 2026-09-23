@@ -75,14 +75,23 @@ The block runs on a plain thread, so ActiveRecord calls inside it just work. [do
 ```ruby
 require 'claude_agent_sdk'
 
-ClaudeAgentSDK.query(prompt: "What is 2 + 2?") do |message|
+puts ClaudeAgentSDK.ask("What is 2 + 2?").result
+```
+
+`ask` runs the whole conversation and returns the final `ResultMessage`: `#result` is the answer, and the same object carries `total_cost_usd`, `usage`, `session_id` and `structured_output` (`puts` on it prints a summary such as `[result: success, 1 turn, 2.1s, $0.0031]`). It takes the same prompt and `options:` as `query()`, and given a block it also yields every message as it arrives:
+
+```ruby
+result = ClaudeAgentSDK.ask("Explain Ruby's GVL in three sentences") do |message|
   puts message.text if message.is_a?(ClaudeAgentSDK::AssistantMessage)
 end
+puts result
 ```
+
+It raises the same errors as `query()` (see [docs/errors.md](docs/errors.md)), plus `CLIConnectionError` if the stream ends without a result.
 
 ### `query()` — one-shot and streaming
 
-`query()` runs a single conversation and yields each response message to the block.
+`query()` runs a single conversation and yields each response message to the block. Reach for it over `ask` when you handle the messages yourself, or want to stop early with `break`.
 
 ```ruby
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(

@@ -702,6 +702,51 @@ module ClaudeAgentSDK
     end).wait
   end
 
+  # Run a query to completion and return its final ResultMessage.
+  #
+  # The one-call form of {.query} for when you want the answer rather than
+  # the stream: +ask(prompt).result+ is the final text, and the returned
+  # ResultMessage also carries cost, usage, duration, session_id and
+  # structured_output. It is {.query} underneath — same prompt types, same
+  # options, same errors — and it consumes the whole stream before
+  # returning. With an Enumerable prompt that produces several turns, the
+  # last ResultMessage is returned.
+  #
+  # An error result is returned like any other (check #is_error / #subtype);
+  # when the CLI then exits non-zero, {.query} raises ResultError, which
+  # propagates from here unchanged.
+  #
+  # @param prompt [String, Enumerable] The prompt, as for {.query}
+  # @param options [ClaudeAgentOptions, nil] Optional configuration
+  # @param transport [Transport, nil] Optional transport, as for {.query}
+  # @yield [Message] Optionally, every message as it arrives (including the
+  #   final ResultMessage), so you can stream progress and still get the
+  #   result back. Runs where {.query}'s block runs. The block observes the
+  #   stream; it cannot end it early — use {.query} for that.
+  # @return [ResultMessage]
+  # @raise [CLIConnectionError] if the stream ends without a ResultMessage
+  #
+  # @example
+  #   puts ClaudeAgentSDK.ask('What is 2 + 2?').result
+  #
+  # @example Stream progress, keep the result
+  #   result = ClaudeAgentSDK.ask('Refactor lib/foo.rb', options: options) do |message|
+  #     puts message.text if message.is_a?(ClaudeAgentSDK::AssistantMessage)
+  #   end
+  #   puts result   # => [result: success, 3 turns, 12.4s, $0.0421]
+  def self.ask(prompt, options: nil, transport: nil, &block)
+    result = nil
+    query(prompt: prompt, options: options, transport: transport) do |message|
+      result = message if message.is_a?(ResultMessage)
+      block&.call(message)
+    end
+    # The same class Query raises to a caller still waiting on the stream
+    # when it ends ("Control stream ended").
+    raise CLIConnectionError, 'Claude Code ended the conversation without a result message' unless result
+
+    result
+  end
+
   # Client for bidirectional, interactive conversations with Claude Code
   #
   # This client provides full control over the conversation flow with support
