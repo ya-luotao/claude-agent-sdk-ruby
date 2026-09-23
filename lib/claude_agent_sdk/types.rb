@@ -252,7 +252,7 @@ module ClaudeAgentSDK
         inspect_container(value, '{', '}', depth, seen) do |key, item|
           "#{inspect_hash_key(key, depth + 1, seen)}#{inspect_bounded(item, depth + 1, seen)}"
         end
-      when Proc, Method then value.inspect
+      when Proc, Method, UnboundMethod then inspect_callable(value)
       else inspect_leaf(value)
       end
     end
@@ -285,16 +285,36 @@ module ClaudeAgentSDK
       "#{string[0, INSPECT_MAX_STRING].inspect}…(+#{string.length - INSPECT_MAX_STRING} chars)"
     end
 
+    # Callbacks (can_use_tool, hooks, callback_wrapper, ...) are user-supplied:
+    # render them from source_location rather than their own #inspect, which
+    # a subclass may override (and raise from) and which embeds an absolute
+    # path — `#<Proc(lambda) permissions.rb:17>`, `#<Method Policy#call>`.
+    def inspect_callable(value)
+      label = if value.is_a?(Proc)
+                value.lambda? ? 'Proc(lambda)' : 'Proc'
+              else
+                "#{value.class.name} #{value.owner.name || value.owner.inspect}##{value.name}"
+              end
+      file, line = value.source_location
+      rendered = file ? "#<#{label} #{File.basename(file)}:#{line}>" : "#<#{label}>"
+      inspect_truncated_text(rendered)
+    rescue StandardError
+      inspect_leaf(value)
+    end
+
+    def inspect_truncated_text(rendered)
+      return rendered if rendered.length <= INSPECT_MAX_STRING
+
+      "#{rendered[0, INSPECT_MAX_STRING]}…(+#{rendered.length - INSPECT_MAX_STRING} chars)"
+    end
+
     # Printing must never raise (it runs inside loggers and `puts`), so an
     # object whose #inspect raises, or a BasicObject without one, falls back
     # to a placeholder.
     def inspect_leaf(value)
       return "#<#{value.class}>" if kernel_inspect_only?(value)
 
-      rendered = value.inspect
-      return rendered if rendered.length <= INSPECT_MAX_STRING
-
-      "#{rendered[0, INSPECT_MAX_STRING]}…(+#{rendered.length - INSPECT_MAX_STRING} chars)"
+      inspect_truncated_text(value.inspect)
     rescue StandardError
       begin
         "#<#{value.class}>"
