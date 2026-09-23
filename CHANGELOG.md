@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Every SDK type now prints its fields.** `Type#inspect` lists the non-nil attributes (`#<ClaudeAgentSDK::ResultMessage subtype="success" num_turns=3 total_cost_usd=0.012 ...>`) instead of a bare object address, and `#to_s` falls back to it, so the README's `puts message` is readable for every message type. The output is bounded for logging: Strings past 80 characters are truncated with a count of what was cut, Arrays and Hashes show their first five entries plus a count of the rest, nesting past two levels (and any reference cycle) collapses to a placeholder, and objects that only have `Kernel#inspect` (SDK MCP server instances, store adapters, observers) show as `#<ClassName>` rather than dumping their state.
+- **One-line `to_s` for results and system messages.** `ResultMessage#to_s` prints `[result: success, 3 turns, 4.2s, $0.0120]` (missing fields omitted; an error result appends its `errors`), `SystemMessage#to_s` prints `[system: init]`, and `TextBlock#to_s` returns its text. `UserMessage` / `AssistantMessage` keep printing their text.
+
+### Changed
+- **`ClaudeAgentOptions#inspect` filters `env` values** to `"[FILTERED]"` (keys stay visible), since `env` usually carries `ANTHROPIC_API_KEY` and options end up in logs. The options object is not modified. Typed `SystemMessage` subclasses (`InitMessage`, ...) leave the raw `@data` frame out of `#inspect`, since it repeats their attributes; a bare `SystemMessage` keeps it. Nothing sent to the CLI changes: wire output still goes through `#to_h`.
+
 ## [0.34.0] - 2026-09-23
 
 The September 2026 audit campaign: 17 fixes from the final audit pass plus the 28 AUDIT-2026-09-22 issues (#66–#93). A few fixes tighten behaviour that was silently wrong — read **Changed** before upgrading.
