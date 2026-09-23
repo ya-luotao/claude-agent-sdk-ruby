@@ -417,6 +417,31 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
   end
 
   describe 'idempotency' do
+    it 'reinstalls the same pinned version when the OS, architecture or libc changes' do
+      %w[darwin-arm64 linux-x64 linux-arm64 linux-arm64-musl].each do |platform|
+        stub_http(platform: platform, body: "binary for #{platform}")
+        described_class.install(version: '2.1.220', dir: tmp_dir)
+
+        expect(File.binread(binary_path)).to eq("binary for #{platform}")
+        expect(File.read(version_path).lines[2]&.strip).to eq(platform)
+      end
+      expect(http).to have_received(:download_to).exactly(4).times
+    end
+
+    it 'migrates checksum-only metadata by reinstalling once, then works offline' do
+      stub_http
+      described_class.install(version: '2.1.220', dir: tmp_dir)
+      File.write(version_path, "2.1.220\n#{checksum}\n")
+
+      described_class.install(version: '2.1.220', dir: tmp_dir)
+      expect(http).to have_received(:download_to).twice
+      expect(File.read(version_path).lines[2]&.strip).to eq('darwin-arm64')
+
+      expect(http).not_to receive(:fetch_text)
+      expect(http).not_to receive(:download_to)
+      expect(described_class.install(version: '2.1.220', dir: tmp_dir)).to eq(binary_path)
+    end
+
     it 'does not download when the installed binary matches the recorded version and checksum' do
       stub_http
       described_class.install(dir: tmp_dir)
@@ -688,22 +713,25 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
     it 'writes atomically via an unpredictable temp file and leaves none behind' do
       FileUtils.mkdir_p(tmp_dir)
 
-      metadata.write(tmp_dir, '2.1.220', checksum)
+      metadata.write(tmp_dir, '2.1.220', checksum, 'linux-x64')
 
-      expect(File.read(version_path)).to eq("2.1.220\n#{checksum}\n")
+      expect(File.read(version_path)).to eq("2.1.220\n#{checksum}\nlinux-x64\n")
       expect(Dir.children(tmp_dir)).to contain_exactly('VERSION')
     end
 
-    it 'round-trips version and checksum' do
-      metadata.write(tmp_dir, '2.1.220', checksum)
+    it 'round-trips version, checksum and platform' do
+      metadata.write(tmp_dir, '2.1.220', checksum, 'linux-arm64-musl')
 
-      expect(metadata.read(tmp_dir)).to eq({ version: '2.1.220', checksum: checksum })
+      expect(metadata.read(tmp_dir)).to eq({ version: '2.1.220', checksum: checksum, platform: 'linux-arm64-musl' })
     end
 
     it 'reads nil for a missing, legacy or corrupt file' do
       expect(metadata.read(tmp_dir)).to be_nil
 
       File.write(version_path, "2.1.220\n")
+      expect(metadata.read(tmp_dir)).to be_nil
+
+      File.write(version_path, "2.1.220\n#{checksum}\n")
       expect(metadata.read(tmp_dir)).to be_nil
 
       File.write(version_path, "2.1.220\nnot-a-sha\n")

@@ -125,7 +125,7 @@ ClaudeAgentSDK.fork_session(
 )
 ```
 
-> Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process. `fork_session` uses `O_CREAT | O_EXCL` to prevent race conditions.
+> Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process. `fork_session` writes and closes a private staging file before atomically publishing it with a hard link, so partial forks are not discoverable and existing sessions are never overwritten. The project filesystem must support hard links; publication failures leave the source and any existing destination untouched.
 
 ## Resuming at a Specific Message
 

@@ -150,6 +150,29 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
   end
 
   describe '.try_append' do
+    [false, true].each do |terminated|
+      it "preserves messages and mutation records with trailing newline #{terminated}" do
+        Dir.mktmpdir do |dir|
+          project_dir = File.join(dir, 'projects', ClaudeAgentSDK::Sessions.project_key_for_directory(dir))
+          FileUtils.mkdir_p(project_dir)
+          path = File.join(project_dir, "#{session_id}.jsonl")
+          entry = { 'type' => 'user', 'uuid' => 'u1', 'message' => { 'content' => 'hello' } }
+          File.write(path, JSON.generate(entry) + (terminated ? "\n" : ''))
+          allow(ClaudeAgentSDK::Sessions).to receive(:config_dir).and_return(dir)
+
+          described_class.rename_session(session_id: session_id, title: 'Renamed', directory: dir)
+          described_class.tag_session(session_id: session_id, tag: 'important', directory: dir)
+
+          records = File.readlines(path).reject { |line| line.strip.empty? }.map { |line| JSON.parse(line) }
+          expect(records.first).to eq(entry)
+          expect(records.map { |record| record['type'] }).to eq(%w[user custom-title tag])
+          expect(ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: dir).map(&:text)).to eq(['hello'])
+          info = ClaudeAgentSDK.get_session_info(session_id: session_id, directory: dir)
+          expect([info.custom_title, info.tag]).to eq(%w[Renamed important])
+        end
+      end
+    end
+
     it 'returns false for nonexistent files' do
       result = described_class.send(:try_append, '/nonexistent/path/file.jsonl', 'data')
       expect(result).to eq(false)
@@ -172,7 +195,7 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
 
         result = described_class.send(:try_append, file_path, "new line\n")
         expect(result).to eq(true)
-        expect(File.read(file_path)).to eq("existing content\nnew line\n")
+        expect(File.read(file_path)).to eq("existing content\n\nnew line\n")
       end
     end
   end
@@ -289,6 +312,52 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
       [project_dir, session_file]
     end
 
+    %i[write close].each do |failure|
+      it "does not publish or retain a partial fork after a #{failure} failure" do
+        Dir.mktmpdir do |dir|
+          content = build_session_content([
+                                            { 'type' => 'user', 'uuid' => msg1_uuid, 'message' => { 'content' => 'hello' } },
+                                            { 'type' => 'assistant', 'uuid' => msg2_uuid, 'parentUuid' => msg1_uuid, 'message' => { 'content' => 'world' } }
+                                          ])
+          project_dir, source = setup_session(dir, content)
+          allow_any_instance_of(IO).to receive(:write).and_wrap_original do |write, data|
+            if data.include?('"forkedFrom"')
+              expect(Dir.glob(File.join(project_dir, '*.jsonl'))).to eq([source])
+              if failure == :write
+                write.call(data.lines.first)
+                raise Errno::ENOSPC
+              end
+              allow(write.receiver).to receive(:close).and_wrap_original do |close|
+                close.call
+                raise Errno::EIO
+              end
+            end
+            write.call(data)
+          end
+
+          error = failure == :write ? Errno::ENOSPC : Errno::EIO
+          expect { described_class.fork_session(session_id: session_id, directory: dir) }.to raise_error(error)
+          expect(Dir.children(project_dir)).to eq([File.basename(source)])
+          expect(File.read(source)).to eq(content)
+        end
+      end
+    end
+
+    it 'never overwrites or removes an existing destination' do
+      Dir.mktmpdir do |dir|
+        content = build_session_content([{ 'type' => 'user', 'uuid' => msg1_uuid, 'message' => { 'content' => 'hello' } }])
+        project_dir, source = setup_session(dir, content)
+        destination = File.join(project_dir, "#{msg3_uuid}.jsonl")
+        File.write(destination, 'existing destination')
+        allow(SecureRandom).to receive(:uuid).and_return(msg3_uuid)
+
+        expect { described_class.fork_session(session_id: session_id, directory: dir) }.to raise_error(Errno::EEXIST)
+        expect(File.read(destination)).to eq('existing destination')
+        expect(File.read(source)).to eq(content)
+        expect(Dir.children(project_dir).sort).to eq([File.basename(source), File.basename(destination)].sort)
+      end
+    end
+
     it 'rejects invalid session_id' do
       expect { described_class.fork_session(session_id: 'bad') }
         .to raise_error(ArgumentError, /Invalid session_id/)
@@ -348,6 +417,8 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
 
         fork_file = File.join(project_dir, "#{result.session_id}.jsonl")
         expect(File.exist?(fork_file)).to be true
+        expect(File.stat(fork_file).mode & 0o777).to eq(0o600)
+        expect(Dir.children(project_dir).sort).to eq(["#{session_id}.jsonl", "#{result.session_id}.jsonl"].sort)
 
         lines = File.readlines(fork_file).map { |l| JSON.parse(l.strip) }
         message_lines = lines.reject { |l| l['type'] == 'custom-title' }

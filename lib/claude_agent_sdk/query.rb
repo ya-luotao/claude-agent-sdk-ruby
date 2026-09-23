@@ -6,6 +6,7 @@ require 'async'
 require 'async/queue'
 require 'async/condition'
 require 'securerandom'
+require 'timeout'
 require_relative 'transport'
 require_relative 'errors'
 require_relative 'cancellation_signal'
@@ -89,6 +90,7 @@ module ClaudeAgentSDK
       @next_callback_id = 0
       @request_counter = 0
       @request_counter_mutex = Mutex.new
+      @control_stream_error = nil
       @inflight_control_request_tasks = {}
       @callback_request_signals = {}
 
@@ -239,7 +241,8 @@ module ClaudeAgentSDK
       raise CLIConnectionError, 'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})' unless parent
 
       @owning_scheduler = Fiber.scheduler
-      @task = parent.async { read_messages }
+      # Async child fibers do not inherit OTel's fiber-local current context.
+      @task = parent.async(&FiberBoundary.capture_otel_context { read_messages })
       # Reactor-side agent for #close calls arriving from foreign threads
       # (FiberBoundary callbacks, plain user threads): Async::Task#stop needs
       # the owning thread's Fiber.scheduler, so the off-thread caller hands the
@@ -247,7 +250,7 @@ module ClaudeAgentSDK
       # alive, and is stopped automatically when the parent task finishes.
       # One-shot: after serving a close it is done; a reactor-side close wakes
       # it via @close_requests.close (pop -> nil) so it exits without serving.
-      @close_watcher = parent.async(transient: true) do
+      @close_watcher = parent.async(transient: true, &FiberBoundary.capture_otel_context do
         if (reply = @close_requests.pop)
           begin
             close
@@ -255,7 +258,7 @@ module ClaudeAgentSDK
             reply << true
           end
         end
-      end
+      end)
     end
 
     # Spawn a child task that is stopped by #close (mirrors the Python SDK's
@@ -272,7 +275,7 @@ module ClaudeAgentSDK
       parent = Async::Task.current?
       raise CLIConnectionError, 'Query#spawn_task must be called inside an Async{} block' unless parent
 
-      task = parent.async(&block)
+      task = parent.async(&FiberBoundary.capture_otel_context(&block))
       @child_tasks << task
       task
     end
@@ -335,7 +338,7 @@ module ClaudeAgentSDK
           # Spawn as a child of the current task so @task.stop cascades and
           # nothing keeps running after close; bare Async do may root at the
           # reactor and leak past shutdown.
-          handler_task = Async::Task.current.async do
+          handler_task = Async::Task.current.async(&FiberBoundary.capture_otel_context do
             begin
               handle_control_request(message)
             ensure
@@ -345,7 +348,7 @@ module ClaudeAgentSDK
                 @inflight_control_request_tasks.delete(request_id)
               end
             end
-          end
+          end)
           # A handler that never suspends (MCP metadata, unsupported-subtype
           # error path) already ran to completion inside the async{} above —
           # its ensure-delete fired before this insert, so registering it here
@@ -413,24 +416,21 @@ module ClaudeAgentSDK
                 e
               end
 
-      # Unblock pending control requests (e.g., initialize) so callers don't
-      # hang until timeout. Computed AFTER the replacement above so they get
-      # the same enriched error the message stream does: a refused resume (a
-      # nonexistent session, a failed --resume-drops-turn guard) is reported
-      # by the CLI as an error result followed by exit 1 *before* it answers
-      # the SDK's `initialize`, so signaling the raw `e` here handed that
-      # in-flight request "Command failed with exit code 1" and discarded the
-      # real reason (Python #1198).
-      # INVARIANT: store the result before signaling — senders check the slot
-      # before waiting (level-trigger).
-      @pending_control_responses.dup.each do |request_id, condition|
-        @pending_control_results[request_id] ||= error
-        condition.signal
-      end
-
       # Put error in queue so iterators can handle it
       @message_queue.enqueue({ type: 'error', error: error })
     ensure
+      # EOF is terminal for control requests even when the message stream
+      # ends successfully. Serialize terminal publication with registration:
+      # every sender is either in this snapshot or rejected before writing.
+      # Preserve enriched ResultError from the rescue path (Python #1198).
+      waiters = @request_counter_mutex.synchronize do
+        @control_stream_error = error || CLIConnectionError.new('Control stream ended')
+        @pending_control_responses.dup
+      end
+      waiters.each do |request_id, condition|
+        @pending_control_results[request_id] ||= @control_stream_error
+        condition.signal
+      end
       # A callback can no longer be answered after EOF, transport failure,
       # or reactor cancellation. Wake cooperative worker-thread callbacks too.
       @callback_request_signals.dup.each_value(&:cancel)
@@ -1022,17 +1022,18 @@ module ClaudeAgentSDK
       # RuntimeError; the eventual response dropped by the key? guard).
       task = Async::Task.current?
 
-      # Generate unique request ID (callbacks may issue requests from
-      # worker threads concurrently with the reactor)
-      request_id = @request_counter_mutex.synchronize do
-        @request_counter += 1
-        "req_#{@request_counter}_#{SecureRandom.hex(4)}"
-      end
-
       # Reactor callers wait on an Async::Condition; worker-thread callers
-      # on a ThreadWaiter. Registration must precede the write.
+      # on a ThreadWaiter. Register atomically with the terminal-state check
+      # so EOF cannot strand a sender that missed the final broadcast.
       waiter = task ? Async::Condition.new : ThreadWaiter.new
-      @pending_control_responses[request_id] = waiter
+      request_id = @request_counter_mutex.synchronize do
+        raise @control_stream_error if @control_stream_error
+
+        @request_counter += 1
+        id = "req_#{@request_counter}_#{SecureRandom.hex(4)}"
+        @pending_control_responses[id] = waiter
+        id
+      end
 
       control_request = {
         type: 'control_request',
@@ -1041,20 +1042,18 @@ module ClaudeAgentSDK
         request: request
       }
 
-      writeln(JSON.generate(control_request))
-
-      begin
-        await_control_response(request_id, waiter, task, timeout_seconds, request[:subtype])
-        result = @pending_control_results[request_id]
-        raise result if result.is_a?(Exception)
-
-        result&.[](:response) || {}
-      ensure
-        # Always evict the entries so a late control_response (after timeout)
-        # or an Async::Stop propagating through wait does not leak state.
-        @pending_control_responses.delete(request_id)
-        @pending_control_results.delete(request_id)
+      await_control_response(request_id, waiter, task, timeout_seconds, request[:subtype]) do
+        writeln(JSON.generate(control_request))
       end
+      result = @pending_control_results[request_id]
+      raise result if result.is_a?(Exception)
+
+      result&.[](:response) || {}
+    ensure
+      # Registration, serialization, write and wait share one cleanup scope.
+      # In particular, failed or cancelled writes never retain a waiter.
+      @pending_control_responses.delete(request_id)
+      @pending_control_results.delete(request_id)
     end
 
     # Level-triggered wait: every signal site stores the result BEFORE
@@ -1068,22 +1067,29 @@ module ClaudeAgentSDK
     # Do NOT reimplement the reactor wait as a nested `Async do ... end.wait`
     # — that spawned a separate task and leaked the pending entries when an
     # Async::Stop propagated through `.wait` before cleanup ran.
+    # The yielded send runs inside the same deadline as the response wait.
     def await_control_response(request_id, waiter, task, timeout_seconds, subtype)
+      expired = -> { ControlRequestTimeoutError.new("Control request timeout: #{subtype}") }
       if task
-        begin
-          task.with_timeout(timeout_seconds) do
-            waiter.wait until @pending_control_results.key?(request_id)
-          end
-        rescue Async::TimeoutError
-          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}"
+        # A non-StandardError deadline escapes the transport's write rescue;
+        # only this deadline is translated, not an outer task's cancellation.
+        FiberBoundary.with_cooperative_timeout(task, timeout_seconds, on_timeout: expired) do
+          yield
+          waiter.wait until @pending_control_results.key?(request_id)
         end
       else
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
-        until @pending_control_results.key?(request_id)
-          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}" if remaining <= 0
-
-          waiter.wait(remaining)
+        # Only schedulerless callers use stdlib Timeout. A fresh, private
+        # non-StandardError deadline bypasses transport write rescues without
+        # relabeling a transport's own Timeout::Error or an outer deadline.
+        # Interrupt the caller rather than abandoning a still-writing worker.
+        cancellation = Class.new(Exception) # rubocop:disable Lint/InheritException -- cancellation must bypass transport rescues
+        begin
+          Timeout.timeout(timeout_seconds, cancellation) do
+            yield
+            waiter.wait(nil) until @pending_control_results.key?(request_id)
+          end
+        rescue cancellation
+          raise expired.call
         end
       end
     end

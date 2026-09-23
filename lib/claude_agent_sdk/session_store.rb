@@ -138,6 +138,8 @@ module ClaudeAgentSDK
       return if entries.nil? || entries.empty?
 
       @mutex.synchronize do
+        key = copy_json(key)
+        entries = copy_json(entries)
         k = key_to_string(key)
         (@store[k] ||= []).concat(entries)
         now_ms = next_mtime
@@ -160,7 +162,7 @@ module ClaudeAgentSDK
     def load(key)
       @mutex.synchronize do
         entries = @store[key_to_string(key)]
-        entries&.dup
+        copy_json(entries)
       end
     end
 
@@ -187,7 +189,7 @@ module ClaudeAgentSDK
         @summaries.filter_map do |(pk, _sid), summary|
           next unless pk == project_key
 
-          { 'session_id' => summary['session_id'], 'mtime' => summary['mtime'], 'data' => summary['data'].dup }
+          copy_json(summary)
         end
       end
     end
@@ -224,7 +226,7 @@ module ClaudeAgentSDK
 
     # All entries for a key (empty array if absent).
     def get_entries(key)
-      @mutex.synchronize { (@store[key_to_string(key)] || []).dup }
+      load(key) || []
     end
 
     # Number of stored sessions (main transcripts only).
@@ -247,6 +249,17 @@ module ClaudeAgentSDK
     end
 
     private
+
+    # JSON values are mutable down to their strings. Keep stored snapshots and
+    # returned values detached, just like a serialization-backed adapter.
+    def copy_json(value)
+      case value
+      when Hash then value.to_h { |k, v| [k, copy_json(v)] }
+      when Array then value.map { |v| copy_json(v) }
+      when String then value.dup
+      else value
+      end
+    end
 
     # True for a main-transcript key: no subpath, or an empty-string subpath
     # (which key_to_string already folds into the main key).

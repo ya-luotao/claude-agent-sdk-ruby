@@ -64,6 +64,26 @@ module ClaudeAgentSDK
     servers
   end
 
+  # Internal: normalize hook lists for the control protocol. An absent or
+  # disabled event must not become an empty registration in initialize.
+  def self.convert_hooks_to_internal_format(hooks)
+    return nil unless hooks
+
+    internal_hooks = {}
+    hooks.each do |event, matchers|
+      next if matchers.nil? || matchers.empty?
+
+      entries = []
+      matchers.each do |matcher|
+        config = { matcher: matcher.matcher, hooks: matcher.hooks }
+        config[:timeout] = matcher.timeout if matcher.timeout
+        entries << config
+      end
+      internal_hooks[event.to_s] = entries unless entries.empty?
+    end
+    internal_hooks.empty? ? nil : internal_hooks
+  end
+
   # Internal: validate can_use_tool and route permission prompts over stdio.
   #
   # Shared by query() and Client#connect so both entry points enforce the
@@ -528,7 +548,7 @@ module ClaudeAgentSDK
 
     raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)' if transport && !transport.respond_to?(:connect)
 
-    Async do
+    Async(&FiberBoundary.capture_otel_context do
       materialized = nil
       query_handler = nil
       begin
@@ -556,25 +576,7 @@ module ClaudeAgentSDK
         # Extract SDK MCP servers
         sdk_mcp_servers = extract_sdk_mcp_servers(configured_options.mcp_servers)
 
-        hooks = nil
-        if configured_options.hooks
-          hooks = {}
-          configured_options.hooks.each do |event, matchers|
-            next if matchers.nil? || matchers.empty?
-
-            entries = []
-            matchers.each do |matcher|
-              config = {
-                matcher: matcher.matcher,
-                hooks: matcher.hooks
-              }
-              config[:timeout] = matcher.timeout if matcher.timeout
-              entries << config
-            end
-            hooks[event.to_s] = entries unless entries.empty?
-          end
-          hooks = nil if hooks.empty?
-        end
+        hooks = convert_hooks_to_internal_format(configured_options.hooks)
 
         # Create Query handler for control protocol
         query_handler = Query.new(
@@ -686,7 +688,7 @@ module ClaudeAgentSDK
           end
         end
       end
-    end.wait
+    end).wait
   end
 
   # Client for bidirectional, interactive conversations with Claude Code
@@ -762,7 +764,7 @@ module ClaudeAgentSDK
     def self.open(prompt = nil, options: nil, transport_class: SubprocessCLITransport, transport_args: {})
       raise ArgumentError, 'Client.open requires a block' unless block_given?
 
-      Sync do
+      Sync(&FiberBoundary.capture_otel_context do
         client = new(options: options, transport_class: transport_class, transport_args: transport_args)
         # connect failures self-clean via connect's rescue -> disconnect ->
         # raise, and disconnect is idempotent — no double-teardown.
@@ -772,7 +774,7 @@ module ClaudeAgentSDK
         ensure
           client.disconnect
         end
-      end
+      end)
     end
 
     # Connect to Claude with optional initial prompt.
@@ -792,6 +794,7 @@ module ClaudeAgentSDK
     def connect(prompt = nil)
       return if @connected
 
+      raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)' if prompt.is_a?(Hash)
       raise ArgumentError, "prompt must be a String, an Enumerator, or nil (got #{prompt.class})" unless prompt.nil? || prompt.is_a?(String) || prompt.respond_to?(:each)
 
       # Validate and configure permission settings
@@ -1125,7 +1128,7 @@ module ClaudeAgentSDK
       sdk_mcp_servers = ClaudeAgentSDK.extract_sdk_mcp_servers(configured_options.mcp_servers)
 
       # Convert hooks to internal format
-      hooks = convert_hooks_to_internal_format(configured_options.hooks) if configured_options.hooks
+      hooks = ClaudeAgentSDK.convert_hooks_to_internal_format(configured_options.hooks)
 
       # Extract exclude_dynamic_sections and snapshot from the system prompt
       # for the initialize request (older CLIs ignore unknown initialize fields)
@@ -1234,24 +1237,6 @@ module ClaudeAgentSDK
         callback_wrapper: @callback_wrapper
       )
       @query_handler.set_transcript_mirror_batcher(batcher)
-    end
-
-    def convert_hooks_to_internal_format(hooks)
-      return nil unless hooks
-
-      internal_hooks = {}
-      hooks.each do |event, matchers|
-        internal_hooks[event.to_s] = []
-        matchers.each do |matcher|
-          config = {
-            matcher: matcher.matcher,
-            hooks: matcher.hooks
-          }
-          config[:timeout] = matcher.timeout if matcher.timeout
-          internal_hooks[event.to_s] << config
-        end
-      end
-      internal_hooks
     end
 
     def writeln(string)
