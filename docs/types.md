@@ -396,7 +396,7 @@ Accepted without a warning: Symbol or String keys, snake_case or camelCase spell
 
 ### Attributes Only
 
-`#[]`, `#[]=` and the camelCase readers (`msg[:session_id]`, `msg['sessionId']`, `msg.sessionId`) are public API for a type's **attributes**: the fields it declares, plus predicates such as `options.forkSession?`. Until now they reached any public method, so `msg[:to_h]` returned a Hash, `msg['freeze']` froze the message and `msg.toH` worked. Such a call still works in 0.37 but warns once per class and name:
+`#[]`, `#[]=` and the camelCase readers (`msg[:session_id]`, `msg['sessionId']`, `msg.sessionId`) are public API for a type's **attributes**: the fields it declares, plus predicates such as `options.forkSession?`. Methods your own code adds to a subclass (an `attr_accessor`, a hand-written reader or setter, a mixin's accessors, a singleton method) count as attributes too. Until now they reached any public method, so `msg[:to_h]` returned a Hash, `msg['freeze']` froze the message and `msg.toH` worked. Such a call still works in 0.37 but warns once per class and name:
 
 ```
 app/jobs/sync.rb:8: warning: ClaudeAgentSDK::ResultMessage#[]: :to_h is not an attribute; Type#[] will only read attributes in 1.0
