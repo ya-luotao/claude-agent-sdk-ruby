@@ -40,7 +40,7 @@ User code
 
 ### Two API Entry Points
 
-- **`query()`** — Simple function interface. Creates a `SubprocessCLITransport` directly, reads messages via `transport.read_messages`, parses with `MessageParser`. No control protocol. Good for one-shot queries and streaming input via Enumerators.
+- **`query()`** — Simple function interface, run in its own `Async { }.wait`. Like `Client`, it always uses streaming mode with a `Query` handler and the control protocol, so hooks, `can_use_tool` and SDK MCP servers work (an optional `transport:` replaces the default `SubprocessCLITransport`). It writes the prompt (a String, or an Enumerator streamed in the background), then closes stdin — after the first `ResultMessage` when hooks / `can_use_tool` / SDK MCP servers still need the channel. The difference from `Client` is lifecycle, not protocol: no follow-up queries and no outbound control calls (interrupt, set_model, ...).
 
 - **`Client`** — Full-featured bidirectional sessions. Accepts optional `transport_class` (defaults to `SubprocessCLITransport`) and `transport_args` for custom transports. Creates transport, instantiates a `Query` handler that runs `read_messages` in an async task, routes control messages internally, and exposes SDK messages via `Async::Queue`. Supports hooks, permission callbacks, SDK MCP servers, interrupt, model switching, and file rewind.
 
@@ -67,7 +67,7 @@ Custom tools run in-process (no subprocess). The flow:
 
 ### Message Flow
 
-CLI outputs newline-delimited JSON. `SubprocessCLITransport.read_messages` parses it and yields raw hashes. In `Client` mode, `Query.read_messages` intercepts `control_response` and `control_request` types, putting regular messages on `@message_queue`. `MessageParser.parse` converts raw hashes into typed objects (`UserMessage`, `AssistantMessage`, `SystemMessage`, `ResultMessage`, `StreamEvent`).
+CLI outputs newline-delimited JSON. `SubprocessCLITransport.read_messages` parses it and yields raw hashes. In both entry points, `Query.read_messages` intercepts `control_response` and `control_request` types, putting regular messages on `@message_queue`. `MessageParser.parse` converts raw hashes into typed objects (`UserMessage`, `AssistantMessage`, `SystemMessage`, `ResultMessage`, `StreamEvent`).
 
 ### Control Protocol
 

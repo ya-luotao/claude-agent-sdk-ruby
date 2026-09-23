@@ -157,7 +157,157 @@ module ClaudeAgentSDK
     end
     private_class_method :option_hash_key
 
+    # Bounded, human-oriented #inspect listing the non-nil instance variables
+    # in definition order:
+    #
+    #   #<ClaudeAgentSDK::ResultMessage subtype="success" num_turns=3 ...>
+    #
+    # Messages carry whole transcripts, tool payloads and usage maps, so the
+    # output is bounded rather than faithful: long Strings are truncated,
+    # long Arrays/Hashes abbreviated, and nesting past INSPECT_MAX_DEPTH (or
+    # a reference cycle) collapses to a placeholder. Other objects keep their
+    # own #inspect (truncated) unless they only have Kernel#inspect, which
+    # dumps every ivar recursively — those (SDK MCP server instances, store
+    # adapters, observers) show as `#<ClassName>`. For display only: nothing
+    # sent to the CLI goes through #inspect or #to_s (wire output uses #to_h).
+    def inspect
+      inspect_with(0, {}.compare_by_identity)
+    end
+
+    # Object#to_s ignores instance variables, so `puts message` would print
+    # only a class name and an address. Types with a natural textual form
+    # (UserMessage, AssistantMessage, TextBlock, ResultMessage, SystemMessage)
+    # override this.
+    def to_s
+      inspect
+    end
+
+    # Declares attributes that carry credentials (env vars, auth headers).
+    # Objects get logged, so #inspect shows them filtered; #to_h and
+    # everything sent to the CLI are unaffected. Inherited by subclasses.
+    def self.inspect_filtered(*names)
+      @inspect_filtered_attributes = (inspect_filtered_attributes + names.map(&:to_s)).uniq.freeze
+    end
+
+    def self.inspect_filtered_attributes
+      @inspect_filtered_attributes || (superclass <= Type ? superclass.inspect_filtered_attributes : [].freeze)
+    end
+
+    INSPECT_MAX_STRING = 80
+    INSPECT_MAX_ITEMS = 5
+    INSPECT_MAX_DEPTH = 2
+    private_constant :INSPECT_MAX_STRING, :INSPECT_MAX_ITEMS, :INSPECT_MAX_DEPTH
+
+    protected
+
+    # `seen` holds the Types/containers on the current rendering path (not
+    # every one rendered so far), so a shared-but-acyclic value still renders
+    # in full wherever it appears.
+    def inspect_with(depth, seen)
+      return "#<#{inspect_class_name} …>" if depth > INSPECT_MAX_DEPTH || seen.key?(self)
+
+      seen[self] = true
+      begin
+        attributes = inspect_attributes.map do |name, value|
+          " #{name}=#{inspect_bounded(value, depth + 1, seen)}"
+        end
+        "#<#{inspect_class_name}#{attributes.join}>"
+      ensure
+        seen.delete(self)
+      end
+    end
+
     private
+
+    # [name, value] pairs rendered by #inspect. Subclasses override to hide
+    # redundant state or redact secrets — never by mutating the object.
+    def inspect_attributes
+      filtered = self.class.inspect_filtered_attributes
+      instance_variables.filter_map do |ivar|
+        value = instance_variable_get(ivar)
+        next if value.nil?
+
+        name = ivar.to_s.delete_prefix('@')
+        [name, filtered.include?(name) ? inspect_filter(value) : value]
+      end
+    end
+
+    # A credential-bearing Hash keeps its keys (useful when debugging which
+    # variables are set) with every value replaced; anything else is replaced
+    # outright. Builds a new Hash; the object itself is never touched.
+    def inspect_filter(value)
+      value.respond_to?(:each_key) ? value.each_key.to_h { |key| [key, '[FILTERED]'] } : '[FILTERED]'
+    end
+
+    def inspect_class_name
+      self.class.name || self.class.inspect
+    end
+
+    def inspect_bounded(value, depth, seen)
+      case value
+      when Type then value.inspect_with(depth, seen)
+      when String then inspect_truncated(value)
+      when Array then inspect_container(value, '[', ']', depth, seen) { |item| inspect_bounded(item, depth + 1, seen) }
+      when Hash
+        inspect_container(value, '{', '}', depth, seen) do |key, item|
+          "#{inspect_hash_key(key, depth + 1, seen)}#{inspect_bounded(item, depth + 1, seen)}"
+        end
+      when Proc, Method then value.inspect
+      else inspect_leaf(value)
+      end
+    end
+
+    def inspect_container(value, open, close, depth, seen, &render)
+      return "#{open}#{close}" if value.empty?
+      return "#{open}…(#{value.size})#{close}" if depth > INSPECT_MAX_DEPTH || seen.key?(value)
+
+      seen[value] = true
+      begin
+        parts = value.first(INSPECT_MAX_ITEMS).map(&render)
+        parts << "…(+#{value.size - INSPECT_MAX_ITEMS} more)" if value.size > INSPECT_MAX_ITEMS
+        "#{open}#{parts.join(', ')}#{close}"
+      ensure
+        seen.delete(value)
+      end
+    end
+
+    # Rendered by hand rather than via Hash#inspect, whose format differs
+    # between Ruby 3.3 (`{:a=>1}`) and 3.4 (`{a: 1}`).
+    def inspect_hash_key(key, depth, seen)
+      return "#{key.name}: " if key.is_a?(Symbol) && key.inspect.match?(/\A:\w+[?!]?\z/)
+
+      "#{inspect_bounded(key, depth, seen)} => "
+    end
+
+    def inspect_truncated(string)
+      return string.inspect if string.length <= INSPECT_MAX_STRING
+
+      "#{string[0, INSPECT_MAX_STRING].inspect}…(+#{string.length - INSPECT_MAX_STRING} chars)"
+    end
+
+    # Printing must never raise (it runs inside loggers and `puts`), so an
+    # object whose #inspect raises, or a BasicObject without one, falls back
+    # to a placeholder.
+    def inspect_leaf(value)
+      return "#<#{value.class}>" if kernel_inspect_only?(value)
+
+      rendered = value.inspect
+      return rendered if rendered.length <= INSPECT_MAX_STRING
+
+      "#{rendered[0, INSPECT_MAX_STRING]}…(+#{rendered.length - INSPECT_MAX_STRING} chars)"
+    rescue StandardError
+      begin
+        "#<#{value.class}>"
+      rescue StandardError
+        '#<?>'
+      end
+    end
+
+    def kernel_inspect_only?(value)
+      Kernel.instance_method(:method).bind_call(value, :inspect).owner == Kernel
+    rescue TypeError # not a Kernel object: BasicObject, Delegator
+      false
+    end
 
     # Allow camelCase attribute access
     def method_missing(method_name, ...)
@@ -230,6 +380,10 @@ module ClaudeAgentSDK
   # Text content block
   class TextBlock < Type
     attr_accessor :text
+
+    def to_s
+      text.to_s
+    end
   end
 
   # Thinking content block
@@ -374,6 +528,22 @@ module ClaudeAgentSDK
     def initialize(attributes = {})
       super
       @data ||= attributes if attributes.is_a?(Hash)
+    end
+
+    def to_s
+      subtype.nil? ? '[system]' : "[system: #{subtype}]"
+    end
+
+    private
+
+    # A typed subclass (InitMessage, TaskStartedMessage, ...) already exposes
+    # the fields of its raw frame as attributes; repeating @data would double
+    # the output. A bare SystemMessage (unrecognized subtype) keeps it, since
+    # @data is the only place its payload lives.
+    def inspect_attributes
+      return super if instance_of?(SystemMessage)
+
+      super.reject { |pair| pair.first == 'data' }
     end
   end
 
@@ -755,6 +925,19 @@ module ClaudeAgentSDK
     # @return [Hash{Symbol => Object}, nil]
     # @see UserMessage#origin
     attr_accessor :origin
+
+    # One human-readable line, e.g. `[result: success, 3 turns, 4.2s, $0.0120]`
+    # (parts the CLI did not report are left out). An error result appends its
+    # `errors`. Use #inspect for every field.
+    def to_s
+      parts = [subtype].compact
+      parts << "#{num_turns} #{num_turns == 1 ? 'turn' : 'turns'}" unless num_turns.nil?
+      parts << format('%.1fs', duration_ms / 1000.0) if duration_ms.is_a?(Numeric)
+      parts << format('$%.4f', total_cost_usd) if total_cost_usd.is_a?(Numeric)
+      line = parts.empty? ? '[result]' : "[result: #{parts.join(', ')}]"
+      line += " - #{Array(errors).join('; ')}" if is_error && !Array(errors).empty?
+      line
+    end
   end
 
   # Stream event for partial message updates
@@ -1723,6 +1906,8 @@ module ClaudeAgentSDK
     attr_accessor :command, :args, :env
     attr_reader :type
 
+    inspect_filtered :env
+
     def initialize(attributes = {})
       super
       @type = 'stdio'
@@ -1742,6 +1927,8 @@ module ClaudeAgentSDK
     attr_accessor :url, :headers
     attr_reader :type
 
+    inspect_filtered :headers
+
     def initialize(attributes = {})
       super
       @type = 'sse'
@@ -1759,6 +1946,8 @@ module ClaudeAgentSDK
 
     attr_accessor :url, :headers
     attr_reader :type
+
+    inspect_filtered :headers
 
     def initialize(attributes = {})
       super
@@ -1980,6 +2169,9 @@ module ClaudeAgentSDK
 
   # Claude Agent Options for configuring queries
   class ClaudeAgentOptions < Type
+    # `env` routinely carries credentials (ANTHROPIC_API_KEY, ...).
+    inspect_filtered :env
+
     attr_accessor :allowed_tools, :system_prompt, :mcp_servers, :permission_mode,
                   :resume, :resume_session_at, :session_id, :max_turns, :disallowed_tools,
                   :model, :permission_prompt_tool_name, :cwd, :cli_path, :settings,

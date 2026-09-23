@@ -2791,4 +2791,227 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
   end
+
+  # `puts message` / `p message` / logging an options object: every Type
+  # prints its fields instead of `#<ClaudeAgentSDK::X:0x...>`, bounded so a
+  # whole transcript can't flood a log line.
+  describe 'string representations' do
+    describe ClaudeAgentSDK::Type do
+      it 'inspects non-nil instance variables in definition order' do
+        block = ClaudeAgentSDK::ToolUseBlock.new(id: 'toolu_1', name: 'Bash', input: { command: 'ls' })
+
+        expect(block.inspect).to eq('#<ClaudeAgentSDK::ToolUseBlock id="toolu_1" name="Bash" input={command: "ls"}>')
+      end
+
+      it 'omits nil attributes but keeps false ones' do
+        block = ClaudeAgentSDK::ToolResultBlock.new(tool_use_id: 'toolu_1', is_error: false)
+
+        expect(block.inspect).to eq('#<ClaudeAgentSDK::ToolResultBlock tool_use_id="toolu_1" is_error=false>')
+      end
+
+      it 'uses #inspect for #to_s so puts shows the fields, not an address' do
+        block = ClaudeAgentSDK::ToolUseBlock.new(id: 'toolu_1', name: 'Bash')
+
+        expect(block.to_s).to eq(block.inspect)
+        expect(block.to_s).not_to match(/0x\h+/)
+      end
+
+      it 'renders non-symbol hash keys with =>' do
+        block = ClaudeAgentSDK::ToolUseBlock.new(input: { 'path' => '/tmp', :'odd-key' => 1 })
+
+        expect(block.inspect).to include('input={"path" => "/tmp", :"odd-key" => 1}')
+      end
+
+      it 'truncates long strings and says how much was cut' do
+        block = ClaudeAgentSDK::TextBlock.new(text: 'a' * 500)
+
+        expect(block.inspect).to eq("#<ClaudeAgentSDK::TextBlock text=\"#{'a' * 80}\"…(+420 chars)>")
+      end
+
+      it 'abbreviates long arrays and hashes with a count of the rest' do
+        block = ClaudeAgentSDK::ToolUseBlock.new(input: { items: (1..100).to_a })
+        many_keys = ClaudeAgentSDK::ToolUseBlock.new(input: (1..8).to_h { |i| [:"k#{i}", i] })
+
+        expect(block.inspect).to include('items: [1, 2, 3, 4, 5, …(+95 more)]')
+        expect(many_keys.inspect).to include('input={k1: 1, k2: 2, k3: 3, k4: 4, k5: 5, …(+3 more)}')
+      end
+
+      it 'collapses nesting past a small depth' do
+        deep = { a: { b: { c: { d: 1 } } } }
+        msg = ClaudeAgentSDK::AssistantMessage.new(
+          content: [ClaudeAgentSDK::ToolUseBlock.new(id: 't1', input: deep)],
+          usage: deep
+        )
+
+        expect(msg.inspect).to include('content=[#<ClaudeAgentSDK::ToolUseBlock id="t1" input={…(1)}>]')
+        expect(msg.inspect).to include('usage={a: {b: {…(1)}}}')
+
+        wrapper = ClaudeAgentSDK::ToolResultBlock.new(content: [[msg]])
+        expect(wrapper.inspect).to eq('#<ClaudeAgentSDK::ToolResultBlock content=[[#<ClaudeAgentSDK::AssistantMessage …>]]>')
+      end
+
+      it 'terminates on cyclic structures' do
+        block = ClaudeAgentSDK::ToolUseBlock.new(id: 'x', input: {})
+        block.input[:self] = block
+        list = [1]
+        list << list
+        other = ClaudeAgentSDK::TextBlock.new(text: list)
+
+        expect(block.inspect).to eq('#<ClaudeAgentSDK::ToolUseBlock id="x" input={self: #<ClaudeAgentSDK::ToolUseBlock …>}>')
+        expect(other.inspect).to eq('#<ClaudeAgentSDK::TextBlock text=[1, […(2)]]>')
+      end
+
+      it 'renders a value shared by two fields in both places' do
+        shared = { k: 1 }
+        block = ClaudeAgentSDK::ToolUseBlock.new(id: 'x', input: { a: shared, b: shared })
+
+        expect(block.inspect).to include('input={a: {k: 1}, b: {k: 1}}')
+      end
+
+      it 'shows objects that only have Kernel#inspect by class, and procs by their own inspect' do
+        adapter_class = Class.new { def initialize = (@secret = 'hunter2') }
+        stub_const('MyStoreAdapter', adapter_class)
+        callback = ->(_input) {}
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: MyStoreAdapter.new, can_use_tool: callback)
+
+        expect(options.inspect).to include('session_store=#<MyStoreAdapter>')
+        expect(options.inspect).not_to include('hunter2')
+        expect(options.inspect).to include("can_use_tool=#{callback.inspect}")
+      end
+
+      it 'never raises on values it cannot inspect' do
+        raising = Class.new { def inspect = raise('no inspect for you') }
+        stub_const('RaisingInspect', raising)
+        block = ClaudeAgentSDK::ToolUseBlock.new(
+          input: { basic: BasicObject.new, raising: RaisingInspect.new, delegator: SimpleDelegator.new([1, 2]) }
+        )
+
+        expect(block.inspect).to eq('#<ClaudeAgentSDK::ToolUseBlock input={basic: #<?>, raising: #<RaisingInspect>, ' \
+                                    'delegator: [1, 2]}>')
+        expect { block.to_s }.not_to raise_error
+      end
+
+      it 'leaves the wire form (#to_h) of a typed config alone' do
+        config = ClaudeAgentSDK::McpStdioServerConfig.new(command: 'npx', args: ['server'])
+
+        expect { config.inspect }.not_to(change { config.to_h })
+        expect(config.to_h).to eq({ type: 'stdio', command: 'npx', args: ['server'] })
+      end
+    end
+
+    describe ClaudeAgentSDK::TextBlock do
+      it 'prints its text' do
+        expect(described_class.new(text: 'Hello').to_s).to eq('Hello')
+        expect(described_class.new.to_s).to eq('')
+      end
+    end
+
+    describe ClaudeAgentSDK::ResultMessage do
+      it 'prints a one-line summary of a successful result' do
+        msg = described_class.new(subtype: 'success', num_turns: 3, duration_ms: 4213, total_cost_usd: 0.012,
+                                  is_error: false, result: 'Paris')
+
+        expect(msg.to_s).to eq('[result: success, 3 turns, 4.2s, $0.0120]')
+      end
+
+      it 'uses the singular for one turn' do
+        expect(described_class.new(subtype: 'success', num_turns: 1).to_s).to eq('[result: success, 1 turn]')
+      end
+
+      it 'appends the errors of an error result' do
+        msg = described_class.new(subtype: 'error_during_execution', is_error: true, num_turns: 2,
+                                  errors: ['tool crashed', 'second failure'])
+
+        expect(msg.to_s).to eq('[result: error_during_execution, 2 turns] - tool crashed; second failure')
+      end
+
+      it 'omits errors when is_error is false or the list is empty' do
+        expect(described_class.new(subtype: 'success', is_error: false, errors: ['x']).to_s).to eq('[result: success]')
+        expect(described_class.new(subtype: 'error_max_turns', is_error: true, errors: []).to_s)
+          .to eq('[result: error_max_turns]')
+      end
+
+      it 'omits every missing field' do
+        expect(described_class.new.to_s).to eq('[result]')
+        expect(described_class.new(total_cost_usd: 0).to_s).to eq('[result: $0.0000]')
+      end
+
+      it 'keeps every field in #inspect' do
+        msg = described_class.new(subtype: 'success', num_turns: 3, total_cost_usd: 0.012)
+
+        expect(msg.inspect).to eq('#<ClaudeAgentSDK::ResultMessage subtype="success" num_turns=3 total_cost_usd=0.012>')
+      end
+    end
+
+    describe ClaudeAgentSDK::SystemMessage do
+      it 'prints its subtype' do
+        expect(described_class.new(subtype: 'future_thing').to_s).to eq('[system: future_thing]')
+        expect(described_class.new.to_s).to eq('[system]')
+      end
+
+      it 'keeps @data in #inspect on a bare SystemMessage, where it is the only payload' do
+        msg = ClaudeAgentSDK::MessageParser.parse({ type: 'system', subtype: 'future_thing', detail: 'x' })
+
+        expect(msg).to be_instance_of(described_class)
+        expect(msg.inspect).to eq('#<ClaudeAgentSDK::SystemMessage subtype="future_thing" ' \
+                                  'data={type: "system", subtype: "future_thing", detail: "x"}>')
+      end
+
+      it 'omits the duplicate @data from typed subclasses such as InitMessage' do
+        msg = ClaudeAgentSDK::MessageParser.parse(
+          { type: 'system', subtype: 'init', session_id: 'sess_1', model: 'claude-opus-5', tools: %w[Bash Read] }
+        )
+
+        expect(msg).to be_a(ClaudeAgentSDK::InitMessage)
+        expect(msg.to_s).to eq('[system: init]')
+        expect(msg.inspect).to eq('#<ClaudeAgentSDK::InitMessage subtype="init" session_id="sess_1" ' \
+                                  'model="claude-opus-5" tools=["Bash", "Read"]>')
+        expect(msg.data).to include(session_id: 'sess_1')
+      end
+    end
+
+    describe ClaudeAgentSDK::ClaudeAgentOptions do
+      it 'filters env values in #inspect without touching the options' do
+        options = described_class.new(env: { 'ANTHROPIC_API_KEY' => 'sk-ant-secret', 'OTHER' => 'value' })
+
+        expect(options.inspect).to include('env={"ANTHROPIC_API_KEY" => "[FILTERED]", "OTHER" => "[FILTERED]"}')
+        expect(options.inspect).not_to include('sk-ant-secret')
+        expect(options.to_s).not_to include('sk-ant-secret')
+        expect(options.env).to eq({ 'ANTHROPIC_API_KEY' => 'sk-ant-secret', 'OTHER' => 'value' })
+      end
+
+      it 'filters a non-Hash env wholesale' do
+        options = described_class.new
+        options.env = 'ANTHROPIC_API_KEY=sk-ant-secret'
+
+        expect(options.inspect).to include('env="[FILTERED]"')
+      end
+    end
+
+    describe 'MCP server config credentials' do
+      it 'filters McpStdioServerConfig#env' do
+        config = ClaudeAgentSDK::McpStdioServerConfig.new(command: 'gh-mcp', env: { 'GITHUB_TOKEN' => 'ghp_secret' })
+
+        expect(config.inspect).to include('env={"GITHUB_TOKEN" => "[FILTERED]"}')
+        expect(config.inspect).not_to include('ghp_secret')
+        expect(config.to_h[:env]).to eq({ 'GITHUB_TOKEN' => 'ghp_secret' })
+      end
+
+      [ClaudeAgentSDK::McpHttpServerConfig, ClaudeAgentSDK::McpSSEServerConfig].each do |klass|
+        it "filters #{klass.name.split('::').last}#headers" do
+          config = klass.new(url: 'https://mcp.example', headers: { 'Authorization' => 'Bearer secret' })
+
+          expect(config.inspect).to include('headers={"Authorization" => "[FILTERED]"}')
+          expect(config.inspect).not_to include('Bearer secret')
+          expect(config.to_h[:headers]).to eq({ 'Authorization' => 'Bearer secret' })
+        end
+      end
+
+      it 'keeps filtered attributes per class (subclasses inherit, siblings do not)' do
+        expect(ClaudeAgentSDK::ClaudeAgentOptions.inspect_filtered_attributes).to eq(['env'])
+        expect(ClaudeAgentSDK::McpHttpServerConfig.inspect_filtered_attributes).to eq(['headers'])
+        expect(ClaudeAgentSDK::ResultMessage.inspect_filtered_attributes).to eq([])
+      end
+    end
+  end
 end

@@ -10,6 +10,7 @@ RSpec.describe 'claude-agent-sdk.gemspec' do
   def git_tracked_files
     IO.popen(%w[git ls-files -z lib docs README.md LICENSE CHANGELOG.md],
              chdir: root, err: File::NULL, &:read).split("\x0")
+      .reject { |path| path.start_with?('docs/history/') }
   rescue SystemCallError
     []
   end
