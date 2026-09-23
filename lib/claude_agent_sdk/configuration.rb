@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+# default_options= copies through Type.deep_dup_for_options: keep this file
+# loadable on its own (require 'claude_agent_sdk/configuration').
+require_relative 'types'
+
 module ClaudeAgentSDK
   # Configuration class for setting default options
   #
