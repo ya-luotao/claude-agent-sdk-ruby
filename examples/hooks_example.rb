@@ -12,7 +12,7 @@ Async do
     return {} unless input.respond_to?(:tool_name) && input.tool_name == 'Bash'
 
     tool_input = input.tool_input || {}
-    command = tool_input[:command] || tool_input['command'] || ''
+    command = tool_input[:command] || ''
     block_patterns = ['rm -rf', 'foo.sh']
 
     block_patterns.each do |pattern|

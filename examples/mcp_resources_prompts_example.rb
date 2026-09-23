@@ -139,8 +139,8 @@ def example_prompts
       { name: 'type', description: 'Type of commit (feat, fix, docs, etc.)', required: false }
     ]
   ) do |args|
-    changes = args[:changes] || args['changes']
-    commit_type = args[:type] || args['type'] || 'feat'
+    changes = args[:changes]
+    commit_type = args[:type] || 'feat'
 
     {
       messages: [
@@ -166,8 +166,8 @@ def example_prompts
       { name: 'style', description: 'Documentation style (YARD, RDoc, etc.)', required: false }
     ]
   ) do |args|
-    code = args[:code] || args['code']
-    style = args[:style] || args['style'] || 'YARD'
+    code = args[:code]
+    style = args[:style] || 'YARD'
 
     {
       messages: [
@@ -263,7 +263,7 @@ def example_complete_server
       { name: 'problem', description: 'The problem to solve', required: true }
     ]
   ) do |args|
-    problem = args[:problem] || args['problem']
+    problem = args[:problem]
 
     {
       messages: [

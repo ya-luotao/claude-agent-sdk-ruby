@@ -28,7 +28,7 @@ Async do
     # Example: Modify Bash commands to add safety prefix
     if input.tool_name == 'Bash'
       tool_input = input.tool_input || {}
-      original_command = tool_input[:command] || tool_input['command'] || ''
+      original_command = tool_input[:command] || ''
 
       # Check for dangerous patterns
       if original_command.match?(/rm\s+-rf|sudo\s+rm/)

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Docs: pre-1.0 contracts written down** ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)). No code changes. `Client#mcp_status` / `#get_mcp_status` and `#context_usage` / `#get_context_usage` return the CLI's raw Hash with camelCase Symbol keys. `docs/types.md` had described `McpStatusResponse` as the response type; it is the optional typed view, via `McpStatusResponse.parse(client.mcp_status)`, and there is no typed context-usage class (`docs/client.md`). A new "Hash keys" section in `docs/types.md` states one rule: Hashes passed through from the live CLI stream (`origin`, `usage`, `model_usage`, hook `tool_input`, `can_use_tool` input, SDK MCP tool args, control responses) have Symbol keys spelled as on the wire, and Hashes read from transcripts or a `SessionStore` (`SessionMessage#message`, `get_subagent_metadata`, store keys and entries) have String keys. The docs, examples and bundled skill drop their `h[:key] || h['key']` fallbacks in favour of the one correct form. `Type#[]`, `#[]=` and the camelCase readers are documented as public API, including that `#[]=` changes the object you received. `docs/sessions.md` documents `ClaudeAgentSDK.project_key_for_directory` and `ClaudeAgentSDK.fold_session_summary` for adapter authors, and `import_session_to_store`'s batching (`batch_size:` defaults to 500 entries, and a batch also ends at about 1 MiB).
+
 ## [0.36.0] - 2026-09-23
 
 The first step on the [road to 1.0](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126): one `session_store:` argument for every session function (the store-specific twins are deprecated), `ClaudeAgentSDK.ask`, String tool results, and the last audit follow-ups (#119–#121). **Read before upgrading:**

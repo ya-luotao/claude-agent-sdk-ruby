@@ -77,6 +77,31 @@ The Ruby-style names above sit next to the Python SDK's spellings, and both work
 
 Each Ruby-style method calls its parity counterpart, so both send the same control request and raise `CLIConnectionError` when the client is not connected. The one exception is `server_info`, which reads the cached initialization result and returns `nil` instead of raising before `connect`. As with any Ruby setter, `client.model = 'haiku'` evaluates to `'haiku'`, not to the control response.
 
+### MCP status and context usage return Hashes
+
+`mcp_status` / `get_mcp_status` and `context_usage` / `get_context_usage` return the CLI's control response payload as a plain Hash, unchanged: Symbol keys spelled as on the wire, which for these payloads is camelCase (`:mcpServers`, `:serverInfo`, `:totalTokens`), at every level of nesting (see [Hash keys](types.md#hash-keys)). The SDK does not model or filter the payload, so fields added by newer CLI versions come through. A response without a payload reads as `{}`.
+
+```ruby
+status = client.mcp_status
+status[:mcpServers].each { |s| puts "#{s[:name]}: #{s[:status]}" }
+status.dig(:mcpServers, 0, :serverInfo, :version)
+
+usage = client.context_usage
+puts "#{usage[:totalTokens]} / #{usage[:maxTokens]} tokens"
+```
+
+For a typed view of the MCP status, parse the Hash yourself:
+
+```ruby
+typed = ClaudeAgentSDK::McpStatusResponse.parse(client.mcp_status)
+typed.mcp_servers.each do |server|            # McpServerStatus
+  puts "#{server.name} #{server.status} #{server.server_info&.version}"
+  server.tools&.each { |tool| puts "  #{tool.name} read_only=#{tool.annotations&.read_only}" }
+end
+```
+
+`McpServerStatus#config` is an `McpSdkServerConfigStatus` or `McpClaudeAIProxyServerConfig` for `sdk` and `claudeai-proxy` servers, and the raw Hash for every other server type. There is no typed class for context usage; read the Hash.
+
 ## Custom Transport
 
 By default, `Client` uses `SubprocessCLITransport` to spawn the Claude Code CLI locally. You can provide a custom transport class to connect via other channels (e.g., remote SSH, WebSocket, or a sandbox VM).
@@ -87,7 +112,7 @@ A transport must implement six methods:
 |---|---|
 | `connect` | Establish the connection / spawn the remote CLI |
 | `write(data)` | Send raw JSON-line bytes to stdin |
-| `read_messages { \|hash\| ... }` | Yield parsed JSON messages from stdout; block until the stream closes |
+| `read_messages { \|hash\| ... }` | Yield each stdout line as a Hash parsed with `JSON.parse(line, symbolize_names: true)` (the SDK reads Symbol keys; see [Hash keys](types.md#hash-keys)); block until the stream closes |
 | `end_input` | Signal EOF on stdin |
 | `close` | Terminate and clean up |
 | `ready?` | Report whether the transport can accept I/O |

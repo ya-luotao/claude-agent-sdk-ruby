@@ -2,6 +2,78 @@
 
 See [lib/claude_agent_sdk/types.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types.rb) for complete type definitions.
 
+## Hash keys
+
+Where the SDK hands you a plain Hash rather than a typed object, its key form
+depends on where the data came from. One rule covers every case:
+
+| Source | Key form | Examples |
+|--------|----------|----------|
+| The CLI's live stream-JSON, passed through as-is | **Symbols**, spelled exactly as on the wire | `UserMessage#origin`, `ResultMessage#origin`, `AssistantMessage#usage`, `ResultMessage#usage`, `ResultMessage#model_usage`, `ResultMessage#structured_output`, `UserMessage#tool_use_result`, `SystemMessage#data`, hook `tool_input`, the `can_use_tool` `input`, SDK MCP tool and prompt `args`, `Client#mcp_status`, `Client#context_usage` |
+| Transcripts read from disk or a `SessionStore` | **Strings**, spelled as in the JSONL | `SessionMessage#message`, `get_subagent_metadata`, `SessionStore` keys and entries, `fold_session_summary` input and output |
+
+"As on the wire" means the SDK does not rewrite key names. Structures the CLI
+generates use camelCase (`origin[:fromSession]`, `model_usage` values'
+`:inputTokens` / `:costUSD`, `client.mcp_status[:mcpServers]`), while objects
+the CLI relays from the API keep their snake_case (`usage[:input_tokens]`).
+Nesting follows the same rule all the way down, including keys that are data
+rather than field names: `model_usage` is keyed by model-name Symbols
+(`result.model_usage.each { |model, u| puts "#{model}: $#{u[:costUSD]}" }`).
+
+The wrong key form reads as `nil` rather than raising, so look up the source
+before indexing: `tool_input['command']` on a hook input, or
+`meta[:toolUseId]` on subagent metadata, silently returns `nil`. The Python
+SDK uses String keys everywhere; do not port its lookups literally.
+
+The Symbol side of the rule relies on the transport parsing each line with
+`JSON.parse(line, symbolize_names: true)`. The built-in
+`SubprocessCLITransport` does; a [custom transport](client.md#custom-transport)
+must too.
+
+## Reading and writing attributes
+
+The SDK's typed objects (messages, content blocks, hook inputs and outputs,
+option objects: everything built on `ClaudeAgentSDK::Type`) accept the same
+attribute name in several spellings. These accessors are public API:
+
+```ruby
+msg.session_id          # the attr_accessor
+msg[:session_id]        # Symbol or String, snake_case or camelCase:
+msg['session_id']       #   all four read the same attribute
+msg[:sessionId]
+msg['sessionId']
+msg.sessionId           # camelCase reader (also answers respond_to?)
+```
+
+`#[]` returns `nil` for a name the type does not define, while a misspelled
+method call such as `msg.nope` raises `NoMethodError`.
+
+`#[]=` assigns through the attribute's setter, with the same name
+normalization, and returns the assigned value:
+
+```ruby
+msg[:result] = 'edited' # same as msg.result = 'edited'
+```
+
+- It **changes the object you received**. Messages are not frozen or copied
+  on delivery, so a change is visible to anything else holding the same
+  object (for example an observer that received it before your block did).
+  Copy first if you need the original.
+- A name the type does not define is ignored, except on
+  `ClaudeAgentOptions`, which raises `ArgumentError` for an unknown key (as its
+  constructor and `dup_with` do).
+- Discriminator fields (`type` on the MCP server and system-prompt configs,
+  `behavior` on `PermissionResultAllow` / `PermissionResultDeny`,
+  `hook_event_name` on hook inputs and outputs) are read-only, so
+  assigning them has no effect.
+
+Constructors accept the same spellings: `ResultMessage.new('sessionId' => 'abc')`
+is equivalent to `ResultMessage.new(session_id: 'abc')`.
+
+`SDKSessionInfo` and `SessionMessage` (returned by the session functions) are
+currently plain classes, not `Type`s: use their snake_case accessors
+(`info.session_id`); they have no `#[]`, `#[]=` or camelCase readers.
+
 ## Message Types
 
 ```ruby
@@ -134,8 +206,9 @@ turn was cancelled via `Client#interrupt`. `nil` when the CLI did not report
 one (older CLIs, or a result that bypassed the query loop such as a local
 slash command).
 
-`model_usage` values are passed through verbatim from the CLI, so their keys
-are camelCase (the TypeScript/Python SDKs' `ModelUsage` shape): `inputTokens`,
+`model_usage` is passed through verbatim from the CLI (see [Hash keys](#hash-keys)):
+it is keyed by model-name Symbols (`:"claude-sonnet-4-5"`), and each value's
+keys are camelCase Symbols (the TypeScript/Python SDKs' `ModelUsage` shape): `inputTokens`,
 `outputTokens`, `cacheReadInputTokens`, `cacheCreationInputTokens`,
 `webSearchRequests`, `costUSD`, `contextWindow`, `maxOutputTokens`, plus
 optional `canonicalModel` (canonical id used for the pricing lookup, which can
@@ -287,7 +360,7 @@ end
 | `McpHttpServerConfig` | MCP server config for HTTP transport |
 | `SdkPluginConfig` | SDK plugin configuration |
 | `McpServerStatus` | Status of a single MCP server connection (with `.parse`) |
-| `McpStatusResponse` | Response from `get_mcp_status` containing all server statuses (with `.parse`) |
+| `McpStatusResponse` | Typed view of the `Client#mcp_status` / `#get_mcp_status` Hash: `McpStatusResponse.parse(client.mcp_status).mcp_servers` is an Array of `McpServerStatus`. The client itself returns the raw Hash (see [client.md](client.md#mcp-status-and-context-usage-return-hashes)) |
 | `McpServerInfo` | MCP server name and version |
 | `McpToolInfo` | MCP tool name, description, and annotations |
 | `McpToolAnnotations` | MCP tool annotation hints (`read_only`, `destructive`, `open_world`) |

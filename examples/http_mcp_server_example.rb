@@ -74,8 +74,8 @@ def build_sdk_mcp_server
       required: ['city']
     }
   ) do |args|
-    city = args[:city] || args['city']
-    units = args[:units] || args['units'] || 'celsius'
+    city = args[:city]
+    units = args[:units] || 'celsius'
 
     # Simulated weather data (would call real API in production)
     temp = rand(15..30)
@@ -109,8 +109,8 @@ def build_sdk_mcp_server
       required: %w[query database]
     }
   ) do |args|
-    query = args[:query] || args['query']
-    database = args[:database] || args['database']
+    query = args[:query]
+    database = args[:database]
 
     # Simulated query result (would execute real query in production)
     # IMPORTANT: Always validate and sanitize queries in production!
