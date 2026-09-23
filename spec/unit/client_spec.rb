@@ -61,6 +61,46 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(payload.dig(:message, :content)).to eq('hello')
   end
 
+  it 'rejects a bare Hash initial prompt before resolving observers or constructing a transport' do
+    factory = double('observer factory')
+    expect(factory).not_to receive(:call)
+    expect(ClaudeAgentSDK::SubprocessCLITransport).not_to receive(:new)
+    client = described_class.new(options: ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [factory]))
+
+    expect { client.connect({ type: 'user', message: { content: 'hello' } }) }
+      .to raise_error(ArgumentError, /got Hash/)
+  end
+
+  describe 'hook normalization on connect' do
+    let(:query_handler) { instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true) }
+
+    before do
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+    end
+
+    it 'omits nil and empty lists while preserving active matcher callbacks and timeouts' do
+      callback = ->(*) { {} }
+      matcher = ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash', hooks: [callback], timeout: 7)
+      hooks = { 'PostToolUse' => nil, 'Stop' => [], PreToolUse: [matcher] }
+      described_class.new(options: ClaudeAgentSDK::ClaudeAgentOptions.new(hooks: hooks)).connect
+
+      expect(ClaudeAgentSDK::Query).to have_received(:new).with(hash_including(
+                                                                  hooks: { 'PreToolUse' => [{ matcher: 'Bash', hooks: [callback], timeout: 7 }] }
+                                                                ))
+      expect(hooks).to eq('PostToolUse' => nil, 'Stop' => [], PreToolUse: [matcher])
+    end
+
+    it 'passes nil when no active hook lists remain' do
+      described_class.new(options: ClaudeAgentSDK::ClaudeAgentOptions.new(
+        hooks: { 'PreToolUse' => nil, 'PostToolUse' => [] }
+      )).connect
+
+      expect(ClaudeAgentSDK::Query).to have_received(:new).with(hash_including(hooks: nil))
+    end
+  end
+
   it 'streams an initial Enumerator prompt in the background via Query#stream_input' do
     transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
     query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)

@@ -59,7 +59,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     hook_fn = ->(_input, _tool_use_id, _context) { {} }
     matcher = ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash', hooks: [hook_fn], timeout: 30)
     options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-      hooks: { 'PreToolUse' => [matcher] }
+      hooks: { 'PostToolUse' => nil, 'Stop' => [], PreToolUse: [matcher] }
     )
 
     writes = []
@@ -102,7 +102,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
 
   it 'passes nil hooks when all matcher lists are empty' do
     options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-      hooks: { 'PreToolUse' => [] }
+      hooks: { 'PreToolUse' => [], 'PostToolUse' => nil }
     )
 
     captured_query_args = nil
