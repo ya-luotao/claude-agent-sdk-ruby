@@ -142,6 +142,7 @@ end
 | `ControlRequestTimeoutError` | Control protocol timeout (configurable via env var) |
 | `CLINotFoundError` | Claude Code not installed |
 | `ProcessError` | Process failed (includes `exit_code` and `stderr`) |
+| `ResultError` | Run ended on a terminal error result (subclasses `ProcessError`; adds `subtype`, `errors`, `api_error_status`, `terminal_reason`, ...) — rescue it first |
 | `CLIJSONDecodeError` | JSON parsing issues |
 | `MessageParseError` | Message parsing issues |
 

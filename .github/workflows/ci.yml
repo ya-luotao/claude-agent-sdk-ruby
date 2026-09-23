@@ -27,3 +27,39 @@ jobs:
 
       - name: Run linter
         run: bundle exec rubocop
+
+  # Dependency resolutions the main Gemfile can't reach: its RuboCop pin holds
+  # json at 2.x. `latest` forces the newest allowed majors (json 3.x, mcp 1.x);
+  # `floor` pins the oldest supported runtime dependencies, on the oldest and
+  # newest supported Ruby. rspec only — lint runs on the main leg. See
+  # gemfiles/*.gemfile.
+  deps:
+    name: deps (${{ matrix.gemfile }}, Ruby ${{ matrix.ruby-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - gemfile: latest
+            ruby-version: '3.4'
+          - gemfile: floor
+            ruby-version: '3.2'
+          - gemfile: floor
+            ruby-version: '3.4'
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.gemfile }}.gemfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby ${{ matrix.ruby-version }}
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler-cache: true
+
+      - name: Show resolved runtime dependencies
+        run: bundle list | grep -E ' (async|mcp|json|json_schemer|io-event) '
+
+      - name: Run tests
+        run: bundle exec rspec

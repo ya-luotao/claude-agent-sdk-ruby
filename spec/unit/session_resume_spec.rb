@@ -146,6 +146,74 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       FileUtils.remove_entry(source) if source && File.directory?(source)
       FileUtils.remove_entry(target) if target && File.directory?(target)
     end
+
+    context 'without a resolvable home directory (#82)' do
+      around do |example|
+        previous_home = ENV.fetch('HOME', nil) # rubocop:disable Style/EnvHome -- raw value; nil when unset
+        example.run
+      ensure
+        previous_home.nil? ? ENV.delete('HOME') : (ENV['HOME'] = previous_home)
+      end
+
+      # HOME unset with no passwd entry for the uid (docker --user in a
+      # minimal image): Dir.home raises ArgumentError. Stubbed because the
+      # host's passwd fallback would otherwise resolve a home.
+      before do
+        ENV.delete('HOME')
+        allow(Dir).to receive(:home).and_raise(ArgumentError, "couldn't find home for uid `4242'")
+        allow(described_class).to receive(:read_keychain_credentials).and_return(nil)
+      end
+
+      it 'skips the home-relative sources instead of raising' do
+        ENV.delete('CLAUDE_CONFIG_DIR')
+        target = Dir.mktmpdir
+        allow(described_class).to receive(:read_if_present).and_call_original
+        allow(described_class).to receive(:copy_if_present).and_call_original
+
+        expect do
+          described_class.send(:copy_auth_files, target, 'ANTHROPIC_API_KEY' => 'sk-test')
+        end.not_to raise_error
+        expect(described_class).not_to have_received(:read_if_present)
+        expect(described_class).not_to have_received(:copy_if_present)
+        expect(Dir.children(target)).to eq([])
+      ensure
+        FileUtils.remove_entry(target) if target && File.directory?(target)
+      end
+
+      it 'still seeds from an explicit CLAUDE_CONFIG_DIR, which needs no home' do
+        source = Dir.mktmpdir
+        target = Dir.mktmpdir
+        File.write(File.join(source, '.credentials.json'), JSON.generate('claudeAiOauth' => { 'accessToken' => 'k' }))
+        File.write(File.join(source, '.claude.json'), JSON.generate('settings' => true))
+
+        described_class.send(:copy_auth_files, target, 'CLAUDE_CONFIG_DIR' => source)
+
+        expect(File.exist?(File.join(target, '.credentials.json'))).to be true
+        expect(File.exist?(File.join(target, '.claude.json'))).to be true
+      ensure
+        FileUtils.remove_entry(source) if source && File.directory?(source)
+        FileUtils.remove_entry(target) if target && File.directory?(target)
+      end
+
+      it 'skips the home-relative sources when HOME is not absolute' do
+        # Dir.home returns HOME verbatim: "" would read /.claude/… and a
+        # relative HOME would read relative to the process cwd — neither is
+        # where the CLI looks.
+        allow(Dir).to receive(:home).and_call_original
+        ENV['HOME'] = ''
+        ENV.delete('CLAUDE_CONFIG_DIR')
+        target = Dir.mktmpdir
+        allow(described_class).to receive(:read_if_present).and_call_original
+        allow(described_class).to receive(:copy_if_present).and_call_original
+
+        described_class.send(:copy_auth_files, target, 'ANTHROPIC_API_KEY' => 'sk-test')
+
+        expect(described_class).not_to have_received(:read_if_present)
+        expect(described_class).not_to have_received(:copy_if_present)
+      ensure
+        FileUtils.remove_entry(target) if target && File.directory?(target)
+      end
+    end
   end
 
   describe '.rmtree_with_retry' do
@@ -208,6 +276,35 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       expect(File.exist?(mat.config_dir)).to be false # cleanup removed it
     end
 
+    it 'proceeds on a host without a resolvable home directory under API-key auth (#82)' do
+      # HOME unset with no passwd entry for the uid (docker --user in a minimal
+      # image): Dir.home raises ArgumentError, which escaped copy_auth_files
+      # through the rescue-Exception cleanup and aborted the resume. Stubbed
+      # because the host's passwd fallback would otherwise resolve a home.
+      previous_home = ENV.fetch('HOME', nil) # rubocop:disable Style/EnvHome -- raw value; nil when unset
+      previous_config = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+      ENV.delete('HOME')
+      ENV.delete('CLAUDE_CONFIG_DIR')
+      allow(Dir).to receive(:home).and_raise(ArgumentError, "couldn't find home for uid `4242'")
+      store.append({ 'project_key' => project_key, 'session_id' => sid }, [entry('hi')])
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: sid, cwd: cwd,
+                                                       env: { 'ANTHROPIC_API_KEY' => 'sk-test' })
+
+      mat = described_class.materialize_resume_session(options)
+      expect(mat.resume_session_id).to eq(sid)
+      expect(File.exist?(File.join(mat.config_dir, 'projects', project_key, "#{sid}.jsonl"))).to be true
+      # The rest of the store-resume path: the mirror batcher resolves its
+      # projects dir from the materialized CLAUDE_CONFIG_DIR, not from ~.
+      applied = described_class.apply_materialized_options(options, mat)
+      expect do
+        described_class.build_mirror_batcher(store: store, env: applied.env, on_error: ->(*) {})
+      end.not_to raise_error
+    ensure
+      mat&.cleanup
+      previous_home.nil? ? ENV.delete('HOME') : (ENV['HOME'] = previous_home)
+      previous_config.nil? ? ENV.delete('CLAUDE_CONFIG_DIR') : (ENV['CLAUDE_CONFIG_DIR'] = previous_config)
+    end
+
     it 'removes the credential-bearing temp dir when materialization fails after mkdtemp' do
       store.append({ 'project_key' => project_key, 'session_id' => sid }, [entry('hi')])
       # A store that writes the main transcript fine but explodes in list_subkeys,
@@ -239,10 +336,10 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       old_sid = SecureRandom.uuid
       new_sid = SecureRandom.uuid
       side_sid = SecureRandom.uuid
+      # InMemorySessionStore stamps strictly increasing mtimes per append
+      # (session_store_spec), so append order is mtime order — no sleeps.
       store.append({ 'project_key' => project_key, 'session_id' => old_sid }, [entry('old')])
-      sleep 0.002
       store.append({ 'project_key' => project_key, 'session_id' => new_sid }, [entry('new')])
-      sleep 0.002
       # Newest by mtime, but a sidechain — must be skipped.
       store.append({ 'project_key' => project_key, 'session_id' => side_sid }, [entry('side', 'isSidechain' => true)])
 
@@ -264,7 +361,6 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       main_sid = SecureRandom.uuid
       side_sid = SecureRandom.uuid
       store.append({ 'project_key' => project_key, 'session_id' => main_sid }, [entry('main')])
-      sleep 0.002
       store.append({ 'project_key' => project_key, 'session_id' => side_sid }, [entry('side', 'isSidechain' => true)])
 
       loads = []

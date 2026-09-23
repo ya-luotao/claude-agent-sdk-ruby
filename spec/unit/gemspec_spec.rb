@@ -1,0 +1,27 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+require 'bundler'
+
+RSpec.describe 'claude-agent-sdk.gemspec' do
+  let(:root) { File.expand_path('../..', __dir__) }
+  let(:gemspec_path) { File.join(root, 'claude-agent-sdk.gemspec') }
+
+  def git_tracked_files
+    IO.popen(%w[git ls-files -z lib docs README.md LICENSE CHANGELOG.md],
+             chdir: root, err: File::NULL, &:read).split("\x0")
+  rescue SystemCallError
+    []
+  end
+
+  it 'packages the same files through the git-less fallback as through git ls-files' do
+    tracked = git_tracked_files
+    skip 'not a git checkout' if tracked.empty?
+
+    # Simulate a host without git: the gemspec's `git ls-files` probe raises.
+    allow(IO).to receive(:popen).and_raise(Errno::ENOENT, 'git')
+    fallback = Bundler.load_gemspec_uncached(gemspec_path).files
+
+    expect(fallback).to match_array(tracked)
+  end
+end

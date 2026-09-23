@@ -609,6 +609,38 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       parsed = JSON.parse(cmd[idx + 1])
       expect(parsed['mcpServers']['calc']).to eq('type' => 'sdk', 'name' => 'calc')
     end
+
+    # Issue #68: a String-keyed SDK config was not recognized, so its live
+    # instance was fed to JSON.generate (GeneratorError, or its #to_s leaked
+    # onto the command line). The CLI-facing entry must not depend on key style.
+    it 'emits the same SDK server entry for String-, Symbol- and mixed-key configs' do
+      instance = Object.new
+      configs = {
+        'symbols' => { type: 'sdk', name: 'calc', instance: instance },
+        'strings' => { 'type' => 'sdk', 'name' => 'calc', 'instance' => instance },
+        'mixed' => { 'type' => 'sdk', name: 'calc', instance: instance, 'instance' => instance },
+        'symbol_type' => { type: :sdk, name: 'calc', instance: instance }
+      }
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(mcp_servers: configs)
+      cmd = described_class.new('/usr/bin/claude', options).build
+      json = cmd[cmd.index('--mcp-config') + 1]
+
+      expect(json).not_to include('instance')
+      entries = JSON.parse(json)['mcpServers']
+      expect(entries.keys).to eq(configs.keys)
+      expect(entries.values).to all(eq('type' => 'sdk', 'name' => 'calc'))
+    end
+
+    it 'raises no GeneratorError for a String-keyed SDK config holding a live server' do
+      server = ClaudeAgentSDK.create_sdk_mcp_server(name: 'calc')[:instance]
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        mcp_servers: { 'calc' => { 'type' => 'sdk', 'name' => 'calc', 'instance' => server } }
+      )
+      cmd = described_class.new('/usr/bin/claude', options).build
+      parsed = JSON.parse(cmd[cmd.index('--mcp-config') + 1])
+
+      expect(parsed['mcpServers']['calc']).to eq('type' => 'sdk', 'name' => 'calc')
+    end
   end
 
   describe 'extra_args' do
