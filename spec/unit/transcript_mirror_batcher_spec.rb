@@ -61,6 +61,25 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
     expect(errors).to be_empty
   end
 
+  # Issue #120: on a host with no usable home and no CLAUDE_CONFIG_DIR the
+  # projects dir is unknown (SessionStores.projects_dir returns nil). The
+  # session must keep running, and the lost mirror must not be silent.
+  it 'reports frames it cannot key (no projects dir) via on_error and counts them as dropped' do
+    b = nil
+    Async do
+      b = batcher(projects_dir: nil)
+      expect do
+        b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'a' }])
+        b.flush
+      end.to output(/CLAUDE_CONFIG_DIR/).to_stderr
+    end
+    expect(store.size).to eq(0)
+    expect(errors.length).to eq(1)
+    expect(errors.first[0]).to be_nil
+    expect(errors.first[1]).to match(/home directory.*CLAUDE_CONFIG_DIR/m)
+    expect(b.batches_dropped?).to be true
+  end
+
   it 'retries a transient adapter failure and succeeds' do
     flaky = Class.new(ClaudeAgentSDK::SessionStore) do
       attr_reader :attempts

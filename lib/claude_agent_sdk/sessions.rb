@@ -3,6 +3,7 @@
 require 'json'
 require 'open3'
 require 'pathname'
+require_relative 'errors'
 require_relative 'session_store'
 require_relative 'session_summary'
 require_relative 'transcript_mirror_batcher'
@@ -176,11 +177,53 @@ module ClaudeAgentSDK
     # Get the Claude config directory (respects CLAUDE_CONFIG_DIR; an empty
     # value is treated as unset, matching the Node CLI and the Python SDK).
     # NFC-normalized on both branches like Python's _get_claude_config_home_dir.
+    #
+    # @raise [ConfigDirError] when CLAUDE_CONFIG_DIR is unset and there is no
+    #   usable home directory (see .home_dir) for the default ~/.claude.
+    #   Python raises too (Path.home() -> RuntimeError); `~` expansion here
+    #   raised a bare ArgumentError from deep inside every disk session API.
     def config_dir
       dir = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
       return dir.unicode_normalize(:nfc) if dir && !dir.empty?
 
-      File.expand_path('~/.claude').unicode_normalize(:nfc)
+      home = home_dir
+      unless home
+        raise ConfigDirError,
+              'Cannot locate the Claude config directory: CLAUDE_CONFIG_DIR is unset and the home directory ' \
+              'could not be resolved (HOME is unset, empty or relative, and the user has no passwd entry). ' \
+              'Set CLAUDE_CONFIG_DIR to the directory holding your Claude Code data (normally ~/.claude).'
+      end
+
+      File.join(home, '.claude').unicode_normalize(:nfc)
+    end
+
+    # A usable home directory, or nil when there is none. The ONE definition
+    # of "home" for the SDK (CLI discovery, disk session APIs, the transcript
+    # mirror, store-backed resume seeding).
+    #
+    # Without +env+, the parent process's home: Dir.home raises ArgumentError
+    # when HOME is unset and the uid has no passwd entry (docker --user in a
+    # minimal image), and returns an empty or relative HOME verbatim — a path
+    # under "" or a cwd-relative dir is not where the user's data lives (and
+    # a relative CLI hit would be spawned from options.cwd, i.e. a different
+    # file), so both read as "no home".
+    #
+    # With +env+ (a ClaudeAgentOptions#env Hash), the home the CLI CHILD will
+    # see: a HOME key there wins, by key presence like the CLAUDE_CONFIG_DIR
+    # override, and must be absolute. An explicit nil (the transport unsets
+    # HOME for the child, which then falls back to its passwd entry) is also
+    # treated as no home rather than guessing that entry.
+    #
+    # @api private
+    def home_dir(env = nil)
+      home = if env.respond_to?(:key?) && (env.key?('HOME') || env.key?(:HOME))
+               env['HOME'] || env[:HOME]
+             else
+               Dir.home
+             end
+      home if home.is_a?(String) && File.absolute_path?(home)
+    rescue ArgumentError
+      nil
     end
 
     # Find the project directory for a given path
@@ -239,7 +282,11 @@ module ClaudeAgentSDK
     # top-level shape can't be checked, and dropping it would regress the
     # common case of a true entry cut by the 64KB window. Unverified blanks
     # cannot clear a previously verified value: they may be nested tool inputs.
-    def extract_top_level_string_field(text, key, last: false)
+    #
+    # +skip_blank+ passes over verified blank values too, for set-once fields
+    # the store fold only takes when non-blank (cwd): there a blank entry is
+    # absent, not a clearing entry.
+    def extract_top_level_string_field(text, key, last: false, skip_blank: false)
       positions = field_match_positions(text, key)
       positions.reverse! if last
       parsed_lines = {}
@@ -250,9 +297,9 @@ module ClaudeAgentSDK
         end
         if entry
           value = entry[key]
-          return value if value.is_a?(String)
+          return value if value.is_a?(String) && (!skip_blank || presence(value))
 
-          next # parseable line without a top-level string value: nested/false match
+          next # parseable line without a usable top-level string value: nested/false match
         end
         value = extract_json_string_value(text, value_start)
         value = presence(unescape_json_string(value)) if value
@@ -334,6 +381,8 @@ module ClaudeAgentSDK
     # a NoMethodError from deep inside (`123.match?`, `123.empty?`) — and so
     # does an invalidly encoded String, on which the regexp match itself
     # raises ArgumentError ("invalid byte sequence").
+    #
+    # @api private
     def valid_session_id?(session_id)
       session_id.is_a?(String) && session_id.valid_encoding? && session_id.match?(UUID_RE)
     end
@@ -352,12 +401,26 @@ module ClaudeAgentSDK
     # bare ArgumentError. Coerce defensively wherever an adapter mtime is
     # ordered or compared: numeric strings and ISO-8601 both order
     # correctly; anything else sorts last rather than crashing.
+    #
+    # A Time (e.g. an ActiveRecord updated_at) counts as its instant in epoch
+    # ms. Non-finite values (Infinity, "1e400") also read as 0: they cannot be
+    # ordered against real clocks nor reported as epoch ms.
     def sortable_mtime(value)
-      case value
-      when Numeric then value
-      when String then Float(value, exception: false) || parse_iso_timestamp_ms(value) || 0
-      else 0
-      end
+      ms = case value
+           when Numeric then value
+           when Time then value.to_r * 1000
+           when String then Float(value, exception: false) || parse_iso_timestamp_ms(value)
+           end
+      ms.is_a?(Numeric) && ms.real? && ms.finite? ? ms : 0
+    end
+
+    # An adapter mtime as SDKSessionInfo#last_modified promises it: Integer
+    # epoch milliseconds. Same coercion as sortable_mtime (so a row reports
+    # the value it is ordered by), truncated to whole milliseconds.
+    #
+    # @api private
+    def epoch_ms_mtime(value)
+      sortable_mtime(value).to_i
     end
 
     # Sort key shared by every session listing, disk and store: newest first,
@@ -365,6 +428,8 @@ module ClaudeAgentSDK
     # the secondary key equal mtimes (coarse adapter clocks, bulk imports)
     # ordered arbitrarily between calls and offset/limit paging could skip or
     # repeat sessions; one key also keeps the two paths in the same order.
+    #
+    # @api private
     def listing_sort_key(mtime, session_id)
       [-sortable_mtime(mtime), session_id.to_s]
     end
@@ -495,7 +560,9 @@ module ClaudeAgentSDK
                               extract_top_level_string_field(head, 'customTitle', last: true)) ||
                      presence(extract_top_level_string_field(tail, 'aiTitle', last: true) ||
                               extract_top_level_string_field(head, 'aiTitle', last: true))
-      first_prompt = extract_first_prompt_from_head(head)
+      # nil, not '', when there is no prompt — the store path's answer, and
+      # Python's (`_extract_first_prompt_from_head(head) or None`).
+      first_prompt = presence(extract_first_prompt_from_head(head))
       # lastPrompt tail entry shows what the user was most recently doing.
       summary = custom_title ||
                 presence(extract_top_level_string_field(tail, 'lastPrompt', last: true)) ||
@@ -528,7 +595,11 @@ module ClaudeAgentSDK
         # (SessionSummary.summary_entry_to_sdk_info) reports it.
         git_branch: presence(extract_json_string_field(tail, 'gitBranch', last: true) ||
                              extract_json_string_field(head, 'gitBranch', last: false)),
-        cwd: presence(extract_json_string_field(head, 'cwd', last: false)) || project_path,
+        # The first non-blank TOP-LEVEL cwd, exactly what the store fold keeps
+        # (set-once, blank skipped): taking the first match even when blank
+        # fell back to the project path where the store read a later entry's
+        # cwd, and the raw scan also matched cwd keys nested in tool inputs.
+        cwd: extract_top_level_string_field(head, 'cwd', skip_blank: true) || project_path,
         tag: tag_value,
         created_at: created_at
       )
@@ -1011,7 +1082,7 @@ module ClaudeAgentSDK
         # its mtime) rather than aborting the whole listing — matches the disk
         # path's per-file rescue and the store path's degrade-the-row contract.
         warn "Claude SDK: [SessionStore] gap-fill load failed for session #{sid}: #{e.message}"
-        return SDKSessionInfo.new(session_id: sid, summary: '', last_modified: slot[:mtime])
+        return SDKSessionInfo.new(session_id: sid, summary: '', last_modified: epoch_ms_mtime(slot[:mtime]))
       end
       return nil if entries.nil? || entries.empty?
 
@@ -1288,7 +1359,9 @@ module ClaudeAgentSDK
       return [] unless File.directory?(projects_dir)
 
       all_sessions = []
-      Dir.children(projects_dir).each do |child|
+      # Sorted: the scan order is deduplicate_sessions' last tiebreak, and
+      # Dir.children returns filesystem order.
+      Dir.children(projects_dir).sort.each do |child|
         dir = File.join(projects_dir, child)
         next unless File.directory?(dir)
 
@@ -1298,13 +1371,24 @@ module ClaudeAgentSDK
       deduplicate_sessions(all_sessions)
     end
 
+    # One entry per session_id when the same session sits in several project
+    # dirs (copied config dirs, worktrees). The newest last_modified wins; on
+    # equal mtimes the larger file (the more complete copy), and then the
+    # copy scanned first — project dirs in name order for the global listing,
+    # worktrees in `git worktree list` order (main worktree first) for a
+    # directory listing. Python keeps the first copy seen in iterdir() order
+    # (sessions.py _deduplicate_by_session_id), which is arbitrary on a tie.
     def deduplicate_sessions(sessions)
       by_id = {}
       sessions.each do |s|
         existing = by_id[s.session_id]
-        by_id[s.session_id] = s if existing.nil? || s.last_modified > existing.last_modified
+        by_id[s.session_id] = s if existing.nil? || (dedup_rank(s) <=> dedup_rank(existing)).positive?
       end
       by_id.values
+    end
+
+    def dedup_rank(session)
+      [session.last_modified, session.file_size.to_i]
     end
 
     # Probe git for the worktree list with a hard 5-second cap. A stale
@@ -1544,12 +1628,12 @@ module ClaudeAgentSDK
 
     private_class_method :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
-                         :deduplicate_sessions,
+                         :deduplicate_sessions, :dedup_rank,
                          :find_session_file, :stat_candidate, :resolve_subagents_dir,
                          :collect_agent_files, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :filter_visible_messages, :read_head_tail, :build_session_info, :user_entry_texts,
-                         :valid_session_id?, :valid_agent_id?, :listing_sort_key, :sidechain_head?,
+                         :valid_agent_id?, :sidechain_head?,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
                          :derive_info_from_entries, :mtime_from_entries, :apply_sort_limit_offset,
                          :filter_transcript_entries, :entries_to_messages,
@@ -1557,7 +1641,9 @@ module ClaudeAgentSDK
                          :import_subagent_files, :append_jsonl_file_in_batches, :collect_jsonl_files,
                          :read_agent_metadata_sidecar, :parent_ids_from_agent_metadata
 
-    # These remain accessible for SessionMutations:
-    # config_dir, sanitize_path, find_project_dir, detect_worktrees
+    # These remain accessible for SessionMutations / SessionResume:
+    # config_dir, sanitize_path, find_project_dir, detect_worktrees,
+    # valid_session_id? (mutation boundary checks), listing_sort_key
+    # (--continue candidate order)
   end
 end

@@ -8,12 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`ClaudeAgentSDK::ConfigDirError`** (a `ClaudeSDKError`), raised by the local-disk session APIs when the Claude config directory cannot be located: `CLAUDE_CONFIG_DIR` is unset and there is no usable home directory for the default `~/.claude`. Its message says to set `CLAUDE_CONFIG_DIR` (#120).
 - CI: a macOS leg (Ruby 3.4) for the main suite; simplecov coverage (`COVERAGE=1 bundle exec rspec`) on the Linux Ruby 3.4 leg, with line/branch totals in the job summary and the HTML report as an artifact; and a weekly real-CLI integration run (`.github/workflows/integration.yml`) against `CLIInstaller::PINNED_CLI_VERSION`, also triggered by PRs that touch the installer. Dependabot keeps the workflows' actions current.
 - `CONTRIBUTING.md`, `SECURITY.md`, and issue and pull request templates.
 
 ### Changed
 - `examples/rails_actioncable_example.rb` and `examples/rails_background_job_example.rb` use `ClaudeAgentSDK::Client.open` instead of hand-rolled `Async { connect … ensure disconnect }.wait`, matching `docs/rails.md`.
 - RuboCop targets Ruby 3.2, the gemspec floor (was 3.0). The resulting autocorrections (anonymous block forwarding, dropping `require 'set'`) change no behavior.
+
+### Fixed
+- **Session APIs on hosts without a home directory (#120).** With `CLAUDE_CONFIG_DIR` unset and `HOME` unset with no passwd entry (`docker --user` in a minimal image) or an empty/relative `HOME`:
+  - the local-disk session APIs (`list_sessions`, `get_session_*`, `list_subagents`, `rename_session` / `tag_session` / `delete_session` / `fork_session`, `import_session_to_store`) raise `ConfigDirError` instead of a bare `ArgumentError` from `~` expansion;
+  - a fresh session with a `session_store` no longer fails at connect. The transcript mirror cannot map the CLI's transcript files to store keys without a projects dir, so each unmappable batch is reported as a `MirrorErrorMessage` (with a `nil` key) and counted as dropped, while the session itself runs normally. `SessionStores.projects_dir` returns `nil` in this case instead of raising.
+- **Store-backed resume seeds auth and settings from the home the CLI subprocess will use (#120).** When `options.env` sets `HOME`, `.credentials.json`, `settings.json` / `cowork_settings.json` and `.claude.json` are now read from under that home, as `CLAUDE_CONFIG_DIR` already was, instead of the parent process's home. An empty or relative `HOME` there, or `HOME => nil`, counts as no home, so those files are skipped. The transcript mirror resolves the subprocess's default `~/.claude/projects` the same way, so a `HOME` override no longer sends every mirror frame down the "not under projects dir" drop path.
+- **Remaining disk/store session read inconsistencies (#121):**
+  - Store listings report `SDKSessionInfo#last_modified` as Integer epoch milliseconds, as documented, whatever shape the adapter's `mtime` has (ISO-8601 String, numeric String, Float, or now `Time`, e.g. an ActiveRecord `updated_at`). Previously only the ordering was coerced and the raw value leaked through. An unusable mtime (including non-finite numbers) reads as `0`, the value it already sorted by.
+  - `continue_conversation` with a `session_store` breaks equal-mtime ties by `session_id`, like the listings, instead of resuming whichever session the adapter listed first.
+  - `first_prompt` is `nil` on the disk path too (it was `''`) when a session has no prompt, matching the store path and the Python SDK.
+  - `cwd`: both paths take the first non-blank top-level `cwd`. The disk path took the first `cwd` even when empty (then fell back to the project path) and also matched `cwd` keys nested in tool inputs; the store fold now also skips whitespace-only values, so a sidecar no longer locks on one.
+  - `rename_session` / `tag_session` / `delete_session` / `fork_session` and their `_via_store` counterparts validate `session_id` (and `up_to_message_id`) at the boundary like the readers: a non-String id raises `ArgumentError` ("Invalid session_id") instead of `NoMethodError`.
+  - `list_sessions` deduplicates a session found in several project directories deterministically: newest `last_modified`, then the larger file, then the project directory that sorts first (the global scan now walks project directories in name order). Equal mtimes used to keep whichever copy the filesystem listed first.
 
 ## [0.35.0] - 2026-09-23
 
