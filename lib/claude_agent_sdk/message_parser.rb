@@ -5,6 +5,8 @@ require_relative 'errors'
 
 module ClaudeAgentSDK
   # Parse message from CLI output into typed Message objects
+  #
+  # @api private
   class MessageParser
     def self.parse(data)
       raise MessageParseError.new("Invalid message data type", data: data) unless data.is_a?(Hash)

@@ -12,16 +12,25 @@ require_relative 'cli_installer'
 module ClaudeAgentSDK
   # Subprocess transport using Claude Code CLI
   class SubprocessCLITransport < Transport
+    # @api private
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
+    # @api private
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
+    # @api private
     SKIP_VERSION_CHECK_ENV_VAR = 'CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'
+    # @api private
     CLI_PATH_ENV_VAR = 'CLAUDE_CLI_PATH'
+    # @api private
     VERSION_CHECK_TIMEOUT_SECONDS = 2 # mirrors Python's anyio.fail_after(2)
+    # @api private
     RECENT_STDERR_LINES_LIMIT = 20
     # After stdout EOF the child has closed (or lost) its last stdout handle,
     # so it is normally already exiting; a CLI still running this long
     # afterwards is wedged and gets the same TERM -> KILL ladder as #close.
+    #
+    # @api private
     EOF_EXIT_GRACE_SECONDS = 5
+    # @api private
     EOF_TERM_GRACE_SECONDS = 2
 
     # Track live CLI subprocesses so we can terminate them when the parent Ruby
@@ -39,27 +48,36 @@ module ClaudeAgentSDK
     # `self.class.register_active_process` would otherwise reach a nil mutex and
     # raise mid-#connect, orphaning the just-spawned child. The base-class
     # at_exit handler must be able to see every subprocess, a subclass's too.
+    #
+    # @api private
     ACTIVE_PROCESSES = Set.new
+    # @api private
     ACTIVE_PROCESSES_MUTEX = Mutex.new
 
     class << self
       # Public readers (the test suite uses `described_class.active_processes`);
       # they return the shared constants so subclasses observe the same objects.
+      #
+      # @api private
       def active_processes
         ACTIVE_PROCESSES
       end
 
+      # @api private
       def active_processes_mutex
         ACTIVE_PROCESSES_MUTEX
       end
 
       # +wait_thr+ is the Process::Waiter returned by Open3.popen3.
+      #
+      # @api private
       def register_active_process(wait_thr)
         return unless wait_thr
 
         active_processes_mutex.synchronize { active_processes.add(wait_thr) }
       end
 
+      # @api private
       def deregister_active_process(wait_thr)
         return unless wait_thr
 
@@ -79,6 +97,8 @@ module ClaudeAgentSDK
       # raises (e.g. ThreadError if reached from a trap context, or a
       # concurrent-modification error from the unlocked read), honoring the
       # "never interrupt interpreter shutdown" contract.
+      #
+      # @api private
       def kill_active_processes
         active_processes.to_a.each do |wait_thr|
           next unless wait_thr.alive?
@@ -134,6 +154,8 @@ module ClaudeAgentSDK
     #      whatever version happens to be installed globally on the host.
     #   3. `which claude`.
     #   4. Well-known install locations.
+    #
+    # @api private
     def find_cli
       env_path = ENV.fetch(CLI_PATH_ENV_VAR, nil).to_s
       unless env_path.empty?
@@ -209,6 +231,8 @@ module ClaudeAgentSDK
     # group. Gate on the carrier's traceparent key (the W3C propagator writes
     # it only for a valid span context) so a baggage-only carrier or a noop
     # propagator preserves inherited env.
+    #
+    # @api private
     def inject_otel_trace_context(process_env, custom_env)
       return unless defined?(OpenTelemetry) && OpenTelemetry.respond_to?(:propagation)
 
@@ -233,6 +257,7 @@ module ClaudeAgentSDK
       # Exception). ScriptError too: NotImplementedError < ScriptError.
     end
 
+    # @api private
     def build_command
       CommandBuilder.new(@cli_path, @options).build
     end
@@ -332,6 +357,7 @@ module ClaudeAgentSDK
       end
     end
 
+    # @api private
     def handle_stderr
       return unless @stderr
 
@@ -375,6 +401,7 @@ module ClaudeAgentSDK
       # Stream-level error (pipe closed mid-read); the loop naturally ends here.
     end
 
+    # @api private
     def drain_stderr_with_accumulation
       return unless @stderr
 
@@ -465,6 +492,8 @@ module ClaudeAgentSDK
     # graceful exit after stdin EOF, escalate TERM → KILL on timeout. Runs on
     # the reactor and suspends at several points; #close's ensure covers the
     # cancellation-abandoned case.
+    #
+    # @api private
     def teardown_process
       cleanup_errors = []
 
@@ -558,6 +587,8 @@ module ClaudeAgentSDK
     # left either way. The alive? guard also makes the delayed KILL
     # pid-reuse-safe: while the waiter thread reports alive (not yet reaped),
     # the pid cannot have been recycled.
+    #
+    # @api private
     def force_terminate_in_background(process, grace_seconds: 2)
       return unless process
 
@@ -598,6 +629,8 @@ module ClaudeAgentSDK
     # across threads via Thread#raise and corrupts Async fiber-scheduler state
     # (close is always called inside an Async task). Yields to the current
     # Async task when one is active so the reactor keeps running.
+    #
+    # @api private
     def wait_process_with_timeout(timeout_seconds, process = @process)
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
       task = defined?(Async::Task) ? Async::Task.current? : nil
@@ -613,6 +646,8 @@ module ClaudeAgentSDK
     # Process::Waiter#join(timeout): under a Fiber scheduler Ruby 3.2's
     # Thread#join ignores its timeout and never returns for a live thread
     # (probed on 3.2.0; 3.3/3.4 honor it).
+    #
+    # @api private
     def process_exited_within?(process, seconds)
       wait_process_with_timeout(seconds, process)
       true
@@ -865,6 +900,7 @@ module ClaudeAgentSDK
       )
     end
 
+    # @api private
     def check_claude_version
       # Mirrors Python's os.environ.get truthiness: any non-empty value skips,
       # including '0'/'false'/' '; unset or empty string runs the check.

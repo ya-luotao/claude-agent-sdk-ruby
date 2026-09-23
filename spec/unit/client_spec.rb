@@ -477,7 +477,7 @@ RSpec.describe ClaudeAgentSDK::Client do
     client = described_class.new
     client.connect
 
-    query_handler.instance_variable_set(:@initialization_result, { commands: ['help'] })
+    allow(query_handler).to receive(:initialization_result).and_return({ commands: ['help'] })
     expect(client.get_server_info).to eq({ commands: ['help'] })
   end
 

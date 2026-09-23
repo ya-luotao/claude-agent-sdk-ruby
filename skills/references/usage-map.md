@@ -5,7 +5,7 @@
 - RubyGems: `ruby -e 'puts Gem::Specification.find_by_name("claude-agent-sdk").full_gem_path'`
 - Open `<gem_path>/README.md` for the overview and minimal examples
 - Browse `<gem_path>/docs/*.md` for topic subpages (shipped with the gem since 0.16.7+)
-- Inspect `<gem_path>/lib/claude_agent_sdk/types.rb` and `<gem_path>/lib/claude_agent_sdk/errors.rb` for canonical types
+- Inspect `<gem_path>/lib/claude_agent_sdk/types/*.rb` and `<gem_path>/lib/claude_agent_sdk/errors.rb` for canonical types
 
 ## Documentation map
 

@@ -7,16 +7,21 @@ require_relative "types"
 module ClaudeAgentSDK
   # Builds the CLI argv array from a ClaudeAgentOptions instance.
   class CommandBuilder
+    # @api private
     EXTRA_ARG_FLAG_REGEXP = /\A[a-z0-9][a-z0-9-]*\z/
 
     # Parentheses and commas are delimiters to the --allowedTools tokenizer;
     # control characters (C0, DEL, C1) never appear in a skill directory name.
     # U+FEFF is here rather than in the whitespace checks below because the
     # CLI trims it as whitespace and [[:space:]] does not match it.
+    #
+    # @api private
     SKILL_NAME_INVALID_CHARS = /[(),\u0000-\u001F\u007F-\u009F\uFEFF]/
 
     # Unicode-aware edge whitespace: the CLI and Skill tool trim Unicode
     # whitespace, and Ruby's String#strip is ASCII-only.
+    #
+    # @api private
     SKILL_NAME_EDGE_WHITESPACE = /\A[[:space:]]+|[[:space:]]+\z/
 
     def initialize(cli_path, options)

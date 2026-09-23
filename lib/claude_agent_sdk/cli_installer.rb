@@ -30,16 +30,22 @@ module ClaudeAgentSDK
   #   ClaudeAgentSDK::CLIInstaller.install_pinned
   # @example Pin a version of your own
   #   ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')
-  module CLIInstaller
+  module CLIInstaller # rubocop:disable Metrics/ModuleLength
+    # @api private
     BASE_URL = 'https://downloads.claude.ai/claude-code-releases'
     # Dist-tags resolved through a GET to BASE_URL/<tag>.
+    #
+    # @api private
     DIST_TAGS = %w[stable latest].freeze
     # Concrete version, optionally with a pre-release suffix (e.g. 2.1.220-rc1).
     # The suffix is restricted to the semver pre-release character set: every
     # accepted version is interpolated straight into a download URL, and a
     # laxer `\S+` would let "2.1.220-x/../2.1.221" traverse out of the release
     # path — silently installing something other than the pinned version.
+    #
+    # @api private
     VERSION_PATTERN = /\A\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?\z/
+    # @api private
     CHECKSUM_PATTERN = /\A[0-9a-f]{64}\z/
     # The CLI version this gem release is developed and tested against — the
     # Ruby equivalent of the Python SDK's bundled-CLI pin (_cli_version.py),
@@ -48,24 +54,35 @@ module ClaudeAgentSDK
     # .github/workflows/cli-pin-bump.yml or a Python-sync release, so a
     # Dependabot bump of the gem carries the CLI forward with it.
     PINNED_CLI_VERSION = '2.1.280'
+    # @api private
     BINARY_NAME = 'claude'
+    # @api private
     VERSION_FILE = 'VERSION'
+    # @api private
     LOCK_FILE = '.install.lock'
     # Relative to .root (Dir.pwd when unset), resolved at CALL time by
     # .default_dir — an absolute constant would freeze the working directory
     # as of require time, which is wrong for anything that chdirs (Rake
     # tasks, bin/setup, test suites).
+    #
+    # @api private
     DEFAULT_DIR = File.join('vendor', 'claude')
     # Response caps. The dist-tag endpoints return a bare version string and
     # manifests are a few KB; anything larger is a misrouted response, not
     # something to buffer in memory. (The binary itself streams to disk.)
+    #
+    # @api private
     VERSION_RESPONSE_LIMIT = 1024
+    # @api private
     MANIFEST_RESPONSE_LIMIT = 5 * 1024 * 1024
+    # @api private
     METADATA_READ_LIMIT = 4096
 
     # Maps the running Ruby to a release-manifest platform key
     # (darwin-arm64, darwin-x64, linux-x64, linux-arm64, and the -musl
     # variants). Windows is not supported by this gem.
+    #
+    # @api private
     module Platform
       class << self
         def detect
@@ -123,6 +140,8 @@ module ClaudeAgentSDK
     # and chunked streaming for the binary. Knows nothing about releases; the
     # specs stub .fetch_text / .download_to wholesale so no HTTP stubbing
     # library is needed.
+    #
+    # @api private
     module Http
       MAX_REDIRECTS = 5
       OPEN_TIMEOUT_SECONDS = 10
@@ -205,6 +224,8 @@ module ClaudeAgentSDK
 
     # Talks to the release service: dist-tag resolution, manifest lookup and
     # URL construction. Pure remote reads — no filesystem, no state.
+    #
+    # @api private
     module Release
       class << self
         # Local, network-free check of what the caller asked for. Returns the
@@ -277,6 +298,8 @@ module ClaudeAgentSDK
     # per line. Both platform and checksum must match before trusting a cached
     # binary offline: a cache copied between OS/CPU/libc targets is not usable.
     # Older one- or two-line files lack that proof and trigger a clean reinstall.
+    #
+    # @api private
     module Metadata
       class << self
         def read(dir)

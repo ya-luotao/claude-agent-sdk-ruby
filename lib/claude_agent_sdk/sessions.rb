@@ -83,6 +83,8 @@ module ClaudeAgentSDK
   end
 
   # Session browsing functions
+  #
+  # @api private
   module Sessions # rubocop:disable Metrics/ModuleLength
     LITE_READ_BUF_SIZE = 65_536
     MAX_SANITIZED_LENGTH = 200

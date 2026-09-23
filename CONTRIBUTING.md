@@ -57,6 +57,25 @@ CI runs the unit suite and RuboCop on Ruby 3.2, 3.3 and 3.4 (Linux), the unit su
 - **Update the docs** when you change public behavior: `docs/`, the README, and YARD comments on the methods you touched.
 - `bundle exec rake` must pass. New code follows the existing conventions: plain classes with `attr_accessor` and keyword arguments, `to_h` emitting camelCase for the CLI, user callbacks dispatched through `FiberBoundary.invoke`, and RSpec's `expect` syntax.
 
+### What is public API
+
+From 1.0 on, SemVer covers everything documented in `docs/` and the README, plus every class, module, method and constant that appears in the YARD docs. Anything tagged `@api private` is excluded: it is hidden from the generated docs (`.yardopts` passes `--hide-api private`) and can change or disappear in any release. It stays callable at runtime; the tag is documentation only.
+
+When you add an internal (a helper module, a constant, a method the SDK calls on itself), tag it:
+
+```ruby
+# Explains what the helper does.
+#
+# @api private
+module SomeInternalHelper
+```
+
+- Put `@api private` on a line of its own. `# @api private Called by Query` sets the API name to "private Called by Query", which the filter doesn't hide.
+- A tag on a class or module covers everything nested inside it, so one tag hides a whole internal namespace.
+- Every constant needs its own tag. A comment attaches only to the constant directly below it.
+- If a class is public but some of its methods aren't (as with `SubprocessCLITransport`), tag those methods one by one.
+- To check the result, run `bundle exec yard list` and confirm that the object you tagged is gone from the list.
+
 ### Porting from the Python SDK
 
 Much of this gem tracks the official [Python SDK](https://github.com/anthropics/claude-agent-sdk-python). When you port a feature or fix from it:

@@ -290,6 +290,8 @@ module ClaudeAgentSDK
   end
 
   # Internal SessionStore support functions (path mapping, option validation).
+  #
+  # @api private
   module SessionStores
     STORE_CALLBACK_SCHEDULING_MODES = %i[thread inline].freeze
 
