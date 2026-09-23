@@ -81,6 +81,19 @@ module ClaudeAgentSDK
   # This class wraps the official MCP Ruby SDK and provides a simpler block-based
   # API for defining tools, resources, and prompts.
   class SdkMcpServer
+    # The gem validates arguments before injecting its server_context keyword.
+    # Guard actual keys here, independent of schema composition/$ref support,
+    # and retain this guard even when schema validation falls back to permissive.
+    class ToolInputSchema < MCP::Tool::InputSchema
+      def validate_arguments(arguments)
+        if arguments.is_a?(Hash) && (arguments.key?(:server_context) || arguments.key?('server_context'))
+          raise ValidationError, "Tool argument 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
+        end
+
+        super
+      end
+    end
+
     attr_reader :name, :version, :tools, :resources, :prompts, :mcp_server
 
     # Default for where user handlers run when this server is invoked
@@ -378,6 +391,15 @@ module ClaudeAgentSDK
       # mode at call time — same pattern as prompt classes.
       sdk_server = self
       tools.map do |tool_def|
+        # The gem injects server_context AFTER expanding the tool arguments,
+        # overwriting a user value before our call method can recover it.
+        # Check at registration (including raw SdkMcpTool definitions), not in
+        # input_schema_value's permissive schema-error fallback.
+        schema = ClaudeAgentSDK.normalize_tool_schema(tool_def.input_schema)
+        if schema[:properties]&.key?(:server_context)
+          raise ArgumentError, "Tool '#{tool_def.name}' input property 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
+        end
+
         # Create a new class that extends MCP::Tool
         Class.new(MCP::Tool) do
           @tool_def = tool_def
@@ -409,11 +431,11 @@ module ClaudeAgentSDK
                 schema = ClaudeAgentSDK.normalize_tool_schema(@tool_def.input_schema)
                 schema = schema.except(:required) if schema[:required].is_a?(Array) && schema[:required].empty?
                 begin
-                  MCP::Tool::InputSchema.new(schema)
+                  ToolInputSchema.new(schema)
                 rescue ArgumentError => e
                   warn "Claude SDK: tool '#{@tool_def.name}' schema not draft4-compatible " \
                        "(#{e.message.lines.first&.strip}); argument validation disabled for this tool"
-                  MCP::Tool::InputSchema.new({ type: 'object', properties: {} })
+                  ToolInputSchema.new({ type: 'object', properties: {} })
                 end
               end
             end
