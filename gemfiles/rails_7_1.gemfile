@@ -1,0 +1,19 @@
+# frozen_string_literal: true
+
+# CI Rails leg, the OLDEST supported Rails (see the `rails` job in
+# .github/workflows/ci.yml; rails_8.gemfile is the newest). 7.1 is the floor
+# because the generated initializer's callback wrapper relies on
+# `config.reloading_enabled?` and the role-taking
+# `clear_active_connections!(:all)`, both 7.1 APIs. Runs only spec/rails:
+#
+#   BUNDLE_GEMFILE=gemfiles/rails_7_1.gemfile bundle exec rspec --options spec/rails/.rspec
+#
+# Loaded through `path:` (runtime dependencies only, no dev/RuboCop deps).
+
+source 'https://rubygems.org'
+
+gem 'claude-agent-sdk', path: '..'
+
+gem 'railties', '~> 7.1.0'
+
+gem 'rspec', '~> 3.0'

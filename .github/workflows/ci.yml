@@ -63,3 +63,38 @@ jobs:
 
       - name: Run tests
         run: bundle exec rspec
+
+  # Rails integration (Railtie, rake tasks, generator, callback wrapper) on
+  # the oldest supported Rails with the oldest Ruby and the newest Rails with
+  # the newest Ruby. spec/rails only, in its own process: railties and
+  # ActiveSupport patch core classes, so the root .rspec excludes spec/rails
+  # from the main run and `--options spec/rails/.rspec` replaces it here. See
+  # gemfiles/rails_*.gemfile.
+  rails:
+    name: rails (${{ matrix.gemfile }}, Ruby ${{ matrix.ruby-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - gemfile: rails_7_1
+            ruby-version: '3.2'
+          - gemfile: rails_8
+            ruby-version: '3.4'
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.gemfile }}.gemfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby ${{ matrix.ruby-version }}
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler-cache: true
+
+      - name: Show resolved Rails
+        run: bundle list | grep -E ' (railties|activesupport) '
+
+      - name: Run Rails integration specs
+        run: bundle exec rspec --options spec/rails/.rspec
