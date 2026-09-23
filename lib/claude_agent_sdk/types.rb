@@ -257,13 +257,13 @@ module ClaudeAgentSDK
       end
     end
 
-    def inspect_container(value, open, close, depth, seen, &render)
+    def inspect_container(value, open, close, depth, seen, &)
       return "#{open}#{close}" if value.empty?
       return "#{open}…(#{value.size})#{close}" if depth > INSPECT_MAX_DEPTH || seen.key?(value)
 
       seen[value] = true
       begin
-        parts = value.first(INSPECT_MAX_ITEMS).map(&render)
+        parts = value.first(INSPECT_MAX_ITEMS).map(&)
         parts << "…(+#{value.size - INSPECT_MAX_ITEMS} more)" if value.size > INSPECT_MAX_ITEMS
         "#{open}#{parts.join(', ')}#{close}"
       ensure

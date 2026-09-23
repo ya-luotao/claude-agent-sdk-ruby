@@ -23,6 +23,14 @@ module ClaudeAgentSDK
   # missing manifest entry, checksum mismatch).
   class CLIInstallError < ClaudeSDKError; end
 
+  # Raised by the local-disk session APIs (list_sessions, get_session_*,
+  # rename/tag/delete/fork_session, import_session_to_store) when the Claude
+  # config directory cannot be located: CLAUDE_CONFIG_DIR is unset and there
+  # is no usable home directory for the default ~/.claude (HOME unset with no
+  # passwd entry, as under `docker --user` in a minimal image, or an empty or
+  # relative HOME). Set CLAUDE_CONFIG_DIR to fix it.
+  class ConfigDirError < ClaudeSDKError; end
+
   # Raised when the CLI process fails
   class ProcessError < ClaudeSDKError
     attr_reader :exit_code, :stderr

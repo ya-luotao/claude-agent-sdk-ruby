@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require 'set'
-
 module ClaudeAgentSDK
   # Advisory warnings for option combinations that silently change behavior.
   module OptionWarnings

@@ -104,6 +104,10 @@ class CLINotFoundError < CLIConnectionError
   # @param cli_path [String, nil] Optional path to the CLI that was not found
 end
 
+# Raised by the local-disk session APIs when CLAUDE_CONFIG_DIR is unset and
+# no usable home directory exists for the default ~/.claude
+class ConfigDirError < ClaudeSDKError; end
+
 # Raised when the Claude Code process fails
 class ProcessError < ClaudeSDKError
   attr_reader :exit_code,  # Integer | nil
@@ -141,6 +145,7 @@ end
 | `CLIConnectionError` | Connection issues — including every write after a stdin write was cancelled mid-frame (the connection is unusable from then on — reconnect), and `ClaudeAgentSDK.ask` when the stream ends without a `ResultMessage` |
 | `ControlRequestTimeoutError` | Control protocol timeout (configurable via env var) |
 | `CLINotFoundError` | Claude Code not installed |
+| `ConfigDirError` | A local-disk session API (`list_sessions`, `get_session_*`, `rename_session`, ...) could not locate the Claude config directory: `CLAUDE_CONFIG_DIR` is unset and there is no usable home directory (`HOME` unset with no passwd entry, as under `docker --user` in a minimal image, or an empty/relative `HOME`). Set `CLAUDE_CONFIG_DIR` |
 | `ProcessError` | Process failed (includes `exit_code` and `stderr`) — also raised when the CLI is still running 5s after closing stdout and the SDK had to terminate it |
 | `ResultError` | Run ended on a terminal error result (subclasses `ProcessError`; adds `subtype`, `errors`, `api_error_status`, `terminal_reason`, ...) — rescue it first |
 | `CLIJSONDecodeError` | JSON parsing issues — including stdout ending mid-frame (a truncated final message; `line` holds the partial frame) |

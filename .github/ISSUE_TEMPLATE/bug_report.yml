@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in the gem doesn't work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For a security vulnerability, **don't open an issue**; see [SECURITY.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/SECURITY.md).
+        If the Claude Code CLI itself misbehaves in the same way when you run `claude` directly, report it to [anthropics/claude-code](https://github.com/anthropics/claude-code/issues) instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead. Paste the full error and backtrace if there is one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: The smallest script or failing spec that shows the problem. A failing RSpec example is ideal. Remove API keys and other secrets.
+      render: ruby
+    validations:
+      required: true
+
+  - type: input
+    id: gem-version
+    attributes:
+      label: Gem version
+      description: "`bundle exec ruby -e 'require \"claude_agent_sdk\"; puts ClaudeAgentSDK::VERSION'`"
+      placeholder: 0.35.0
+    validations:
+      required: true
+
+  - type: input
+    id: cli-version
+    attributes:
+      label: Claude Code CLI version
+      description: "`claude --version`, or the vendored binary's (`vendor/claude/claude --version`)"
+      placeholder: 2.1.280 (Claude Code)
+    validations:
+      required: true
+
+  - type: input
+    id: ruby-version
+    attributes:
+      label: Ruby version and platform
+      description: "`ruby -v`"
+      placeholder: ruby 3.4.5 [arm64-darwin24]
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Anything else about the environment
+      description: Rails version, job backend (Sidekiq, Solid Queue, ...), `callback_scheduling` mode, custom transport, Docker image, and so on.

@@ -52,6 +52,28 @@ RSpec.describe 'ClaudeAgentSDK.query with session_store' do
       expect(captured).to be_a(ClaudeAgentSDK::TranscriptMirrorBatcher)
     end
 
+    it 'installs the batcher for a fresh session on a host without a resolvable home (#120)' do
+      # No CLAUDE_CONFIG_DIR and no usable home: the projects dir is unknown.
+      # Resolving it raised from `~` expansion and aborted the whole query;
+      # now the batcher is built without one and reports the unmappable
+      # frames as MirrorErrorMessage instead.
+      # An empty HOME is a real (unstubbed) way to get here: `~` expansion
+      # raises "non-absolute home".
+      previous_home = ENV.fetch('HOME', nil) # rubocop:disable Style/EnvHome -- raw value; nil when unset
+      previous_config = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
+      ENV['HOME'] = ''
+      ENV.delete('CLAUDE_CONFIG_DIR')
+      captured = nil
+      allow(query_handler).to receive(:set_transcript_mirror_batcher) { |b| captured = b }
+
+      ClaudeAgentSDK.query(prompt: 'hi', options: ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store)) { nil }
+
+      expect(captured).to be_a(ClaudeAgentSDK::TranscriptMirrorBatcher)
+    ensure
+      previous_home.nil? ? ENV.delete('HOME') : (ENV['HOME'] = previous_home)
+      previous_config.nil? ? ENV.delete('CLAUDE_CONFIG_DIR') : (ENV['CLAUDE_CONFIG_DIR'] = previous_config)
+    end
+
     it 'does not install a batcher when no session_store is set' do
       allow(query_handler).to receive(:set_transcript_mirror_batcher)
       ClaudeAgentSDK.query(prompt: 'hi', options: ClaudeAgentSDK::ClaudeAgentOptions.new) { nil }

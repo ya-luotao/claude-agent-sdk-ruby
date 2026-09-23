@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/ya-luotao/claude-agent-sdk-ruby/security/advisories/new
+    about: Please report vulnerabilities in this gem privately, not as a public issue. See SECURITY.md.
+  - name: Claude Code CLI bugs
+    url: https://github.com/anthropics/claude-code/issues
+    about: Problems with the `claude` CLI itself (not this gem's wrapper around it) belong in Anthropic's Claude Code repository.

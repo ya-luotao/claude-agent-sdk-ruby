@@ -20,7 +20,8 @@ module ClaudeAgentSDK
       cancelled?
     end
 
-    # @api private Called by the SDK when the request is no longer actionable.
+    # Called by the SDK when the request is no longer actionable.
+    # @api private
     def cancel
       @queue.close
     end

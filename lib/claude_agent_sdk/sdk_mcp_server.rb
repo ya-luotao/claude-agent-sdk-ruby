@@ -4,6 +4,7 @@ require 'mcp'
 
 module ClaudeAgentSDK
   # Recursively convert all hash keys to symbols
+  # @api private
   def self.deep_symbolize_keys(obj)
     case obj
     when Hash then obj.transform_keys(&:to_sym).transform_values { |v| deep_symbolize_keys(v) }
@@ -15,6 +16,7 @@ module ClaudeAgentSDK
   # Like deep_symbolize_keys, but also converts Symbol VALUES to strings so a
   # prebuilt schema written with symbols ({ type: :object, ... }) emits clean
   # wire-format JSON Schema.
+  # @api private
   def self.deep_normalize_schema(obj)
     case obj
     when Hash then obj.transform_keys(&:to_sym).transform_values { |v| deep_normalize_schema(v) }
@@ -34,6 +36,7 @@ module ClaudeAgentSDK
   # mangled into nonsense parameter lists ("additionalProperties" as a
   # required string param). A $ref-only schema without type: 'object' remains
   # indistinguishable from a params hash — declare the type alongside $ref.
+  # @api private
   def self.prebuilt_json_schema?(schema)
     return false unless schema.is_a?(Hash)
 
@@ -47,6 +50,7 @@ module ClaudeAgentSDK
   # Single source of truth for tool input schemas: prebuilt schemas are
   # normalized (symbol keys, string values); simple { name: :type } hashes
   # become a full JSON Schema with every param required (string keys).
+  # @api private
   def self.normalize_tool_schema(schema)
     return deep_normalize_schema(schema) if prebuilt_json_schema?(schema)
 
@@ -60,6 +64,7 @@ module ClaudeAgentSDK
     { type: 'object', properties: {} }
   end
 
+  # @api private
   def self.ruby_type_to_json_schema(type)
     # Class#=== matches instances, not the class object used in { id: Integer }.
     type = { String => :string, Integer => :integer, Float => :float, TrueClass => :boolean, FalseClass => :boolean }.fetch(type, type)
