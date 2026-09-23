@@ -39,12 +39,16 @@ RSpec.describe ClaudeAgentSDK::Query do
     it 'delivers queued messages until the end sentinel' do
       query = described_class.new(transport: mock_transport, is_streaming_mode: true)
       queue = query.instance_variable_get(:@message_queue)
-      queue.enqueue({ type: 'assistant' })
-      queue.enqueue({ type: 'result' })
-      queue.enqueue({ type: 'end' })
-
       seen = []
-      Async { query.receive_messages { |m| seen << m[:type] } }.wait
+      # Enqueue inside the reactor, as the read loop does: async < 2.29
+      # raises "No async task available!" for an Async::Queue#enqueue outside
+      # one (exercised by the floor-dependency CI leg).
+      Async do
+        queue.enqueue({ type: 'assistant' })
+        queue.enqueue({ type: 'result' })
+        queue.enqueue({ type: 'end' })
+        query.receive_messages { |m| seen << m[:type] }
+      end.wait
       expect(seen).to eq(%w[assistant result])
     end
 
@@ -55,10 +59,10 @@ RSpec.describe ClaudeAgentSDK::Query do
     it 'propagates StopIteration raised by the user block instead of faking completion' do
       query = described_class.new(transport: mock_transport, is_streaming_mode: true)
       queue = query.instance_variable_get(:@message_queue)
-      queue.enqueue({ type: 'assistant' })
-      queue.enqueue({ type: 'end' })
 
       Async do
+        queue.enqueue({ type: 'assistant' }) # inside the reactor; see above
+        queue.enqueue({ type: 'end' })
         expect do
           query.receive_messages { |_m| [].each.next } # exhausted Enumerator → StopIteration
         end.to raise_error(StopIteration)

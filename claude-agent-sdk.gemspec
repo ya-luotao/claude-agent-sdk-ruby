@@ -22,29 +22,45 @@ Gem::Specification.new do |spec|
 
   # Ship only git-tracked files: a working-tree Dir glob would package any
   # stray/untracked files under lib/ or docs/ present at build time (a stray
-  # lib/*.rb even becomes requireable code in the released gem). Fall back to
-  # the glob when git is unavailable (e.g. building from a source tarball).
+  # lib/*.rb even becomes requireable code in the released gem). Releases are
+  # built from a git checkout (publish.yml), so this is the path that matters.
+  #
+  # Without git (a source tarball, or a Bundler `path:` source in a git-less
+  # container) fall back to a glob restricted to the file types git ships —
+  # spec/unit/gemspec_spec.rb asserts both select the same set. Not a hard
+  # failure: Bundler evaluates this file for path/git-sourced consumers, and
+  # raising here would break their bundle, not just a release build.
   tracked = begin
     IO.popen(%w[git ls-files -z lib docs README.md LICENSE CHANGELOG.md],
              chdir: __dir__, err: File::NULL, &:read).split("\x0")
   rescue SystemCallError
     []
   end
-  spec.files = tracked.empty? ? Dir['lib/**/*', 'docs/**/*', 'README.md', 'LICENSE', 'CHANGELOG.md'] : tracked
+  spec.files = if tracked.empty?
+                 Dir.glob(['lib/**/*.rb', 'docs/**/*.md', 'README.md', 'LICENSE', 'CHANGELOG.md'], base: __dir__)
+               else
+                 tracked
+               end
   spec.require_paths = ['lib']
 
   # Runtime dependencies
-  spec.add_dependency 'async', '~> 2.0'
-  # >= 0.20: first release on json_schemer. <= 0.19 validates through the
-  # json-schema gem, whose JSON.parse(s, quirks_mode: true) raises under
-  # json 3.x (strict keywords) and fails every SDK MCP tools/call — and a
-  # fresh bundle resolves json 3.x via async -> console -> json.
+  # >= 2.6.4: the oldest release the suite passes on (gemfiles/floor.gemfile
+  # pins it in CI). 2.0.x cannot run on Ruby 3.2+ at all (its scheduler
+  # io_write hook has the wrong arity), and releases before 2.6.4 break
+  # HookMatcher timeouts and pending-control-request error delivery.
+  spec.add_dependency 'async', '>= 2.6.4', '< 3'
+  # >= 0.22: 0.19 and older validate through the json-schema gem, whose
+  # JSON.parse(s, quirks_mode: true) raises under json 3.x (strict keywords)
+  # and fails every SDK MCP tools/call — and a fresh bundle resolves json 3.x
+  # via async -> console -> json; 0.20/0.21 (the first json_schemer releases)
+  # fail every tools/call of a tool whose input_schema uses
+  # `$ref: '#/$defs/...'`.
   # tools/call error envelopes are normalized to in-band isError by the SDK
   # itself, and handler exceptions are rescued inside the SDK's tool class
   # (1.2+ redacts e.message from its own error text, CWE-209), so the gem's
   # per-version error behavior swings don't leak through.
   # < 2: the suite is verified against every 1.x release through 1.6.0.
-  spec.add_dependency 'mcp', '>= 0.20', '< 2'
+  spec.add_dependency 'mcp', '>= 0.22', '< 2'
 
   # Development dependencies
   spec.add_development_dependency 'bundler', '~> 2.0'

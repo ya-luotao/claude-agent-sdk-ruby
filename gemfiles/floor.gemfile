@@ -1,0 +1,19 @@
+# frozen_string_literal: true
+
+# CI dependency leg: the OLDEST runtime dependencies the SDK supports (see the
+# `deps` job in .github/workflows/ci.yml), so a stale floor fails CI instead of
+# the first user whose bundle resolves it. Transitive dependencies resolve
+# normally. Keep these pins in lockstep with the add_dependency floors in
+# claude-agent-sdk.gemspec.
+#
+# Loaded through `path:` (runtime dependencies only, no dev/RuboCop deps);
+# runs rspec alone — lint stays on the main leg.
+
+source 'https://rubygems.org'
+
+gem 'claude-agent-sdk', path: '..'
+
+gem 'async', '2.6.4'
+gem 'mcp', '0.22.0'
+
+gem 'rspec', '~> 3.0'

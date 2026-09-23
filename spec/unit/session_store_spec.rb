@@ -184,8 +184,10 @@ RSpec.describe ClaudeAgentSDK::InMemorySessionStore do
     it 'monotonic mtimes: back-to-back appends produce strictly increasing mtimes' do
       store.append({ 'project_key' => 'p', 'session_id' => 'a' }, [{ 'type' => 'user' }])
       store.append({ 'project_key' => 'p', 'session_id' => 'b' }, [{ 'type' => 'user' }])
-      mtimes = store.list_sessions('p').map { |s| s['mtime'] }
-      expect(mtimes.uniq.length).to eq(2)
+      # Other specs order sessions by append order on the strength of this
+      # guarantee instead of sleeping between appends.
+      mtimes = store.list_sessions('p').to_h { |s| [s['session_id'], s['mtime']] }
+      expect(mtimes['b']).to be > mtimes['a']
     end
 
     it 'list_session_summaries returns copies; mutating one does not corrupt the store' do

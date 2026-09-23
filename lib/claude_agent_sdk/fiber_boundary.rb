@@ -212,8 +212,15 @@ module ClaudeAgentSDK
         return with_cooperative_timeout(task, timeout, on_timeout: expired) { body.call }
       end
 
-      thread = Thread.new(&capture_otel_context(&body))
-      thread.report_on_exception = false
+      work = capture_otel_context(&body)
+      thread = Thread.new do
+        # The caller re-raises the failure via #value, so the default report
+        # would be a duplicate stderr dump. Set as the thread's FIRST
+        # statement: assigning it from the caller after Thread.new races a
+        # body that raises before the caller gets scheduled again.
+        Thread.current.report_on_exception = false
+        work.call
+      end
       return thread.value if timeout.nil?
       raise JoinTimeout, "timed out after #{timeout}s" unless thread.join(timeout)
 
