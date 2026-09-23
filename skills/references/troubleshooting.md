@@ -6,7 +6,7 @@ Symptoms:
 - `ClaudeAgentSDK::CLINotFoundError`
 
 Fix:
-- Install Claude Code CLI (Node.js required), or vendor a pinned binary with `ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')` (downloads into `vendor/claude/`; discovery prefers it over `PATH` — since 0.30.0).
+- Install Claude Code CLI (Node.js required), or vendor a pinned binary with `ClaudeAgentSDK::CLIInstaller.install_pinned` (0.34.0+; installs the CLI version the gem release was tested against, `CLIInstaller::PINNED_CLI_VERSION`) or `CLIInstaller.install(version: 'x.y.z')` for a concrete pin of your own (`'stable'`, the default, and `'latest'` are floating dist-tags that re-resolve on every install). Downloads into `vendor/claude/`; discovery prefers it over `PATH` — since 0.30.0.
 - If the CLI is installed in a non-standard path, set `ClaudeAgentSDK::ClaudeAgentOptions#cli_path` (see `references/options.md`) or the `CLAUDE_CLI_PATH` environment variable.
 
 ## Control requests timing out

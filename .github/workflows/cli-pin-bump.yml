@@ -1,0 +1,65 @@
+# Tracks the Python SDK's bundled-CLI pin (src/claude_agent_sdk/_cli_version.py
+# on anthropics/claude-agent-sdk-python main) and opens a PR moving
+# PINNED_CLI_VERSION in lib/claude_agent_sdk/cli_installer.rb when it changes.
+# That constant is the pin's single source of truth, so this workflow touches
+# exactly one line; the CHANGELOG entry and the follow-up patch release (which
+# is what Dependabot consumers actually see) stay human decisions.
+#
+# Requirements:
+# - Repo setting: Settings → Actions → General → "Allow GitHub Actions to
+#   create and approve pull requests" must be enabled.
+# - PRs opened with the default GITHUB_TOKEN do not trigger CI workflows.
+#   Either set a classic/fine-grained PAT in secrets.CLI_PIN_BUMP_TOKEN
+#   (preferred), or close-and-reopen the PR to kick CI off.
+name: Bump pinned CLI version
+
+on:
+  schedule:
+    # Weekday mornings UTC; scheduled workflows are auto-disabled after 60
+    # days without repo activity — workflow_dispatch stays available.
+    - cron: '17 6 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read upstream pin
+        id: upstream
+        run: |
+          version=$(curl -fsSL https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/main/src/claude_agent_sdk/_cli_version.py \
+            | sed -n 's/^__cli_version__ = "\([0-9][0-9.A-Za-z-]*\)"$/\1/p')
+          if [ -z "$version" ]; then
+            echo "Could not parse _cli_version.py — upstream format changed?" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Apply pin
+        run: |
+          sed -i "s/^\(    PINNED_CLI_VERSION = \)'[^']*'/\1'${{ steps.upstream.outputs.version }}'/" \
+            lib/claude_agent_sdk/cli_installer.rb
+          # A silent sed no-op must fail loudly, not open an empty PR.
+          grep -q "PINNED_CLI_VERSION = '${{ steps.upstream.outputs.version }}'" \
+            lib/claude_agent_sdk/cli_installer.rb
+
+      # No-ops (creates no PR) when the tree is unchanged, i.e. already current.
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.CLI_PIN_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+          branch: chore/bump-pinned-cli
+          commit-message: "Bump PINNED_CLI_VERSION to ${{ steps.upstream.outputs.version }}"
+          title: "Bump PINNED_CLI_VERSION to ${{ steps.upstream.outputs.version }}"
+          body: |
+            Tracks `_cli_version.py` on anthropics/claude-agent-sdk-python `main`.
+
+            Only the pin moves. After merging, cut a patch release so gem
+            consumers (e.g. Dependabot-driven Docker builds using
+            `CLIInstaller.install_pinned`) pick the new CLI up.

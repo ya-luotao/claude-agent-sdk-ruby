@@ -26,7 +26,9 @@ module ClaudeAgentSDK
   # Stdlib only (net/http, json, digest, fileutils, rbconfig) — the gem gains
   # no runtime dependency for this.
   #
-  # @example Pin a version in bin/setup or a Dockerfile build step
+  # @example Install the gem's tested version in bin/setup or a Dockerfile build step
+  #   ClaudeAgentSDK::CLIInstaller.install_pinned
+  # @example Pin a version of your own
   #   ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')
   module CLIInstaller
     BASE_URL = 'https://downloads.claude.ai/claude-code-releases'
@@ -39,6 +41,13 @@ module ClaudeAgentSDK
     # path — silently installing something other than the pinned version.
     VERSION_PATTERN = /\A\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?\z/
     CHECKSUM_PATTERN = /\A[0-9a-f]{64}\z/
+    # The CLI version this gem release is developed and tested against — the
+    # Ruby equivalent of the Python SDK's bundled-CLI pin (_cli_version.py),
+    # except nothing is shipped inside the gem; +install_pinned+ downloads it.
+    # Single source of truth: bumped here (and only here) by
+    # .github/workflows/cli-pin-bump.yml or a Python-sync release, so a
+    # Dependabot bump of the gem carries the CLI forward with it.
+    PINNED_CLI_VERSION = '2.1.280'
     BINARY_NAME = 'claude'
     VERSION_FILE = 'VERSION'
     LOCK_FILE = '.install.lock'
@@ -346,6 +355,14 @@ module ClaudeAgentSDK
         # a read-only mount) reach callers as CLIInstallError like every other
         # install failure; `cause` keeps the original for debugging.
         raise CLIInstallError, "Failed to install the Claude Code CLI into #{dir}: #{e.class}: #{e.message}"
+      end
+
+      # Install PINNED_CLI_VERSION — the version this gem release was tested
+      # against. The Dockerfile / bin/setup form of "pin the tested pair":
+      # bumping the gem moves the CLI with it, with no version literal in the
+      # caller to keep in sync.
+      def install_pinned(dir: nil)
+        install(version: PINNED_CLI_VERSION, dir: dir)
       end
 
       # Path of an already-installed binary, or nil.

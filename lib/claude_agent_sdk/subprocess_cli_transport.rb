@@ -197,7 +197,7 @@ module ClaudeAgentSDK
         "\n\nOr provide the path via ClaudeAgentOptions:\n" \
         "  ClaudeAgentOptions.new(cli_path: '/path/to/claude')" \
         "\n\nFor hermetic deploys (Docker/CI), vendor a pinned CLI into the project:\n" \
-        "  ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')" \
+        "  ClaudeAgentSDK::CLIInstaller.install_pinned  # installs #{CLIInstaller::PINNED_CLI_VERSION}" \
         "\n\nOr point the SDK at an existing binary:\n" \
         "  export #{CLI_PATH_ENV_VAR}=/path/to/claude"
       )
