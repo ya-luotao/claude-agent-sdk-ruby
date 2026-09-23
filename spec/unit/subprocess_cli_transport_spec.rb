@@ -549,12 +549,74 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
 
     it 'mentions the installer and CLAUDE_CLI_PATH when nothing is found' do
-      allow(File).to receive(:exist?).and_call_original
-      allow(File).to receive(:exist?).with(a_string_matching(/claude/)).and_return(false)
+      allow(File).to receive(:file?).and_call_original
+      allow(File).to receive(:file?).with(a_string_matching(/claude/)).and_return(false)
 
       expect { transport.find_cli }.to raise_error(
         ClaudeAgentSDK::CLINotFoundError, /CLIInstaller\.install.*CLAUDE_CLI_PATH/m
       )
+    end
+
+    context 'with the well-known install locations' do
+      around do |example|
+        previous_home = ENV.fetch('HOME', nil) # rubocop:disable Style/EnvHome -- raw value; nil when unset
+        example.run
+      ensure
+        previous_home.nil? ? ENV.delete('HOME') : (ENV['HOME'] = previous_home)
+      end
+
+      # The one non-home location is host-global; keep the host's real
+      # install (if any) from deciding these examples.
+      before do
+        allow(File).to receive(:file?).and_call_original
+        allow(File).to receive(:file?).with('/usr/local/bin/claude').and_return(false)
+      end
+
+      def home_install(mode)
+        path = File.join(tmp_dir, '.claude', 'local', 'claude')
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "#!/bin/sh\n")
+        File.chmod(mode, path)
+        path
+      end
+
+      it 'finds an executable at a home-relative location' do
+        ENV['HOME'] = tmp_dir
+        path = home_install(0o755)
+
+        expect(transport.find_cli).to eq(path)
+      end
+
+      it 'skips a non-executable file so discovery ends in CLINotFoundError (#72)' do
+        # Accepting it deferred the failure to spawn as a raw Errno::EACCES,
+        # without the install/vendor instructions CLINotFoundError carries.
+        ENV['HOME'] = tmp_dir
+        home_install(0o644)
+
+        expect { transport.find_cli }.to raise_error(ClaudeAgentSDK::CLINotFoundError)
+      end
+
+      it 'skips home-relative locations when the home directory cannot be resolved (#82)' do
+        # HOME unset with no passwd entry for the uid (docker --user in a
+        # minimal image): Dir.home raises ArgumentError. Stubbed because the
+        # host's passwd fallback would otherwise resolve a home.
+        ENV.delete('HOME')
+        allow(Dir).to receive(:home).and_raise(ArgumentError, "couldn't find home for uid `4242'")
+
+        expect { transport.find_cli }.to raise_error(ClaudeAgentSDK::CLINotFoundError)
+      end
+
+      it 'skips home-relative locations when HOME is relative (#82)' do
+        # Dir.home returns a relative HOME verbatim; probing under it would
+        # validate a path relative to the process cwd and hand back a path the
+        # spawn (chdir: options.cwd) resolves somewhere else.
+        home_install(0o755)
+        ENV['HOME'] = '.'
+
+        Dir.chdir(tmp_dir) do
+          expect { transport.find_cli }.to raise_error(ClaudeAgentSDK::CLINotFoundError)
+        end
+      end
     end
   end
 
@@ -1881,6 +1943,36 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       described_class.new('hi', ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude'))
     end
 
+    [false, true].each do |ignore_term|
+      it "deregisters a reaped fallback child (ignores TERM: #{ignore_term})" do
+        script = "#{"trap('TERM', 'IGNORE');" if ignore_term} STDOUT.sync = true; puts 'ready'; sleep 60"
+        stdin, stdout, stderr, waiter = Open3.popen3(RbConfig.ruby, '-e', script)
+        expect(stdout.gets).to eq("ready\n")
+        described_class.register_active_process(waiter)
+
+        worker = bare_transport.force_terminate_in_background(waiter, grace_seconds: 0.05)
+        expect(worker.join(2)).not_to be_nil
+        expect(waiter.join(1)).not_to be_nil
+        expect(waiter.value.termsig).to eq(Signal.list.fetch(ignore_term ? 'KILL' : 'TERM'))
+        expect(described_class.active_processes).not_to include(waiter)
+      ensure
+        # Always reap real children and join workers before the test ends,
+        # including when an assertion fails on the unfixed implementation.
+        Process.kill('KILL', waiter.pid) if waiter&.alive?
+        waiter&.join
+        worker&.join
+        [stdin, stdout, stderr].each { |io| io&.close }
+      end
+    end
+
+    it 'deregisters a child already reaped before fallback begins' do
+      waiter = instance_double(Process::Waiter, alive?: false)
+      described_class.register_active_process(waiter)
+      expect(Process).not_to receive(:kill)
+      expect(bare_transport.force_terminate_in_background(waiter)).to be_nil
+      expect(described_class.active_processes).not_to include(waiter)
+    end
+
     %i[stderr grace reap].each do |phase|
       it "preserves an outer Async timeout during #{phase} and retains fallback ownership" do
         transport = bare_transport
@@ -1915,7 +2007,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
 
     it 'still TERMs the child when cancellation interrupts the graceful teardown' do
-      waiter = instance_double(Process::Waiter, pid: 4242, alive?: true)
+      waiter = instance_double(Process::Waiter, pid: 4242, alive?: true, join: nil)
       transport = bare_transport
       stdin_io = StringIO.new
       stdout_io = StringIO.new
@@ -1926,16 +2018,18 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
       # Async::Stop at any of teardown's suspension points (task sleep,
       # thread join) abandons the TERM -> KILL escalation; the ensure must
-      # still terminate the child. Capture every signal so the delayed KILL
-      # thread can never reach the real Process.kill after the example.
+      # still terminate the child. Own and join the worker before mocks expire.
       signals = Queue.new
       allow(Process).to receive(:kill) { |sig, pid| signals << [sig, pid] }
       allow(transport).to receive(:teardown_process).and_raise(Async::Stop)
+      worker = nil
+      allow(transport).to receive(:force_terminate_in_background).and_wrap_original do |original, process|
+        worker = original.call(process, grace_seconds: 0.01)
+      end
 
       expect { transport.close }.to raise_error(Async::Stop)
       expect(signals.pop).to eq(['TERM', 4242])
-      # Deliberately NOT deregistered on this path — the at_exit reaper
-      # stays as a second safety net.
+      # This stub never finishes reaping, so it must retain the safety net.
       expect(described_class.active_processes).to include(waiter)
       expect(transport.instance_variable_get(:@process)).to be_nil
 
@@ -1948,10 +2042,13 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(transport.instance_variable_get(:@stdin)).to be_nil
       expect(transport.instance_variable_get(:@stdout)).to be_nil
       expect(transport.instance_variable_get(:@stderr)).to be_nil
+    ensure
+      worker&.join
     end
 
-    it 'escalates to KILL from a background thread when the child survives TERM' do
-      waiter = instance_double(Process::Waiter, pid: 4243, alive?: true)
+    it 'escalates to KILL but retains ownership when the bounded reap does not finish' do
+      waiter = instance_double(Process::Waiter, pid: 4243, alive?: true, join: nil)
+      described_class.register_active_process(waiter)
       signals = Queue.new
       allow(Process).to receive(:kill) { |sig, pid| signals << [sig, pid] }
 
@@ -1960,21 +2057,36 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(signals.pop).to eq(['TERM', 4243])
       thread.join
       expect(signals.pop).to eq(['KILL', 4243])
+      expect(described_class.active_processes).to include(waiter)
+    ensure
+      thread&.join
     end
 
-    it 'skips the delayed KILL when the child dies inside the grace window' do
-      alive = true
-      waiter = instance_double(Process::Waiter, pid: 4244)
-      allow(waiter).to receive(:alive?) { alive }
-      signals = Queue.new
-      allow(Process).to receive(:kill) { |sig, pid| signals << [sig, pid] }
+    %w[TERM KILL].each do |signal|
+      it "reaps and deregisters when exit races #{signal}" do
+        alive = true
+        waiter = instance_double(Process::Waiter, pid: 4244)
+        allow(waiter).to receive(:alive?) { alive }
+        joins = signal == 'TERM' ? 0 : 1
+        allow(waiter).to receive(:join) do
+          if joins.positive?
+            joins -= 1
+            nil
+          else
+            alive = false
+            waiter
+          end
+        end
+        described_class.register_active_process(waiter)
+        allow(Process).to receive(:kill)
+        allow(Process).to receive(:kill).with(signal, 4244).and_raise(Errno::ESRCH)
 
-      thread = bare_transport.force_terminate_in_background(waiter, grace_seconds: 0.05)
-      expect(signals.pop).to eq(['TERM', 4244])
-
-      alive = false
-      thread.join
-      expect(signals).to be_empty
+        thread = bare_transport.force_terminate_in_background(waiter, grace_seconds: 0.01)
+        thread.join
+        expect(described_class.active_processes).not_to include(waiter)
+      ensure
+        thread&.join
+      end
     end
 
     it 'is a no-op for a nil or already-dead process' do
@@ -1984,11 +2096,13 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(transport.force_terminate_in_background(instance_double(Process::Waiter, alive?: false))).to be_nil
     end
 
-    it 'gives up without spawning the KILL thread when TERM itself raises' do
+    it 'retains ownership without spawning the KILL thread when TERM is not permitted' do
       waiter = instance_double(Process::Waiter, pid: 4245, alive?: true)
-      allow(Process).to receive(:kill).with('TERM', 4245).and_raise(Errno::ESRCH)
+      described_class.register_active_process(waiter)
+      allow(Process).to receive(:kill).with('TERM', 4245).and_raise(Errno::EPERM)
 
       expect(bare_transport.force_terminate_in_background(waiter)).to be_nil
+      expect(described_class.active_processes).to include(waiter)
     end
   end
   describe '#connect — pipe encoding (locale independence)' do
@@ -2057,6 +2171,53 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         expect(e.stderr).to include('héllo 好')
         expect(e.stderr.valid_encoding?).to be(true)
         expect(e.stderr.encoding).to eq(Encoding::UTF_8)
+      end
+    ensure
+      [stdout_w, stderr_w, stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
+    end
+
+    # #90: stdout frames and the version probe are scrubbed; stderr must be
+    # too, or invalid bytes reach user callbacks and ProcessError#stderr and
+    # blow up later encoding work (JSON generation in loggers/exporters).
+    it 'scrubs invalid UTF-8 on the drained stderr before it reaches ProcessError' do
+      stdout_r, stdout_w, stderr_r, stderr_w = c_locale_pipes
+      status = instance_double(Process::Status, exitstatus: 1, signaled?: false)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      transport = connect_with_pipes(stdout_r, stderr_r, waiter)
+
+      stderr_w.write("bad \xFF\xFE bytes\n".b)
+      stdout_w.close
+      stderr_w.close
+
+      expect { transport.read_messages { |m| m } }.to raise_error(ClaudeAgentSDK::ProcessError) do |e|
+        expect(e.stderr).to include('bad ', ' bytes')
+        expect(e.stderr.valid_encoding?).to be(true)
+        expect(e.message.valid_encoding?).to be(true)
+      end
+    ensure
+      [stdout_w, stderr_w, stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'scrubs invalid UTF-8 before the stderr callback and ProcessError see it' do
+      stdout_r, stdout_w, stderr_r, stderr_w = c_locale_pipes
+      status = instance_double(Process::Status, exitstatus: 1, signaled?: false)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      lines = Queue.new
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', stderr: ->(line) { lines << line })
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout_r, stderr_r, waiter])
+      transport.connect
+
+      stderr_w.write("bad \xFF\xFE bytes\n".b)
+      stderr_w.close
+      line = lines.pop(timeout: 5) # the callback ran: the stderr thread consumed the line
+      stdout_w.close
+
+      expect(line).to include('bad ', ' bytes')
+      expect(line.valid_encoding?).to be(true)
+      expect { transport.read_messages { |m| m } }.to raise_error(ClaudeAgentSDK::ProcessError) do |e|
+        expect(e.stderr.valid_encoding?).to be(true)
       end
     ensure
       [stdout_w, stderr_w, stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }

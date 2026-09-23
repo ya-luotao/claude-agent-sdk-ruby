@@ -142,6 +142,7 @@ end
 | `ControlRequestTimeoutError` | Control protocol timeout (configurable via env var) |
 | `CLINotFoundError` | Claude Code not installed |
 | `ProcessError` | Process failed (includes `exit_code` and `stderr`) — also raised when the CLI is still running 5s after closing stdout and the SDK had to terminate it |
+| `ResultError` | Run ended on a terminal error result (subclasses `ProcessError`; adds `subtype`, `errors`, `api_error_status`, `terminal_reason`, ...) — rescue it first |
 | `CLIJSONDecodeError` | JSON parsing issues — including stdout ending mid-frame (a truncated final message; `line` holds the partial frame) |
 | `MessageParseError` | Message parsing issues |
 

@@ -31,4 +31,13 @@ RSpec.describe 'require surface' do
     _out, err, status = run_ruby(code)
     expect(status.exitstatus).to eq(0), "instrumentation entry point must load the SDK core: #{err}"
   end
+
+  it 'lets the configuration file be required on its own' do
+    # default_options= deep-copies through Type.deep_dup_for_options; a
+    # standalone require of configuration.rb must bring that in itself.
+    code = "require 'claude_agent_sdk/configuration'; " \
+           "ClaudeAgentSDK::Configuration.new.default_options = { model: 'x' }"
+    _out, err, status = run_ruby(code)
+    expect(status.exitstatus).to eq(0), "standalone configuration require must work: #{err}"
+  end
 end

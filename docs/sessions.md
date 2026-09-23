@@ -213,15 +213,32 @@ Relevant options: `session_store`, `session_store_flush` (`"batched"` default, o
 `"eager"` to flush after every frame), and `load_timeout_ms` (per store call
 during resume materialization, default `60_000`).
 
-> **Store-backed resume runs against a bare temp `CLAUDE_CONFIG_DIR`.** Only the
-> transcript plus `.credentials.json` (redacted) and `.claude.json` are
-> materialized into it — user-scope `settings.json` (hooks, `permissions`),
-> user `CLAUDE.md`, `agents/`, `skills/`, and `plugins/` from your real config
-> dir are **not** visible to the subprocess, so a store-backed resume can
-> behave differently from a plain `resume:` of the same session. Project-level
-> `.claude/*` still applies (it resolves from `cwd`), and hooks/options passed
-> programmatically via `ClaudeAgentOptions` are unaffected. This matches the
-> Python and TypeScript SDKs.
+> **Store-backed resume runs against a temp `CLAUDE_CONFIG_DIR`.** The SDK
+> materializes the session transcript (plus subagent transcripts, when the
+> store implements `#list_subkeys`) into it and seeds it from your real config
+> dir (`CLAUDE_CONFIG_DIR` from `options.env`/`ENV`, else `~/.claude`):
+>
+> - `.credentials.json`, with the OAuth `refreshToken` removed so the resumed
+>   subprocess can't consume it. On macOS with the default config dir and no
+>   `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN`, the credentials come from
+>   the Keychain entry when one exists (the redirected config dir would
+>   otherwise miss it).
+> - `.claude.json` (from `$CLAUDE_CONFIG_DIR/.claude.json` when set, else
+>   `~/.claude.json`).
+> - User `settings.json` and `cowork_settings.json` — so `apiKeyHelper`, `env`,
+>   hooks and `permissions` still apply — minus `enabledPlugins`,
+>   `extraKnownMarketplaces` and `env.CLAUDE_CONFIG_DIR`, which would misbehave
+>   under the redirected config dir (plugin declarations would re-install every
+>   declared marketplace on each resume).
+>
+> Everything else in your config dir is **not** visible to the subprocess —
+> notably user `CLAUDE.md`, `agents/`, `skills/`, and `plugins/` (so, with the
+> plugin keys stripped, user plugins are off) — so a store-backed resume can
+> still behave differently from a plain `resume:` of the same session.
+> Project-level `.claude/*` still applies (it resolves from `cwd`), and
+> hooks/options passed programmatically via `ClaudeAgentOptions` are unaffected.
+> Seeded files are written owner-only (`0600`); a missing source file is simply
+> skipped.
 >
 > The temp dir is deleted at disconnect — **unless the mirror dropped batches**
 > (terminal append failures — timeouts immediately, other failures after up to
@@ -282,6 +299,16 @@ Declaring `:inline` means the calls run in place on the reactor fiber under a
   The drop is surfaced like every dropped batch — `MirrorErrorMessage` on
   the stream, `batches_dropped?` on the batcher — and the local transcript
   remains the source of truth, so nothing is lost from the session itself.
+- The timeout bounds the cancellation **request**, not the call's
+  completion: the cancellation is delivered once, at the next suspension
+  point, and the adapter's `ensure` / rescue cleanup then runs unbounded on
+  the reactor fiber before the timeout is reported. Fiber-aware cleanup
+  (closing an async client, releasing an async lock) delays only that call;
+  scheduler-opaque cleanup — an `fsync`, a non-fiber-aware driver's
+  disconnect, a GVL-holding C extension — stalls the whole reactor for its
+  duration, and no deadline can interrupt it. Keep inline cleanup
+  fiber-aware, or leave the adapter on the default thread hop when a hard
+  bound on the whole call matters more than fiber affinity.
 
 Anything other than `:thread`/`:inline` raises `ArgumentError` when the
 session is set up; without a reactor the hard thread-hop bound still applies

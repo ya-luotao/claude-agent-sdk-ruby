@@ -310,6 +310,36 @@ RSpec.describe 'Fiber scheduler boundary' do
     end
   end
 
+  describe 'FiberBoundary.invoke worker thread' do
+    # Force the worst-case schedule deterministically: the worker runs to
+    # completion before Thread.new returns to the caller. Assigning
+    # report_on_exception from the caller after Thread.new lost exactly this
+    # race, so a fast-failing body dumped its (re-raised) error to stderr.
+    def run_worker_before_caller_resumes
+      allow(Thread).to receive(:new).and_wrap_original do |original, *args, &blk|
+        original.call(*args, &blk).tap do |thread|
+          thread.join
+        rescue StandardError
+          nil # invoke re-raises it from #value; only the ordering matters here
+        end
+      end
+    end
+
+    it 'disables report_on_exception before the body runs' do
+      run_worker_before_caller_resumes
+      flag = ClaudeAgentSDK::FiberBoundary.invoke(timeout: 5) { Thread.current.report_on_exception }
+      expect(flag).to be false
+    end
+
+    it 're-raises a body failure without the worker also dumping it to stderr' do
+      run_worker_before_caller_resumes
+      expect do
+        expect { ClaudeAgentSDK::FiberBoundary.invoke(timeout: 5) { raise 'boom' } }
+          .to raise_error(RuntimeError, 'boom')
+      end.not_to output.to_stderr
+    end
+  end
+
   describe 'SDK MCP tool handler' do
     it 'is invoked without a Fiber scheduler when called from inside an Async reactor' do
       captured = :unset

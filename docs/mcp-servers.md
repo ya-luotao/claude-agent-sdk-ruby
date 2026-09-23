@@ -103,6 +103,12 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
+An exception raised inside a handler is returned to the model as an
+`isError: true` result carrying the exception message, so it can self-correct.
+This includes `exit`, `Interrupt` and other signal exceptions: they are reported
+the same way instead of escaping the session and leaving the CLI waiting on the
+tool call. Cancellation of the tool call itself still propagates.
+
 ## Mixed Server Support
 
 You can use both SDK and external MCP servers together:
@@ -118,6 +124,11 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   }
 )
 ```
+
+A hand-written SDK entry may use String or Symbol keys:
+`{ 'type' => 'sdk', 'name' => 'calc', 'instance' => server }` behaves exactly like
+the Hash `create_sdk_mcp_server` returns. The instance is registered in-process
+and is never sent to the CLI.
 
 ## MCP Resources and Prompts
 

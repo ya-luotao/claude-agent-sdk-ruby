@@ -130,7 +130,7 @@ class ChatAgentJob
       system_prompt: build_system_prompt,
       permission_mode: 'bypassPermissions',
       setting_sources: [],
-      model: 'sonnet', # Use sonnet for faster responses in jobs
+      model: 'claude-sonnet-5', # Sonnet for faster responses in jobs
       max_turns: 50,   # Limit turns for safety
       cwd: Dir.pwd
     }
