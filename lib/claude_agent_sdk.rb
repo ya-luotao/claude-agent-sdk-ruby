@@ -52,14 +52,19 @@ module ClaudeAgentSDK
   # Internal: pull live SDK MCP server instances out of an mcp_servers Hash.
   # Accepts both raw Hash configs and typed Mcp*ServerConfig objects — a
   # McpSdkServerConfig passed without .to_h previously failed the Hash-only
-  # guard, so its in-process server was silently never registered.
+  # guard, so its in-process server was silently never registered. Hash
+  # configs may use String or Symbol keys (and a Symbol :sdk type) — the
+  # recognition rule must match CommandBuilder#append_mcp_servers, which
+  # strips the instance from exactly these entries.
   def self.extract_sdk_mcp_servers(mcp_servers)
     return {} unless mcp_servers.is_a?(Hash)
 
     servers = {}
     mcp_servers.each do |name, config|
       config = config.to_h if config.is_a?(Type)
-      servers[name] = config[:instance] if config.is_a?(Hash) && config[:type] == 'sdk'
+      next unless config.is_a?(Hash) && (config[:type] || config['type']).to_s == 'sdk'
+
+      servers[name] = config.key?(:instance) ? config[:instance] : config['instance']
     end
     servers
   end

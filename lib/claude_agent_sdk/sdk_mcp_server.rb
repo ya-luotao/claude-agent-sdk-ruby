@@ -72,6 +72,24 @@ module ClaudeAgentSDK
     end
   end
 
+  # Internal: call a tool handler, reporting SystemExit / SignalException
+  # (Interrupt included) as an ordinary handler failure — re-raised as a
+  # RuntimeError (#cause holds the original) that both tools/call dispatch
+  # boundaries turn into an in-band isError result, so the pending control
+  # response is always written. Must run INSIDE the FiberBoundary.invoke
+  # block: a worker thread that dies with SystemExit has it re-raised by
+  # Ruby on the MAIN thread, tearing down the reactor, while the dispatcher
+  # only sees Async::Stop — a rescue after the hop cannot catch it in
+  # :thread mode. A callback_wrapper therefore observes the RuntimeError.
+  # Deliberately not `rescue Exception`: cancellation (Async::Stop, and
+  # InlineCancellation at an :inline suspension point) must propagate.
+  # @api private
+  def self.call_tool_handler(handler, arguments)
+    handler.call(arguments)
+  rescue SystemExit, SignalException => e
+    raise e.message
+  end
+
   # SDK MCP Server - wraps official MCP::Server with block-based API
   #
   # Unlike external MCP servers that run as separate processes, SDK MCP servers
@@ -272,7 +290,7 @@ module ClaudeAgentSDK
       # AR/PG); in :inline mode it runs in place on the reactor fiber.
       scheduling, wrapper = effective_callback_dispatch
       result = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
-        tool.handler.call(arguments)
+        ClaudeAgentSDK.call_tool_handler(tool.handler, arguments)
       end
 
       # Guard before flexible_fetch: it raises on non-Hash inputs.
@@ -458,7 +476,7 @@ module ClaudeAgentSDK
               # the Fiber scheduler; :inline runs in place on the reactor.
               scheduling, wrapper = @sdk_server.effective_callback_dispatch
               result = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
-                @tool_def.handler.call(args)
+                ClaudeAgentSDK.call_tool_handler(@tool_def.handler, args)
               end
 
               # Guard BEFORE flexible_fetch: on a non-Hash it raises
