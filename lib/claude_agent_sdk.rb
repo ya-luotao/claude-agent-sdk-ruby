@@ -548,7 +548,7 @@ module ClaudeAgentSDK
 
     raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)' if transport && !transport.respond_to?(:connect)
 
-    Async do
+    Async(&FiberBoundary.capture_otel_context do
       materialized = nil
       query_handler = nil
       begin
@@ -688,7 +688,7 @@ module ClaudeAgentSDK
           end
         end
       end
-    end.wait
+    end).wait
   end
 
   # Client for bidirectional, interactive conversations with Claude Code
@@ -764,7 +764,7 @@ module ClaudeAgentSDK
     def self.open(prompt = nil, options: nil, transport_class: SubprocessCLITransport, transport_args: {})
       raise ArgumentError, 'Client.open requires a block' unless block_given?
 
-      Sync do
+      Sync(&FiberBoundary.capture_otel_context do
         client = new(options: options, transport_class: transport_class, transport_args: transport_args)
         # connect failures self-clean via connect's rescue -> disconnect ->
         # raise, and disconnect is idempotent — no double-teardown.
@@ -774,7 +774,7 @@ module ClaudeAgentSDK
         ensure
           client.disconnect
         end
-      end
+      end)
     end
 
     # Connect to Claude with optional initial prompt.

@@ -241,7 +241,8 @@ module ClaudeAgentSDK
       raise CLIConnectionError, 'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})' unless parent
 
       @owning_scheduler = Fiber.scheduler
-      @task = parent.async { read_messages }
+      # Async child fibers do not inherit OTel's fiber-local current context.
+      @task = parent.async(&FiberBoundary.capture_otel_context { read_messages })
       # Reactor-side agent for #close calls arriving from foreign threads
       # (FiberBoundary callbacks, plain user threads): Async::Task#stop needs
       # the owning thread's Fiber.scheduler, so the off-thread caller hands the
@@ -249,7 +250,7 @@ module ClaudeAgentSDK
       # alive, and is stopped automatically when the parent task finishes.
       # One-shot: after serving a close it is done; a reactor-side close wakes
       # it via @close_requests.close (pop -> nil) so it exits without serving.
-      @close_watcher = parent.async(transient: true) do
+      @close_watcher = parent.async(transient: true, &FiberBoundary.capture_otel_context do
         if (reply = @close_requests.pop)
           begin
             close
@@ -257,7 +258,7 @@ module ClaudeAgentSDK
             reply << true
           end
         end
-      end
+      end)
     end
 
     # Spawn a child task that is stopped by #close (mirrors the Python SDK's
@@ -274,7 +275,7 @@ module ClaudeAgentSDK
       parent = Async::Task.current?
       raise CLIConnectionError, 'Query#spawn_task must be called inside an Async{} block' unless parent
 
-      task = parent.async(&block)
+      task = parent.async(&FiberBoundary.capture_otel_context(&block))
       @child_tasks << task
       task
     end
@@ -337,7 +338,7 @@ module ClaudeAgentSDK
           # Spawn as a child of the current task so @task.stop cascades and
           # nothing keeps running after close; bare Async do may root at the
           # reactor and leak past shutdown.
-          handler_task = Async::Task.current.async do
+          handler_task = Async::Task.current.async(&FiberBoundary.capture_otel_context do
             begin
               handle_control_request(message)
             ensure
@@ -347,7 +348,7 @@ module ClaudeAgentSDK
                 @inflight_control_request_tasks.delete(request_id)
               end
             end
-          end
+          end)
           # A handler that never suspends (MCP metadata, unsupported-subtype
           # error path) already ran to completion inside the async{} above —
           # its ensure-delete fired before this insert, so registering it here
