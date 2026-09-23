@@ -14,11 +14,15 @@ module ClaudeAgentSDK
 
   # Permission rule value
   class PermissionRuleValue < Type
+    strict_attributes
+
     attr_accessor :tool_name, :rule_content
   end
 
   # Permission update configuration
   class PermissionUpdate < Type
+    strict_attributes
+
     attr_accessor :type, :behavior, :mode, :directories, :destination
     attr_reader :rules
 
@@ -76,6 +80,8 @@ module ClaudeAgentSDK
 
   # Permission results
   class PermissionResultAllow < Type
+    strict_attributes
+
     attr_accessor :updated_input, :updated_permissions
     attr_reader :behavior
 
@@ -86,6 +92,8 @@ module ClaudeAgentSDK
   end
 
   class PermissionResultDeny < Type
+    strict_attributes
+
     attr_accessor :message, :interrupt
     attr_reader :behavior
 

@@ -18,6 +18,8 @@ module ClaudeAgentSDK
   class ThinkingConfigAdaptive < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_reader :type, :display
 
     def initialize(attributes = {})
@@ -43,6 +45,8 @@ module ClaudeAgentSDK
   # Enabled thinking: uses a user-specified budget
   class ThinkingConfigEnabled < Type
     include Type::OptionValue
+
+    strict_attributes
 
     attr_accessor :budget_tokens
     attr_reader :type, :display
@@ -71,6 +75,8 @@ module ClaudeAgentSDK
   class ThinkingConfigDisabled < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_reader :type
 
     def initialize(attributes = {})
@@ -83,6 +89,8 @@ module ClaudeAgentSDK
   class AgentDefinition < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_accessor :description, :prompt, :tools, :disallowed_tools, :model, :skills, :memory, :mcp_servers,
                   :initial_prompt, :max_turns, :background, :effort, :permission_mode
   end
@@ -90,6 +98,8 @@ module ClaudeAgentSDK
   # SDK Plugin configuration
   class SdkPluginConfig < Type
     include Type::OptionValue
+
+    strict_attributes
 
     attr_accessor :path
     attr_reader :type
@@ -107,6 +117,8 @@ module ClaudeAgentSDK
   # Sandbox network configuration
   class SandboxNetworkConfig < Type
     include Type::OptionValue
+
+    strict_attributes
 
     attr_accessor :allowed_domains, :denied_domains, :allow_managed_domains_only,
                   :allow_unix_sockets, :allow_all_unix_sockets, :allow_local_binding,
@@ -131,6 +143,8 @@ module ClaudeAgentSDK
   class SandboxFilesystemConfig < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_accessor :allow_write, :deny_write, :deny_read, :allow_read, :allow_managed_read_paths_only
 
     def to_h
@@ -147,6 +161,8 @@ module ClaudeAgentSDK
   # Sandbox settings for isolated command execution
   class SandboxSettings < Type
     include Type::OptionValue
+
+    strict_attributes
 
     attr_accessor :enabled, :fail_if_unavailable, :auto_allow_bash_if_sandboxed,
                   :excluded_commands, :allow_unsandboxed_commands, :network, :filesystem,
@@ -176,6 +192,8 @@ module ClaudeAgentSDK
   class TaskBudget < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_accessor :total
 
     def to_h
@@ -186,6 +204,8 @@ module ClaudeAgentSDK
   # System prompt file configuration — loads system prompt from a file path
   class SystemPromptFile < Type
     include Type::OptionValue
+
+    strict_attributes
 
     attr_accessor :path
     attr_reader :type
@@ -216,6 +236,8 @@ module ClaudeAgentSDK
   class SystemPromptPreset < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_reader :type
     attr_accessor :preset, :append, :exclude_dynamic_sections, :snapshot
 
@@ -240,6 +262,8 @@ module ClaudeAgentSDK
   class SystemPromptCustom < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_reader :type
     attr_accessor :prompt, :snapshot
 
@@ -258,6 +282,8 @@ module ClaudeAgentSDK
   # Tools preset configuration
   class ToolsPreset < Type
     include Type::OptionValue
+
+    strict_attributes
 
     attr_reader :type
     attr_accessor :preset

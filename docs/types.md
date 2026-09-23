@@ -302,6 +302,22 @@ end
 | `SystemPromptFile` | System prompt loaded from a file path |
 | `ToolsPreset` | Tools preset configuration for base tools selection |
 
+### Unknown Keys
+
+`ClaudeAgentOptions` raises `ArgumentError` on an unknown key. The value types you build and pass *in* used to drop a misspelled key silently; they now print a warning, once per class and key, pointing at your call:
+
+```
+app/agents/reviewer.rb:12: warning: ClaudeAgentSDK::HookMatcher: unknown attribute :matchr ignored; this will raise ArgumentError in 1.0 (known: hooks, matcher, timeout)
+```
+
+**In 1.0 the same call raises `ArgumentError`.** This covers `.new` and `#[]=` on:
+
+- option values: `AgentDefinition`, `SandboxSettings`, `SandboxNetworkConfig`, `SandboxFilesystemConfig`, `ThinkingConfigAdaptive` / `Enabled` / `Disabled`, `TaskBudget`, `SystemPromptPreset` / `Custom` / `File`, `ToolsPreset`, `SdkPluginConfig`, `McpStdioServerConfig`, `McpSSEServerConfig`, `McpHttpServerConfig`, `McpSdkServerConfig`
+- `HookMatcher` and hook outputs: `SyncHookJSONOutput`, `AsyncHookJSONOutput`, every `*HookSpecificOutput`
+- `PermissionResultAllow`, `PermissionResultDeny`, `PermissionUpdate`, `PermissionRuleValue`
+
+Accepted without a warning: Symbol or String keys, snake_case or camelCase spellings, and the fixed discriminator a type sets itself (`type`, `hook_event_name`, `behavior`), so `klass.new(value.to_h)` round-trips. Types the SDK parses from CLI output (messages, content blocks, hook inputs, `ToolPermissionContext`, the MCP status types) stay lenient, so a field added by a newer CLI never warns, and so does every construction through `.from_hash` or `.wrap`. The warning goes through `Kernel#warn`, so `-W0` or `$VERBOSE = nil` silences it.
+
 ## Constants
 
 | Constant | Description |

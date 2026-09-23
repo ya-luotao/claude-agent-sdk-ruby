@@ -133,6 +133,8 @@ module ClaudeAgentSDK
   class McpStdioServerConfig < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_accessor :command, :args, :env
     attr_reader :type
 
@@ -154,6 +156,8 @@ module ClaudeAgentSDK
   class McpSSEServerConfig < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_accessor :url, :headers
     attr_reader :type
 
@@ -174,6 +178,8 @@ module ClaudeAgentSDK
   class McpHttpServerConfig < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_accessor :url, :headers
     attr_reader :type
 
@@ -193,6 +199,8 @@ module ClaudeAgentSDK
 
   class McpSdkServerConfig < Type
     include Type::OptionValue
+
+    strict_attributes
 
     attr_accessor :name, :instance
     attr_reader :type

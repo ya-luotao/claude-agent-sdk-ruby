@@ -1,20 +1,77 @@
 # frozen_string_literal: true
 
+require_relative '../deprecation'
+
 module ClaudeAgentSDK
   # Base class for all types.
   class Type
+    # What a strict type (see .strict_attributes) does with an unknown
+    # attribute: :warn (once per class and key) through 0.x, :raise from 1.0.
+    UNKNOWN_ATTRIBUTE_ACTION = :warn
+
+    LENIENT_KEY = :__claude_agent_sdk_lenient_attributes
+    private_constant :UNKNOWN_ATTRIBUTE_ACTION, :LENIENT_KEY
+
+    # Lenient, like every parse path: never warns or raises on an unknown key.
     def self.wrap(object)
       return object if object.is_a?(self)
       return nil if object.nil?
 
-      new(object)
+      lenient { new(object) }
     end
 
+    # Lenient, like every parse path: never warns or raises on an unknown key.
     def self.from_hash(hash)
       return unless hash.is_a?(Hash)
 
-      new(hash)
+      lenient { new(hash) }
     end
+
+    # Declares a type the user constructs and passes IN (option values, hook
+    # matchers and outputs, permission results and updates). Constructing
+    # one directly (.new or #[]=) with a key that is neither a setter nor a
+    # public reader warns once per class and key — a typo would otherwise be
+    # dropped silently — and raises ArgumentError from 1.0. Types the SDK
+    # parses from CLI output stay lenient so a newer CLI's extra fields never
+    # break an older SDK; so does every construction through .from_hash or
+    # .wrap. Inherited by subclasses.
+    #
+    # @api private
+    def self.strict_attributes
+      @strict_attributes = true
+    end
+
+    # @api private
+    def self.strict_attributes?
+      @strict_attributes || (superclass <= Type && superclass.strict_attributes?)
+    end
+
+    # The attribute names (snake_case) a strict type accepts: its setters
+    # plus its public readers, so the discriminator a type sets itself
+    # (+type+, +hook_event_name+, +behavior+) — which its own #to_h emits —
+    # round-trips silently. Type's own methods (#to_h, #inspect, ...) are
+    # not attributes.
+    #
+    # @api private
+    def self.known_attribute_names
+      public_instance_methods.filter_map do |method_name|
+        owner = instance_method(method_name).owner
+        next unless owner.is_a?(Class) && owner < Type && !Type.public_method_defined?(method_name, false)
+
+        method_name.to_s.delete_suffix('=') if method_name.match?(/\A[a-z_]\w*=?\z/)
+      end.uniq.sort
+    end
+
+    # Runs the block with the strict-attribute check off on this fiber, for
+    # the SDK's own parse paths (CLI payloads and their nested values).
+    def self.lenient
+      previous = Thread.current[LENIENT_KEY]
+      Thread.current[LENIENT_KEY] = true
+      yield
+    ensure
+      Thread.current[LENIENT_KEY] = previous
+    end
+    private_class_method :lenient
 
     def initialize(attributes = {})
       assign_attributes(attributes) if attributes
@@ -41,6 +98,8 @@ module ClaudeAgentSDK
     # the same object. Option VALUE types include OptionValue to opt in to
     # copying, so a per-session change to e.g. sandbox rules can never reach
     # another session or the configured defaults.
+    #
+    # @api private
     def dup_for_options
       self
     end
@@ -53,6 +112,8 @@ module ClaudeAgentSDK
     # callables in HookMatcher#hooks) stay shared. #dup never copies frozen
     # state, so a copy of a frozen value (the configured-defaults snapshot) is
     # mutable.
+    #
+    # @api private
     module OptionValue
       def dup_for_options
         copy = dup
@@ -78,6 +139,8 @@ module ClaudeAgentSDK
     # not of a String SUBCLASS key, so those are copied (and frozen, as keys
     # should be) here. A compare_by_identity Hash is left keyed by the
     # caller's objects: copying a key would break the caller's own lookups.
+    #
+    # @api private
     def self.deep_dup_for_options(value)
       case value
       when Hash
@@ -129,10 +192,13 @@ module ClaudeAgentSDK
     # Declares attributes that carry credentials (env vars, auth headers).
     # Objects get logged, so #inspect shows them filtered; #to_h and
     # everything sent to the CLI are unaffected. Inherited by subclasses.
+    #
+    # @api private
     def self.inspect_filtered(*names)
       @inspect_filtered_attributes = (inspect_filtered_attributes + names.map(&:to_s)).uniq.freeze
     end
 
+    # @api private
     def self.inspect_filtered_attributes
       @inspect_filtered_attributes || (superclass <= Type ? superclass.inspect_filtered_attributes : [].freeze)
     end
@@ -298,8 +364,27 @@ module ClaudeAgentSDK
     end
 
     def assign_attribute(name, value)
-      setter = :"#{normalize_name(name)}="
-      public_send(setter, value) if respond_to?(setter)
+      normalized = normalize_name(name)
+      setter = :"#{normalized}="
+      if respond_to?(setter)
+        public_send(setter, value)
+      elsif self.class.strict_attributes? && !Thread.current[LENIENT_KEY] &&
+            !self.class.known_attribute_names.include?(normalized)
+        unknown_attribute(name, normalized)
+      end
+    end
+
+    def unknown_attribute(name, normalized)
+      klass = self.class
+      class_name = klass.name || klass.inspect
+      known = klass.known_attribute_names.join(', ')
+      raise ArgumentError, "#{class_name}: unknown attribute #{name.inspect} (known: #{known})" if UNKNOWN_ATTRIBUTE_ACTION == :raise
+
+      Deprecation.warn_once_at_caller(
+        [:unknown_attribute, klass, normalized],
+        "#{class_name}: unknown attribute #{name.inspect} ignored; " \
+        "this will raise ArgumentError in 1.0 (known: #{known})"
+      )
     end
 
     def read_attribute(name)

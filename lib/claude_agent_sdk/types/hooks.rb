@@ -38,6 +38,8 @@ module ClaudeAgentSDK
   class HookMatcher < Type
     include Type::OptionValue
 
+    strict_attributes
+
     attr_accessor :matcher, :hooks, :timeout
 
     def initialize(attributes = {})
@@ -354,6 +356,8 @@ module ClaudeAgentSDK
 
   # Setup hook specific output
   class SetupHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :additional_context
     attr_reader :hook_event_name
 
@@ -371,6 +375,8 @@ module ClaudeAgentSDK
 
   # PreToolUse hook specific output
   class PreToolUseHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :permission_decision, :permission_decision_reason,
                   :updated_input, :additional_context
     attr_reader :hook_event_name
@@ -398,6 +404,8 @@ module ClaudeAgentSDK
   # honors it, so both are emitted when set. Mirrors Python's
   # `PostToolUseHookSpecificOutput`.
   class PostToolUseHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :additional_context, :updated_mcp_tool_output, :updated_tool_output
     attr_reader :hook_event_name
 
@@ -417,6 +425,8 @@ module ClaudeAgentSDK
 
   # PostToolUseFailure hook specific output
   class PostToolUseFailureHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :additional_context
     attr_reader :hook_event_name
 
@@ -434,6 +444,8 @@ module ClaudeAgentSDK
 
   # UserPromptSubmit hook specific output
   class UserPromptSubmitHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :additional_context
     attr_reader :hook_event_name
 
@@ -451,6 +463,8 @@ module ClaudeAgentSDK
 
   # Notification hook specific output
   class NotificationHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :additional_context
     attr_reader :hook_event_name
 
@@ -468,6 +482,8 @@ module ClaudeAgentSDK
 
   # SubagentStart hook specific output
   class SubagentStartHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :additional_context
     attr_reader :hook_event_name
 
@@ -485,6 +501,8 @@ module ClaudeAgentSDK
 
   # PermissionRequest hook specific output
   class PermissionRequestHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :decision
     attr_reader :hook_event_name
 
@@ -502,6 +520,8 @@ module ClaudeAgentSDK
 
   # SessionStart hook specific output
   class SessionStartHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :additional_context
     attr_reader :hook_event_name
 
@@ -519,6 +539,8 @@ module ClaudeAgentSDK
 
   # PermissionDenied hook specific output
   class PermissionDeniedHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :retry
     attr_reader :hook_event_name
 
@@ -537,6 +559,8 @@ module ClaudeAgentSDK
 
   # CwdChanged hook specific output
   class CwdChangedHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :watch_paths
     attr_reader :hook_event_name
 
@@ -554,6 +578,8 @@ module ClaudeAgentSDK
 
   # FileChanged hook specific output
   class FileChangedHookSpecificOutput < Type
+    strict_attributes
+
     attr_accessor :watch_paths
     attr_reader :hook_event_name
 
@@ -571,6 +597,8 @@ module ClaudeAgentSDK
 
   # Async hook JSON output
   class AsyncHookJSONOutput < Type
+    strict_attributes
+
     attr_accessor :async, :async_timeout
 
     def initialize(attributes = {})
@@ -587,6 +615,8 @@ module ClaudeAgentSDK
 
   # Sync hook JSON output
   class SyncHookJSONOutput < Type
+    strict_attributes
+
     attr_accessor :continue, :suppress_output, :stop_reason, :decision,
                   :system_message, :reason, :hook_specific_output
 
