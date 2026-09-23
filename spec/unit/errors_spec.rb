@@ -166,6 +166,17 @@ RSpec.describe ClaudeAgentSDK do
           data = { errors: [' boom ', 3, ''] }
           expect(described_class.error_text(data)).to eq(described_class.new('m', data: data).errors.join('; '))
         end
+
+        # Issue #76: a non-Integer status used to be interpolated into the
+        # message while #api_error_status read back nil.
+        it 'ignores a non-Integer api_error_status, like the structured attribute' do
+          ['500', 500.0, { code: 500 }, true].each do |status|
+            data = { subtype: 'success', api_error_status: status }
+            expect(described_class.new('m', data: data).api_error_status).to be_nil
+            expect(described_class.error_text(data)).to eq('unknown error')
+            expect(described_class.error_text(data.transform_keys(&:to_s))).to eq('unknown error')
+          end
+        end
       end
 
       # Wire payloads arrive symbolized; a payload replayed from plain

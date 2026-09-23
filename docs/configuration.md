@@ -135,8 +135,8 @@ receives the full conversation.
 
 ```ruby
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  model: 'haiku',
-  advisor_model: 'opus'  # alias or full model ID, e.g. 'claude-opus-5'
+  model: 'claude-haiku-4-5',
+  advisor_model: 'claude-opus-5'  # full model ID, or an alias such as 'opus'
 )
 ```
 

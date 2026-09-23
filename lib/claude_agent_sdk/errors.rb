@@ -129,6 +129,15 @@ module ClaudeAgentSDK
 
         data.key?(key) ? data[key] : data[key.to_s]
       end
+
+      # The +api_error_status+ field narrowed to Integer-or-nil — the one
+      # narrowing both #api_error_status and .error_text read, so a "500"
+      # String can neither show up in the message nor go missing from the
+      # accessor on its own.
+      def api_error_status(data)
+        status = field(data, :api_error_status)
+        status.is_a?(Integer) ? status : nil
+      end
     end
     private_constant :Payload
 
@@ -158,7 +167,7 @@ module ClaudeAgentSDK
       subtype = Payload.field(data, :subtype)
       return subtype if subtype.is_a?(String) && !subtype.empty? && subtype != 'success'
 
-      status = Payload.field(data, :api_error_status)
+      status = Payload.api_error_status(data)
       return "API error (HTTP #{status})" unless status.nil?
 
       'unknown error'
@@ -174,8 +183,7 @@ module ClaudeAgentSDK
       @errors = Payload.normalize_errors(Payload.field(data, :errors))
       result = Payload.field(data, :result)
       @result = result.is_a?(String) ? result : nil
-      status = Payload.field(data, :api_error_status)
-      @api_error_status = status.is_a?(Integer) ? status : nil
+      @api_error_status = Payload.api_error_status(data)
       reason = Payload.field(data, :terminal_reason)
       @terminal_reason = reason.is_a?(String) ? reason : nil
       session_id = Payload.field(data, :session_id)

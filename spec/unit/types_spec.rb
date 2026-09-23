@@ -28,6 +28,28 @@ RSpec.describe ClaudeAgentSDK do
           expect(ClaudeAgentSDK::TextBlock.wrap(nil)).to be_nil
         end
       end
+
+      # The options copier's hook: identity for anything that is not an SDK
+      # option value type, a fresh copy (own containers included) for those.
+      describe '#dup_for_options' do
+        it 'returns self for message/callback types and for ClaudeAgentOptions' do
+          block = ClaudeAgentSDK::TextBlock.new(text: 'Hi')
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new
+          expect(block.dup_for_options).to be(block)
+          expect(options.dup_for_options).to be(options)
+        end
+
+        it 'copies option value types with their own containers, keeping a frozen original intact' do
+          preset = ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: +'base').freeze
+          copy = preset.dup_for_options
+
+          expect(copy).not_to be(preset)
+          expect(copy).not_to be_frozen
+          expect(copy.to_h).to eq(preset.to_h)
+          copy.append = 'copy'
+          expect(preset.append).to eq('base')
+        end
+      end
     end
 
     describe ClaudeAgentSDK::TextBlock do
@@ -1037,6 +1059,121 @@ RSpec.describe ClaudeAgentSDK do
         expect(copied[:type]).to eq('sdk') # symbol lookup must survive the copy
         copied[:extra] = 'x'
         expect(config.key?('extra')).to be(false) # and it is still a deep copy
+      end
+
+      # Regression (#70): the deep-dup recursed into Hash/Array only, so typed
+      # option values — top-level (sandbox, system_prompt) or nested inside a
+      # container (agents[:x]) — stayed shared between the base and every
+      # variant, defeating the isolation the container copy exists for.
+      it 'copies typed option values nested inside containers' do
+        agent = ClaudeAgentSDK::AgentDefinition.new(description: 'r', prompt: 'p')
+        agent.skills = ['one']
+        base = described_class.new(agents: { reviewer: agent })
+        copy = base.dup_with(model: 'opus')
+
+        copy.agents[:reviewer].skills << 'two'
+        copy.agents[:reviewer].tools = ['Bash']
+
+        expect(base.agents[:reviewer].skills).to eq(['one'])
+        expect(base.agents[:reviewer].tools).to be_nil
+        expect(base.agents[:reviewer]).to equal(agent) # the base keeps the caller's object
+        expect(copy.agents[:reviewer].to_h).to eq({}) # value types still serialize as before
+      end
+
+      it 'copies top-level typed option values so a variant cannot touch the base' do
+        base = described_class.new(
+          sandbox: ClaudeAgentSDK::SandboxSettings.new(
+            enabled: true, excluded_commands: ['git'],
+            network: ClaudeAgentSDK::SandboxNetworkConfig.new(allowed_domains: ['example.com'])
+          ),
+          system_prompt: ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: 'base'),
+          thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 1000),
+          tools: ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code'),
+          task_budget: ClaudeAgentSDK::TaskBudget.new(total: 10),
+          plugins: [ClaudeAgentSDK::SdkPluginConfig.new(path: '/p')]
+        )
+        expected_sandbox = base.sandbox.to_h
+        variant = base.dup_with(model: 'opus')
+
+        expect(variant.sandbox).not_to equal(base.sandbox)
+        expect(variant.sandbox.network).not_to equal(base.sandbox.network)
+        expect(variant.sandbox.to_h).to eq(expected_sandbox)
+        variant.sandbox.enabled = false
+        variant.sandbox.excluded_commands << 'rm'
+        variant.sandbox.network.allowed_domains << 'evil.example'
+        variant.system_prompt.append = 'variant'
+        variant.thinking.budget_tokens = 1
+        variant.tools.preset = 'other'
+        variant.task_budget.total = 1
+        variant.plugins.first.path = '/other'
+
+        expect(base.sandbox.to_h).to eq(expected_sandbox)
+        expect(base.system_prompt.append).to eq('base')
+        expect(base.thinking.budget_tokens).to eq(1000)
+        expect(base.thinking.type).to eq('enabled')
+        expect(variant.thinking.type).to eq('enabled')
+        expect(base.tools.preset).to eq('claude_code')
+        expect(base.task_budget.total).to eq(10)
+        expect(base.plugins.first.path).to eq('/p')
+      end
+
+      # Strings were identity leaves, so a caller-built (unfrozen) model,
+      # allowed_tools entry, env value or SystemPromptPreset#append mutated
+      # in place on a variant changed the base too. Frozen Strings (literals
+      # under frozen_string_literal) are immutable and keep identity.
+      it 'copies mutable Strings so in-place mutation on a variant cannot touch the base' do
+        base = described_class.new(
+          model: +'sonnet', allowed_tools: [+'Read'], env: { 'A' => +'1' },
+          system_prompt: ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: +'base')
+        )
+        variant = base.dup_with(max_turns: 2)
+
+        expect(variant.model).not_to be(base.model)
+        expect(variant.model).not_to be_frozen
+        variant.model << '-x'
+        variant.allowed_tools.first << 'x'
+        variant.env['A'] << 'x'
+        variant.system_prompt.append << 'x'
+
+        expect(base.model).to eq('sonnet')
+        expect(base.allowed_tools).to eq(['Read'])
+        expect(base.env).to eq('A' => '1')
+        expect(base.system_prompt.append).to eq('base')
+        expect(variant.model).to eq('sonnet-x')
+      end
+
+      it 'keeps frozen Strings by identity across dup_with' do
+        model = 'sonnet' # frozen literal
+        base = described_class.new(model: model, allowed_tools: ['Read'])
+        variant = base.dup_with(max_turns: 2)
+
+        expect(variant.model).to be(model)
+        expect(variant.allowed_tools.first).to be(base.allowed_tools.first)
+      end
+
+      it 'keeps identity of instances, callables, observers and adapters inside typed values across dup_with' do
+        server = Object.new
+        hook = ->(_input, _id, _ctx) { {} }
+        observer = Object.new
+        factory = -> { observer }
+        store = Object.new
+        base = described_class.new(
+          mcp_servers: { typed: ClaudeAgentSDK::McpSdkServerConfig.new(name: 'typed', instance: server) },
+          hooks: { 'PreToolUse' => [ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash', hooks: [hook])] },
+          observers: [observer, factory],
+          session_store: store
+        )
+        variant = base.dup_with(max_turns: 2)
+
+        expect(variant.mcp_servers[:typed]).not_to equal(base.mcp_servers[:typed])
+        expect(variant.mcp_servers[:typed].instance).to equal(server)
+        expect(variant.mcp_servers[:typed].to_h).to eq(type: 'sdk', name: 'typed', instance: server)
+        expect(variant.hooks['PreToolUse'].first.hooks.first).to equal(hook)
+        expect(variant.observers.first).to equal(observer)
+        expect(variant.observers.last).to equal(factory)
+        expect(variant.session_store).to equal(store)
+        variant.hooks['PreToolUse'].first.hooks << hook
+        expect(base.hooks['PreToolUse'].first.hooks).to eq([hook])
       end
 
       it 'raises ArgumentError for unknown keys at construction' do

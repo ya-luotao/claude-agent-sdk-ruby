@@ -88,6 +88,51 @@ RSpec.describe 'Inline callback scheduling' do
     end
   end
 
+  # Issue #71: the cooperative deadline bounds the cancellation REQUEST, not
+  # the callback's completion. Cancellation is delivered once, at the next
+  # suspension point; whatever the callback's ensure then does runs
+  # unbounded on the reactor fiber. Pinned semantics (no elapsed-time
+  # assertions — the cleanup gate, not a clock, controls the order):
+  # fiber-aware cleanup lets siblings progress meanwhile, and the outward
+  # timeout surfaces only after cleanup released. Not a bug to fix (a live
+  # fiber stack cannot be moved to a thread, and a second deadline could not
+  # interrupt scheduler-opaque blocking anyway) — hosts needing a bounded
+  # wait use :thread scheduling.
+  describe 'FiberBoundary.with_cooperative_timeout' do
+    it 'bounds only the cancellation request: cleanup runs unbounded while siblings progress' do
+      events = []
+      body_gate = Thread::Queue.new     # never released: the zero deadline cancels here
+      ensure_entered = Thread::Queue.new
+      cleanup_gate = Thread::Queue.new  # released by the sibling, i.e. while cleanup is parked
+
+      Async do |task|
+        task.async do
+          ClaudeAgentSDK::FiberBoundary.with_cooperative_timeout(
+            Async::Task.current, 0,
+            on_timeout: -> { ClaudeAgentSDK::FiberBoundary::JoinTimeout.new('expired') }
+          ) do
+            body_gate.pop
+          ensure
+            events << :ensure_enter
+            ensure_entered << true
+            cleanup_gate.pop # fiber-aware cleanup: parks this fiber, siblings run
+            events << :ensure_exit
+          end
+        rescue ClaudeAgentSDK::FiberBoundary::JoinTimeout
+          events << :timeout_surfaced
+        end
+
+        task.async do
+          ensure_entered.pop
+          events << :sibling_ran_during_cleanup
+          cleanup_gate << true
+        end
+      end.wait
+
+      expect(events).to eq(%i[ensure_enter sibling_ran_during_cleanup ensure_exit timeout_surfaced])
+    end
+  end
+
   describe 'ClaudeAgentOptions#callback_scheduling' do
     it 'defaults to :thread' do
       expect(ClaudeAgentSDK::ClaudeAgentOptions.new.callback_scheduling).to eq(:thread)
