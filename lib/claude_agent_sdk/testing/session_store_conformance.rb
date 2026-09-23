@@ -197,13 +197,15 @@ module ClaudeAgentSDK
 
     # -- Optional: list_session_summaries ----------------------------------
 
-    def check_list_session_summaries(fresh, has_list_sessions, has_delete)
+    def check_list_session_summaries(fresh, has_list_sessions, has_delete) # rubocop:disable Metrics/MethodLength
       # 14. persisted fold output round-trips through fold_session_summary.
       store = fresh.call
       summ_key = { 'project_key' => 'proj', 'session_id' => 'summ-sess' }
-      store.append(summ_key, [entry('timestamp' => '2024-01-01T00:00:00.000Z', 'customTitle' => 'first'),
+      store.append(summ_key, [entry('type' => 'user', 'timestamp' => '2024-01-01T00:00:00.000Z',
+                                    'customTitle' => 'first', 'message' => { 'content' => 'first prompt' }),
                               entry('timestamp' => '2024-01-01T00:00:01.000Z')])
-      store.append(summ_key, [entry('timestamp' => '2024-01-01T00:00:02.000Z', 'customTitle' => 'second')])
+      store.append(summ_key, [entry('type' => 'user', 'timestamp' => '2024-01-01T00:00:02.000Z',
+                                    'customTitle' => 'second', 'message' => { 'content' => 'later prompt' })])
       store.append({ 'project_key' => 'other', 'session_id' => 'elsewhere' },
                    [entry('timestamp' => '2024-01-01T00:00:00.000Z')])
 
@@ -219,9 +221,17 @@ module ClaudeAgentSDK
       end
 
       assert(summ['data'].is_a?(Hash), 'summary data must be a Hash')
+      # Independent expectations: refolding the adapter's own output alone
+      # accepts even an empty/stale sidecar and hides valid sessions in listings.
+      expected_data = { 'custom_title' => 'second', 'created_at' => 1_704_067_200_000,
+                        'first_prompt' => 'first prompt', 'first_prompt_locked' => true,
+                        'is_sidechain' => false }
+      assert_eq(summ['data'].slice(*expected_data.keys), expected_data,
+                'summary data must persist latest title and first timestamp/prompt across appends')
       refolded = SessionSummary.fold_session_summary(summ, summ_key, [entry('timestamp' => '2024-01-01T00:00:03.000Z')])
       assert_eq(refolded['session_id'], 'summ-sess', 'refold must preserve session_id')
       assert_eq(refolded['mtime'], summ['mtime'], 'fold must preserve prev mtime verbatim')
+      assert_eq(refolded['data'].slice(*expected_data.keys), expected_data, 'refold must preserve summary data')
 
       # Subagent appends must NOT affect the main session's summary.
       store.append(summ_key.merge('subpath' => 'subagents/agent-1'),
