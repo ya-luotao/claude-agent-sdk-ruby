@@ -44,11 +44,13 @@ rescue ClaudeAgentSDK::CLIJSONDecodeError => e
 end
 ```
 
-An exception raised inside your own callbacks (hooks, `can_use_tool`, SDK MCP
-tool handlers, resource readers and prompt generators) is not raised to the
-code above. It is reported to the CLI as a failed callback, and the session
-keeps running. That includes `exit`, `Interrupt` and other signal exceptions.
-See [Hooks & Permission Callbacks](hooks-and-permissions.md#when-a-callback-raises)
+An ordinary exception raised inside your own callbacks (hooks, `can_use_tool`,
+SDK MCP tool handlers, resource readers and prompt generators) is not raised
+to the code above. It is reported to the CLI as a failed callback, and the
+session keeps running. `exit`, `Interrupt` and other signal exceptions are the
+exception: the CLI gets the error response first, and then they propagate as
+Ruby normally would. See
+[Hooks & Permission Callbacks](hooks-and-permissions.md#when-a-callback-raises)
 and [MCP Servers](mcp-servers.md).
 
 ## Terminal Error Results

@@ -72,15 +72,6 @@ module ClaudeAgentSDK
     end
   end
 
-  # Internal: call a tool handler, reporting SystemExit / SignalException
-  # (Interrupt included) as an ordinary handler failure that both tools/call
-  # dispatch boundaries turn into an in-band isError result. Must run INSIDE
-  # the FiberBoundary.invoke block — see FiberBoundary.contain_process_exit.
-  # @api private
-  def self.call_tool_handler(handler, arguments)
-    FiberBoundary.contain_process_exit { handler.call(arguments) }
-  end
-
   # SDK MCP Server - wraps official MCP::Server with block-based API
   #
   # Unlike external MCP servers that run as separate processes, SDK MCP servers
@@ -280,8 +271,10 @@ module ClaudeAgentSDK
       # gem's Fiber scheduler is not visible to user code (which may hit
       # AR/PG); in :inline mode it runs in place on the reactor fiber.
       scheduling, wrapper = effective_callback_dispatch
-      result = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
-        ClaudeAgentSDK.call_tool_handler(tool.handler, arguments)
+      # exit / Interrupt from the handler propagate (never an isError
+      # result): see FiberBoundary.invoke_callback.
+      result = FiberBoundary.invoke_callback(scheduling: scheduling, wrapper: wrapper) do
+        tool.handler.call(arguments)
       end
 
       # Guard before flexible_fetch: it raises on non-Hash inputs.
@@ -318,10 +311,8 @@ module ClaudeAgentSDK
       # as `call_tool` above: reader blocks may touch Thread.current-keyed
       # libraries (ActiveRecord, pg, ...) and must run on a plain thread.
       scheduling, wrapper = effective_callback_dispatch
-      # exit / Interrupt from the reader become an ordinary failure INSIDE
-      # the hop (see FiberBoundary.contain_process_exit).
-      content = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
-        FiberBoundary.contain_process_exit { resource.reader.call }
+      content = FiberBoundary.invoke_callback(scheduling: scheduling, wrapper: wrapper) do
+        resource.reader.call
       end
 
       # Ensure content has the expected format (symbol or string keys; guard
@@ -355,8 +346,8 @@ module ClaudeAgentSDK
       # Hop off the Fiber scheduler before invoking user code — same reason
       # as `call_tool` above.
       scheduling, wrapper = effective_callback_dispatch
-      result = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
-        FiberBoundary.contain_process_exit { prompt.generator.call(arguments) }
+      result = FiberBoundary.invoke_callback(scheduling: scheduling, wrapper: wrapper) do
+        prompt.generator.call(arguments)
       end
 
       # Ensure result has the expected format (symbol or string keys)
@@ -468,8 +459,11 @@ module ClaudeAgentSDK
               # Hop to a plain thread (default) so user handlers don't see
               # the Fiber scheduler; :inline runs in place on the reactor.
               scheduling, wrapper = @sdk_server.effective_callback_dispatch
-              result = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
-                ClaudeAgentSDK.call_tool_handler(@tool_def.handler, args)
+              # exit / Interrupt propagate past the gem (it rescues only
+              # StandardError) to Query#handle_control_request, which
+              # answers with an isError result and then re-raises them.
+              result = FiberBoundary.invoke_callback(scheduling: scheduling, wrapper: wrapper) do
+                @tool_def.handler.call(args)
               end
 
               # Guard BEFORE flexible_fetch: on a non-Hash it raises

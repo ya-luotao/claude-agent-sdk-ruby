@@ -2,126 +2,173 @@
 
 require 'json'
 
-# Issue #119 harness: drives one control request whose user callback raises
-# a process-exit exception (exit / Interrupt / SignalException), then one
-# ordinary request on the same Query inside the same reactor, and returns
-# every control response written. Plain Ruby with no RSpec dependency, so
-# the `exit` cases can run it in a child process
-# (spec/unit/callback_process_exit_spec.rb): in :thread scheduling Ruby
-# re-raises a worker thread's SystemExit on the MAIN thread, which would
-# end the rspec process itself if the conversion regressed.
-module CallbackExitHarness
-  # Every user-callback dispatch site covered by #119. :hook_timeout takes
-  # the HookMatcher#timeout variants — Async with_timeout around the thread
-  # hop in :thread mode, the cooperative with_cooperative_timeout in :inline.
-  PATHS = %i[hook hook_timeout can_use_tool read_resource get_prompt].freeze
+# Issue #119 harness, run in a CHILD process (spec/unit/callback_process_exit_spec.rb):
+# a user callback raises a process-termination exception (exit / Interrupt /
+# SignalException), or the process receives a real SIGINT / SIGTERM while
+# an inline callback runs. The SDK must answer the pending control request
+# and then let the exception terminate the process as plain Ruby would.
+# Every control response is printed (and flushed) the moment it is written,
+# so the parent can check it went out BEFORE the process died. Plain Ruby
+# with no RSpec dependency; it is loaded by spec_helper too, which only
+# defines the module.
+module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-contained child-process fixture
+  # Every control-request path whose user callback answers the CLI.
+  # :hook_timeout takes the HookMatcher#timeout variants (Async with_timeout
+  # around the thread hop in :thread mode, with_cooperative_timeout in
+  # :inline); :call_tool is a routed tools/call through the mcp gem.
+  PATHS = %i[hook hook_timeout can_use_tool read_resource get_prompt call_tool].freeze
+  # SdkMcpServer's public entry points used without a Query: nothing to
+  # answer, so the exception simply propagates.
+  DIRECT_PATHS = %i[direct_call_tool direct_handle_message].freeze
   MODES = %i[thread inline].freeze
 
-  # The error text each exception kind is reported with.
-  MESSAGES = {
-    exit: 'SystemExit: exit',
-    interrupt: 'Interrupt: Interrupt',
-    signal: 'SignalException: SIGTERM'
+  # How each kind is raised, what the CLI is told, and how plain Ruby
+  # terminates on it (an exit status, or the signal it re-raises itself).
+  KINDS = {
+    exit: { message: 'SystemExit: exit', exitstatus: 3 },
+    interrupt: { message: 'Interrupt', termsig: 'INT' },
+    signal: { message: 'SignalException: SIGTERM', termsig: 'TERM' },
+    # Real OS signals, sent while an inline callback is busy:
+    sigint: { message: 'Interrupt', termsig: 'INT' },
+    sigterm: { message: 'SignalException: SIGTERM', termsig: 'TERM' }
   }.freeze
 
-  class RecordingTransport < ClaudeAgentSDK::Transport
-    attr_reader :writes
+  RESPONSE = 'RESPONSE '
+  SURVIVED = 'CALLBACK_EXIT_HARNESS_SURVIVED'
 
-    def initialize
-      super
-      @writes = []
+  class StdoutTransport < ClaudeAgentSDK::Transport
+    def initialize(messages)
+      super()
+      @messages = messages
     end
 
     def write(data)
-      @writes << JSON.parse(data)
+      $stdout.write("#{RESPONSE}#{data.chomp}\n")
+      $stdout.flush
+    end
+
+    def read_messages(&block)
+      @messages.each(&block)
     end
   end
 
   module_function
 
-  def raise_exit(kind)
+  # Called at the top of every failing callback.
+  def trigger(kind)
     case kind
-    when :exit then exit 3 # nonzero: a leak must not look like a clean run
+    when :exit then exit 3
     when :interrupt then raise Interrupt
     when :signal then raise SignalException, 'TERM'
+    when :sigint, :sigterm then busy_until_signalled(kind == :sigint ? 'INT' : 'TERM')
     else raise ArgumentError, "unknown kind #{kind.inspect}"
     end
   end
 
-  # Returns the parsed control responses: the failing request's first, then
-  # the follow-up ordinary request's (proof the reactor survived).
-  def run(path, mode, kind)
-    transport = RecordingTransport.new
-    query = build_query(path, mode, kind, transport)
-    Sync do
-      query.send(:handle_control_request, control_request(path, 'req_fail', fail: true))
-      query.send(:handle_control_request, control_request(path, 'req_ok', fail: false))
+  # CPU-bound (scheduler-opaque) work on the callback's own thread — for an
+  # :inline callback the reactor's, i.e. the main thread — while another
+  # thread sends the process a real signal, which MRI delivers to the main
+  # thread. Returns normally if the signal never arrives.
+  def busy_until_signalled(signal)
+    Thread.new do
+      sleep 0.1
+      Process.kill(signal, Process.pid)
     end
-    transport.writes
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+    nil while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
   end
 
   def build_query(path, mode, kind, transport)
-    can_use_tool = lambda do |tool_name, _input, _context|
-      raise_exit(kind) if tool_name == 'Boom'
+    can_use_tool = lambda do |_tool_name, _input, _context|
+      trigger(kind)
       ClaudeAgentSDK::PermissionResultAllow.new
+    end
+    hook = lambda do |*|
+      if path == :hook_timeout_abandoned
+        sleep 0.3 # outlives its 0.05s timeout; the request is answered first
+        exit 3
+      end
+      trigger(kind)
+      {}
     end
     ClaudeAgentSDK::Query.new(
       transport: transport, is_streaming_mode: true, can_use_tool: can_use_tool,
       sdk_mcp_servers: { 'srv' => mcp_server(kind) }, callback_scheduling: mode
     ).tap do |query|
-      hooks = { 'hook_fail' => ->(*) { raise_exit(kind) }, 'hook_ok' => ->(*) { {} } }
-      query.instance_variable_set(:@hook_callbacks, hooks)
-      query.instance_variable_set(:@hook_callback_timeouts, { 'hook_fail' => 5, 'hook_ok' => 5 }) if path == :hook_timeout
+      query.instance_variable_set(:@hook_callbacks, { 'hook' => hook })
+      timeout = { hook_timeout: 5, hook_timeout_abandoned: 0.05 }[path]
+      query.instance_variable_set(:@hook_callback_timeouts, { 'hook' => timeout }) if timeout
     end
   end
 
   def mcp_server(kind)
-    resources = %w[fail ok].map do |outcome|
-      ClaudeAgentSDK.create_resource(uri: "res://#{outcome}", name: outcome) do
-        raise_exit(kind) if outcome == 'fail'
-        { contents: [{ uri: 'res://ok', text: 'fine' }] }
-      end
+    tool = ClaudeAgentSDK.create_tool('boom', 'Boom', {}) do |_args|
+      trigger(kind)
+      { content: [{ type: 'text', text: 'fine' }] }
     end
-    prompts = %w[fail ok].map do |outcome|
-      ClaudeAgentSDK.create_prompt(name: outcome) do |_args|
-        raise_exit(kind) if outcome == 'fail'
-        { messages: [{ role: 'user', content: { type: 'text', text: 'fine' } }] }
-      end
+    resource = ClaudeAgentSDK.create_resource(uri: 'res://boom', name: 'boom') do
+      trigger(kind)
+      { contents: [{ uri: 'res://boom', text: 'fine' }] }
     end
-    ClaudeAgentSDK.create_sdk_mcp_server(name: 'srv', resources: resources, prompts: prompts)[:instance]
+    prompt = ClaudeAgentSDK.create_prompt(name: 'boom') do |_args|
+      trigger(kind)
+      { messages: [{ role: 'user', content: { type: 'text', text: 'fine' } }] }
+    end
+    ClaudeAgentSDK.create_sdk_mcp_server(name: 'srv', tools: [tool], resources: [resource],
+                                         prompts: [prompt])[:instance]
   end
 
-  def control_request(path, request_id, fail:)
-    outcome = fail ? 'fail' : 'ok'
+  def control_request(path)
     request =
       case path
-      when :hook, :hook_timeout
-        { subtype: 'hook_callback', callback_id: "hook_#{outcome}", tool_use_id: 'tool_1',
+      when :hook, :hook_timeout, :hook_timeout_abandoned
+        { subtype: 'hook_callback', callback_id: 'hook', tool_use_id: 'tool_1',
           input: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} } }
       when :can_use_tool
-        { subtype: 'can_use_tool', tool_name: fail ? 'Boom' : 'Read', input: {} }
-      when :read_resource
-        mcp_request('resources/read', uri: "res://#{outcome}")
-      when :get_prompt
-        mcp_request('prompts/get', name: outcome)
+        { subtype: 'can_use_tool', tool_name: 'Bash', input: {} }
+      when :read_resource then mcp_request('resources/read', uri: 'res://boom')
+      when :get_prompt then mcp_request('prompts/get', name: 'boom')
+      when :call_tool then mcp_request('tools/call', name: 'boom', arguments: {})
       end
-    { type: 'control_request', request_id: request_id, request: request }
+    { type: 'control_request', request_id: 'req_fail', request: request }
   end
 
   def mcp_request(method, params)
     { subtype: 'mcp_message', server_name: 'srv',
-      message: { jsonrpc: '2.0', id: 1, method: method, params: params } }
+      message: { jsonrpc: '2.0', id: 7, method: method, params: params } }
   end
 
-  # Child-process entry point: run one cell, print the responses as JSON,
-  # then a marker. Reaching the marker (and exiting 0) proves the exception
-  # neither escaped dispatch nor was re-raised on the main thread.
-  SURVIVED = 'CALLBACK_EXIT_HARNESS_SURVIVED'
-
+  # Child-process entry point: `ruby -e 'CallbackExitHarness.main(ARGV)' PATH MODE KIND`.
+  # Reaching SURVIVED means the exception was swallowed.
   def main(argv)
     path, mode, kind = argv.map(&:to_sym)
-    $stdout.puts JSON.generate(run(path, mode, kind))
+    if DIRECT_PATHS.include?(path)
+      run_direct(path, mode, kind)
+    else
+      transport = StdoutTransport.new([control_request(path)])
+      query = build_query(path, mode, kind, transport)
+      # Through read_messages, as in a session: the request is handled in
+      # its own child task.
+      Sync do |task|
+        query.send(:read_messages)
+        task.children&.each(&:wait)
+      end
+      sleep 1 if path == :hook_timeout_abandoned # let the abandoned worker finish
+    end
     $stdout.puts SURVIVED
     $stdout.flush
+  end
+
+  def run_direct(path, mode, kind)
+    server = mcp_server(kind)
+    server.callback_scheduling = mode
+    Sync do
+      if path == :direct_call_tool
+        server.call_tool('boom', {})
+      else
+        server.handle_message({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+                                params: { name: 'boom', arguments: {} } })
+      end
+    end
   end
 end

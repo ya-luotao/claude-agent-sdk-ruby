@@ -575,11 +575,48 @@ module ClaudeAgentSDK
         }
       }
       writeln(JSON.generate(success_response))
+      responded = true
     rescue Async::Stop
       # Cancellation requested; respond with an error so the CLI can unblock.
       send_control_error(request_id, 'Cancelled')
+    rescue SystemExit, SignalException => e
+      # exit / Interrupt / a signal raised while a user callback ran
+      # (FiberBoundary.invoke_callback re-raises it here, on the reactor) —
+      # or a real signal landing on this fiber. Never swallowed: answer the
+      # request the way an ordinary callback failure is answered, so the CLI
+      # is not left waiting, then let it terminate the process as Ruby
+      # normally would. The transport flushes every write.
+      respond_to_process_exit(request_id, request_data, e) unless responded
+      raise
     rescue StandardError => e
       send_control_error(request_id, e.message)
+    end
+
+    # The response an ordinary exception from the callback would have
+    # produced, with the process-exit exception named by class: an error
+    # control response for hooks / can_use_tool; for SDK MCP requests an
+    # in-band isError result (tools/call) or a JSON-RPC internal error
+    # (resources/read, prompts/get), inside a successful control response.
+    def respond_to_process_exit(request_id, request_data, error)
+      message = FiberBoundary.process_exit_message(error)
+      mcp_message = request_data[:message] if request_data.is_a?(Hash) && request_data[:subtype] == 'mcp_message'
+      return send_control_error(request_id, message) unless mcp_message.is_a?(Hash)
+
+      mcp_response = { jsonrpc: '2.0', id: mcp_message[:id] }
+      if mcp_message[:method] == 'tools/call'
+        mcp_response[:result] = { content: [{ type: 'text', text: message }], isError: true }
+      else
+        mcp_response[:error] = { code: -32_603, message: message }
+      end
+      writeln(JSON.generate({
+                              type: 'control_response',
+                              response: {
+                                subtype: 'success', request_id: request_id, requestId: request_id,
+                                response: { mcp_response: mcp_response }
+                              }
+                            }))
+    rescue CLIConnectionError
+      nil # the CLI is already gone; nothing is waiting for the answer
     end
 
     def send_control_error(request_id, message)
@@ -629,12 +666,10 @@ module ClaudeAgentSDK
       # with callback_scheduling: :inline it runs in place on this control-
       # request task, where control_cancel_request (task.stop) can actually
       # cancel it at suspension points. exit / Interrupt from the callback
-      # become an ordinary callback failure (an error control response)
-      # INSIDE the hop — see FiberBoundary.contain_process_exit.
-      response = FiberBoundary.invoke(scheduling: @callback_scheduling, wrapper: @callback_wrapper) do
-        FiberBoundary.contain_process_exit do
-          @can_use_tool.call(request_data[:tool_name], request_data[:input], context)
-        end
+      # re-raise here after the hop; handle_control_request answers the
+      # request before letting them propagate (FiberBoundary.invoke_callback).
+      response = FiberBoundary.invoke_callback(scheduling: @callback_scheduling, wrapper: @callback_wrapper) do
+        @can_use_tool.call(request_data[:tool_name], request_data[:input], context)
       end
       # A worker may return a decision after the read loop invalidated the
       # request. Never turn that late decision into an allow response.
@@ -688,12 +723,12 @@ module ClaudeAgentSDK
       # genuine cooperative cancellation: the hook is interrupted at its next
       # suspension point and its ensure blocks run (Python parity — anyio
       # cancels the coroutine). A CPU-stuck inline hook cannot be timed out.
-      # In all three variants exit / Interrupt from the hook become an
-      # ordinary callback failure (an error control response) INSIDE the
-      # hop — see FiberBoundary.contain_process_exit.
+      # All three variants go through FiberBoundary.invoke_callback, so exit
+      # / Interrupt from the hook reach handle_control_request, which answers
+      # the request before letting them propagate.
       unless @hook_callback_timeouts[callback_id]
-        hook_output = FiberBoundary.invoke(scheduling: @callback_scheduling, wrapper: @callback_wrapper) do
-          FiberBoundary.contain_process_exit { callback.call(hook_input, request_data[:tool_use_id], context) }
+        hook_output = FiberBoundary.invoke_callback(scheduling: @callback_scheduling, wrapper: @callback_wrapper) do
+          callback.call(hook_input, request_data[:tool_use_id], context)
         end
       end
 
@@ -716,14 +751,14 @@ module ClaudeAgentSDK
               Async::Task.current, timeout,
               on_timeout: -> { Async::TimeoutError.new('execution expired') }
             ) do
-              FiberBoundary.invoke(scheduling: :inline, wrapper: @callback_wrapper) do
-                FiberBoundary.contain_process_exit { callback.call(hook_input, request_data[:tool_use_id], context) }
+              FiberBoundary.invoke_callback(scheduling: :inline, wrapper: @callback_wrapper) do
+                callback.call(hook_input, request_data[:tool_use_id], context)
               end
             end
           else
             Async::Task.current.with_timeout(timeout) do
-              FiberBoundary.invoke(wrapper: @callback_wrapper) do
-                FiberBoundary.contain_process_exit { callback.call(hook_input, request_data[:tool_use_id], context) }
+              FiberBoundary.invoke_callback(wrapper: @callback_wrapper) do
+                callback.call(hook_input, request_data[:tool_use_id], context)
               end
             end
           end

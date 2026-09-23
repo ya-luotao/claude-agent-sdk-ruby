@@ -65,11 +65,11 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
-Tool arguments are JSON-Schema-validated (draft4) before the handler runs — the simple `{ name: :string }` idiom marks every param required; validation failures, unknown tools, and handler exceptions (including `exit`/`Interrupt`/signals raised by the handler) return to the model in-band (`isError: true`). Global opt-out: `MCP.configure { |c| c.validate_tool_call_arguments = false }`. Draft4-incompatible schemas (numeric `exclusiveMinimum`, `$ref`) fall back to validation-disabled with a warning.
+Tool arguments are JSON-Schema-validated (draft4) before the handler runs — the simple `{ name: :string }` idiom marks every param required; validation failures, unknown tools, and handler exceptions return to the model in-band (`isError: true`); `exit`/`Interrupt`/signals from a handler are answered that way first and then propagate as Ruby normally would (they are never swallowed). Global opt-out: `MCP.configure { |c| c.validate_tool_call_arguments = false }`. Draft4-incompatible schemas (numeric `exclusiveMinimum`, `$ref`) fall back to validation-disabled with a warning.
 
 ## Resources and prompts (SDK MCP)
 
-SDK MCP servers can also expose resources and prompts via `ClaudeAgentSDK.create_resource` and `ClaudeAgentSDK.create_prompt`. A reader/generator exception (including `exit`/`Interrupt`/signals) is answered with a JSON-RPC `-32603` error carrying the message; it never ends the process.
+SDK MCP servers can also expose resources and prompts via `ClaudeAgentSDK.create_resource` and `ClaudeAgentSDK.create_prompt`. A reader/generator exception is answered with a JSON-RPC `-32603` error carrying the message; `exit`/`Interrupt`/signals are answered that way first and then propagate.
 
 ## MCP runtime control (Client only)
 

@@ -850,13 +850,13 @@ RSpec.describe ClaudeAgentSDK, '.extract_sdk_mcp_servers' do
   end
 end
 
-# Issue #77: a tool handler raising SystemExit / Interrupt / SignalException
-# escaped the StandardError-only dispatch boundaries, so the pending
-# tools/call control response was never written (and in :thread mode Ruby
-# re-raised the worker's SystemExit on the main thread, tearing down the
-# reactor). Such exceptions become in-band isError results like any other
-# handler failure; cancellation must still propagate untouched.
-RSpec.describe ClaudeAgentSDK::SdkMcpServer, 'process-exit exceptions raised by tool handlers' do
+# Issue #77 / #119: exit / Interrupt / signals raised by a tool handler are
+# answered (an isError result) and then re-raised — those cases terminate
+# the process, so they live in the child-process harness
+# (spec/unit/callback_process_exit_spec.rb): run in-process, a regression
+# aborted rspec mid-run with a green "0 failures". What stays here is the
+# cancellation that must still propagate untouched.
+RSpec.describe ClaudeAgentSDK::SdkMcpServer, 'cancellation raised by tool handlers' do
   def server_raising(exception)
     tool = ClaudeAgentSDK.create_tool('boom', 'Boom', {}) { |_args| raise exception }
     described_class.new(name: 'srv', tools: [tool])
@@ -864,71 +864,6 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer, 'process-exit exceptions raised by 
 
   def tools_call(id = 1)
     { jsonrpc: '2.0', id: id, method: 'tools/call', params: { name: 'boom', arguments: {} } }
-  end
-
-  exceptions = {
-    'SystemExit' => -> { SystemExit.new(3, 'handler called exit') },
-    'Interrupt' => -> { Interrupt.new('handler interrupted') },
-    'SignalException' => -> { SignalException.new('TERM') }
-  }
-
-  %i[thread inline].each do |scheduling|
-    context "with #{scheduling} callback scheduling" do
-      exceptions.each do |label, build|
-        it "reports #{label} from #call_tool as an in-band isError result" do
-          exception = build.call
-          server = server_raising(exception)
-          server.callback_scheduling = scheduling
-
-          result = Sync { server.call_tool('boom', {}) }
-
-          expect(result).to eq(content: [{ type: 'text', text: "#{exception.class}: #{exception.message}" }], isError: true)
-        end
-
-        it "reports #{label} from a routed tools/call as an in-band isError result" do
-          exception = build.call
-          server = server_raising(exception)
-          server.callback_scheduling = scheduling
-
-          response = Sync { server.handle_message(tools_call(7)) }
-
-          expect(response[:error]).to be_nil
-          expect(response[:id]).to eq(7)
-          expect(response.dig(:result, :isError)).to be(true)
-          expect(response.dig(:result, :content, 0, :text)).to eq("#{exception.class}: #{exception.message}")
-        end
-      end
-
-      # End to end through Query: the control response is written and the
-      # reactor survives — before the fix, :thread mode lost the reactor to
-      # a SystemExit Ruby re-raised on the main thread.
-      it 'writes the tools/call control response when a handler calls exit' do
-        server = server_raising(SystemExit.new(3, 'handler called exit'))
-        writes = []
-        transport = instance_double(ClaudeAgentSDK::Transport)
-        allow(transport).to receive(:write) { |json| writes << JSON.parse(json) }
-        query = ClaudeAgentSDK::Query.new(
-          transport: transport, is_streaming_mode: true,
-          sdk_mcp_servers: { 'srv' => server }, callback_scheduling: scheduling
-        )
-        request = {
-          type: 'control_request', request_id: 'req_exit',
-          request: { subtype: 'mcp_message', server_name: 'srv', message: tools_call }
-        }
-
-        reactor_alive = Sync do
-          query.send(:handle_control_request, request)
-          :alive
-        end
-
-        expect(reactor_alive).to eq(:alive)
-        expect(writes.length).to eq(1)
-        response = writes.first.fetch('response')
-        expect(response).to include('subtype' => 'success', 'request_id' => 'req_exit')
-        expect(response.dig('response', 'mcp_response', 'result', 'isError')).to be(true)
-        expect(response.dig('response', 'mcp_response', 'result', 'content', 0, 'text')).to eq('SystemExit: handler called exit')
-      end
-    end
   end
 
   context 'with cancellation raised inside an inline handler' do
