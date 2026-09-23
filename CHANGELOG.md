@@ -7,13 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **`CLIInstaller::PINNED_CLI_VERSION`** (`'2.1.280'`, the CLI Python SDK 0.2.158 bundles) — the CLI version this gem release is developed and tested against; the Ruby equivalent of the Python SDK's bundled-CLI pin (`_cli_version.py`), except nothing is shipped inside the gem. Single source of truth: this constant is the only place the pin lives — docs and the transport's guidance reference it rather than repeating the literal.
-- **`CLIInstaller.install_pinned(dir: nil)`** — installs exactly `PINNED_CLI_VERSION`. The Dockerfile / `bin/setup` form of "pin the tested pair": a deploy that calls it gets the SDK+CLI combination this release was tested with, and a Dependabot bump of the gem carries the CLI forward with it — no version literal in the caller to keep in sync. `install`'s default is unchanged (`'stable'` dist-tag), and explicit `version:` pins behave exactly as before.
-- **`.github/workflows/cli-pin-bump.yml`** — scheduled (and manually dispatchable) workflow that reads the Python SDK's `_cli_version.py` on `main` and opens a PR moving `PINNED_CLI_VERSION` when it changes. It touches only that one line; cutting the follow-up patch release stays a human decision.
-
 ### Changed
-- The transport's "Claude Code not found" guidance, `docs/cli-installer.md` and the skill references now point at `install_pinned` (interpolating the constant) instead of a hardcoded example version that went stale with every CLI release.
 - Docs, examples and the bundled `claude-agent-ruby` skill now use current model IDs (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`) and recommend adaptive thinking plus `effort:`; `ThinkingConfigEnabled(budget_tokens:)` is described as the older-model path. `examples/extended_thinking_example.rb` no longer teaches the deprecated `max_thinking_tokens`. No API changes.
 
 ## [0.33.1] - 2026-09-21
