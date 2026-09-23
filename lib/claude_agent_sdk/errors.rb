@@ -120,6 +120,8 @@ module ClaudeAgentSDK
     # never disagree. Private to ResultError (Python keeps the equivalent
     # helpers module-private as _normalize_result_errors); callers outside
     # go through .error_text.
+    #
+    # @api private
     module Payload
       module_function
 
