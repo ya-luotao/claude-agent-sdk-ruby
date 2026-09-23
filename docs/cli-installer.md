@@ -13,8 +13,12 @@ require 'claude_agent_sdk'
 ClaudeAgentSDK::CLIInstaller.install_pinned
 # => "/app/vendor/claude/claude"
 
-# Or pin your own: 'stable' (default), 'latest', or a concrete version.
-ClaudeAgentSDK::CLIInstaller.install(version: 'stable', dir: '/opt/claude')
+# Or pin a concrete version of your own:
+ClaudeAgentSDK::CLIInstaller.install(version: 'x.y.z', dir: '/opt/claude')
+
+# 'stable' (the default) and 'latest' are floating dist-tags, not pins:
+# they re-resolve on every call, so a rebuild may install a newer CLI.
+ClaudeAgentSDK::CLIInstaller.install(version: 'stable')
 
 # nil unless a binary is already installed there
 ClaudeAgentSDK::CLIInstaller.installed_path
