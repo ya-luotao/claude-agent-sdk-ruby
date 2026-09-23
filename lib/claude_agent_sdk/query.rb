@@ -21,7 +21,7 @@ module ClaudeAgentSDK
   # - Initialization handshake
   #
   # @api private
-  class Query
+  class Query # rubocop:disable Metrics/ClassLength -- control-protocol hub: routing, hooks, permissions, MCP bridge
     attr_reader :transport, :is_streaming_mode, :sdk_mcp_servers
 
     # The CLI's response to the initialize control request (nil before
@@ -71,7 +71,7 @@ module ClaudeAgentSDK
       end
     end
 
-    def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
+    def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil, # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- initializes every control-protocol concern in one place
                    exclude_dynamic_sections: nil, system_prompt_snapshot: nil, skills: nil,
                    forward_subagent_text: false, agent_progress_summaries: nil,
                    callback_scheduling: :thread, callback_wrapper: nil)
@@ -140,7 +140,7 @@ module ClaudeAgentSDK
 
     # Initialize control protocol if in streaming mode
     # @return [Hash, nil] Initialize response with supported commands, or nil if not streaming
-    def initialize_protocol
+    def initialize_protocol # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- builds the initialize request from every optional option
       return nil unless @is_streaming_mode
 
       # Build hooks configuration for initialization
@@ -333,8 +333,8 @@ module ClaudeAgentSDK
       DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS
     end
 
-    def read_messages
-      @transport.read_messages do |message|
+    def read_messages # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- concurrency-sensitive read loop; kept whole on purpose
+      @transport.read_messages do |message| # rubocop:disable Metrics/BlockLength -- see read_messages
         break if @closed
 
         msg_type = message[:type]
@@ -551,7 +551,7 @@ module ClaudeAgentSDK
       waiter.signal
     end
 
-    def handle_control_request(request)
+    def handle_control_request(request) # rubocop:disable Metrics/MethodLength -- subtype dispatch plus the shared error response
       request_id = request[:request_id] || request[:requestId]
       request_data = request[:request]
       subtype = request_data[:subtype]
@@ -642,7 +642,7 @@ module ClaudeAgentSDK
       nil
     end
 
-    def handle_permission_request(request_data, request_id: nil)
+    def handle_permission_request(request_data, request_id: nil) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- permission round-trip: input, callback, result conversion
       raise 'canUseTool callback is not provided' unless @can_use_tool
 
       signal = CancellationSignal.new
@@ -707,7 +707,7 @@ module ClaudeAgentSDK
       untrack_callback_signal(request_id, signal)
     end
 
-    def handle_hook_callback(request_data, request_id: nil)
+    def handle_hook_callback(request_data, request_id: nil) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- hook round-trip: timeout, callback, output conversion
       callback_id = request_data[:callback_id]
       callback = @hook_callbacks[callback_id]
       raise "No hook callback found for ID: #{callback_id}" unless callback
@@ -792,7 +792,7 @@ module ClaudeAgentSDK
       @callback_request_signals.delete(request_id)
     end
 
-    def parse_hook_input(input_data)
+    def parse_hook_input(input_data) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength -- one branch per hook event type
       event_name = input_data[:hook_event_name] || input_data['hook_event_name']
       fetch = lambda do |key|
         if input_data.key?(key)
@@ -1025,7 +1025,7 @@ module ClaudeAgentSDK
       { mcp_response: mcp_response }
     end
 
-    def convert_hook_output_for_cli(hook_output)
+    def convert_hook_output_for_cli(hook_output) # rubocop:disable Metrics/CyclomaticComplexity -- one optional field per hook output key
       # Handle typed output objects
       return hook_output.to_h if hook_output.respond_to?(:to_h) && !hook_output.is_a?(Hash)
 
@@ -1141,7 +1141,7 @@ module ClaudeAgentSDK
       end
     end
 
-    def handle_sdk_mcp_request(server_name, message)
+    def handle_sdk_mcp_request(server_name, message) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/MethodLength -- JSON-RPC method dispatch for SDK MCP servers
       # Carry this session's scheduling mode and callback wrapper across the
       # dispatch into the (possibly session-shared) SdkMcpServer via fiber
       # storage — set on the dispatching fiber, read back by the server's

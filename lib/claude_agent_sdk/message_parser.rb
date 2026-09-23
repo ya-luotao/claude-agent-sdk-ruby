@@ -8,7 +8,7 @@ module ClaudeAgentSDK
   #
   # @api private
   class MessageParser
-    def self.parse(data)
+    def self.parse(data) # rubocop:disable Metrics/CyclomaticComplexity -- flat dispatch over CLI message types
       raise MessageParseError.new('Invalid message data type', data: data) unless data.is_a?(Hash)
 
       message_type = data[:type]

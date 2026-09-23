@@ -5,7 +5,7 @@ require_relative '../session_summary'
 
 module ClaudeAgentSDK
   # Test helpers shipped in the gem for third-party SessionStore adapter authors.
-  module Testing # rubocop:disable Metrics/ModuleLength
+  module Testing # rubocop:disable Metrics/ModuleLength -- the whole conformance suite in one module
     # Raised by run_session_store_conformance when a behavioral contract fails.
     class ConformanceError < StandardError; end
 
@@ -100,7 +100,7 @@ module ClaudeAgentSDK
 
     # -- Required: append + load -------------------------------------------
 
-    def check_append_and_load(fresh, has_list_sessions) # rubocop:disable Metrics/MethodLength
+    def check_append_and_load(fresh, has_list_sessions) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- linear assertion script
       # 1. append then load returns same entries in same order.
       store = fresh.call
       store.append(key, [entry('uuid' => 'b', 'n' => 1), entry('uuid' => 'a', 'n' => 2)])
@@ -165,7 +165,7 @@ module ClaudeAgentSDK
 
     # -- Optional: list_sessions -------------------------------------------
 
-    def check_list_sessions(fresh)
+    def check_list_sessions(fresh) # rubocop:disable Metrics/AbcSize -- linear assertion script
       # 7. list_sessions returns session_ids for project.
       store = fresh.call
       store.append({ 'project_key' => 'proj', 'session_id' => 'a' }, [entry('n' => 1)])
@@ -197,7 +197,7 @@ module ClaudeAgentSDK
 
     # -- Optional: list_session_summaries ----------------------------------
 
-    def check_list_session_summaries(fresh, has_list_sessions, has_delete) # rubocop:disable Metrics/MethodLength
+    def check_list_session_summaries(fresh, has_list_sessions, has_delete) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- linear assertion script
       # 14. persisted fold output round-trips through fold_session_summary.
       store = fresh.call
       summ_key = { 'project_key' => 'proj', 'session_id' => 'summ-sess' }
@@ -251,7 +251,7 @@ module ClaudeAgentSDK
 
     # -- Optional: delete --------------------------------------------------
 
-    def check_delete(fresh, has_list_subkeys, has_list_sessions) # rubocop:disable Metrics/MethodLength
+    def check_delete(fresh, has_list_subkeys, has_list_sessions) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- linear assertion script
       # 9. delete main then load returns nil (delete of never-written is a no-op).
       store = fresh.call
       store.delete('project_key' => 'proj', 'session_id' => 'never-written')
@@ -310,7 +310,7 @@ module ClaudeAgentSDK
 
     # -- Optional: list_subkeys --------------------------------------------
 
-    def check_list_subkeys(fresh)
+    def check_list_subkeys(fresh) # rubocop:disable Metrics/AbcSize -- linear assertion script
       # 12. list_subkeys returns subpaths (scoped to the session).
       store = fresh.call
       store.append(key, [entry('n' => 1)])

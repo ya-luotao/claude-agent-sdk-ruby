@@ -33,7 +33,7 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
   # fixture body so the real Digest/chmod/rename path still runs.
   # +manifest_size+ defaults to the fixture's own size (the real manifest
   # carries one); pass nil to model a manifest entry without a size field.
-  def stub_http(version: '2.1.220', platform: 'darwin-arm64', manifest_checksum: nil,
+  def stub_http(version: '2.1.220', platform: 'darwin-arm64', manifest_checksum: nil, # rubocop:disable Metrics/AbcSize -- stubs every CLIInstaller::Http entry point
                 body: binary_body, manifest_size: :auto, tags: { 'stable' => '2.1.220', 'latest' => '2.1.226' })
     manifest_size = body.bytesize if manifest_size == :auto
     manifest_checksum ||= Digest::SHA256.hexdigest(body)

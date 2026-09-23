@@ -15,7 +15,7 @@ module ClaudeAgentSDK
   # matching the CLI pattern. Safe to call from any SDK host process.
   #
   # @api private
-  module SessionMutations # rubocop:disable Metrics/ModuleLength
+  module SessionMutations # rubocop:disable Metrics/ModuleLength -- rename/tag/delete/fork share transcript helpers
     module_function
 
     # Transcript entry types kept in fork output. Mirrors Python's
@@ -392,7 +392,7 @@ module ClaudeAgentSDK
     # +derive_title+ is a callable invoked ONLY when no explicit +title+ is
     # given, so the disk path's head/tail byte scan and the store path's
     # entry-object scan each run only when needed.
-    def build_fork_lines(transcript, content_replacements, session_id, up_to_message_id, title, derive_title) # rubocop:disable Metrics/MethodLength
+    def build_fork_lines(transcript, content_replacements, session_id, up_to_message_id, title, derive_title) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/ParameterLists, Metrics/PerceivedComplexity -- single fork rewrite pass: UUID remap, truncation, title
       transcript = transcript.reject { |e| e['isSidechain'] }
       raise ArgumentError, "Session #{session_id} has no messages to fork" if transcript.empty?
 
@@ -530,7 +530,7 @@ module ClaudeAgentSDK
     end
 
     # Build a single forked entry with remapped UUIDs.
-    def build_forked_entry(original, index, total, uuid_mapping, by_uuid,
+    def build_forked_entry(original, index, total, uuid_mapping, by_uuid, # rubocop:disable Metrics/ParameterLists -- per-entry step of build_fork_lines; its state is threaded explicitly
                            forked_session_id, source_session_id, now)
       new_uuid = uuid_mapping[original['uuid']]
 

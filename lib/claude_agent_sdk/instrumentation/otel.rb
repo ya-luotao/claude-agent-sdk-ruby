@@ -34,7 +34,7 @@ module ClaudeAgentSDK
     #   observer = ClaudeAgentSDK::Instrumentation::OTelObserver.new
     #   options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer])
     #   ClaudeAgentSDK.query(prompt: "Hello", options: options) { |msg| ... }
-    class OTelObserver
+    class OTelObserver # rubocop:disable Metrics/ClassLength -- one observer mapping every message type to spans
       include ClaudeAgentSDK::Observer
 
       TRACER_NAME = 'claude_agent_sdk'
@@ -124,7 +124,7 @@ module ClaudeAgentSDK
 
       private
 
-      def start_trace(message)
+      def start_trace(message) # rubocop:disable Metrics/AbcSize -- flat mapping of init-message fields to root span attributes
         # A new init without an intervening ResultMessage (e.g. /clear or an
         # interrupted turn) supersedes the current trace; finish it so it is
         # exported instead of leaking as a never-ended span, and reset the
@@ -228,7 +228,7 @@ module ClaudeAgentSDK
         end
       end
 
-      def end_trace(message)
+      def end_trace(message) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- flat mapping of optional usage/cost fields to span attributes
         return unless @root_span
 
         usage = message.usage || {}

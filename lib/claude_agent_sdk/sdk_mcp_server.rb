@@ -412,11 +412,11 @@ module ClaudeAgentSDK
     end
 
     # Create dynamic Tool classes from tool definitions
-    def create_tool_classes(tools)
+    def create_tool_classes(tools) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- builds each dynamic MCP::Tool subclass inline
       # Captured so the dynamic class can resolve the effective scheduling
       # mode at call time — same pattern as prompt classes.
       sdk_server = self
-      tools.map do |tool_def|
+      tools.map do |tool_def| # rubocop:disable Metrics/BlockLength -- see create_tool_classes
         # The gem injects server_context AFTER expanding the tool arguments,
         # overwriting a user value before our call method can recover it.
         # Check at registration (including raw SdkMcpTool definitions), not in

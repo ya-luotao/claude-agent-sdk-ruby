@@ -29,7 +29,7 @@ require 'async'
 require 'securerandom'
 
 # Claude Agent SDK for Ruby
-module ClaudeAgentSDK
+module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry points (query, ask, sessions API) live on the root module
   # The duck-typed observer surface probed by resolve_observers — implementing
   # any one of these counts as an observer (see Observer's no-op defaults).
   #
@@ -669,7 +669,7 @@ module ClaudeAgentSDK
   #   ClaudeAgentSDK.query(prompt: messages) do |message|
   #     puts message
   #   end
-  def self.query(prompt:, options: nil, transport: nil, &block)
+  def self.query(prompt:, options: nil, transport: nil, &block) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- one-shot lifecycle (validate, resume, connect, stream, teardown) kept linear
     # Validate BEFORE the block-less enum_for return so a bad prompt fails at
     # the call site, not on first iteration. Mirrors Client#query: a bare Hash
     # responds to #each and would stream [key, value] pairs' to_s garbage to
@@ -703,7 +703,7 @@ module ClaudeAgentSDK
       raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)'
     end
 
-    Async(&FiberBoundary.capture_otel_context do
+    Async(&FiberBoundary.capture_otel_context do # rubocop:disable Metrics/BlockLength -- the reactor task body of query()
       materialized = nil
       query_handler = nil
       begin
@@ -930,7 +930,7 @@ module ClaudeAgentSDK
   #     }
   #   )
   #   client = ClaudeAgentSDK::Client.new(options: options)
-  class Client
+  class Client # rubocop:disable Metrics/ClassLength -- public session API: lifecycle, control methods and their Ruby aliases
     # The session's control-protocol handler (nil until #connect).
     #
     # @api private
@@ -1377,7 +1377,7 @@ module ClaudeAgentSDK
     end
 
     # The connect body, wrapped by #connect so a failure triggers cleanup.
-    def connect_inner(configured_options, prompt)
+    def connect_inner(configured_options, prompt) # rubocop:disable Metrics/MethodLength -- connect sequence kept in order; #connect wraps it for cleanup
       # Client always uses streaming mode; keep stdin open for bidirectional
       # communication. Observers were already resolved by #connect.
       @transport = @transport_class.new(configured_options, **@transport_args)

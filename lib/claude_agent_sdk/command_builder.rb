@@ -6,7 +6,7 @@ require_relative 'types'
 
 module ClaudeAgentSDK
   # Builds the CLI argv array from a ClaudeAgentOptions instance.
-  class CommandBuilder
+  class CommandBuilder # rubocop:disable Metrics/ClassLength -- one append_* method per CLI flag group
     # @api private
     EXTRA_ARG_FLAG_REGEXP = /\A[a-z0-9][a-z0-9-]*\z/
 
@@ -156,7 +156,7 @@ module ClaudeAgentSDK
     # rejected too, so a dead rule fails loudly here instead of silently
     # granting nothing. Returns the name as a UTF-8 String so later argv
     # joins cannot raise Encoding::CompatibilityError.
-    def validate_skill_name(name) # rubocop:disable Metrics/MethodLength
+    def validate_skill_name(name) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- one guard per rejected input shape, each with its own message
       raise TypeError, "Skill names must be strings, got #{name.class}: #{name.inspect}" unless name.is_a?(String)
 
       # Ruby's analogue of Python's surrogate check: a lone surrogate (or any
@@ -294,7 +294,7 @@ module ClaudeAgentSDK
     # must reach the CLI so it can override a sandbox enabled in the
     # settings JSON (`sandbox: true`, the boolean toggle, used to crash on
     # true.empty?; false and {} were silently dropped).
-    def append_settings(cmd)
+    def append_settings(cmd) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- folds settings, sandbox and flag overrides into one --settings value
       return unless @options.settings || !@options.sandbox.nil?
 
       settings_hash = {}
@@ -305,7 +305,7 @@ module ClaudeAgentSDK
           begin
             settings_hash = JSON.parse(@options.settings)
           rescue JSON::ParserError
-            if @options.sandbox.nil?
+            if @options.sandbox.nil? # rubocop:disable Metrics/BlockNesting -- settings-is-a-path fallback inside the JSON parse rescue
               settings_is_path = true
               cmd.push('--settings', @options.settings)
             else

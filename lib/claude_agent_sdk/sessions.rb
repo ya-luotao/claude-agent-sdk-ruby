@@ -85,7 +85,7 @@ module ClaudeAgentSDK
   # Session browsing functions
   #
   # @api private
-  module Sessions # rubocop:disable Metrics/ModuleLength
+  module Sessions # rubocop:disable Metrics/ModuleLength -- session listing/reading functions share private helpers
     LITE_READ_BUF_SIZE = 65_536
     MAX_SANITIZED_LENGTH = 200
 
@@ -437,7 +437,7 @@ module ClaudeAgentSDK
     end
 
     # Extract the first meaningful user prompt from the head of a JSONL file
-    def extract_first_prompt_from_head(head)
+    def extract_first_prompt_from_head(head) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- first-prompt skip rules, matched by the store fold
       command_fallback = nil
 
       head.each_line do |line|
@@ -549,7 +549,7 @@ module ClaudeAgentSDK
       [head, tail]
     end
 
-    def build_session_info(file_path, head, tail, stat, project_path)
+    def build_session_info(file_path, head, tail, stat, project_path) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- one optional field per SDKSessionInfo attribute
       # User-set title (customTitle) wins over AI-generated title (aiTitle).
       # Consult the head only when the tail has no occurrence of that field.
       # Normalize blanks AFTER choosing the latest occurrence: an explicit
@@ -1000,7 +1000,7 @@ module ClaudeAgentSDK
     # NotImplementedError (caller falls back to the slow path). Sessions missing
     # a sidecar or whose sidecar is stale (summary.mtime < the session's current
     # mtime) are routed through gap-fill so the fold is recomputed from source.
-    def list_sessions_via_summaries(store, project_key, project_path, limit, offset)
+    def list_sessions_via_summaries(store, project_key, project_path, limit, offset) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- fast path plus stale/missing-sidecar gap-fill
       begin
         # Array(): a non-conformant store returning nil (e.g. a NULL JSONB read)
         # degrades to gap-fill instead of crashing on nil.each, matching the
@@ -1048,7 +1048,7 @@ module ClaudeAgentSDK
     # leaves a short page; loads stay bounded to ~offset + limit + (the dropped
     # placeholders encountered before the page fills), preserving the fast
     # path's "don't load every session" intent.
-    def paginate_resolving_gaps(store, project_key, project_path, slots, limit, offset)
+    def paginate_resolving_gaps(store, project_key, project_path, slots, limit, offset) # rubocop:disable Metrics/ParameterLists -- pagination state threaded explicitly
       offset = 0 unless offset&.positive?
       results = []
       skipped = 0
@@ -1401,7 +1401,7 @@ module ClaudeAgentSDK
     # threads (so a full pipe buffer can't deadlock git) and SIGKILL the
     # child if the deadline passes. Matches Python's
     # `subprocess.run(..., timeout=5)`.
-    def detect_worktrees(path)
+    def detect_worktrees(path) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- bounded git subprocess: drained pipes, deadline kill
       stdin, stdout, stderr, wait_thr = Open3.popen3('git', '-C', path, 'worktree', 'list', '--porcelain')
       stdin.close
 

@@ -11,7 +11,7 @@ require_relative 'cli_installer'
 
 module ClaudeAgentSDK
   # Subprocess transport using Claude Code CLI
-  class SubprocessCLITransport < Transport
+  class SubprocessCLITransport < Transport # rubocop:disable Metrics/ClassLength -- subprocess lifecycle: discovery, spawn, IO, teardown
     # @api private
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     # @api private
@@ -157,7 +157,7 @@ module ClaudeAgentSDK
     #   4. Well-known install locations.
     #
     # @api private
-    def find_cli
+    def find_cli # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- ordered discovery probes (env, vendored, PATH, known locations)
       env_path = ENV.fetch(CLI_PATH_ENV_VAR, nil).to_s
       unless env_path.empty?
         # Absolutize against the CURRENT working directory, which is where the
@@ -262,7 +262,7 @@ module ClaudeAgentSDK
       CommandBuilder.new(@cli_path, @options).build
     end
 
-    def connect
+    def connect # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- spawn sequence kept in order
       return if @process
 
       check_claude_version
@@ -414,7 +414,7 @@ module ClaudeAgentSDK
       end
     end
 
-    def close
+    def close # rubocop:disable Metrics/MethodLength -- teardown ordering is load-bearing
       @ready = false
       return unless @process
 
@@ -494,7 +494,7 @@ module ClaudeAgentSDK
     # cancellation-abandoned case.
     #
     # @api private
-    def teardown_process
+    def teardown_process # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- TERM/KILL escalation and reaping; ordering is load-bearing
       cleanup_errors = []
 
       # Kill stderr thread
@@ -719,7 +719,7 @@ module ClaudeAgentSDK
       # Ignore
     end
 
-    def read_messages(&)
+    def read_messages(&) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- concurrency-sensitive read loop; kept whole on purpose
       return enum_for(:read_messages) unless block_given?
 
       raise CLIConnectionError, 'Not connected' unless @process && @stdout
@@ -946,7 +946,7 @@ module ClaudeAgentSDK
     # read both pipes to EOF (pre-existing capture3 shape), so the deadline
     # also bounds CLI exit. ensure always reaps the probe (mirrors Python's
     # finally: terminate(); wait()).
-    def capture_cli_version_output
+    def capture_cli_version_output # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- bounded subprocess probe: drained pipes, reaping
       stdin, stdout, stderr, wait_thr = Open3.popen3(@cli_path.to_s, '-v')
       stdin.close
       drainer = Thread.new { [stdout.read, stderr.read] }

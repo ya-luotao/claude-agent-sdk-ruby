@@ -30,7 +30,7 @@ module ClaudeAgentSDK
   #   ClaudeAgentSDK::CLIInstaller.install_pinned
   # @example Pin a version of your own
   #   ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')
-  module CLIInstaller # rubocop:disable Metrics/ModuleLength
+  module CLIInstaller # rubocop:disable Metrics/ModuleLength -- Http/Platform/Release/Metadata submodules in one file
     # @api private
     BASE_URL = 'https://downloads.claude.ai/claude-code-releases'
     # Dist-tags resolved through a GET to BASE_URL/<tag>.

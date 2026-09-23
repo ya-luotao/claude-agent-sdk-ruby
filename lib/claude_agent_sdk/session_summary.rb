@@ -51,7 +51,7 @@ module ClaudeAgentSDK
     # @param key [Hash] the SessionKey (string keys)
     # @param entries [Array<Hash>] newly appended transcript entries
     # @return [Hash] the updated summary entry ({ 'session_id', 'mtime', 'data' })
-    def fold_session_summary(prev, key, entries)
+    def fold_session_summary(prev, key, entries) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- incremental fold over every summary field
       summary = if prev
                   { 'session_id' => prev['session_id'], 'mtime' => prev['mtime'], 'data' => prev['data'].dup }
                 else
@@ -149,7 +149,7 @@ module ClaudeAgentSDK
     # deliberately match the disk extractor (not Python's per-char replace) so
     # the Ruby store path and disk path produce identical first_prompt values
     # for the same transcript.
-    def fold_first_prompt(data, entry)
+    def fold_first_prompt(data, entry) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- must match the disk first-prompt extractor rule for rule
       return if data['first_prompt_locked']
       return unless entry['type'] == 'user'
       return if entry['isMeta'] == true || entry['isCompactSummary'] == true

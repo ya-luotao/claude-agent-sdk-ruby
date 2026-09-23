@@ -1,5 +1,3 @@
-inherit_from: .rubocop_todo.yml
-
 AllCops:
   TargetRubyVersion: 3.2
   NewCops: enable
@@ -11,37 +9,61 @@ AllCops:
 Style/Documentation:
   Enabled: false
 
-Metrics/MethodLength:
-  Max: 30
+# --- Policy exceptions (deliberate, not lint debt) -------------------------
+
+Gemspec/DevelopmentDependencies:
   Exclude:
-    - 'spec/**/*'
+    # Dev tools are declared in the gemspec as well as the Gemfile; moving
+    # them is a packaging decision, not a lint fix.
+    - 'claude-agent-sdk.gemspec'
+
+Gemspec/RequireMFA:
+  Exclude:
+    # Releases publish through a RubyGems trusted publisher; adding
+    # rubygems_mfa_required metadata is a release-policy change.
+    - 'claude-agent-sdk.gemspec'
+
+Naming/AccessorMethodName:
+  Exclude:
+    # get_*/set_* (get_mcp_status, set_model, ...) are the Python SDK parity
+    # names; the Ruby-idiom aliases sit next to them. Both stay public.
     - 'lib/claude_agent_sdk.rb'
     - 'lib/claude_agent_sdk/query.rb'
-    - 'lib/claude_agent_sdk/message_parser.rb'
-    - 'lib/claude_agent_sdk/sdk_mcp_server.rb'
-    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-    - 'lib/claude_agent_sdk/instrumentation/otel.rb'
-
-Metrics/ClassLength:
-  Max: 250
-  Exclude:
-    - 'lib/claude_agent_sdk.rb'
-    - 'lib/claude_agent_sdk/query.rb'
-    - 'lib/claude_agent_sdk/message_parser.rb'
-    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-    - 'lib/claude_agent_sdk/command_builder.rb'
-    - 'lib/claude_agent_sdk/instrumentation/otel.rb'
-
-Metrics/ModuleLength:
-  Exclude:
-    - 'lib/claude_agent_sdk.rb'
-
-Metrics/BlockLength:
-  Exclude:
-    - 'spec/**/*'
-    - '*.gemspec'
 
 Naming/FileName:
   Exclude:
     # Bundler autorequire shim — the dash name IS the point (matches the gem name).
     - 'lib/claude-agent-sdk.rb'
+
+# --- Metrics ---------------------------------------------------------------
+# Active for every file. Thresholds sit above RuboCop's defaults because the
+# SDK mirrors the Python SDK's control flow (wide protocol dispatch, CLI flag
+# mapping). A method or class over them carries a named inline
+# `# rubocop:disable Metrics/... -- reason`; new code gets no blanket pass.
+
+Metrics/AbcSize:
+  Max: 30
+
+Metrics/CyclomaticComplexity:
+  Max: 12
+
+Metrics/PerceivedComplexity:
+  Max: 12
+
+Metrics/MethodLength:
+  Max: 30
+  Exclude:
+    - 'spec/**/*'
+
+Metrics/ClassLength:
+  Max: 250
+
+Metrics/ParameterLists:
+  # Keyword arguments are self-describing and this gem's constructors are
+  # keyword-based by convention; positional parameters are still capped.
+  CountKeywordArgs: false
+
+Metrics/BlockLength:
+  Exclude:
+    - 'spec/**/*'
+    - '*.gemspec'

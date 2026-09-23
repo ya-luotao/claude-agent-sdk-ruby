@@ -169,7 +169,7 @@ module ClaudeAgentSDK
                   :ignore_violations, :enable_weaker_nested_sandbox,
                   :enable_weaker_network_isolation, :ripgrep
 
-    def to_h
+    def to_h # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- one optional key per sandbox field
       result = {}
       result[:enabled] = @enabled unless @enabled.nil?
       result[:failIfUnavailable] = @fail_if_unavailable unless @fail_if_unavailable.nil?

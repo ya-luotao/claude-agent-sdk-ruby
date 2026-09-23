@@ -59,7 +59,7 @@ module ClaudeAgentSDK
   # the path so the caller can point the subprocess at it via CLAUDE_CONFIG_DIR.
   #
   # @api private
-  module SessionResume # rubocop:disable Metrics/ModuleLength
+  module SessionResume # rubocop:disable Metrics/ModuleLength -- resume materialization and its helpers
     # User settings files seeded into the temp config dir. cowork_settings.json
     # is the alternate filename the CLI reads in cowork-plugins mode.
     SEEDED_SETTINGS_FILES = ['settings.json', 'cowork_settings.json'].freeze
@@ -120,7 +120,7 @@ module ClaudeAgentSDK
     # (no store, no resume/continue, store has no entries, or the resolved
     # session id is not a valid UUID) — the caller then falls through to the
     # normal spawn path. Raises RuntimeError if a store call fails or times out.
-    def materialize_resume_session(options)
+    def materialize_resume_session(options) # rubocop:disable Metrics/AbcSize -- materialization sequence kept in order
       store = options.session_store
       return nil if store.nil?
       return nil if options.resume.nil? && !options.continue_conversation
@@ -178,7 +178,7 @@ module ClaudeAgentSDK
 
     # Load entries for session_id; return [session_id, entries] or nil if empty.
     # Callers pass the result through encode_candidate before writing.
-    def load_candidate(store, project_key, session_id, timeout_s, scheduling, wrapper)
+    def load_candidate(store, project_key, session_id, timeout_s, scheduling, wrapper) # rubocop:disable Metrics/ParameterLists -- store-call context (timeout, scheduling, wrapper) threaded explicitly
       entries = with_timeout(timeout_s, "SessionStore#load for session #{session_id}", scheduling, wrapper) do
         store.load('project_key' => project_key, 'session_id' => session_id)
       end
@@ -191,7 +191,7 @@ module ClaudeAgentSDK
     # transcripts are mirrored as ordinary top-level keys and often have the
     # highest mtime, so walk newest->oldest and skip them so --continue resumes
     # the user's conversation, not a subagent's.
-    def resolve_continue_candidate(store, project_key, timeout_s, scheduling, wrapper)
+    def resolve_continue_candidate(store, project_key, timeout_s, scheduling, wrapper) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- newest-first walk with sidechain and validity skips
       sessions = with_timeout(timeout_s, 'SessionStore#list_sessions', scheduling, wrapper) do
         store.list_sessions(project_key)
       end
@@ -343,7 +343,7 @@ module ClaudeAgentSDK
     # missing files: they cannot exist, and raising here aborted every
     # store-backed resume on a HOME-less host — even API-key auth, which
     # needs none of them.
-    def copy_auth_files(tmp_base, opt_env)
+    def copy_auth_files(tmp_base, opt_env) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- each auth source is optional and copied independently
       caller_config_dir = env_value(opt_env, 'CLAUDE_CONFIG_DIR')
       home = caller_config_dir ? nil : Sessions.home_dir(opt_env)
       source_config_dir = caller_config_dir || (home && File.join(home, '.claude'))
@@ -592,7 +592,7 @@ module ClaudeAgentSDK
     end
 
     # Load and write all subagent transcripts/metadata under session_id.
-    def materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper)
+    def materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper) # rubocop:disable Metrics/ParameterLists -- store-call context (timeout, scheduling, wrapper) threaded explicitly
       session_dir = File.join(project_dir, session_id)
       subkeys = with_timeout(timeout_s, "SessionStore#list_subkeys for session #{session_id}", scheduling, wrapper) do
         store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
