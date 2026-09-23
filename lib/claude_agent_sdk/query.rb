@@ -1542,8 +1542,20 @@ module ClaudeAgentSDK
       # the tasks being stopped: the reactor-side caller (Client#disconnect
       # from the connect task, the close watcher) and foreign threads keep
       # the plain path, unchanged.
+      #
+      # The deferred Stop SUPERSEDES anything the teardown raises: async
+      # raises it from defer_stop's ensure with an explicit `cause:`, so a
+      # transport #close error would vanish from the chain entirely. Warn
+      # before it is lost. (An inline hook's cooperative timeout landing
+      # while the teardown is suspended is superseded the same way; harmless,
+      # the handler is ending anyway.)
       if (caller_task = task_inside_stopped_trees)
-        caller_task.defer_stop { stop_tasks_and_close_transport }
+        caller_task.defer_stop do
+          stop_tasks_and_close_transport
+        rescue StandardError => e
+          warn "Claude SDK: close from inside a stopping task failed during teardown: #{e.class}: #{e.message}"
+          raise
+        end
       else
         stop_tasks_and_close_transport
       end

@@ -247,6 +247,42 @@ RSpec.describe 'Query#close from inside a user callback (issue #81)' do
 
       expect(query.instance_variable_get(:@close_requests).closed?).to be(true)
     end
+
+    # The deferred Stop supersedes a teardown error (async raises it with an
+    # explicit cause:, dropping the error from the chain), so the error must
+    # at least be reported before it is lost.
+    it 'in :inline mode warns about a transport close error the deferred Stop supersedes' do
+      transport = transport_class.new
+      allow(transport).to receive(:close).and_wrap_original do |original|
+        original.call
+        raise IOError, 'boom'
+      end
+      query = nil
+      observed = nil
+      can_use_tool = lambda do |_tool, _input, _context|
+        begin
+          query.close
+          observed = snapshot(query, transport, nil)
+        rescue Exception => e # rubocop:disable Lint/RescueException -- Async::Stop is not a StandardError
+          observed = snapshot(query, transport, e)
+        end
+        ClaudeAgentSDK::PermissionResultAllow.new
+      end
+      query = ClaudeAgentSDK::Query.new(transport: transport, is_streaming_mode: true,
+                                        can_use_tool: can_use_tool, callback_scheduling: :inline)
+
+      expect do
+        Async do
+          query.start
+          transport.inject(permission_request('req_close_probe'))
+        end.wait
+      end.to output(/close from inside a stopping task failed during teardown: IOError: boom/).to_stderr
+
+      expect(observed).not_to be_nil, 'the callback never ran'
+      expect(observed[:raised]).to be_a(Async::Stop)
+      expect(observed[:transport_closed]).to be(true)
+      expect(observed[:close_requests_closed]).to be(true)
+    end
   end
 
   describe 'Client#disconnect' do
