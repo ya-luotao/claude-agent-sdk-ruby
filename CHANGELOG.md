@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-09-23
+
 The September 2026 audit campaign: 17 fixes from the final audit pass plus the 28 AUDIT-2026-09-22 issues (#66–#93). A few fixes tighten behaviour that was silently wrong — read **Changed** before upgrading.
 
 ### Added
