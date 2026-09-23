@@ -23,7 +23,7 @@ For everything else, open the matching `docs/` subpage:
 | OpenTelemetry observer setup, Langfuse export, span attributes, W3C trace-context propagation to the CLI, custom `Observer` module | `docs/observability.md` |
 | Rails integration — fiber-safety guarantee, ActionCable streaming, session resumption, background jobs, HTTP MCP servers, observability initializer | `docs/rails.md` |
 | Vendoring a pinned, checksum-verified CLI binary with `CLIInstaller` (idempotent/concurrent installs, Docker and `bin/setup` recipes, supported platforms) and the CLI discovery order (`CLAUDE_CLI_PATH` → vendored → `PATH` → common locations) | `docs/cli-installer.md` |
-| Message types (`UserMessage`, `AssistantMessage`, `SystemMessage` subtypes, `ResultMessage`), content blocks, configuration types, constants | `docs/types.md` |
+| Hash-key rule (Symbol vs String keys), `#[]` / camelCase access, message types (`UserMessage`, `AssistantMessage`, `SystemMessage` subtypes, `ResultMessage`), content blocks, configuration types, constants | `docs/types.md` |
 | `AssistantMessage.error`, exception hierarchy, `CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS` env var | `docs/errors.md` |
 
 ## Minimal skeletons

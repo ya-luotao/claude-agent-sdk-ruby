@@ -40,7 +40,7 @@ messages.each { |msg| puts "[#{msg.type}] #{msg.message}" }
 ClaudeAgentSDK.get_session_messages(session_id: 'abc-123-...', offset: 10, limit: 20)
 ```
 
-Each `SessionMessage` includes `type` (`"user"` or `"assistant"`), `uuid`, `session_id`, and `message` (raw API hash).
+Each `SessionMessage` includes `type` (`"user"` or `"assistant"`), `uuid`, `session_id`, and `message` (the raw API message Hash, read from the transcript, so its keys are Strings: `msg.message['content']`; see [Hash keys](types.md#hash-keys)).
 
 ## Reading Subagent Transcripts
 
@@ -292,6 +292,65 @@ require 'claude_agent_sdk/testing/session_store_conformance'
 ClaudeAgentSDK::Testing.run_session_store_conformance(-> { MyStore.new(...) })
 ```
 
+Keys and entries cross the adapter boundary with **String** keys (see
+[Hash keys](types.md#hash-keys)): a key is `{ 'project_key' => ..., 'session_id' => ... }`,
+plus `'subpath'` for a subagent transcript, and entries are the raw JSONL
+objects. Persist entries verbatim and treat `entry['uuid']` as an idempotency
+key, since a retried or re-imported batch can repeat earlier writes.
+
+#### Helpers for adapter authors
+
+`ClaudeAgentSDK.project_key_for_directory(directory = nil)` returns the
+`project_key` the SDK uses for a directory (a String or Pathname; `nil` means
+the current working directory). It applies the CLI's project-directory naming
+(realpath, Unicode NFC, then the CLI's sanitization), so a key you build
+matches the keys of live-mirrored transcripts:
+
+```ruby
+key = { 'project_key' => ClaudeAgentSDK.project_key_for_directory('/path/to/project'),
+        'session_id' => '550e8400-e29b-41d4-a716-446655440000' }
+store.load(key)
+```
+
+`ClaudeAgentSDK.fold_session_summary(prev, key, entries)` maintains a
+per-session summary incrementally, so an adapter can implement
+`#list_session_summaries` and `list_sessions(session_store:)` can read every
+session's metadata in one call instead of one `#load` per session. Call it
+from `#append`:
+
+```ruby
+def append(key, entries)
+  return if entries.nil? || entries.empty?
+
+  write_entries(key, entries)
+  return unless key['subpath'].nil? # subagent transcripts never feed the summary
+
+  summary = ClaudeAgentSDK.fold_session_summary(read_summary(key), key, entries)
+  summary['mtime'] = write_time_ms # the clock #list_sessions reports
+  write_summary(key, summary)
+end
+
+def list_session_summaries(project_key)
+  read_summaries(project_key) # => [{ 'session_id' => ..., 'mtime' => ..., 'data' => {...} }, ...]
+end
+```
+
+- `prev` is the summary you stored for the same key on the previous append,
+  or `nil` on the first one. `entries` are the entries being appended.
+- It returns a new `{ 'session_id', 'mtime', 'data' }` Hash and leaves `prev`
+  unchanged. Every derived field is set-once or last-wins, so the fold never
+  needs earlier entries again.
+- Only call it for main-transcript keys (no `'subpath'`).
+- It does not set `mtime`: it carries `prev`'s value, or `0` for a new
+  session. Stamp it after persisting, from the same clock as the `mtime`
+  your `#list_sessions` returns. When the store also implements
+  `#list_sessions`, a summary whose `mtime` is older than the listed one is
+  treated as stale and the SDK re-derives it from the transcript.
+- `data` is opaque. Store it as returned; its String keys survive a JSON
+  round-trip (JSONB, Redis).
+
+`InMemorySessionStore#append` is a working reference.
+
 Copy-in reference adapters for **S3, Redis, and Postgres** live in
 [`examples/session_stores/`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/session_stores/README.md), each with a
 production checklist.
@@ -391,7 +450,27 @@ Where the store path differs from the disk path:
   entries are removed too depends on the store's delete cascade.
 
 To migrate, `import_session_to_store` replays a local on-disk session (and its
-subagents) into a store.
+subagents) into a store:
+
+```ruby
+ClaudeAgentSDK.import_session_to_store(
+  session_id: '550e8400-...',
+  session_store: store,
+  directory: '/path/to/project', # optional; nil searches every project
+  include_subagents: true,       # default
+  batch_size: 500                # default
+)
+```
+
+It streams the transcript and calls `store.append` once per batch. A batch ends
+at `batch_size` entries (default **500**; `nil` or a non-positive value also
+means 500) or at about 1 MiB of JSONL, whichever comes first. Entries are
+keyed under the on-disk project directory name, so the imported session can
+be resumed with `session_store:` + `resume:` from the original directory.
+Re-importing appends the entries again, so adapters should dedupe by
+`entry['uuid']`. It raises `ArgumentError` for an invalid `session_id` and
+`Errno::ENOENT` when the transcript cannot be found; an unparseable line is
+skipped with a warning.
 
 > **Deprecated:** the separate store functions (`list_sessions_from_store`,
 > `get_session_info_from_store`, `get_session_messages_from_store`,

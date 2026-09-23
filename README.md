@@ -193,7 +193,7 @@ See [docs/hooks-and-permissions.md](docs/hooks-and-permissions.md) for the full 
 | OpenTelemetry tracing, Langfuse, custom observers | [docs/observability.md](docs/observability.md) |
 | Rails: generator, `install_cli` task, callback wrapper, fiber safety, solid_queue fiber workers, ActionCable, jobs | [docs/rails.md](docs/rails.md) |
 | Vendoring a pinned CLI binary and CLI discovery order | [docs/cli-installer.md](docs/cli-installer.md) |
-| Message, content block, and configuration type reference | [docs/types.md](docs/types.md) |
+| Hash-key rule, attribute access, and the message, content block, and configuration type reference | [docs/types.md](docs/types.md) |
 | Error handling, exception hierarchy, timeouts | [docs/errors.md](docs/errors.md) |
 
 API reference: [rubydoc.info/gems/claude-agent-sdk](https://rubydoc.info/gems/claude-agent-sdk). Available built-in tools: [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code/settings#tools-available-to-claude).

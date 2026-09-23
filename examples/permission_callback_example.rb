@@ -21,7 +21,7 @@ Async do
 
     # Block Write to sensitive files
     if tool_name == 'Write'
-      file_path = input[:file_path] || input['file_path']
+      file_path = input[:file_path]
       if file_path && (file_path.include?('/etc/') || file_path.include?('passwd'))
         puts "  Decision: DENY (sensitive file)"
         return ClaudeAgentSDK::PermissionResultDeny.new(
@@ -35,7 +35,7 @@ Async do
 
     # Block dangerous bash commands
     if tool_name == 'Bash'
-      command = input[:command] || input['command'] || ''
+      command = input[:command] || ''
       dangerous_patterns = ['rm -rf', 'sudo', '>']
 
       dangerous_patterns.each do |pattern|

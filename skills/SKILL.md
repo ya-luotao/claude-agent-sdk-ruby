@@ -83,12 +83,17 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 - `Client#get_context_usage` — context window breakdown (tokens by category, model, MCP tools, etc.)
 - `Client#reconnect_mcp_server(name)`, `Client#toggle_mcp_server(name, enabled)`, `Client#stop_task(task_id)`, `Client#background_tasks(tool_use_id: nil)` for live control
 - `Client#rewind_files(uuid)` with `enable_file_checkpointing: true`
-- `McpStatusResponse.parse(client.get_mcp_status)` for typed MCP status
+- `client.mcp_status` / `client.context_usage` return raw Hashes (Symbol keys, CLI camelCase: `status[:mcpServers]`, `usage[:totalTokens]`); `McpStatusResponse.parse(client.mcp_status)` for typed MCP status (no typed class for context usage)
+
+## Hash Keys
+- Hashes passed through from the live CLI stream (`origin`, `usage`, `model_usage`, hook `tool_input`, `can_use_tool` `input`, SDK MCP tool args, `mcp_status`) have **Symbol** keys spelled as on the wire: `tool_input[:command]`, `origin[:fromSession]`
+- Hashes read from transcripts or a SessionStore (`SessionMessage#message`, `get_subagent_metadata`, store keys/entries, `fold_session_summary`) have **String** keys: `meta['toolUseId']`
+- Use the one correct form; the wrong one silently returns `nil`. Typed objects also accept `msg[:session_id]`, `msg['sessionId']`, `msg.sessionId`; `msg[:x] = v` mutates the received object
 
 ## Where To Look For Exact Details
 - Locate the gem: `bundle show claude-agent-sdk`
 - Read `<gem_path>/README.md` for the overview, install, and minimal API examples
-- Read `<gem_path>/docs/*.md` for topic subpages — `client.md` (bidirectional + custom transports), `mcp-servers.md` (SDK MCP tools/resources/prompts), `hooks-and-permissions.md` (27 hook events + permission callbacks), `configuration.md` (structured output, thinking, budget, sandbox, bare mode, file checkpointing), `sessions.md` (list/read/rename/tag/fork/resume + SessionStore mirroring/store-backed helpers), `observability.md` (OTel + Langfuse), `rails.md` (ActionCable, jobs, initializers), `types.md` (message/content-block/configuration types), `errors.md` (error hierarchy + timeout)
+- Read `<gem_path>/docs/*.md` for topic subpages — `client.md` (bidirectional + custom transports), `mcp-servers.md` (SDK MCP tools/resources/prompts), `hooks-and-permissions.md` (27 hook events + permission callbacks), `configuration.md` (structured output, thinking, budget, sandbox, bare mode, file checkpointing), `sessions.md` (list/read/rename/tag/fork/resume + SessionStore mirroring/store-backed helpers), `observability.md` (OTel + Langfuse), `rails.md` (ActionCable, jobs, initializers), `types.md` (Hash-key rule, `#[]`/camelCase access, message/content-block/configuration types), `errors.md` (error hierarchy + timeout)
 - Inspect `<gem_path>/lib/claude_agent_sdk/types/` for all types (one file per area: messages, hooks, options, ...)
 - Inspect `<gem_path>/lib/claude_agent_sdk/message_parser.rb` for message parsing
 - Inspect `<gem_path>/lib/claude_agent_sdk/sessions.rb` for session browsing

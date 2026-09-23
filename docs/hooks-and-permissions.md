@@ -19,6 +19,8 @@ All hook input objects include common fields like `session_id`, `transcript_path
 - `SubagentStart` → `SubagentStartHookInput` (`agent_id`, `agent_type`)
 - `PermissionRequest` → `PermissionRequestHookInput` (`tool_name`, `tool_input`, `permission_suggestions`)
 
+`tool_input` (and the `input` a [permission callback](#permission-callbacks) receives) is the CLI's Hash passed through unchanged, so its keys are Symbols spelled as on the wire: `tool_input[:command]`, `input[:file_path]`. See [Hash keys](types.md#hash-keys).
+
 All 27 hook events have typed input classes. See [`ClaudeAgentSDK::HOOK_EVENTS`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types/hooks.rb) and [examples/lifecycle_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
 
 `background_tasks` and `session_crons` are optional arrays of raw CLI hashes.
@@ -40,7 +42,7 @@ Async do
     return {} unless input.respond_to?(:tool_name) && input.tool_name == 'Bash'
 
     tool_input = input.tool_input || {}
-    command = tool_input[:command] || tool_input['command'] || ''
+    command = tool_input[:command] || ''
     block_patterns = ['rm -rf', 'foo.sh']
 
     block_patterns.each do |pattern|
@@ -105,7 +107,7 @@ Async do
     return ClaudeAgentSDK::PermissionResultAllow.new if tool_name == 'Read'
 
     if tool_name == 'Write'
-      file_path = input[:file_path] || input['file_path']
+      file_path = input[:file_path]
       if file_path && file_path.include?('/etc/')
         return ClaudeAgentSDK::PermissionResultDeny.new(
           message: 'Cannot write to sensitive system files',
