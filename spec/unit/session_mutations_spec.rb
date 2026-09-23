@@ -150,6 +150,29 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
   end
 
   describe '.try_append' do
+    [false, true].each do |terminated|
+      it "preserves messages and mutation records with trailing newline #{terminated}" do
+        Dir.mktmpdir do |dir|
+          project_dir = File.join(dir, 'projects', ClaudeAgentSDK::Sessions.project_key_for_directory(dir))
+          FileUtils.mkdir_p(project_dir)
+          path = File.join(project_dir, "#{session_id}.jsonl")
+          entry = { 'type' => 'user', 'uuid' => 'u1', 'message' => { 'content' => 'hello' } }
+          File.write(path, JSON.generate(entry) + (terminated ? "\n" : ''))
+          allow(ClaudeAgentSDK::Sessions).to receive(:config_dir).and_return(dir)
+
+          described_class.rename_session(session_id: session_id, title: 'Renamed', directory: dir)
+          described_class.tag_session(session_id: session_id, tag: 'important', directory: dir)
+
+          records = File.readlines(path).reject { |line| line.strip.empty? }.map { |line| JSON.parse(line) }
+          expect(records.first).to eq(entry)
+          expect(records.map { |record| record['type'] }).to eq(%w[user custom-title tag])
+          expect(ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: dir).map(&:text)).to eq(['hello'])
+          info = ClaudeAgentSDK.get_session_info(session_id: session_id, directory: dir)
+          expect([info.custom_title, info.tag]).to eq(%w[Renamed important])
+        end
+      end
+    end
+
     it 'returns false for nonexistent files' do
       result = described_class.send(:try_append, '/nonexistent/path/file.jsonl', 'data')
       expect(result).to eq(false)
@@ -172,7 +195,7 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
 
         result = described_class.send(:try_append, file_path, "new line\n")
         expect(result).to eq(true)
-        expect(File.read(file_path)).to eq("existing content\nnew line\n")
+        expect(File.read(file_path)).to eq("existing content\n\nnew line\n")
       end
     end
   end
