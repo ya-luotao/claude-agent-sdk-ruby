@@ -41,6 +41,7 @@ module ClaudeAgentSDK
   # skipped — most commonly a Class passed instead of an instance, which
   # previously produced silent zero instrumentation (every notify raised
   # NoMethodError, swallowed by notify_observers' error containment).
+  # @api private
   def self.resolve_observers(observers)
     Array(observers).filter_map do |obs|
       resolved = obs.respond_to?(:call) ? obs.call : obs
@@ -61,6 +62,7 @@ module ClaudeAgentSDK
   # configs may use String or Symbol keys (and a Symbol :sdk type) — the
   # recognition rule must match CommandBuilder#append_mcp_servers, which
   # strips the instance from exactly these entries.
+  # @api private
   def self.extract_sdk_mcp_servers(mcp_servers)
     return {} unless mcp_servers.is_a?(Hash)
 
@@ -76,6 +78,7 @@ module ClaudeAgentSDK
 
   # Internal: normalize hook lists for the control protocol. An absent or
   # disabled event must not become an empty registration in initialize.
+  # @api private
   def self.convert_hooks_to_internal_format(hooks)
     return nil unless hooks
 
@@ -109,6 +112,7 @@ module ClaudeAgentSDK
   # guarantees for can_use_tool — the permission round-trip works. The old
   # "requires streaming mode" ArgumentError was a needless restriction
   # (Python #1204).
+  # @api private
   def self.configure_can_use_tool(options)
     return options unless options.can_use_tool
 
@@ -125,6 +129,7 @@ module ClaudeAgentSDK
   # Internal: pull exclude_dynamic_sections out of a preset system prompt for
   # the initialize request (older CLIs ignore unknown initialize fields).
   # Shared by Client#connect and the one-shot query() path.
+  # @api private
   def self.extract_exclude_dynamic_sections(system_prompt)
     if system_prompt.is_a?(SystemPromptPreset)
       eds = system_prompt.exclude_dynamic_sections
@@ -144,6 +149,7 @@ module ClaudeAgentSDK
   # String or file prompt has no snapshot, and only a genuine true/false is
   # forwarded — `snapshot: false` is the primary use case, so the Hash lookup
   # must not collapse it to nil. Shared by Client#connect and query().
+  # @api private
   def self.extract_system_prompt_snapshot(system_prompt)
     case system_prompt
     when SystemPromptPreset, SystemPromptCustom
@@ -163,6 +169,7 @@ module ClaudeAgentSDK
   # Each observer is invoked through FiberBoundary so that user code runs
   # on a plain thread (no Fiber scheduler) even when called from inside
   # the SDK's Async reactor — or in place when scheduling is :inline.
+  # @api private
   def self.notify_observers(observers, method, *args, scheduling: :thread, wrapper: nil)
     observers.each do |obs|
       FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) { obs.send(method, *args) }
@@ -203,6 +210,7 @@ module ClaudeAgentSDK
   # almost certainly violates inline mode's fiber-isolation precondition
   # (solid_queue fiber workers require isolation_level = :fiber).
   # defined? probing only; the SDK never loads ActiveSupport itself.
+  # @api private
   def self.check_inline_isolation(scheduling)
     return unless scheduling == :inline
     return unless defined?(ActiveSupport::IsolatedExecutionState)
@@ -225,6 +233,7 @@ module ClaudeAgentSDK
   # when there is none (non-user messages, tool_result-only content, …).
   # Only Hash and JSON-string items are inspected; arbitrary objects written
   # via to_s are never notified.
+  # @api private
   def self.extract_user_prompt_text(message)
     data = case message
            when Hash then message
@@ -255,6 +264,7 @@ module ClaudeAgentSDK
   # when there is no extractable text — on_user_prompt('') would latch
   # OTelObserver's first-prompt buffer while never setting the attribute,
   # permanently suppressing later real prompts.
+  # @api private
   def self.prompt_text_from_content(content)
     case content
     when String
@@ -274,6 +284,7 @@ module ClaudeAgentSDK
   # Wrap a streaming-input enumerable so observers get on_user_prompt for
   # each user message before it is written to stdin. Identity when no
   # observers are configured.
+  # @api private
   def self.observing_prompt_stream(prompt, observers, scheduling: :thread, wrapper: nil)
     return prompt if observers.empty?
 
@@ -288,6 +299,7 @@ module ClaudeAgentSDK
 
   # Look up a value in a hash that may use symbol or string keys in camelCase or snake_case.
   # Returns the first non-nil value found, preserving false as a meaningful value.
+  # @api private
   def self.flexible_fetch(hash, camel_key, snake_key)
     val = hash[camel_key.to_sym]
     val = hash[camel_key.to_s] if val.nil?
