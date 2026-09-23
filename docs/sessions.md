@@ -210,8 +210,10 @@ ClaudeAgentSDK.query(
 ```
 
 Relevant options: `session_store`, `session_store_flush` (`"batched"` default, or
-`"eager"` to flush after every frame), and `load_timeout_ms` (per store call
-during resume materialization, default `60_000`).
+`"eager"` to flush each frame as soon as the store is free — frames arriving
+while an append is in flight are coalesced into the next append, so a slow
+store never accumulates one background task per frame), and `load_timeout_ms`
+(per store call during resume materialization, default `60_000`).
 
 Resume materialization re-serializes each loaded entry to JSONL. An entry that
 cannot be serialized (NaN/Infinity, invalid UTF-8, circular nesting), an

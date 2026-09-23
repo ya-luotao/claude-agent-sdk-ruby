@@ -180,6 +180,196 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
     expect(errors).to be_empty
   end
 
+  # Issue #84: every eager frame used to spawn its own drain task, each
+  # detaching its batch before queueing on the lock — a store slower than the
+  # frame rate piled up tasks + detached batches without bound. Now at most one
+  # background drainer is live; frames arriving while it is busy stay in the
+  # pending buffer and are coalesced into its next append.
+  describe 'backpressure against a store slower than the frame rate' do
+    # Gated store: each append announces itself on `started`, then parks its
+    # (batcher-spawned) worker thread on `gate` until the test releases it.
+    let(:gated_store) do
+      Class.new(ClaudeAgentSDK::SessionStore) do
+        attr_reader :entries, :calls, :max_concurrent, :started, :gate
+
+        def initialize
+          super
+          @entries = []
+          @calls = 0
+          @live = 0
+          @max_concurrent = 0
+          @mutex = Mutex.new
+          @started = Thread::Queue.new
+          @gate = Thread::Queue.new
+        end
+
+        def append(_key, entries)
+          @mutex.synchronize do
+            @calls += 1
+            @live += 1
+            @max_concurrent = [@max_concurrent, @live].max
+          end
+          @started.push(true)
+          @gate.pop # nil once the gate is closed
+          @mutex.synchronize { @entries.concat(entries) }
+        ensure
+          @mutex.synchronize { @live -= 1 }
+        end
+
+        def load(_key) = @mutex.synchronize { @entries.dup }
+      end.new
+    end
+
+    it 'keeps one drain in flight, coalesces the backlog, and loses nothing on close (eager)' do
+      n = 50
+      live_drains = 0
+      max_live_drains = 0
+      max_live_during_ingest = nil
+      pending_during_ingest = nil
+
+      Async do |task|
+        task.with_timeout(10) do
+          b = described_class.new(store: gated_store, projects_dir: projects, on_error: on_error,
+                                  max_pending_entries: 0, max_pending_bytes: 0) # eager
+          allow(b).to receive(:drain).and_wrap_original do |original|
+            live_drains += 1
+            max_live_drains = [max_live_drains, live_drains].max
+            original.call
+          ensure
+            live_drains -= 1
+          end
+
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'u0' }])
+          gated_store.started.pop # append #1 is parked on the gate
+          # The read loop keeps ingesting while the store is stuck: enqueue
+          # must return without suspending and without spawning a drain.
+          (1...n).each { |i| b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => "u#{i}" }]) }
+          max_live_during_ingest = max_live_drains
+          pending_during_ingest = b.instance_variable_get(:@pending).length
+
+          gated_store.gate.close # release append #1 and every later one
+          b.close
+        end
+      end
+
+      expect(max_live_during_ingest).to eq(1) # unfixed: one parked drain per frame
+      expect(pending_during_ingest).to eq(n - 1) # backlog buffered, not detached
+      expect(gated_store.max_concurrent).to eq(1)
+      expect(gated_store.calls).to be <= 3 # u0, then the coalesced backlog
+      expect(gated_store.entries.map { |e| e['uuid'] }).to eq(Array.new(n) { |i| "u#{i}" })
+      expect(errors).to be_empty
+    end
+
+    it 'close flushes frames buffered behind an in-flight background append' do
+      Async do |task|
+        task.with_timeout(10) do
+          b = described_class.new(store: gated_store, projects_dir: projects, on_error: on_error,
+                                  max_pending_entries: 0, max_pending_bytes: 0) # eager
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'a' }])
+          gated_store.started.pop # background append parked on the gate
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'b' }])
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'c' }])
+
+          closer = task.async { b.close } # barrier: parks behind the in-flight append
+          gated_store.gate.close
+          closer.wait
+          expect(b.instance_variable_get(:@pending)).to be_empty
+        end
+      end
+
+      expect(gated_store.entries.map { |e| e['uuid'] }).to eq(%w[a b c])
+      expect(gated_store.max_concurrent).to eq(1)
+      expect(errors).to be_empty
+    end
+
+    # The looping drainer re-detaches after its append completes. A #flush
+    # barrier that detached OLDER frames is already parked on the lock by
+    # then, and Semaphore#release hands the lock straight to it (FIFO), so the
+    # drainer's NEWER frames must land after the barrier's — not ahead of it.
+    it 'appends a parked flush barrier batch before frames the drainer picks up later' do
+      Async do |task|
+        task.with_timeout(10) do
+          b = described_class.new(store: gated_store, projects_dir: projects, on_error: on_error,
+                                  max_pending_entries: 0, max_pending_bytes: 0) # eager
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'a' }])
+          gated_store.started.pop # drainer's append of `a` parked on the gate
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'b' }])
+          flusher = task.async { b.flush } # detaches `b`, parks on the lock
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'c' }]) # buffered for the drainer
+
+          gated_store.gate.close
+          flusher.wait
+          b.flush # barrier covering the drainer's `c` iteration
+        end
+      end
+
+      expect(gated_store.entries.map { |e| e['uuid'] }).to eq(%w[a b c])
+      expect(gated_store.max_concurrent).to eq(1)
+      expect(errors).to be_empty
+    end
+
+    # Teardown corner: Query#close runs batcher.close, then stops the read
+    # task (the drainer's parent). A frame the read loop enqueued during the
+    # close window sits in @pending (the live drainer would have taken it
+    # next), so stopping the read task first loses it — and that loss must
+    # surface through batches_dropped?, as the old per-frame parked drain's
+    # cancellation did, so resume-from-store teardown preserves the temp dir.
+    it 'counts a frame buffered during close as dropped when the read task is stopped first' do
+      b = nil
+      pending_at_stop = nil
+      Async do |task|
+        task.with_timeout(10) do
+          b = described_class.new(store: gated_store, projects_dir: projects, on_error: on_error,
+                                  max_pending_entries: 0, max_pending_bytes: 0) # eager
+          resume_reader = Thread::Queue.new
+          reader_enqueued = Thread::Queue.new
+          reader = task.async do # stands in for Query's read task (drainer's parent)
+            b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'a' }])
+            resume_reader.pop
+            b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'late' }])
+            reader_enqueued.push(true)
+            resume_reader.pop # parked until stopped
+          end
+          gated_store.started.pop # drainer's append of `a` parked on the gate
+
+          closer = task.async do # Query#close order: batcher close, then @task.stop
+            b.close
+            pending_at_stop = b.instance_variable_get(:@pending).length
+            reader.stop
+          end
+          resume_reader.push(true)
+          reader_enqueued.pop # `late` buffered behind the live drainer, close parked
+          gated_store.gate.close
+          closer.wait
+        end
+      end
+
+      expect(pending_at_stop).to eq(1) # the corner was reached: `late` never detached
+      expect(gated_store.entries.map { |e| e['uuid'] }).to eq(%w[a])
+      expect(b.batches_dropped?).to be(true)
+    end
+
+    it 'does not report a drop when frames buffered during close are drained before teardown ends' do
+      b = nil
+      Async do |task|
+        task.with_timeout(10) do
+          b = described_class.new(store: gated_store, projects_dir: projects, on_error: on_error,
+                                  max_pending_entries: 0, max_pending_bytes: 0) # eager
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'a' }])
+          gated_store.started.pop
+          closer = task.async { b.close }
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'late' }]) # during the close window
+          gated_store.gate.close
+          closer.wait
+          b.flush # the still-live drainer (not stopped here) delivers `late`
+        end
+      end
+
+      expect(gated_store.entries.map { |e| e['uuid'] }).to eq(%w[a late])
+      expect(b.batches_dropped?).to be(false)
+    end
+  end
+
   it 'close performs a final flush and never raises' do
     Async do
       b = batcher
