@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `lib/claude_agent_sdk/types.rb` is split into one file per area under `lib/claude_agent_sdk/types/` (messages, hooks, options, ...). The code moved without edits and `types.rb` still loads every part, so `require 'claude_agent_sdk/types'` and every class and constant are unchanged; no API change ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)).
+
 ## [0.36.0] - 2026-09-23
 
 The first step on the [road to 1.0](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126): one `session_store:` argument for every session function (the store-specific twins are deprecated), `ClaudeAgentSDK.ask`, String tool results, and the last audit follow-ups (#119–#121). **Read before upgrading:**

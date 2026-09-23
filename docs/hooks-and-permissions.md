@@ -19,7 +19,7 @@ All hook input objects include common fields like `session_id`, `transcript_path
 - `SubagentStart` → `SubagentStartHookInput` (`agent_id`, `agent_type`)
 - `PermissionRequest` → `PermissionRequestHookInput` (`tool_name`, `tool_input`, `permission_suggestions`)
 
-All 27 hook events have typed input classes. See [`ClaudeAgentSDK::HOOK_EVENTS`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types.rb) and [examples/lifecycle_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
+All 27 hook events have typed input classes. See [`ClaudeAgentSDK::HOOK_EVENTS`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types/hooks.rb) and [examples/lifecycle_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
 
 `background_tasks` and `session_crons` are optional arrays of raw CLI hashes.
 `nil` means the CLI did not provide a snapshot; `[]` means it provided an empty

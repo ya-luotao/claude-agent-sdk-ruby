@@ -118,6 +118,7 @@ Opt-in `ClaudeAgentOptions#callback_scheduling: :inline` (issue #47) skips the h
 ## Key Conventions
 
 - Types use plain Ruby classes with `attr_accessor` and keyword args (no Struct/Data)
+- Type definitions live in `lib/claude_agent_sdk/types/`, one file per area: `base` (`Type`, `Type::OptionValue`), `content_blocks`, `messages` (incl. `SystemMessage` subclasses, rate-limit types), `hooks` (`HOOK_EVENTS`, inputs, outputs), `permissions`, `mcp`, `option_values` (value types `ClaudeAgentOptions` holds), `sessions`, `options` (`ClaudeAgentOptions`). Shared constants sit with the types that use them. `types.rb` only `require_relative`s the parts; add new types to the matching part file (each part requires `base` itself)
 - Hook inputs are typed classes inheriting from `BaseHookInput`; hook outputs use `to_h` for serialization with camelCase keys for CLI compatibility
 - `ClaudeAgentOptions` is the central config object (~30 fields); uses `dup_with` for immutable-style updates
 - `to_h` methods on config types convert Ruby snake_case to CLI camelCase (e.g., `auto_allow_bash_if_sandboxed` → `autoAllowBashIfSandboxed`)
