@@ -2876,7 +2876,24 @@ RSpec.describe ClaudeAgentSDK do
 
         expect(options.inspect).to include('session_store=#<MyStoreAdapter>')
         expect(options.inspect).not_to include('hunter2')
-        expect(options.inspect).to include("can_use_tool=#{callback.inspect}")
+        expect(options.inspect).to include("can_use_tool=#<Proc(lambda) #{File.basename(__FILE__)}:")
+      end
+
+      it 'renders callables from source_location, never through their own #inspect' do
+        raising_proc = Class.new(Proc) { def inspect = raise('no inspect for you') }
+        stub_const('RaisingProc', raising_proc)
+        callback = RaisingProc.new { |_tool, _input, _ctx| nil }
+        line = __LINE__ - 1
+        policy = Class.new { def call(*) = nil }
+        stub_const('Policy', policy)
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(can_use_tool: callback)
+
+        expect(options.inspect).to include("can_use_tool=#<Proc #{File.basename(__FILE__)}:#{line}>")
+        expect(options.inspect).not_to include(File.dirname(__FILE__))
+        expect { options.to_s }.not_to raise_error
+
+        method_block = ClaudeAgentSDK::ToolUseBlock.new(input: { handler: Policy.new.method(:call) })
+        expect(method_block.inspect).to include("handler: #<Method Policy#call #{File.basename(__FILE__)}:")
       end
 
       it 'never raises on values it cannot inspect' do
