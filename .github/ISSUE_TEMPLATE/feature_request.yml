@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest an addition or change to the gem's API
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The use case, and what makes it awkward or impossible today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API or behavior
+      description: What you'd like to write instead. A code sketch helps.
+      render: ruby
+
+  - type: input
+    id: parity
+    attributes:
+      label: Official SDK equivalent
+      description: If the Python or TypeScript SDK already has this, link the docs, PR or release note. Parity ports are usually quick to land.

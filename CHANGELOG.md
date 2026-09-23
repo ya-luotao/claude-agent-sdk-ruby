@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`ClaudeAgentSDK::ConfigDirError`** (a `ClaudeSDKError`), raised by the local-disk session APIs when the Claude config directory cannot be located: `CLAUDE_CONFIG_DIR` is unset and there is no usable home directory for the default `~/.claude`. Its message says to set `CLAUDE_CONFIG_DIR` (#120).
+- CI: a macOS leg (Ruby 3.4) for the main suite; simplecov coverage (`COVERAGE=1 bundle exec rspec`) on the Linux Ruby 3.4 leg, with line/branch totals in the job summary and the HTML report as an artifact; and a weekly real-CLI integration run (`.github/workflows/integration.yml`) against `CLIInstaller::PINNED_CLI_VERSION`, also triggered by PRs that touch the installer. Dependabot keeps the workflows' actions current.
+- `CONTRIBUTING.md`, `SECURITY.md`, and issue and pull request templates.
+
+### Changed
+- `examples/rails_actioncable_example.rb` and `examples/rails_background_job_example.rb` use `ClaudeAgentSDK::Client.open` instead of hand-rolled `Async { connect … ensure disconnect }.wait`, matching `docs/rails.md`.
+- RuboCop targets Ruby 3.2, the gemspec floor (was 3.0). The resulting autocorrections (anonymous block forwarding, dropping `require 'set'`) change no behavior.
 
 ### Fixed
 - **Session APIs on hosts without a home directory (#120).** With `CLAUDE_CONFIG_DIR` unset and `HOME` unset with no passwd entry (`docker --user` in a minimal image) or an empty/relative `HOME`:
