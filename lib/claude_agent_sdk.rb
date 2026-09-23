@@ -447,6 +447,7 @@ module ClaudeAgentSDK
   # rename_session). Appends a custom-title entry carrying a fresh uuid +
   # timestamp via SessionStore#append.
   # @raise [ArgumentError] if session_id is invalid or title is empty
+  # @raise [Errno::ENOENT] if the session is not found in the store (nothing is appended)
   def self.rename_session_via_store(session_store:, session_id:, title:, directory: nil)
     SessionMutations.rename_session_via_store(session_store: session_store, session_id: session_id,
                                               title: title, directory: directory)
@@ -455,6 +456,7 @@ module ClaudeAgentSDK
   # Tag a session in a SessionStore (store-backed counterpart to tag_session).
   # Pass nil to clear the tag.
   # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
+  # @raise [Errno::ENOENT] if the session is not found in the store (nothing is appended)
   def self.tag_session_via_store(session_store:, session_id:, tag:, directory: nil)
     SessionMutations.tag_session_via_store(session_store: session_store, session_id: session_id,
                                            tag: tag, directory: directory)

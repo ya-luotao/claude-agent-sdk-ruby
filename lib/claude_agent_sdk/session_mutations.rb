@@ -157,6 +157,7 @@ module ClaudeAgentSDK
     # by entry["uuid"] (per the SessionStore#append contract) treat it correctly.
     #
     # @raise [ArgumentError] if session_id is invalid or title is empty
+    # @raise [Errno::ENOENT] if the session is not found in the store
     def rename_session_via_store(session_store:, session_id:, title:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
 
@@ -164,6 +165,7 @@ module ClaudeAgentSDK
       raise ArgumentError, 'title must be non-empty' if stripped.empty?
 
       key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
+      ensure_store_session_exists(session_store, key)
       session_store.append(key, [{
                              'type' => 'custom-title',
                              'customTitle' => stripped,
@@ -179,6 +181,7 @@ module ClaudeAgentSDK
     # Unicode-sanitized before storing.
     #
     # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
+    # @raise [Errno::ENOENT] if the session is not found in the store
     def tag_session_via_store(session_store:, session_id:, tag:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
 
@@ -190,6 +193,7 @@ module ClaudeAgentSDK
       end
 
       key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
+      ensure_store_session_exists(session_store, key)
       session_store.append(key, [{
                              'type' => 'tag',
                              'tag' => tag || '',
@@ -248,6 +252,27 @@ module ClaudeAgentSDK
     end
 
     # -- Private helpers --
+
+    # Raise Errno::ENOENT (as the disk counterparts and fork_session_via_store
+    # do) unless the store holds entries for +key+. Without this probe, a
+    # rename/tag of a typo'd or stale id APPENDED metadata to a never-written
+    # key, creating a phantom session — permanent on WORM/append-only stores.
+    #
+    # #load is the probe because it is the only exact per-session existence
+    # check the contract offers: it is required, and returns nil for a key
+    # that was never written. The optional methods don't fit: list_subkeys
+    # returns [] for "no subagents" and "no session" alike,
+    # list_session_summaries is an advisory sidecar that may be stale, and
+    # list_sessions scans the whole project (no cheaper than one load in the
+    # reference adapters).
+    #
+    # Check-then-act: a concurrent delete between this probe and the append
+    # can still recreate the key. That window is inherent to the store API
+    # (there is no conditional append), so no locking is attempted.
+    def ensure_store_session_exists(session_store, key)
+      entries = session_store.load(key)
+      raise Errno::ENOENT, "Session #{key['session_id']} not found" if entries.nil? || entries.empty?
+    end
 
     # Locate the JSONL file for a session and return [file_path, project_dir].
     def find_session_file_with_dir(session_id, directory)
@@ -643,6 +668,7 @@ module ClaudeAgentSDK
                          :parse_fork_transcript, :derive_fork_title, :build_forked_entry, :resolve_parent_uuid,
                          :append_to_session, :append_to_session_in_directory,
                          :append_to_session_global, :try_append, :sanitize_unicode, :unicode_category,
-                         :iso_now, :build_fork_lines, :partition_fork_entries, :derive_title_from_entries
+                         :iso_now, :build_fork_lines, :partition_fork_entries, :derive_title_from_entries,
+                         :ensure_store_session_exists
   end
 end

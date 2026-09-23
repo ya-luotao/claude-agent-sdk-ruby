@@ -213,6 +213,14 @@ Relevant options: `session_store`, `session_store_flush` (`"batched"` default, o
 `"eager"` to flush after every frame), and `load_timeout_ms` (per store call
 during resume materialization, default `60_000`).
 
+Resume materialization re-serializes each loaded entry to JSONL. An entry that
+cannot be serialized (NaN/Infinity, invalid UTF-8, circular nesting), an
+unserializable subagent metadata sidecar, or a subkey that is not a safe
+relative String path is skipped with a warning on stderr (naming the entry's
+`uuid` when it has one) rather than aborting the resume. A session left with
+no usable entries is treated like an empty one: `resume:` falls through to the
+normal spawn path and `continue_conversation` moves on to the next candidate.
+
 > **Store-backed resume runs against a temp `CLAUDE_CONFIG_DIR`.** The SDK
 > materializes the session transcript (plus subagent transcripts, when the
 > store implements `#list_subkeys`) into it and seeds it from your real config
@@ -335,7 +343,12 @@ The browsing/mutation helpers above have store-backed counterparts that take a
   project keys (parity with the Python SDK).
 - Mutations: `rename_session_via_store`, `tag_session_via_store`,
   `delete_session_via_store` (a no-op on append-only stores without `#delete`),
-  `fork_session_via_store`.
+  `fork_session_via_store`. Like their disk counterparts, rename, tag, and fork
+  raise `Errno::ENOENT` for a session the store has never seen (`#load`
+  returns nil or `[]`) instead of appending to — and so creating — a phantom
+  session. Rename/tag probe with one `#load` before appending; the probe is
+  check-then-act, so a session deleted concurrently between the probe and the
+  append can still be recreated by that append.
 - Migration: `import_session_to_store` replays a local on-disk session (and its
   subagents) into a store.
 

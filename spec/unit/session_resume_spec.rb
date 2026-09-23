@@ -38,7 +38,11 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       # session_dir.
       '~nosuchuser-zz/agent-1' => true,
       '~root/agent-1' => true,
-      "embeds\u0000nul" => false
+      "embeds\u0000nul" => false,
+      # Non-String subkeys from an adapter are a contract violation: reject
+      # them (never coerce) instead of raising NoMethodError mid-resume.
+      :'subagents/agent-1' => false,
+      42 => false
     }.each do |subpath, expected|
       it "returns #{expected} for #{subpath.inspect}" do
         expect(described_class.safe_subpath?(subpath, session_dir)).to eq(expected)
@@ -448,6 +452,174 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
           ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: slow, resume: sid, cwd: cwd, load_timeout_ms: 50)
         )
       end.to raise_error(RuntimeError, /timed out after 50ms/)
+    end
+
+    # Poisoned entries are served by a duck-typed store: they cannot be seeded
+    # through InMemorySessionStore, whose append folds a summary over them.
+    # Later sessions in +main+ are newer (mtime = insertion index).
+    context 'with store entries or subkeys an adapter should never return' do
+      let(:fixed_store_class) do
+        Class.new do
+          def initialize(main, subs = {})
+            @main = main
+            @subs = subs
+          end
+
+          def append(_key, _entries); end
+
+          def load(key)
+            key['subpath'] ? @subs.fetch(key['session_id'], {})[key['subpath']] : @main[key['session_id']]
+          end
+
+          def list_sessions(_project_key)
+            @main.keys.each_with_index.map { |s, i| { 'session_id' => s, 'mtime' => i } }
+          end
+
+          def list_subkeys(key) = @subs.fetch(key['session_id'], {}).keys
+        end
+      end
+
+      let(:good) { [entry('first', 'timestamp' => '2024-01-01T00:00:00Z'), entry('second')] }
+
+      def poisoned_entries
+        circular = { 'uuid' => 'poison-circular' }
+        circular['self'] = circular
+        [
+          { 'uuid' => 'poison-nan', 'x' => Float::NAN },
+          circular,
+          { 'uuid' => 'poison-utf8', 'text' => (+"\xFF\xFE").force_encoding('UTF-8') },
+          Float::INFINITY # not even a Hash: the warning must not assume one
+        ]
+      end
+
+      def main_jsonl(mat, session_id)
+        File.join(mat.config_dir, 'projects', project_key, "#{session_id}.jsonl")
+      end
+
+      before { allow(described_class).to receive(:copy_auth_files) }
+
+      it 'skips unserializable entries (warning with their uuid) and writes the rest unchanged' do
+        p1, p2, p3, p4 = poisoned_entries
+        fixed = fixed_store_class.new(sid => [good[0], p1, p2, p3, p4, good[1]])
+
+        mat = nil
+        expect do
+          mat = described_class.materialize_resume_session(
+            ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: fixed, resume: sid, cwd: cwd)
+          )
+        end.to output(a_string_including('poison-nan', 'poison-circular', 'poison-utf8')).to_stderr
+        begin
+          expect(mat.resume_session_id).to eq(sid)
+          expect(File.read(main_jsonl(mat, sid))).to eq("#{JSON.generate(good[0])}\n#{JSON.generate(good[1])}\n")
+        ensure
+          mat&.cleanup
+        end
+      end
+
+      it 'treats a session whose entries are all unserializable like an empty one (nil, no temp dir leaked)' do
+        fixed = fixed_store_class.new(sid => poisoned_entries)
+
+        before = Dir.glob(File.join(Dir.tmpdir, 'claude-resume-*'))
+        mat = :unset
+        expect do
+          mat = described_class.materialize_resume_session(
+            ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: fixed, resume: sid, cwd: cwd)
+          )
+        end.to output(/poison-nan/).to_stderr
+        expect(mat).to be_nil
+        expect(Dir.glob(File.join(Dir.tmpdir, 'claude-resume-*')) - before).to eq([])
+      end
+
+      it 'for continue_conversation passes over an all-unserializable newest session' do
+        older = SecureRandom.uuid
+        fixed = fixed_store_class.new(older => good, sid => poisoned_entries)
+
+        mat = nil
+        expect do
+          mat = described_class.materialize_resume_session(
+            ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: fixed, continue_conversation: true, cwd: cwd)
+          )
+        end.to output(/poison-nan/).to_stderr
+        begin
+          expect(mat.resume_session_id).to eq(older)
+        ensure
+          mat&.cleanup
+        end
+      end
+
+      # The sidechain check must classify from the first SURVIVING object entry:
+      # reading the raw head let a poisoned (or non-Hash) first entry hide the
+      # isSidechain flag carried by the rest, so --continue resumed a subagent.
+      {
+        'an unserializable Hash' => { 'uuid' => 'poison-head', 'x' => Float::NAN },
+        'an unserializable non-Hash' => Float::INFINITY,
+        'a serializable non-Hash' => 'not-an-object'
+      }.each do |label, head|
+        it "for continue_conversation still skips a sidechain whose first entry is #{label}" do
+          main = SecureRandom.uuid
+          side = [head, entry('side', 'isSidechain' => true), entry('side2', 'isSidechain' => true)]
+          fixed = fixed_store_class.new(main => good, sid => side) # sid is newest
+
+          mat = nil
+          expect do
+            mat = described_class.materialize_resume_session(
+              ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: fixed, continue_conversation: true, cwd: cwd)
+            )
+          end.to output(anything).to_stderr
+          begin
+            expect(mat.resume_session_id).to eq(main)
+          ensure
+            mat&.cleanup
+          end
+        end
+      end
+
+      it 'skips unserializable subagent entries and an unserializable metadata sidecar' do
+        fixed = fixed_store_class.new(
+          { sid => good },
+          { sid => {
+            'subagents/agent-x' => [{ 'type' => 'agent_metadata', 'agentId' => 'x', 'n' => Float::NAN },
+                                    entry('sub'), poisoned_entries[0]],
+            'subagents/agent-y' => [poisoned_entries[0]]
+          } }
+        )
+
+        mat = nil
+        expect do
+          mat = described_class.materialize_resume_session(
+            ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: fixed, resume: sid, cwd: cwd)
+          )
+        end.to output(a_string_including('poison-nan', 'metadata')).to_stderr
+        begin
+          subagents = File.join(mat.config_dir, 'projects', project_key, sid, 'subagents')
+          lines = File.readlines(File.join(subagents, 'agent-x.jsonl'))
+          expect(lines.map { |l| JSON.parse(l)['message']['content'] }).to eq(['sub'])
+          expect(File.exist?(File.join(subagents, 'agent-x.meta.json'))).to be false # unusable sidecar = absent
+          expect(File.exist?(File.join(subagents, 'agent-y.jsonl'))).to be false # nothing usable, no empty file
+        ensure
+          mat&.cleanup
+        end
+      end
+
+      it 'skips a non-String subkey instead of aborting the resume' do
+        fixed = fixed_store_class.new(
+          { sid => good },
+          { sid => { :'subagents/agent-sym' => [entry('sym')], 'subagents/agent-ok' => [entry('ok')] } }
+        )
+
+        mat = nil
+        expect do
+          mat = described_class.materialize_resume_session(
+            ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: fixed, resume: sid, cwd: cwd)
+          )
+        end.to output(/unsafe subpath.*agent-sym/).to_stderr
+        begin
+          subagents = File.join(mat.config_dir, 'projects', project_key, sid, 'subagents')
+          expect(Dir.children(subagents)).to eq(['agent-ok.jsonl'])
+        ensure
+          mat&.cleanup
+        end
+      end
     end
   end
 
