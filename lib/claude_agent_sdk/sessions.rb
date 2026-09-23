@@ -88,6 +88,13 @@ module ClaudeAgentSDK
 
     UUID_RE = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
+    # Subagent ids as the CLI writes them (agent-<id>.jsonl): hex ids and
+    # prefixed forms like `aprompt_suggestion-1a2b3c`. The store readers
+    # synthesize `subagents/agent-<agent_id>` subpaths from caller input, so
+    # anything that could re-route a path-, prefix-, or URL-shaped adapter key
+    # ('/', '\', '..', '%', NUL, whitespace) is rejected at the boundary.
+    AGENT_ID_RE = /\A[A-Za-z0-9._-]+\z/
+
     # Transcript entry types that participate in conversation reads. One shared
     # constant for the disk (parse_jsonl_entries) and store
     # (filter_transcript_entries) paths so the two read paths can't drift when
@@ -308,14 +315,53 @@ module ClaudeAgentSDK
     # Python's `x or None` for the summary/title fallback chains: Ruby's ||
     # treats "" as truthy, so a CLI title-clearing entry ({"customTitle":""})
     # would win over a real first prompt and then fail the summary presence
-    # check — silently dropping the whole session from disk listings (the
-    # store path, SessionSummary.presence, already falls through correctly).
-    # Whitespace-only counts as blank because the final gate strips.
+    # check — silently dropping the whole session from disk listings.
+    # Whitespace-only counts as blank because the final gate strips. The ONE
+    # definition for both summary paths (SessionSummary calls it too): a
+    # second copy that only rejected "" let the store path list an invisible
+    # whitespace summary the disk path hid.
     def presence(val)
       return nil if val.nil?
       return nil if val.is_a?(String) && val.strip.empty?
 
       val
+    end
+
+    # Boundary checks for caller-supplied ids. A non-String id gets exactly
+    # the malformed-id answer (nil / [] / ArgumentError, per API) instead of
+    # a NoMethodError from deep inside (`123.match?`, `123.empty?`).
+    def valid_session_id?(session_id)
+      session_id.is_a?(String) && session_id.match?(UUID_RE)
+    end
+
+    def valid_agent_id?(agent_id)
+      agent_id.is_a?(String) && agent_id.match?(AGENT_ID_RE) && !%w[. ..].include?(agent_id)
+    end
+
+    # Adapters contractually report mtime as an epoch-ms Numeric (the
+    # conformance suite asserts it), but SQL timestamps naturally arrive as
+    # ISO-8601 Strings through JSON. Unary minus on a String is String#-@
+    # (frozen-string dedup), so String mtimes sorted lexicographically
+    # ASCENDING — oldest first, so `limit` cut off the newest sessions and
+    # --continue resumed the oldest — and mixed Integer/String lists raised a
+    # bare ArgumentError. Coerce defensively wherever an adapter mtime is
+    # ordered or compared: numeric strings and ISO-8601 both order
+    # correctly; anything else sorts last rather than crashing.
+    def sortable_mtime(value)
+      case value
+      when Numeric then value
+      when String then Float(value, exception: false) || parse_iso_timestamp_ms(value) || 0
+      else 0
+      end
+    end
+
+    # Sort key shared by every session listing, disk and store: newest first,
+    # ties broken by session_id ascending. sort_by is not stable, so without
+    # the secondary key equal mtimes (coarse adapter clocks, bulk imports)
+    # ordered arbitrarily between calls and offset/limit paging could skip or
+    # repeat sessions; one key also keeps the two paths in the same order.
+    def listing_sort_key(mtime, session_id)
+      [-sortable_mtime(mtime), session_id.to_s]
     end
 
     # Extract the first meaningful user prompt from the head of a JSONL file
@@ -382,25 +428,38 @@ module ClaudeAgentSDK
 
       head, tail = read_head_tail(file_path, stat.size)
 
-      # Check first line for sidechain
-      return nil if sidechain_first_line?(head.lines.first || '')
+      return nil if sidechain_head?(head, stat.size > LITE_READ_BUF_SIZE)
 
       build_session_info(file_path, head, tail, stat, project_path)
     rescue StandardError
       nil
     end
 
-    # Sidechain classification parses the first line and reads the top-level
-    # key — the same key the store fold reads (`entry['isSidechain'] == true`).
-    # The old raw substring scan also matched "isSidechain":true nested inside
-    # a structured field, hiding the session from disk listings only. A first
-    # line truncated by the read window can't be shape-checked and keeps the
-    # substring heuristic.
-    def sidechain_first_line?(line)
-      entry = JSON.parse(line)
-      entry.is_a?(Hash) && entry['isSidechain'] == true
-    rescue StandardError
-      line.include?('"isSidechain":true') || line.include?('"isSidechain": true')
+    # Sidechain classification reads the top-level key of the FIRST PARSEABLE
+    # entry — the entry the store fold classifies from (it sets is_sidechain
+    # once, from the first Hash entry; a store never holds an unparseable line
+    # since import skips them). The old raw substring scan also matched
+    # "isSidechain":true nested inside a structured field, and classifying
+    # strictly from line one let a corrupt/blank/non-object first line make
+    # the two paths disagree about whether the session exists. So blank,
+    # unparseable, and non-object lines are skipped — except a final line cut
+    # by the head window: it isn't corrupt, just unseen, so it can't be
+    # shape-checked and keeps the substring heuristic.
+    def sidechain_head?(head, window_truncated)
+      lines = head.lines
+      lines.each_with_index do |line, idx|
+        next if line.strip.empty?
+
+        begin
+          entry = JSON.parse(line)
+        rescue StandardError
+          next unless window_truncated && idx == lines.length - 1 && !line.end_with?("\n")
+
+          return line.include?('"isSidechain":true') || line.include?('"isSidechain": true')
+        end
+        return entry['isSidechain'] == true if entry.is_a?(Hash)
+      end
+      false
     end
 
     def read_head_tail(file_path, size)
@@ -441,8 +500,7 @@ module ClaudeAgentSDK
       # Scope tag extraction to {"type":"tag"} lines — a bare tail scan for
       # "tag" would match tool_use inputs (git tag, Docker tags, etc.).
       tag_line = tail.lines.reverse.find { |ln| ln.start_with?('{"type":"tag"') }
-      tag_value = tag_line ? extract_json_string_field(tag_line, 'tag', last: true) : nil
-      tag_value = nil if tag_value && tag_value.empty?
+      tag_value = presence(tag_line ? extract_json_string_field(tag_line, 'tag', last: true) : nil)
 
       # created_at from the first ISO timestamp found in the head (epoch ms).
       # More reliable than stat().birthtime which is unsupported on some
@@ -460,9 +518,11 @@ module ClaudeAgentSDK
         file_size: stat.size,
         custom_title: custom_title,
         first_prompt: first_prompt,
-        git_branch: extract_json_string_field(tail, 'gitBranch', last: true) ||
-                    extract_json_string_field(head, 'gitBranch', last: false),
-        cwd: extract_json_string_field(head, 'cwd', last: false) || project_path,
+        # presence: blank metadata reads as absent, exactly as the store path
+        # (SessionSummary.summary_entry_to_sdk_info) reports it.
+        git_branch: presence(extract_json_string_field(tail, 'gitBranch', last: true) ||
+                             extract_json_string_field(head, 'gitBranch', last: false)),
+        cwd: presence(extract_json_string_field(head, 'cwd', last: false)) || project_path,
         tag: tag_value,
         created_at: created_at
       )
@@ -511,11 +571,12 @@ module ClaudeAgentSDK
                    list_all_sessions
                  end
 
-      # Sort by last_modified descending, then apply offset and limit.
+      # Sort by last_modified descending (ties by session_id, identically to
+      # the store path), then apply offset and limit.
       # [limit, 0].max: limit <= 0 yields [] across the whole read-API family
       # (a bare first(-1) would raise ArgumentError here but silently clamp on
       # the store paths).
-      sessions.sort_by! { |s| -s.last_modified }
+      sessions.sort_by! { |s| listing_sort_key(s.last_modified, s.session_id) }
       sessions = sessions[offset..] || [] if offset.positive?
       sessions = sessions.first([limit, 0].max) if limit
       sessions
@@ -528,7 +589,7 @@ module ClaudeAgentSDK
     #   project directories are searched.
     # @return [SDKSessionInfo, nil] Session info, or nil if not found / sidechain / no summary
     def get_session_info(session_id:, directory: nil)
-      return nil unless session_id.match?(UUID_RE)
+      return nil unless valid_session_id?(session_id)
 
       file_name = "#{session_id}.jsonl"
       return get_session_info_for_directory(file_name, directory) if directory
@@ -554,7 +615,7 @@ module ClaudeAgentSDK
     # @param offset [Integer] Number of messages to skip
     # @return [Array<SessionMessage>] Ordered messages from the session
     def get_session_messages(session_id:, directory: nil, limit: nil, offset: 0)
-      return [] unless session_id.match?(UUID_RE)
+      return [] unless valid_session_id?(session_id)
 
       offset ||= 0
 
@@ -590,7 +651,7 @@ module ClaudeAgentSDK
     #   scopes to that project + its worktrees; nil searches all projects)
     # @return [Array<String>] Subagent IDs
     def list_subagents(session_id:, directory: nil)
-      return [] unless session_id.match?(UUID_RE)
+      return [] unless valid_session_id?(session_id)
 
       subagents_dir = resolve_subagents_dir(session_id, directory)
       return [] if subagents_dir.nil?
@@ -603,8 +664,7 @@ module ClaudeAgentSDK
     # reader. This is historical metadata, not a live status query.
     # @return [Hash{String => Object}, nil] Original CLI fields, or nil if unavailable
     def get_subagent_metadata(session_id:, agent_id:, directory: nil)
-      return nil unless session_id.match?(UUID_RE)
-      return nil if agent_id.nil? || agent_id.empty?
+      return nil unless valid_session_id?(session_id) && valid_agent_id?(agent_id)
 
       subagents_dir = resolve_subagents_dir(session_id, directory)
       return nil if subagents_dir.nil?
@@ -627,8 +687,7 @@ module ClaudeAgentSDK
     # @param offset [Integer] Number of messages to skip
     # @return [Array<SessionMessage>] Ordered messages from the subagent
     def get_subagent_messages(session_id:, agent_id:, directory: nil, limit: nil, offset: 0)
-      return [] unless session_id.match?(UUID_RE)
-      return [] if agent_id.nil? || agent_id.empty?
+      return [] unless valid_session_id?(session_id) && valid_agent_id?(agent_id)
 
       subagents_dir = resolve_subagents_dir(session_id, directory)
       return [] if subagents_dir.nil?
@@ -725,7 +784,7 @@ module ClaudeAgentSDK
 
         { mtime: entry['mtime'] || 0, session_id: sid, info: nil }
       end
-      slots.sort_by! { |slot| -slot[:mtime] }
+      slots.sort_by! { |slot| listing_sort_key(slot[:mtime], slot[:session_id]) }
       paginate_resolving_gaps(session_store, project_key, project_path, slots, limit, offset)
     end
 
@@ -733,7 +792,7 @@ module ClaudeAgentSDK
     # counterpart to get_session_info. Returns nil for an invalid UUID, an
     # unknown session, a sidechain session, or one with no extractable summary.
     def get_session_info_from_store(session_store:, session_id:, directory: nil)
-      return nil unless session_id.match?(UUID_RE)
+      return nil unless valid_session_id?(session_id)
 
       project_path = canonicalize_path(directory.nil? ? '.' : directory.to_s)
       entries = session_store.load('project_key' => sanitize_path(project_path), 'session_id' => session_id)
@@ -745,7 +804,7 @@ module ClaudeAgentSDK
     # Read a session's conversation messages from a SessionStore. Store-backed
     # counterpart to get_session_messages.
     def get_session_messages_from_store(session_store:, session_id:, directory: nil, limit: nil, offset: 0)
-      return [] unless session_id.match?(UUID_RE)
+      return [] unless valid_session_id?(session_id)
 
       offset ||= 0
       entries = session_store.load('project_key' => project_key_for_directory(directory), 'session_id' => session_id)
@@ -757,7 +816,7 @@ module ClaudeAgentSDK
     # List subagent IDs for a session from a SessionStore. Requires the store to
     # implement list_subkeys.
     def list_subagents_from_store(session_store:, session_id:, directory: nil)
-      return [] unless session_id.match?(UUID_RE)
+      return [] unless valid_session_id?(session_id)
 
       unless SessionStore.implements?(session_store, :list_subkeys)
         raise ArgumentError,
@@ -787,8 +846,7 @@ module ClaudeAgentSDK
     # remain unchanged. Adapter failures propagate, like other store readers.
     # @return [Hash{String => Object}, nil]
     def get_subagent_metadata_from_store(session_store:, session_id:, agent_id:, directory: nil)
-      return nil unless session_id.match?(UUID_RE)
-      return nil if agent_id.nil? || agent_id.empty?
+      return nil unless valid_session_id?(session_id) && valid_agent_id?(agent_id)
 
       project_key = project_key_for_directory(directory)
       subpath = resolve_subagent_subpath(session_store, project_key, session_id, agent_id)
@@ -804,8 +862,7 @@ module ClaudeAgentSDK
     # subagents/workflows/<runId>/agent-<id>; scans subkeys to resolve the path
     # when the store implements list_subkeys, else tries the direct path.
     def get_subagent_messages_from_store(session_store:, session_id:, agent_id:, directory: nil, limit: nil, offset: 0)
-      return [] unless session_id.match?(UUID_RE)
-      return [] if agent_id.nil? || agent_id.empty?
+      return [] unless valid_session_id?(session_id) && valid_agent_id?(agent_id)
 
       project_key = project_key_for_directory(directory)
       subpath = resolve_subagent_subpath(session_store, project_key, session_id, agent_id)
@@ -836,7 +893,7 @@ module ClaudeAgentSDK
     # @raise [Errno::ENOENT] if the session JSONL cannot be found
     def import_session_to_store(session_id:, session_store:, directory: nil, include_subagents: true,
                                 batch_size: TranscriptMirrorBatcher::MAX_PENDING_ENTRIES)
-      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(UUID_RE)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless valid_session_id?(session_id)
 
       resolved = find_session_file(session_id, directory)
       raise Errno::ENOENT, "Session #{session_id} not found" if resolved.nil? || !File.exist?(resolved)
@@ -886,12 +943,14 @@ module ClaudeAgentSDK
         s_mtime = summary['mtime'] || 0
         if has_list_sessions
           known = known_mtimes[sid]
-          # known.nil?: no longer listed (drop). s_mtime < known: stale sidecar (re-fold).
-          next if known.nil? || s_mtime < known
+          # known.nil?: no longer listed (drop). s_mtime < known: stale sidecar
+          # (re-fold). Coerced: the sidecar and the listing may report the
+          # same clock in different shapes (epoch Integer vs ISO String).
+          next if known.nil? || sortable_mtime(s_mtime) < sortable_mtime(known)
         end
         fresh[sid] = true
         info = SessionSummary.summary_entry_to_sdk_info(summary, project_path)
-        slots << { mtime: s_mtime, info: info } unless info.nil?
+        slots << { mtime: s_mtime, session_id: sid, info: info } unless info.nil?
       end
       listing.each do |e|
         next if fresh[e['session_id']]
@@ -899,7 +958,7 @@ module ClaudeAgentSDK
         slots << { mtime: e['mtime'] || 0, session_id: e['session_id'], info: nil }
       end
 
-      slots.sort_by! { |slot| -slot[:mtime] }
+      slots.sort_by! { |slot| listing_sort_key(slot[:mtime], slot[:session_id]) }
       paginate_resolving_gaps(store, project_key, project_path, slots, limit, offset)
     end
 
@@ -972,7 +1031,7 @@ module ClaudeAgentSDK
     end
 
     def apply_sort_limit_offset(results, limit, offset)
-      results = results.sort_by { |s| -s.last_modified }
+      results = results.sort_by { |s| listing_sort_key(s.last_modified, s.session_id) }
       results = results[offset..] || [] if offset.positive?
       # A non-nil limit caps the result. limit <= 0 yields [] (matching the disk
       # readers' `first(limit) if limit` and entries_to_messages), and the
@@ -1483,7 +1542,8 @@ module ClaudeAgentSDK
                          :find_session_file, :stat_candidate, :resolve_subagents_dir,
                          :collect_agent_files, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
-                         :filter_visible_messages, :read_head_tail, :build_session_info, :presence, :user_entry_texts,
+                         :filter_visible_messages, :read_head_tail, :build_session_info, :user_entry_texts,
+                         :valid_session_id?, :valid_agent_id?, :listing_sort_key, :sidechain_head?,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
                          :derive_info_from_entries, :mtime_from_entries, :apply_sort_limit_offset,
                          :filter_transcript_entries, :entries_to_messages,

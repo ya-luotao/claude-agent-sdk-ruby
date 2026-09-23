@@ -134,6 +134,21 @@ RSpec.describe ClaudeAgentSDK::SessionSummary do
       expect(info.tag).to be_nil
     end
 
+    # Issue #67: whitespace-only counts as blank, like Sessions.presence on
+    # the disk path — otherwise the store path listed an invisible summary.
+    it 'treats whitespace-only strings as absent too' do
+      info = described_class.summary_entry_to_sdk_info(
+        summary_with('custom_title' => '  ', 'last_prompt' => "\t", 'summary_hint' => 'hint',
+                     'git_branch' => ' ', 'tag' => ' ', 'cwd' => ' '), '/fallback'
+      )
+      expect(info.summary).to eq('hint')
+      expect(info.custom_title).to be_nil
+      expect(info.git_branch).to be_nil
+      expect(info.tag).to be_nil
+      expect(info.cwd).to eq('/fallback')
+      expect(described_class.summary_entry_to_sdk_info(summary_with('last_prompt' => '   '), nil)).to be_nil
+    end
+
     it 'uses project_path as the cwd fallback' do
       info = described_class.summary_entry_to_sdk_info(summary_with('last_prompt' => 'x'), '/fallback')
       expect(info.cwd).to eq('/fallback')

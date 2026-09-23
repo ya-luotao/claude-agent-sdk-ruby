@@ -281,6 +281,91 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       end
     end
 
+    # Issue #67: SessionSummary.presence only rejected "", so a whitespace-only
+    # value reaching the store path kept an invisible summary/title/branch
+    # while the disk path (which strips) hid it. One shared presence helper
+    # now drives both paths.
+    it 'treats whitespace-only summary and metadata fields as blank on disk and store alike' do
+      Dir.mktmpdir do |dir|
+        sid = '12345678-1234-1234-1234-123456789abc'
+        project_path = described_class.canonicalize_path(dir)
+        file_path = File.join(dir, "#{sid}.jsonl")
+        entries = [
+          { 'type' => 'user', 'uuid' => 'u1', 'cwd' => '   ', 'gitBranch' => ' ',
+            'message' => { 'content' => 'Hello' } },
+          { 'type' => 'custom-title', 'customTitle' => '  ' },
+          { 'type' => 'ai-title', 'aiTitle' => "\t" },
+          { 'type' => 'last-prompt', 'lastPrompt' => '   ' },
+          { 'type' => 'summary', 'summary' => ' ' },
+          { 'type' => 'tag', 'tag' => '  ' }
+        ]
+        File.write(file_path, entries.map(&:to_json).join("\n"))
+        store = ClaudeAgentSDK::InMemorySessionStore.new
+        store.append({ 'project_key' => described_class.project_key_for_directory(dir), 'session_id' => sid }, entries)
+
+        disk = described_class.read_session_lite(file_path, project_path)
+        stored = described_class.get_session_info_from_store(session_store: store, session_id: sid, directory: dir)
+        [disk, stored].each do |info|
+          expect(info.summary).to eq('Hello')
+          expect(info.custom_title).to be_nil
+          expect(info.git_branch).to be_nil
+          expect(info.cwd).to eq(project_path)
+          expect(info.tag).to be_nil
+        end
+      end
+    end
+
+    # Issue #75: sidechain classification must come from the same entry on
+    # both paths. The store never holds an unparseable line (import skips
+    # them; the fold skips non-object entries), so the disk path now skips
+    # leading blank/unparseable/non-object lines too and classifies from the
+    # first parseable entry.
+    sidechain_line = { type: 'user', uuid: 'u1', isSidechain: true, message: { content: 'Side' } }.to_json
+    main_line = { type: 'user', uuid: 'u1', message: { content: 'Main' } }.to_json
+    [
+      ['a corrupt first line before a sidechain entry', ['{"type":"user","uu', sidechain_line], nil],
+      ['a corrupt first line mentioning isSidechain before a main entry',
+       ['{"isSidechain":true,"type":"us', main_line], 'Main'],
+      ['a non-object first line before a sidechain entry', ['42', sidechain_line], nil],
+      ['a blank first line before a sidechain entry', ['', sidechain_line], nil]
+    ].each do |label, lines, expected_summary|
+      it "classifies sidechain-ness identically on disk and store for #{label}" do
+        Dir.mktmpdir do |dir|
+          sid = '12345678-1234-1234-1234-123456789abc'
+          file_path = File.join(dir, "#{sid}.jsonl")
+          File.write(file_path, "#{lines.join("\n")}\n")
+          store = ClaudeAgentSDK::InMemorySessionStore.new
+          # What import_session_to_store would mirror: unparseable lines dropped.
+          parsed = lines.filter_map do |line|
+            JSON.parse(line)
+          rescue JSON::ParserError
+            nil
+          end
+          store.append({ 'project_key' => described_class.project_key_for_directory(dir), 'session_id' => sid }, parsed)
+
+          disk = described_class.read_session_lite(file_path, dir)
+          stored = described_class.get_session_info_from_store(session_store: store, session_id: sid, directory: dir)
+          expect(disk&.summary).to eq(expected_summary)
+          expect(stored&.summary).to eq(expected_summary)
+        end
+      end
+    end
+
+    it 'keeps the substring heuristic for a first line truncated by the head window' do
+      stub_const('ClaudeAgentSDK::Sessions::LITE_READ_BUF_SIZE', 64)
+      Dir.mktmpdir do |dir|
+        file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
+        # The head window ends inside the first entry: it can't be parsed, but
+        # it is not corrupt — skipping it would misclassify a real sidechain.
+        File.write(file_path, [
+          { isSidechain: true, type: 'user', uuid: 'u1', message: { content: "Side #{'x' * 200}" } }.to_json,
+          main_line
+        ].join("\n"))
+
+        expect(described_class.read_session_lite(file_path, dir)).to be_nil
+      end
+    end
+
     # Regression (M14): the tail byte-scan also matched summary/customTitle/
     # lastPrompt keys nested inside tool_use inputs (subagent/teammate tool
     # arguments carry unescaped `"summary":"..."`), reporting tool-argument
@@ -585,6 +670,48 @@ RSpec.describe ClaudeAgentSDK::Sessions do
     it 'treats offset: nil the same as offset: 0' do
       allow(described_class).to receive(:config_dir).and_return('/nonexistent')
       expect { described_class.list_sessions(offset: nil) }.not_to raise_error
+    end
+
+    # Issue #78: equal mtimes (same-second writes, bulk copies) had no
+    # secondary key, so their order depended on directory enumeration order
+    # and offset/limit paging could skip or repeat sessions. Ties now break by
+    # session_id ascending — the same order the store path produces.
+    it 'breaks equal-mtime ties by session_id, identically to the store path' do
+      Dir.mktmpdir do |config_dir|
+        allow(described_class).to receive(:config_dir).and_return(config_dir)
+        tie = Time.at(1_700_000_000)
+        sids = %w[ffffffff-1234-4234-8234-123456789abc 00000000-1234-4234-8234-123456789abc
+                  88888888-1234-4234-8234-123456789abc 44444444-1234-4234-8234-123456789abc]
+        entries = {}
+        # Spread across project dirs so the unsorted Dir.children walk (not a
+        # sorted glob) decides the pre-sort order.
+        sids.each_with_index do |sid, i|
+          project_dir = File.join(config_dir, 'projects', "-proj-#{%w[z a m c][i]}")
+          FileUtils.mkdir_p(project_dir)
+          entries[sid] = [{ 'type' => 'user', 'uuid' => "u-#{sid}", 'message' => { 'content' => "p #{sid}" } }]
+          path = File.join(project_dir, "#{sid}.jsonl")
+          File.write(path, entries[sid].map(&:to_json).join("\n"))
+          File.utime(tie, tie, path)
+        end
+
+        disk = described_class.list_sessions.map(&:session_id)
+        expect(disk).to eq(sids.sort)
+        expect(described_class.list_sessions(limit: 2).map(&:session_id) +
+               described_class.list_sessions(limit: 2, offset: 2).map(&:session_id)).to eq(sids.sort)
+
+        store = Class.new(ClaudeAgentSDK::SessionStore) do
+          def initialize(entries, mtime)
+            super()
+            @entries = entries
+            @mtime = mtime
+          end
+
+          def append(_key, _entries) = nil
+          def load(key) = @entries[key['session_id']]
+          def list_sessions(_project_key) = @entries.keys.reverse.map { |s| { 'session_id' => s, 'mtime' => @mtime } }
+        end.new(entries, (tie.to_f * 1000).to_i)
+        expect(described_class.list_sessions_from_store(session_store: store).map(&:session_id)).to eq(disk)
+      end
     end
   end
 
@@ -1301,6 +1428,43 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
         expect(ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: '', directory: canonical)).to eq([])
         expect(ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: 'ghost', directory: canonical))
           .to eq([])
+      end
+    end
+
+    # Issue #74: a non-String id raised a deep NoMethodError (`123.match?`,
+    # `123.empty?`) instead of getting the malformed-id answer.
+    [nil, 123, :sym, ['x']].each do |bad|
+      it "treats session_id #{bad.inspect} like a malformed id on every disk reader" do
+        with_session_on_disk do |_subagents_dir, canonical|
+          args = { session_id: bad, directory: canonical }
+          expect(ClaudeAgentSDK.get_session_info(**args)).to be_nil
+          expect(ClaudeAgentSDK.get_session_messages(**args)).to eq([])
+          expect(ClaudeAgentSDK.list_subagents(**args)).to eq([])
+          expect(ClaudeAgentSDK.get_subagent_metadata(**args, agent_id: 'abc')).to be_nil
+          expect(ClaudeAgentSDK.get_subagent_messages(**args, agent_id: 'abc')).to eq([])
+        end
+      end
+
+      it "treats agent_id #{bad.inspect} like a malformed id on the disk subagent readers" do
+        with_session_on_disk do |_subagents_dir, canonical|
+          args = { session_id: uuid, agent_id: bad, directory: canonical }
+          expect(ClaudeAgentSDK.get_subagent_metadata(**args)).to be_nil
+          expect(ClaudeAgentSDK.get_subagent_messages(**args)).to eq([])
+        end
+      end
+    end
+
+    # Issue #79: the store readers reject agent ids outside the id grammar
+    # before synthesizing a subpath; the disk readers apply the same grammar
+    # so the two paths accept exactly the same ids.
+    it 'rejects a malformed agent_id on disk exactly like the store readers do' do
+      with_session_on_disk do |subagents_dir, canonical|
+        File.write(File.join(subagents_dir, 'agent-x%2Fy.jsonl'), sidechain_entry('s1').to_json)
+        File.write(File.join(subagents_dir, 'agent-x%2Fy.meta.json'), '{}')
+        expect(ClaudeAgentSDK.get_subagent_messages(session_id: uuid, agent_id: 'x%2Fy', directory: canonical))
+          .to eq([])
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'x%2Fy', directory: canonical))
+          .to be_nil
       end
     end
   end

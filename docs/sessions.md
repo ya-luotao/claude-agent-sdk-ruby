@@ -2,7 +2,7 @@
 
 Browse, read, mutate, fork, and resume Claude Code sessions directly from Ruby — no CLI subprocess required. These APIs read and write `~/.claude/projects/` JSONL files directly, respecting the `CLAUDE_CONFIG_DIR` environment variable (an empty value is treated as unset, falling back to `~/.claude`) and auto-detecting git worktrees.
 
-Not-found semantics: the read APIs return `[]`/`nil` for unknown sessions and for directories that do not exist or have no recorded sessions. An explicit `directory:` strictly scopes the search to that project and its git worktrees — there is no cross-project fallback (pass `directory: nil` to search all projects). 0-byte transcript stubs are skipped during session-file resolution.
+Not-found semantics: the read APIs return `[]`/`nil` for unknown sessions and for directories that do not exist or have no recorded sessions. An explicit `directory:` strictly scopes the search to that project and its git worktrees — there is no cross-project fallback (pass `directory: nil` to search all projects). 0-byte transcript stubs are skipped during session-file resolution. Ids are validated at the boundary: a `session_id` that is not a UUID String, or an `agent_id` that is not a String of `[A-Za-z0-9._-]` characters (or is `.`/`..`), gets the same `[]`/`nil` as an unknown session (`import_session_to_store` raises `ArgumentError`), on the disk and store readers alike.
 
 ## Listing Sessions
 
@@ -24,6 +24,8 @@ ClaudeAgentSDK.list_sessions(directory: '.', include_worktrees: true)
 ```
 
 Each `SDKSessionInfo` includes: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`, `tag`, `created_at`.
+
+Listings are newest first; sessions with the same `last_modified` are ordered by `session_id`, so `offset:`/`limit:` pages are stable across calls and the disk and store listings order identically. Blank (empty or whitespace-only) custom/AI titles, last-prompt and summary entries, `git_branch`, `cwd`, and `tag` values read as absent on both paths (a blank `cwd` falls back to the project path).
 
 ## Reading Session Messages
 
@@ -235,6 +237,13 @@ during resume materialization, default `60_000`).
 Subclass `ClaudeAgentSDK::SessionStore` (or duck-type it). Only `#append` and
 `#load` are required; `#list_sessions`, `#delete`, `#list_subkeys`, and
 `#list_session_summaries` are optional and probed via `SessionStore.implements?`.
+Report `mtime` as epoch milliseconds; the SDK also orders numeric-string and
+ISO-8601-string mtimes correctly, but anything else sorts as oldest. Subagent
+transcripts arrive under a `subpath` key such as `subagents/agent-<agent_id>`
+(or nested `subagents/workflows/<runId>/agent-<agent_id>`); on a store without
+`#list_subkeys` the subagent readers build `subagents/agent-<agent_id>` from the
+caller's `agent_id`, which the SDK first restricts to `[A-Za-z0-9._-]+`
+(never `.`/`..`), so a path- or prefix-keyed adapter cannot be re-routed by it.
 Validate your adapter with the shipped, framework-agnostic conformance harness:
 
 ```ruby

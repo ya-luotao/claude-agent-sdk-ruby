@@ -29,6 +29,9 @@ module ClaudeAgentSDK
   # All keys/entries cross the adapter boundary as Hashes with STRING keys:
   #   - SessionKey: { 'project_key' => String, 'session_id' => String,
   #                   'subpath' => String (optional; omit for the main transcript) }
+  #     Subagent reads on a store without #list_subkeys synthesize the subpath
+  #     `subagents/agent-<agent_id>` from the caller's agent_id, which the SDK
+  #     first restricts to [A-Za-z0-9._-]+ (never '.' or '..').
   #   - entries: raw JSONL transcript objects (opaque pass-through blobs)
   #   - list_sessions result: [{ 'session_id' => String, 'mtime' => Integer }]
   #   - summary entries: { 'session_id', 'mtime', 'data' } (see SessionSummary)
