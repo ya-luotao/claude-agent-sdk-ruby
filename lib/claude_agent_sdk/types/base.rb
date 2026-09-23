@@ -286,21 +286,21 @@ module ClaudeAgentSDK
 
     def normalize_name(name)
       name = name.to_s.dup
-      name.gsub!(/(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z\d])(?=[A-Z])/, "_")
-      name.tr!("-", "_")
+      name.gsub!(/(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z\d])(?=[A-Z])/, '_')
+      name.tr!('-', '_')
       name.downcase!
       name
     end
 
     FALSE_VALUES = [
       false, 0,
-      "0", :'0',
-      "f", :f,
-      "F", :F,
-      "false", :false, # rubocop:disable Lint/BooleanSymbol
-      "FALSE", :FALSE,
-      "off", :off,
-      "OFF", :OFF
+      '0', :'0',
+      'f', :f,
+      'F', :F,
+      'false', :false, # rubocop:disable Lint/BooleanSymbol
+      'FALSE', :FALSE,
+      'off', :off,
+      'OFF', :OFF
     ].to_set.freeze
 
     private_constant :FALSE_VALUES
@@ -308,7 +308,7 @@ module ClaudeAgentSDK
     def coerce_boolean(value)
       return if value.nil?
 
-      if value == ""
+      if value == ''
         nil
       else
         !FALSE_VALUES.include?(value)

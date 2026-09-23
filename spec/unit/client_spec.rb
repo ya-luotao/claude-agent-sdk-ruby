@@ -186,7 +186,7 @@ RSpec.describe ClaudeAgentSDK::Client do
   end
 
   it 'does not mutate global CLAUDE_CODE_ENTRYPOINT' do
-    original_entrypoint = ENV['CLAUDE_CODE_ENTRYPOINT']
+    original_entrypoint = ENV.fetch('CLAUDE_CODE_ENTRYPOINT', nil)
     ENV.delete('CLAUDE_CODE_ENTRYPOINT')
 
     transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
@@ -198,7 +198,7 @@ RSpec.describe ClaudeAgentSDK::Client do
     client = described_class.new
     client.connect
 
-    expect(ENV['CLAUDE_CODE_ENTRYPOINT']).to be_nil
+    expect(ENV.fetch('CLAUDE_CODE_ENTRYPOINT', nil)).to be_nil
   ensure
     if original_entrypoint.nil?
       ENV.delete('CLAUDE_CODE_ENTRYPOINT')

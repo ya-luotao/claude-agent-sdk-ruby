@@ -21,7 +21,7 @@ module ClaudeAgentSDK
         parent_tool_use_id: parent_tool_use_id,
         session_id: session_id
       }
-      JSON.generate(message) + "\n"
+      "#{JSON.generate(message)}\n"
     end
 
     # Create an Enumerator from an array of messages

@@ -5,7 +5,7 @@ require_relative '../session_summary'
 
 module ClaudeAgentSDK
   # Test helpers shipped in the gem for third-party SessionStore adapter authors.
-  module Testing # rubocop:disable Metrics/ModuleLength
+  module Testing # rubocop:disable Metrics/ModuleLength -- the whole conformance suite in one module
     # Raised by run_session_store_conformance when a behavioral contract fails.
     class ConformanceError < StandardError; end
 
@@ -100,7 +100,7 @@ module ClaudeAgentSDK
 
     # -- Required: append + load -------------------------------------------
 
-    def check_append_and_load(fresh, has_list_sessions) # rubocop:disable Metrics/MethodLength
+    def check_append_and_load(fresh, has_list_sessions) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- linear assertion script
       # 1. append then load returns same entries in same order.
       store = fresh.call
       store.append(key, [entry('uuid' => 'b', 'n' => 1), entry('uuid' => 'a', 'n' => 2)])
@@ -165,7 +165,7 @@ module ClaudeAgentSDK
 
     # -- Optional: list_sessions -------------------------------------------
 
-    def check_list_sessions(fresh)
+    def check_list_sessions(fresh) # rubocop:disable Metrics/AbcSize -- linear assertion script
       # 7. list_sessions returns session_ids for project.
       store = fresh.call
       store.append({ 'project_key' => 'proj', 'session_id' => 'a' }, [entry('n' => 1)])
@@ -197,7 +197,7 @@ module ClaudeAgentSDK
 
     # -- Optional: list_session_summaries ----------------------------------
 
-    def check_list_session_summaries(fresh, has_list_sessions, has_delete) # rubocop:disable Metrics/MethodLength
+    def check_list_session_summaries(fresh, has_list_sessions, has_delete) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- linear assertion script
       # 14. persisted fold output round-trips through fold_session_summary.
       store = fresh.call
       summ_key = { 'project_key' => 'proj', 'session_id' => 'summ-sess' }
@@ -236,8 +236,10 @@ module ClaudeAgentSDK
       # Subagent appends must NOT affect the main session's summary.
       store.append(summ_key.merge('subpath' => 'subagents/agent-1'),
                    [entry('timestamp' => '2024-01-01T00:00:09.000Z', 'customTitle' => 'subagent')])
-      after_sub = summaries_by_id(store, 'proj', ['summ-sess'],
-                                  'list_session_summaries must still return one row per session after a subagent append')
+      after_sub = summaries_by_id(
+        store, 'proj', ['summ-sess'],
+        'list_session_summaries must still return one row per session after a subagent append'
+      )
       assert_eq(after_sub['summ-sess']['data'], summ['data'], 'subagent appends must not change the main summary')
       assert_eq(store.list_session_summaries('never-appended-project'), [], 'unknown project must list no summaries')
 
@@ -249,7 +251,7 @@ module ClaudeAgentSDK
 
     # -- Optional: delete --------------------------------------------------
 
-    def check_delete(fresh, has_list_subkeys, has_list_sessions) # rubocop:disable Metrics/MethodLength
+    def check_delete(fresh, has_list_subkeys, has_list_sessions) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- linear assertion script
       # 9. delete main then load returns nil (delete of never-written is a no-op).
       store = fresh.call
       store.delete('project_key' => 'proj', 'session_id' => 'never-written')
@@ -308,7 +310,7 @@ module ClaudeAgentSDK
 
     # -- Optional: list_subkeys --------------------------------------------
 
-    def check_list_subkeys(fresh)
+    def check_list_subkeys(fresh) # rubocop:disable Metrics/AbcSize -- linear assertion script
       # 12. list_subkeys returns subpaths (scoped to the session).
       store = fresh.call
       store.append(key, [entry('n' => 1)])
@@ -317,7 +319,8 @@ module ClaudeAgentSDK
       store.append({ 'project_key' => key['project_key'], 'session_id' => 'other-sess',
                      'subpath' => 'subagents/agent-x' }, [entry('n' => 1)])
       subkeys = store.list_subkeys(key)
-      assert_eq(subkeys.sort, ['subagents/agent-1', 'subagents/agent-2'], "list_subkeys must return this session's subpaths")
+      assert_eq(subkeys.sort, ['subagents/agent-1', 'subagents/agent-2'],
+                "list_subkeys must return this session's subpaths")
       assert(!subkeys.include?('subagents/agent-x'), "list_subkeys must not leak another session's subkeys")
 
       # 13. list_subkeys excludes the main transcript.
@@ -381,7 +384,8 @@ module ClaudeAgentSDK
       return if actual == expected
 
       raise ConformanceError,
-            "SessionStore conformance failed: #{message}\n  expected: #{expected.inspect}\n  actual:   #{actual.inspect}"
+            "SessionStore conformance failed: #{message}\n  " \
+            "expected: #{expected.inspect}\n  actual:   #{actual.inspect}"
     end
 
     private_class_method :check_callback_scheduling_declaration, :check_append_and_load, :check_list_sessions,

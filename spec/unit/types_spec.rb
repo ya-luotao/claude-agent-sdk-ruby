@@ -958,12 +958,12 @@ RSpec.describe ClaudeAgentSDK do
 
       it 'accepts configuration' do
         options = described_class.new(
-          allowed_tools: ['Read', 'Write'],
+          allowed_tools: %w[Read Write],
           permission_mode: 'acceptEdits',
           max_turns: 5
         )
 
-        expect(options.allowed_tools).to eq(['Read', 'Write'])
+        expect(options.allowed_tools).to eq(%w[Read Write])
         expect(options.permission_mode).to eq('acceptEdits')
         expect(options.max_turns).to eq(5)
       end
@@ -1824,12 +1824,12 @@ RSpec.describe ClaudeAgentSDK do
         sandbox = described_class.new(
           enabled: true,
           auto_allow_bash_if_sandboxed: true,
-          excluded_commands: ['rm', 'sudo']
+          excluded_commands: %w[rm sudo]
         )
 
         expect(sandbox.enabled).to eq(true)
         expect(sandbox.auto_allow_bash_if_sandboxed).to eq(true)
-        expect(sandbox.excluded_commands).to eq(['rm', 'sudo'])
+        expect(sandbox.excluded_commands).to eq(%w[rm sudo])
       end
 
       it 'converts to hash with nested configs' do
@@ -1985,9 +1985,9 @@ RSpec.describe ClaudeAgentSDK do
 
       it 'accepts tools option as array' do
         options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-          tools: ['Read', 'Edit', 'Bash']
+          tools: %w[Read Edit Bash]
         )
-        expect(options.tools).to eq(['Read', 'Edit', 'Bash'])
+        expect(options.tools).to eq(%w[Read Edit Bash])
       end
 
       it 'accepts tools option as ToolsPreset' do

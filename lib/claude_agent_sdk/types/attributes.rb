@@ -163,7 +163,10 @@ module ClaudeAgentSDK
     end
 
     def assign_attributes(attributes)
-      raise ArgumentError, "When assigning attributes, you must pass a hash as an argument, #{attributes.inspect} passed." unless attributes.respond_to?(:each_pair)
+      unless attributes.respond_to?(:each_pair)
+        raise ArgumentError,
+              "When assigning attributes, you must pass a hash as an argument, #{attributes.inspect} passed."
+      end
 
       return if attributes.empty?
 

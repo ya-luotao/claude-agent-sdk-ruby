@@ -99,7 +99,7 @@ module ClaudeAgentSDK
     end
 
     def dup_with(**changes)
-      new_options = self.dup
+      new_options = dup
       # A shallow #dup shares nested containers and typed option values, so
       # mutating a derived copy (e.g. `variant.allowed_tools << 'Bash'` or
       # `variant.sandbox.enabled = false`) would bleed into the base and every
@@ -279,7 +279,9 @@ module ClaudeAgentSDK
     # callback ends). A bare `Rails.application.executor.wrap` deadlocks
     # under development code reloading in :thread mode.
     def callback_wrapper=(value)
-      raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})" unless value.nil? || value.respond_to?(:call)
+      unless value.nil? || value.respond_to?(:call)
+        raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})"
+      end
 
       @callback_wrapper = value
     end

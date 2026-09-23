@@ -67,13 +67,14 @@ module ClaudeAgentSDK
   # @api private
   def self.ruby_type_to_json_schema(type)
     # Class#=== matches instances, not the class object used in { id: Integer }.
-    type = { String => :string, Integer => :integer, Float => :float, TrueClass => :boolean, FalseClass => :boolean }.fetch(type, type)
+    type = { String => :string, Integer => :integer, Float => :float,
+             TrueClass => :boolean, FalseClass => :boolean }.fetch(type, type)
     case type
     when :string, String then { type: 'string' }
     when :integer, Integer then { type: 'integer' }
     when :float, Float, :number then { type: 'number' }
     when :boolean, TrueClass, FalseClass then { type: 'boolean' }
-    else { type: 'string' } # Default fallback
+    else { type: 'string' } # rubocop:disable Lint/DuplicateBranch -- default fallback; the :string arm stays explicit
     end
   end
 
@@ -96,7 +97,7 @@ module ClaudeAgentSDK
   #
   # This class wraps the official MCP Ruby SDK and provides a simpler block-based
   # API for defining tools, resources, and prompts.
-  class SdkMcpServer
+  class SdkMcpServer # rubocop:disable Metrics/ClassLength -- one facade over MCP::Server tools, resources and prompts
     # The gem validates arguments before injecting its server_context keyword.
     # Guard actual keys here, independent of schema composition/$ref support,
     # and retain this guard even when schema validation falls back to permissive.
@@ -105,7 +106,8 @@ module ClaudeAgentSDK
     class ToolInputSchema < MCP::Tool::InputSchema
       def validate_arguments(arguments)
         if arguments.is_a?(Hash) && (arguments.key?(:server_context) || arguments.key?('server_context'))
-          raise ValidationError, "Tool argument 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
+          raise ValidationError,
+                "Tool argument 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
         end
 
         super
@@ -152,7 +154,9 @@ module ClaudeAgentSDK
     # Validated at set time so a non-callable fails here, not later as a
     # NoMethodError inside a tool dispatch.
     def callback_wrapper=(value)
-      raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})" unless value.nil? || value.respond_to?(:call)
+      unless value.nil? || value.respond_to?(:call)
+        raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})"
+      end
 
       @callback_wrapper = value
     end
@@ -298,7 +302,7 @@ module ClaudeAgentSDK
       end
 
       # Guard before flexible_fetch: it raises on non-Hash inputs.
-      content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "content", "content") : nil
+      content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, 'content', 'content') : nil
       return error_tool_result("Tool '#{name}' must return a hash with :content key") unless content
 
       result
@@ -337,7 +341,7 @@ module ClaudeAgentSDK
 
       # Ensure content has the expected format (symbol or string keys; guard
       # before flexible_fetch — it raises on non-Hash inputs)
-      contents = content.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(content, "contents", "contents") : nil
+      contents = content.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(content, 'contents', 'contents') : nil
       raise "Resource '#{uri}' must return a hash with :contents key" if contents.nil?
 
       content
@@ -371,7 +375,7 @@ module ClaudeAgentSDK
       end
 
       # Ensure result has the expected format (symbol or string keys)
-      messages = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "messages", "messages") : nil
+      messages = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, 'messages', 'messages') : nil
       raise "Prompt '#{name}' must return a hash with :messages key" if messages.nil?
 
       result
@@ -383,7 +387,7 @@ module ClaudeAgentSDK
     # in content with isError: true, returned as a *successful* JSON-RPC
     # result.
     def error_tool_result(text)
-      { content: [{ type: "text", text: text }], isError: true }
+      { content: [{ type: 'text', text: text }], isError: true }
     end
 
     # The mcp gem's tools/call error behavior swung across 0.x releases:
@@ -408,18 +412,19 @@ module ClaudeAgentSDK
     end
 
     # Create dynamic Tool classes from tool definitions
-    def create_tool_classes(tools)
+    def create_tool_classes(tools) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- builds each dynamic MCP::Tool subclass inline
       # Captured so the dynamic class can resolve the effective scheduling
       # mode at call time — same pattern as prompt classes.
       sdk_server = self
-      tools.map do |tool_def|
+      tools.map do |tool_def| # rubocop:disable Metrics/BlockLength -- see create_tool_classes
         # The gem injects server_context AFTER expanding the tool arguments,
         # overwriting a user value before our call method can recover it.
         # Check at registration (including raw SdkMcpTool definitions), not in
         # input_schema_value's permissive schema-error fallback.
         schema = ClaudeAgentSDK.normalize_tool_schema(tool_def.input_schema)
         if schema[:properties]&.key?(:server_context)
-          raise ArgumentError, "Tool '#{tool_def.name}' input property 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
+          raise ArgumentError, "Tool '#{tool_def.name}' input property 'server_context' is reserved by the MCP SDK; " \
+                               "rename it (e.g. 'request_context')"
         end
 
         # Create a new class that extends MCP::Tool
@@ -474,7 +479,7 @@ module ClaudeAgentSDK
               @tool_def.meta
             end
 
-            def call(server_context: nil, **args)
+            def call(server_context: nil, **args) # rubocop:disable Lint/UnusedMethodArgument -- declared to strip it from args
               # Filter out server_context and pass remaining args to handler.
               # Hop to a plain thread (default) so user handlers don't see
               # the Fiber scheduler; :inline runs in place on the reactor.

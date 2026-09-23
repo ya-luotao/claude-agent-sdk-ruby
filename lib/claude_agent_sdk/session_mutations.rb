@@ -15,7 +15,7 @@ module ClaudeAgentSDK
   # matching the CLI pattern. Safe to call from any SDK host process.
   #
   # @api private
-  module SessionMutations # rubocop:disable Metrics/ModuleLength
+  module SessionMutations # rubocop:disable Metrics/ModuleLength -- rename/tag/delete/fork share transcript helpers
     module_function
 
     # Transcript entry types kept in fork output. Mirrors Python's
@@ -84,7 +84,9 @@ module ClaudeAgentSDK
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
       result = find_session_file_with_dir(session_id, directory)
-      raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}" unless result
+      unless result
+        raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}"
+      end
 
       path = result[0]
 
@@ -119,10 +121,14 @@ module ClaudeAgentSDK
     def fork_session(session_id:, directory: nil, up_to_message_id: nil, title: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
-      raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}" if up_to_message_id && !Sessions.valid_session_id?(up_to_message_id)
+      if up_to_message_id && !Sessions.valid_session_id?(up_to_message_id)
+        raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}"
+      end
 
       result = find_session_file_with_dir(session_id, directory)
-      raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}" unless result
+      unless result
+        raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}"
+      end
 
       file_path, project_dir = result
       file_size = File.size(file_path)
@@ -234,7 +240,9 @@ module ClaudeAgentSDK
     # @raise [Errno::ENOENT] if the source session is not found in the store
     def fork_session_via_store(session_store:, session_id:, directory: nil, up_to_message_id: nil, title: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
-      raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}" if up_to_message_id && !Sessions.valid_session_id?(up_to_message_id)
+      if up_to_message_id && !Sessions.valid_session_id?(up_to_message_id)
+        raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}"
+      end
 
       project_key = Sessions.project_key_for_directory(directory)
       raw = session_store.load('project_key' => project_key, 'session_id' => session_id)
@@ -384,7 +392,7 @@ module ClaudeAgentSDK
     # +derive_title+ is a callable invoked ONLY when no explicit +title+ is
     # given, so the disk path's head/tail byte scan and the store path's
     # entry-object scan each run only when needed.
-    def build_fork_lines(transcript, content_replacements, session_id, up_to_message_id, title, derive_title) # rubocop:disable Metrics/MethodLength
+    def build_fork_lines(transcript, content_replacements, session_id, up_to_message_id, title, derive_title) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/ParameterLists, Metrics/PerceivedComplexity -- single fork rewrite pass: UUID remap, truncation, title
       transcript = transcript.reject { |e| e['isSidechain'] }
       raise ArgumentError, "Session #{session_id} has no messages to fork" if transcript.empty?
 
@@ -522,7 +530,7 @@ module ClaudeAgentSDK
     end
 
     # Build a single forked entry with remapped UUIDs.
-    def build_forked_entry(original, index, total, uuid_mapping, by_uuid,
+    def build_forked_entry(original, index, total, uuid_mapping, by_uuid, # rubocop:disable Metrics/ParameterLists -- per-entry step of build_fork_lines; its state is threaded explicitly
                            forked_session_id, source_session_id, now)
       new_uuid = uuid_mapping[original['uuid']]
 
@@ -605,7 +613,9 @@ module ClaudeAgentSDK
 
     def append_to_session_global(session_id, data, file_name)
       projects_dir = File.join(Sessions.config_dir, 'projects')
-      raise Errno::ENOENT, "Session #{session_id} not found (no projects directory)" unless File.directory?(projects_dir)
+      unless File.directory?(projects_dir)
+        raise Errno::ENOENT, "Session #{session_id} not found (no projects directory)"
+      end
 
       found = Dir.children(projects_dir).any? do |child|
         candidate = File.join(projects_dir, child, file_name)

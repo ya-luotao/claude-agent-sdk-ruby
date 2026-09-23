@@ -1809,7 +1809,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     it 'stays silent when close() cuts the read short mid-frame' do
       stdout = instance_double(IO)
       allow(stdout).to receive(:each_line) do |*_args, &blk|
-        blk.call("{\"type\":\"result\",\"sub")
+        blk.call('{"type":"result","sub')
         raise IOError, 'stream closed in another thread'
       end
       wire(stdout)
@@ -1819,7 +1819,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
     it 'prefers the process exit error when the CLI died mid-frame' do
       status = instance_double(Process::Status, exitstatus: nil, signaled?: true, termsig: 9)
-      transport.instance_variable_set(:@stdout, StringIO.new("{\"type\":\"result\",\"sub"))
+      transport.instance_variable_set(:@stdout, StringIO.new('{"type":"result","sub'))
       transport.instance_variable_set(:@process, instance_double(Process::Waiter, alive?: false, value: status))
 
       expect { transport.read_messages { |m| m } }.to raise_error(ClaudeAgentSDK::ProcessError)

@@ -29,7 +29,7 @@ require 'async'
 require 'securerandom'
 
 # Claude Agent SDK for Ruby
-module ClaudeAgentSDK
+module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry points (query, ask, sessions API) live on the root module
   # The duck-typed observer surface probed by resolve_observers — implementing
   # any one of these counts as an observer (see Observer's no-op defaults).
   #
@@ -119,7 +119,9 @@ module ClaudeAgentSDK
     return options unless options.can_use_tool
 
     # can_use_tool and permission_prompt_tool_name are mutually exclusive
-    raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name' if options.permission_prompt_tool_name
+    if options.permission_prompt_tool_name
+      raise ArgumentError, 'can_use_tool callback cannot be used with permission_prompt_tool_name'
+    end
 
     # Advisory: warn if other options shadow the callback. After the
     # ArgumentError above so invalid configs raise, not warn.
@@ -667,13 +669,17 @@ module ClaudeAgentSDK
   #   ClaudeAgentSDK.query(prompt: messages) do |message|
   #     puts message
   #   end
-  def self.query(prompt:, options: nil, transport: nil, &block)
+  def self.query(prompt:, options: nil, transport: nil, &block) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- one-shot lifecycle (validate, resume, connect, stream, teardown) kept linear
     # Validate BEFORE the block-less enum_for return so a bad prompt fails at
     # the call site, not on first iteration. Mirrors Client#query: a bare Hash
     # responds to #each and would stream [key, value] pairs' to_s garbage to
     # the CLI; nil/Integer would hang forever waiting for input.
-    raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)' if prompt.is_a?(Hash)
-    raise ArgumentError, "prompt must be a String or respond to #each (got #{prompt.class})" unless prompt.is_a?(String) || prompt.respond_to?(:each)
+    if prompt.is_a?(Hash)
+      raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)'
+    end
+    unless prompt.is_a?(String) || prompt.respond_to?(:each)
+      raise ArgumentError, "prompt must be a String or respond to #each (got #{prompt.class})"
+    end
 
     return enum_for(:query, prompt: prompt, options: options, transport: transport) unless block
 
@@ -693,9 +699,11 @@ module ClaudeAgentSDK
     callback_wrapper = configured_options.callback_wrapper
     ClaudeAgentSDK.check_inline_isolation(callback_scheduling)
 
-    raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)' if transport && !transport.respond_to?(:connect)
+    if transport && !transport.respond_to?(:connect)
+      raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)'
+    end
 
-    Async(&FiberBoundary.capture_otel_context do
+    Async(&FiberBoundary.capture_otel_context do # rubocop:disable Metrics/BlockLength -- the reactor task body of query()
       materialized = nil
       query_handler = nil
       begin
@@ -708,7 +716,9 @@ module ClaudeAgentSDK
           # env/--resume only apply to the CLI subprocess (Python parity:
           # client.py skips materialization when a transport is supplied).
           materialized = SessionResume.materialize_resume_session(configured_options)
-          configured_options = SessionResume.apply_materialized_options(configured_options, materialized) if materialized
+          if materialized
+            configured_options = SessionResume.apply_materialized_options(configured_options, materialized)
+          end
 
           # Always use streaming mode with control protocol (matches Python
           # SDK). This sends agents via initialize request instead of CLI
@@ -772,7 +782,7 @@ module ClaudeAgentSDK
             parent_tool_use_id: nil,
             session_id: ''
           }
-          transport.write(JSON.generate(message) + "\n")
+          transport.write("#{JSON.generate(message)}\n")
           # Background-spawn so messages stream to the user block while stdin
           # close waits (without timeout) for the first result; a synchronous
           # call would defer all delivery until the turn completes (mirrors
@@ -783,8 +793,9 @@ module ClaudeAgentSDK
           # here kept the root reactor alive forever when the read loop died
           # while the user enumerator was still blocked (matches Python's
           # query.spawn_task(query.stream_input(prompt))).
-          observed_prompt = ClaudeAgentSDK.observing_prompt_stream(prompt, resolved_observers,
-                                                                   scheduling: callback_scheduling, wrapper: callback_wrapper)
+          observed_prompt = ClaudeAgentSDK.observing_prompt_stream(
+            prompt, resolved_observers, scheduling: callback_scheduling, wrapper: callback_wrapper
+          )
           query_handler.spawn_task { query_handler.stream_input(observed_prompt) }
         end
 
@@ -919,7 +930,7 @@ module ClaudeAgentSDK
   #     }
   #   )
   #   client = ClaudeAgentSDK::Client.new(options: options)
-  class Client
+  class Client # rubocop:disable Metrics/ClassLength -- public session API: lifecycle, control methods and their Ruby aliases
     # The session's control-protocol handler (nil until #connect).
     #
     # @api private
@@ -989,8 +1000,12 @@ module ClaudeAgentSDK
     def connect(prompt = nil)
       return if @connected
 
-      raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)' if prompt.is_a?(Hash)
-      raise ArgumentError, "prompt must be a String, an Enumerator, or nil (got #{prompt.class})" unless prompt.nil? || prompt.is_a?(String) || prompt.respond_to?(:each)
+      if prompt.is_a?(Hash)
+        raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)'
+      end
+      unless prompt.nil? || prompt.is_a?(String) || prompt.respond_to?(:each)
+        raise ArgumentError, "prompt must be a String, an Enumerator, or nil (got #{prompt.class})"
+      end
 
       # Validate and configure permission settings
       configured_options = ClaudeAgentSDK.configure_can_use_tool(@options)
@@ -1055,7 +1070,9 @@ module ClaudeAgentSDK
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
       # A bare Hash responds to #each and would silently iterate [key, value]
       # pairs (Python's async-for over a dict raises TypeError).
-      raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)' if prompt.is_a?(Hash)
+      if prompt.is_a?(Hash)
+        raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)'
+      end
 
       begin
         if prompt.is_a?(String)
@@ -1145,6 +1162,7 @@ module ClaudeAgentSDK
     # Send interrupt signal
     def interrupt
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.interrupt
     end
 
@@ -1152,6 +1170,7 @@ module ClaudeAgentSDK
     # @param mode [String] Permission mode ('default', 'acceptEdits', 'bypassPermissions')
     def set_permission_mode(mode)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.set_permission_mode(mode)
     end
 
@@ -1165,6 +1184,7 @@ module ClaudeAgentSDK
     # @param model [String, nil] Model name or nil for default
     def set_model(model)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.set_model(model)
     end
 
@@ -1177,6 +1197,7 @@ module ClaudeAgentSDK
     # @param server_name [String] Name of the MCP server to reconnect
     def reconnect_mcp_server(server_name)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.reconnect_mcp_server(server_name)
     end
 
@@ -1185,6 +1206,7 @@ module ClaudeAgentSDK
     # @param enabled [Boolean] Whether to enable or disable
     def toggle_mcp_server(server_name, enabled)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.toggle_mcp_server(server_name, enabled)
     end
 
@@ -1192,6 +1214,7 @@ module ClaudeAgentSDK
     # @param task_id [String] The ID of the task to stop
     def stop_task(task_id)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.stop_task(task_id)
     end
 
@@ -1217,6 +1240,7 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if tool_use_id is neither nil nor a non-empty String
     def background_tasks(tool_use_id: nil)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.background_tasks(tool_use_id: tool_use_id)
     end
 
@@ -1226,6 +1250,7 @@ module ClaudeAgentSDK
     # @param user_message_uuid [String] The UUID of the UserMessage to rewind to
     def rewind_files(user_message_uuid)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.rewind_files(user_message_uuid)
     end
 
@@ -1241,6 +1266,7 @@ module ClaudeAgentSDK
     # @return [Hash] Context usage response
     def get_context_usage
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.get_context_usage
     end
 
@@ -1254,6 +1280,7 @@ module ClaudeAgentSDK
     # @return [Hash] MCP status information, including mcpServers list
     def get_mcp_status
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       @query_handler.get_mcp_status
     end
 
@@ -1267,6 +1294,7 @@ module ClaudeAgentSDK
     # @return [Hash] Server info
     def get_server_info
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+
       server_info
     end
 
@@ -1349,7 +1377,7 @@ module ClaudeAgentSDK
     end
 
     # The connect body, wrapped by #connect so a failure triggers cleanup.
-    def connect_inner(configured_options, prompt)
+    def connect_inner(configured_options, prompt) # rubocop:disable Metrics/MethodLength -- connect sequence kept in order; #connect wraps it for cleanup
       # Client always uses streaming mode; keep stdin open for bidirectional
       # communication. Observers were already resolved by #connect.
       @transport = @transport_class.new(configured_options, **@transport_args)

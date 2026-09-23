@@ -11,7 +11,7 @@ require_relative 'cli_installer'
 
 module ClaudeAgentSDK
   # Subprocess transport using Claude Code CLI
-  class SubprocessCLITransport < Transport
+  class SubprocessCLITransport < Transport # rubocop:disable Metrics/ClassLength -- subprocess lifecycle: discovery, spawn, IO, teardown
     # @api private
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     # @api private
@@ -114,6 +114,7 @@ module ClaudeAgentSDK
     end
 
     def initialize(options_or_prompt = nil, options = nil)
+      super() # Transport defines no state today; keep the chain intact if it ever does
       # Support both new single-arg form and legacy two-arg form
       @options = options.nil? ? options_or_prompt : options
       @cli_path = @options.cli_path || find_cli
@@ -156,7 +157,7 @@ module ClaudeAgentSDK
     #   4. Well-known install locations.
     #
     # @api private
-    def find_cli
+    def find_cli # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- ordered discovery probes (env, vendored, PATH, known locations)
       env_path = ENV.fetch(CLI_PATH_ENV_VAR, nil).to_s
       unless env_path.empty?
         # Absolutize against the CURRENT working directory, which is where the
@@ -210,18 +211,17 @@ module ClaudeAgentSDK
         return path if File.file?(path) && File.executable?(path)
       end
 
-      raise CLINotFoundError.new(
-        "Claude Code not found. Install with:\n" \
-        "  npm install -g @anthropic-ai/claude-code\n" \
-        "\nIf already installed locally, try:\n" \
-        '  export PATH="$HOME/node_modules/.bin:$PATH"' \
-        "\n\nOr provide the path via ClaudeAgentOptions:\n" \
-        "  ClaudeAgentOptions.new(cli_path: '/path/to/claude')" \
-        "\n\nFor hermetic deploys (Docker/CI), vendor a pinned CLI into the project:\n" \
-        "  ClaudeAgentSDK::CLIInstaller.install_pinned  # installs #{CLIInstaller::PINNED_CLI_VERSION}" \
-        "\n\nOr point the SDK at an existing binary:\n" \
-        "  export #{CLI_PATH_ENV_VAR}=/path/to/claude"
-      )
+      raise CLINotFoundError,
+            "Claude Code not found. Install with:\n  " \
+            "npm install -g @anthropic-ai/claude-code\n" \
+            "\nIf already installed locally, try:\n  " \
+            'export PATH="$HOME/node_modules/.bin:$PATH"' \
+            "\n\nOr provide the path via ClaudeAgentOptions:\n  " \
+            "ClaudeAgentOptions.new(cli_path: '/path/to/claude')" \
+            "\n\nFor hermetic deploys (Docker/CI), vendor a pinned CLI into the project:\n  " \
+            "ClaudeAgentSDK::CLIInstaller.install_pinned  # installs #{CLIInstaller::PINNED_CLI_VERSION}" \
+            "\n\nOr point the SDK at an existing binary:\n  " \
+            "export #{CLI_PATH_ENV_VAR}=/path/to/claude"
     end
 
     # Inject W3C trace context (TRACEPARENT/TRACESTATE, plus BAGGAGE) into the
@@ -262,7 +262,7 @@ module ClaudeAgentSDK
       CommandBuilder.new(@cli_path, @options).build
     end
 
-    def connect
+    def connect # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- spawn sequence kept in order
       return if @process
 
       check_claude_version
@@ -271,7 +271,7 @@ module ClaudeAgentSDK
 
       # Build environment
       # Convert symbol keys to strings for spawn compatibility
-      custom_env = @options.env.transform_keys { |k| k.to_s }
+      custom_env = @options.env.transform_keys(&:to_s)
       # Explicitly unset CLAUDECODE to prevent "nested session" detection when the SDK
       # launches Claude Code from within an existing Claude Code terminal.
       # NOTE: Must set to nil (not just omit the key) — Ruby's spawn only overlays
@@ -337,7 +337,7 @@ module ClaudeAgentSDK
 
         # Always keep stdin open — streaming mode uses it for the control protocol
         @ready = true
-      rescue Errno::ENOENT => e
+      rescue Errno::ENOENT
         # Check if error is from cwd or CLI
         if @cwd && !File.directory?(@cwd.to_s)
           error = CLIConnectionError.new("Working directory does not exist: #{@cwd}")
@@ -414,7 +414,7 @@ module ClaudeAgentSDK
       end
     end
 
-    def close
+    def close # rubocop:disable Metrics/MethodLength -- teardown ordering is load-bearing
       @ready = false
       return unless @process
 
@@ -494,7 +494,7 @@ module ClaudeAgentSDK
     # cancellation-abandoned case.
     #
     # @api private
-    def teardown_process
+    def teardown_process # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- TERM/KILL escalation and reaping; ordering is load-bearing
       cleanup_errors = []
 
       # Kill stderr thread
@@ -572,9 +572,7 @@ module ClaudeAgentSDK
       end
 
       # Log any cleanup errors (non-fatal)
-      if cleanup_errors.any?
-        warn "Claude SDK: Cleanup warnings: #{cleanup_errors.join(', ')}"
-      end
+      warn "Claude SDK: Cleanup warnings: #{cleanup_errors.join(', ')}" if cleanup_errors.any?
 
       self.class.deregister_active_process(@process)
     end
@@ -607,20 +605,18 @@ module ClaudeAgentSDK
       end
 
       Thread.new do
-        begin
-          unless process.join(grace_seconds)
-            begin
-              Process.kill('KILL', pid) if process.alive?
-            rescue Errno::ESRCH
-              # Still wait for the waiter when exit raced the signal.
-            end
-            process.join(grace_seconds)
+        unless process.join(grace_seconds)
+          begin
+            Process.kill('KILL', pid) if process.alive?
+          rescue Errno::ESRCH
+            # Still wait for the waiter when exit raced the signal.
           end
-        rescue StandardError
-          nil # best-effort; retain ownership if termination/reaping failed
-        ensure
-          self.class.deregister_active_process(process) unless process.alive?
+          process.join(grace_seconds)
         end
+      rescue StandardError
+        nil # best-effort; retain ownership if termination/reaping failed
+      ensure
+        self.class.deregister_active_process(process) unless process.alive?
       end
     end
 
@@ -656,7 +652,7 @@ module ClaudeAgentSDK
     end
 
     def write(data)
-      raise CLIConnectionError, "Cannot write to terminated process" if @process && !@process.alive?
+      raise CLIConnectionError, 'Cannot write to terminated process' if @process && !@process.alive?
       raise CLIConnectionError, "Cannot write to process that exited with error: #{@exit_error}" if @exit_error
 
       # Snapshot @stdin under the lock so close() nilling it concurrently is
@@ -723,7 +719,7 @@ module ClaudeAgentSDK
       # Ignore
     end
 
-    def read_messages(&)
+    def read_messages(&) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- concurrency-sensitive read loop; kept whole on purpose
       return enum_for(:read_messages) unless block_given?
 
       raise CLIConnectionError, 'Not connected' unless @process && @stdout
@@ -782,7 +778,7 @@ module ClaudeAgentSDK
             buffer_length = json_buffer.bytesize
             json_buffer = ''
             raise CLIJSONDecodeError.new(
-              "JSON message exceeded maximum buffer size",
+              'JSON message exceeded maximum buffer size',
               StandardError.new("Buffer size #{buffer_length} exceeds limit #{@max_buffer_size}")
             )
           end
@@ -913,7 +909,7 @@ module ClaudeAgentSDK
         # stdout chunk): this searches anywhere in stdout+stderr, so leading
         # noise (a shim's own version line) could be mistaken for the CLI
         # version. Pre-existing shape; the check is best-effort only.
-        if match = output.match(/([0-9]+\.[0-9]+\.[0-9]+)/)
+        if (match = output.match(/([0-9]+\.[0-9]+\.[0-9]+)/))
           version = match[1]
           version_parts = version.split('.').map(&:to_i)
           min_parts = MINIMUM_CLAUDE_CODE_VERSION.split('.').map(&:to_i)
@@ -923,7 +919,7 @@ module ClaudeAgentSDK
           if (version_parts <=> min_parts).negative?
             warning = "Warning: Claude Code version #{version} at #{@cli_path} is unsupported in the Agent SDK. " \
                       "Minimum required version is #{MINIMUM_CLAUDE_CODE_VERSION}. " \
-                      "Some features may not work correctly."
+                      'Some features may not work correctly.'
             warn warning
           end
         end
@@ -950,7 +946,7 @@ module ClaudeAgentSDK
     # read both pipes to EOF (pre-existing capture3 shape), so the deadline
     # also bounds CLI exit. ensure always reaps the probe (mirrors Python's
     # finally: terminate(); wait()).
-    def capture_cli_version_output
+    def capture_cli_version_output # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- bounded subprocess probe: drained pipes, reaping
       stdin, stdout, stderr, wait_thr = Open3.popen3(@cli_path.to_s, '-v')
       stdin.close
       drainer = Thread.new { [stdout.read, stderr.read] }

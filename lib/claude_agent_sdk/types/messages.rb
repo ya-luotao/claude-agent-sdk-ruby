@@ -4,7 +4,9 @@ require_relative 'base'
 
 module ClaudeAgentSDK
   # Type constants for assistant message errors
-  ASSISTANT_MESSAGE_ERRORS = %w[authentication_failed billing_error rate_limit invalid_request server_error max_output_tokens unknown].freeze
+  ASSISTANT_MESSAGE_ERRORS = %w[
+    authentication_failed billing_error rate_limit invalid_request server_error max_output_tokens unknown
+  ].freeze
 
   # Message Types
 
@@ -440,7 +442,7 @@ module ClaudeAgentSDK
   class PermissionDeniedMessage < SystemMessage
     attr_accessor :uuid, :session_id, :tool_name, :tool_use_id,
                   :agent_id,             # Subagent ID when the denied call originated inside a subagent; nil otherwise
-                  :decision_reason_type, # Open String, e.g. "classifier", "asyncAgent", "mode", "rule"; nil when not reported
+                  :decision_reason_type, # Open String ("classifier", "asyncAgent", "mode", "rule"); nil if not reported
                   :decision_reason,      # Human-readable reason from the deciding component; nil when not reported
                   :message               # The rejection message returned to the model in the tool_result
   end

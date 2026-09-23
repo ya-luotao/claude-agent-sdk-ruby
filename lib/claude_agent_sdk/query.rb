@@ -21,7 +21,7 @@ module ClaudeAgentSDK
   # - Initialization handshake
   #
   # @api private
-  class Query
+  class Query # rubocop:disable Metrics/ClassLength -- control-protocol hub: routing, hooks, permissions, MCP bridge
     attr_reader :transport, :is_streaming_mode, :sdk_mcp_servers
 
     # The CLI's response to the initialize control request (nil before
@@ -71,7 +71,7 @@ module ClaudeAgentSDK
       end
     end
 
-    def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
+    def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil, # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- initializes every control-protocol concern in one place
                    exclude_dynamic_sections: nil, system_prompt_snapshot: nil, skills: nil,
                    forward_subagent_text: false, agent_progress_summaries: nil,
                    callback_scheduling: :thread, callback_wrapper: nil)
@@ -140,7 +140,7 @@ module ClaudeAgentSDK
 
     # Initialize control protocol if in streaming mode
     # @return [Hash, nil] Initialize response with supported commands, or nil if not streaming
-    def initialize_protocol
+    def initialize_protocol # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- builds the initialize request from every optional option
       return nil unless @is_streaming_mode
 
       # Build hooks configuration for initialization
@@ -245,7 +245,10 @@ module ClaudeAgentSDK
       return if @task
 
       parent = Async::Task.current?
-      raise CLIConnectionError, 'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})' unless parent
+      unless parent
+        raise CLIConnectionError,
+              'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})'
+      end
 
       @owning_scheduler = Fiber.scheduler
       # Async child fibers do not inherit OTel's fiber-local current context.
@@ -330,8 +333,8 @@ module ClaudeAgentSDK
       DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS
     end
 
-    def read_messages
-      @transport.read_messages do |message|
+    def read_messages # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- concurrency-sensitive read loop; kept whole on purpose
+      @transport.read_messages do |message| # rubocop:disable Metrics/BlockLength -- see read_messages
         break if @closed
 
         msg_type = message[:type]
@@ -346,14 +349,12 @@ module ClaudeAgentSDK
           # nothing keeps running after close; bare Async do may root at the
           # reactor and leak past shutdown.
           handler_task = Async::Task.current.async(&FiberBoundary.capture_otel_context do
-            begin
-              handle_control_request(message)
-            ensure
-              # Identity-guarded: if the CLI ever reused an in-flight request
-              # id, the later handler owns the slot and must stay cancellable.
-              if request_id && @inflight_control_request_tasks[request_id].equal?(Async::Task.current)
-                @inflight_control_request_tasks.delete(request_id)
-              end
+            handle_control_request(message)
+          ensure
+            # Identity-guarded: if the CLI ever reused an in-flight request
+            # id, the later handler owns the slot and must stay cancellable.
+            if request_id && @inflight_control_request_tasks[request_id].equal?(Async::Task.current)
+              @inflight_control_request_tasks.delete(request_id)
             end
           end)
           # A handler that never suspends (MCP metadata, unsupported-subtype
@@ -391,11 +392,7 @@ module ClaudeAgentSDK
               @first_result_received = true
               @first_result_condition.signal
             end
-            if message[:is_error]
-              @last_error_result = message
-            else
-              @last_error_result = nil
-            end
+            @last_error_result = message[:is_error] ? message : nil
           elsif !(msg_type == 'system' && message[:subtype] == 'session_state_changed')
             # Anything other than the post-turn session_state_changed marker
             # means the conversation moved on; a ProcessError now is a fresh
@@ -541,11 +538,12 @@ module ClaudeAgentSDK
       waiter = @pending_control_responses[request_id]
       return unless waiter
 
-      if response[:subtype] == 'error'
-        @pending_control_results[request_id] = StandardError.new(response[:error] || 'Unknown error')
-      else
-        @pending_control_results[request_id] = response
-      end
+      @pending_control_results[request_id] =
+        if response[:subtype] == 'error'
+          StandardError.new(response[:error] || 'Unknown error')
+        else
+          response
+        end
 
       # Signal that response is ready. INVARIANT: the result slot above
       # MUST be written before this signal — senders check the slot before
@@ -553,7 +551,7 @@ module ClaudeAgentSDK
       waiter.signal
     end
 
-    def handle_control_request(request)
+    def handle_control_request(request) # rubocop:disable Metrics/MethodLength -- subtype dispatch plus the shared error response
       request_id = request[:request_id] || request[:requestId]
       request_data = request[:request]
       subtype = request_data[:subtype]
@@ -644,7 +642,7 @@ module ClaudeAgentSDK
       nil
     end
 
-    def handle_permission_request(request_data, request_id: nil)
+    def handle_permission_request(request_data, request_id: nil) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- permission round-trip: input, callback, result conversion
       raise 'canUseTool callback is not provided' unless @can_use_tool
 
       signal = CancellationSignal.new
@@ -693,9 +691,7 @@ module ClaudeAgentSDK
           behavior: 'allow',
           updatedInput: response.updated_input || original_input
         }
-        if response.updated_permissions
-          result[:updatedPermissions] = response.updated_permissions.map(&:to_h)
-        end
+        result[:updatedPermissions] = response.updated_permissions.map(&:to_h) if response.updated_permissions
         result
       when PermissionResultDeny
         result = { behavior: 'deny', message: response.message }
@@ -711,7 +707,7 @@ module ClaudeAgentSDK
       untrack_callback_signal(request_id, signal)
     end
 
-    def handle_hook_callback(request_data, request_id: nil)
+    def handle_hook_callback(request_data, request_id: nil) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- hook round-trip: timeout, callback, output conversion
       callback_id = request_data[:callback_id]
       callback = @hook_callbacks[callback_id]
       raise "No hook callback found for ID: #{callback_id}" unless callback
@@ -796,7 +792,7 @@ module ClaudeAgentSDK
       @callback_request_signals.delete(request_id)
     end
 
-    def parse_hook_input(input_data)
+    def parse_hook_input(input_data) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength -- one branch per hook event type
       event_name = input_data[:hook_event_name] || input_data['hook_event_name']
       fetch = lambda do |key|
         if input_data.key?(key)
@@ -1029,11 +1025,9 @@ module ClaudeAgentSDK
       { mcp_response: mcp_response }
     end
 
-    def convert_hook_output_for_cli(hook_output)
+    def convert_hook_output_for_cli(hook_output) # rubocop:disable Metrics/CyclomaticComplexity -- one optional field per hook output key
       # Handle typed output objects
-      if hook_output.respond_to?(:to_h) && !hook_output.is_a?(Hash)
-        return hook_output.to_h
-      end
+      return hook_output.to_h if hook_output.respond_to?(:to_h) && !hook_output.is_a?(Hash)
 
       return {} unless hook_output.is_a?(Hash)
 
@@ -1147,7 +1141,7 @@ module ClaudeAgentSDK
       end
     end
 
-    def handle_sdk_mcp_request(server_name, message)
+    def handle_sdk_mcp_request(server_name, message) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/MethodLength -- JSON-RPC method dispatch for SDK MCP servers
       # Carry this session's scheduling mode and callback wrapper across the
       # dispatch into the (possibly session-shared) SdkMcpServer via fiber
       # storage — set on the dispatching fiber, read back by the server's
@@ -1174,7 +1168,7 @@ module ClaudeAgentSDK
           jsonrpc: '2.0',
           id: message[:id],
           error: {
-            code: -32601,
+            code: -32_601,
             message: "Server '#{server_name}' not found"
           }
         }
@@ -1205,14 +1199,14 @@ module ClaudeAgentSDK
         {
           jsonrpc: '2.0',
           id: message[:id],
-          error: { code: -32601, message: "Method '#{method}' not found" }
+          error: { code: -32_601, message: "Method '#{method}' not found" }
         }
       end
     rescue StandardError => e
       {
         jsonrpc: '2.0',
         id: message[:id],
-        error: { code: -32603, message: e.message }
+        error: { code: -32_603, message: e.message }
       }
     ensure
       dispatch_scope&.close
@@ -1441,6 +1435,7 @@ module ClaudeAgentSDK
       wrote_message = false
       stream.each do |message|
         break if @closed
+
         serialized = message.is_a?(Hash) ? JSON.generate(message) : message.to_s
         writeln(serialized)
         wrote_message = true
