@@ -1,6 +1,6 @@
 # Session Browsing & Mutations
 
-Browse, read, mutate, fork, and resume Claude Code sessions directly from Ruby — no CLI subprocess required. These APIs read and write `~/.claude/projects/` JSONL files directly, respecting the `CLAUDE_CONFIG_DIR` environment variable (an empty value is treated as unset, falling back to `~/.claude`) and auto-detecting git worktrees.
+Browse, read, mutate, fork, and resume Claude Code sessions directly from Ruby — no CLI subprocess required. These APIs read and write `~/.claude/projects/` JSONL files directly, respecting the `CLAUDE_CONFIG_DIR` environment variable (an empty value is treated as unset, falling back to `~/.claude`) and auto-detecting git worktrees. On a host with no usable home directory (`HOME` unset with no passwd entry — e.g. `docker --user` in a minimal image — or an empty/relative `HOME`) and no `CLAUDE_CONFIG_DIR`, they raise `ClaudeAgentSDK::ConfigDirError`; set `CLAUDE_CONFIG_DIR` there.
 
 Not-found semantics: the read APIs return `[]`/`nil` for unknown sessions and for directories that do not exist or have no recorded sessions. An explicit `directory:` strictly scopes the search to that project and its git worktrees — there is no cross-project fallback (pass `directory: nil` to search all projects). 0-byte transcript stubs are skipped during session-file resolution. Ids are validated at the boundary: a `session_id` that is not a UUID String, or an `agent_id` that is not a String of `[A-Za-z0-9._-]` characters (or is `.`/`..`), gets the same `[]`/`nil` as an unknown session (`import_session_to_store` raises `ArgumentError`), on the disk and store readers alike.
 
@@ -211,6 +211,14 @@ ClaudeAgentSDK.query(
 ) { |message| }
 ```
 
+The mirror maps each transcript file the CLI reports to a store key relative to
+the subprocess's projects dir: `CLAUDE_CONFIG_DIR` from `options.env` (else
+`ENV`), else `~/.claude` under the `HOME` the subprocess sees (`options.env`'s
+`HOME` when it sets one). When neither exists — no `CLAUDE_CONFIG_DIR` and no
+usable home — the session still runs, but nothing is mirrored: each unmappable
+batch is reported as a `MirrorErrorMessage` (with a `nil` key) telling you to
+set `CLAUDE_CONFIG_DIR`.
+
 Relevant options: `session_store`, `session_store_flush` (`"batched"` default, or
 `"eager"` to flush each frame as soon as the store is free — frames arriving
 while an append is in flight are coalesced into the next append, so a slow
@@ -228,7 +236,8 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 > **Store-backed resume runs against a temp `CLAUDE_CONFIG_DIR`.** The SDK
 > materializes the session transcript (plus subagent transcripts, when the
 > store implements `#list_subkeys`) into it and seeds it from your real config
-> dir (`CLAUDE_CONFIG_DIR` from `options.env`/`ENV`, else `~/.claude`):
+> dir (`CLAUDE_CONFIG_DIR` from `options.env`/`ENV`, else `~/.claude` under the
+> `HOME` the subprocess will see — `options.env`'s `HOME` when it sets one):
 >
 > - `.credentials.json`, with the OAuth `refreshToken` removed so the resumed
 >   subprocess can't consume it. On macOS with the default config dir and no

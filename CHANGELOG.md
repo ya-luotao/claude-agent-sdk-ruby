@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`ClaudeAgentSDK::ConfigDirError`** (a `ClaudeSDKError`), raised by the local-disk session APIs when the Claude config directory cannot be located: `CLAUDE_CONFIG_DIR` is unset and there is no usable home directory for the default `~/.claude`. Its message says to set `CLAUDE_CONFIG_DIR` (#120).
+
+### Fixed
+- **Session APIs on hosts without a home directory (#120).** With `CLAUDE_CONFIG_DIR` unset and `HOME` unset with no passwd entry (`docker --user` in a minimal image) or an empty/relative `HOME`:
+  - the local-disk session APIs (`list_sessions`, `get_session_*`, `list_subagents`, `rename_session` / `tag_session` / `delete_session` / `fork_session`, `import_session_to_store`) raise `ConfigDirError` instead of a bare `ArgumentError` from `~` expansion;
+  - a fresh session with a `session_store` no longer fails at connect. The transcript mirror cannot map the CLI's transcript files to store keys without a projects dir, so each unmappable batch is reported as a `MirrorErrorMessage` (with a `nil` key) and counted as dropped, while the session itself runs normally. `SessionStores.projects_dir` returns `nil` in this case instead of raising.
+- **Store-backed resume seeds auth and settings from the home the CLI subprocess will use (#120).** When `options.env` sets `HOME`, `.credentials.json`, `settings.json` / `cowork_settings.json` and `.claude.json` are now read from under that home, as `CLAUDE_CONFIG_DIR` already was, instead of the parent process's home. An empty or relative `HOME` there, or `HOME => nil`, counts as no home, so those files are skipped. The transcript mirror resolves the subprocess's default `~/.claude/projects` the same way, so a `HOME` override no longer sends every mirror frame down the "not under projects dir" drop path.
+
 ## [0.35.0] - 2026-09-23
 
 First-class Rails integration and a first-impressions pass. **Rails users:** if your initializer uses the previously documented `->(inv) { Rails.application.executor.wrap { inv.call } }` callback wrapper, switch to `ClaudeAgentSDK::Railtie.callback_wrapper` — the bare form can deadlock in development (see **Fixed**).

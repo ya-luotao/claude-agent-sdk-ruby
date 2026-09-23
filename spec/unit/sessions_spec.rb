@@ -1575,6 +1575,58 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
         ENV['CLAUDE_CONFIG_DIR'] = "/tmp/café" # decomposed é
         expect(described_class.config_dir).to eq("/tmp/café")
       end
+
+      # Issue #120: with CLAUDE_CONFIG_DIR unset and no usable home, the
+      # default ~/.claude cannot be resolved. `~` expansion raised a bare
+      # ArgumentError ("couldn't find login name" / "non-absolute home") from
+      # deep inside every local-disk session API.
+      context 'without a resolvable home directory (#120)' do
+        around do |example|
+          previous_home = ENV.fetch('HOME', nil) # rubocop:disable Style/EnvHome -- raw value; nil when unset
+          example.run
+        ensure
+          previous_home.nil? ? ENV.delete('HOME') : (ENV['HOME'] = previous_home)
+        end
+
+        before { ENV.delete('CLAUDE_CONFIG_DIR') }
+
+        # HOME unset with no passwd entry for the uid (docker --user in a
+        # minimal image). Stubbed because the host's passwd fallback would
+        # otherwise resolve a home.
+        def remove_home
+          ENV.delete('HOME')
+          allow(Dir).to receive(:home).and_raise(ArgumentError, "couldn't find home for uid `4242'")
+        end
+
+        it 'raises ConfigDirError naming CLAUDE_CONFIG_DIR' do
+          remove_home
+          expect { described_class.config_dir }
+            .to raise_error(ClaudeAgentSDK::ConfigDirError, /home directory.*CLAUDE_CONFIG_DIR/m)
+        end
+
+        it 'raises ConfigDirError for an empty or relative HOME' do
+          ['', 'relative/home'].each do |home|
+            ENV['HOME'] = home
+            expect { described_class.config_dir }.to raise_error(ClaudeAgentSDK::ConfigDirError)
+          end
+        end
+
+        it 'raises ConfigDirError (a ClaudeSDKError) from the public disk readers' do
+          remove_home
+          expect { described_class.list_sessions }.to raise_error(ClaudeAgentSDK::ConfigDirError)
+          expect { described_class.get_session_info(session_id: '12345678-1234-1234-1234-123456789abc') }
+            .to raise_error(ClaudeAgentSDK::ClaudeSDKError)
+          expect { ClaudeAgentSDK::SessionMutations.rename_session(session_id: '12345678-1234-1234-1234-123456789abc', title: 't') }
+            .to raise_error(ClaudeAgentSDK::ConfigDirError)
+        end
+
+        it 'needs no home when CLAUDE_CONFIG_DIR is set' do
+          remove_home
+          ENV['CLAUDE_CONFIG_DIR'] = '/srv/claude-nonexistent'
+          expect(described_class.config_dir).to eq('/srv/claude-nonexistent')
+          expect(described_class.list_sessions).to eq([])
+        end
+      end
     end
   end
 end

@@ -393,6 +393,51 @@ RSpec.describe ClaudeAgentSDK::SessionStores do
       expect(described_class.projects_dir('OTHER' => 'x')).to eq('/ambient/projects')
       expect(described_class.projects_dir(nil)).to eq('/ambient/projects')
     end
+
+    it "resolves the default config dir under the child's HOME from options.env" do
+      # The CLI's default ~/.claude is relative to the HOME the child sees;
+      # resolving it under the parent's home pointed the batcher at a dir the
+      # subprocess never writes to, so every mirror frame was dropped.
+      ENV.delete('CLAUDE_CONFIG_DIR')
+      expect(described_class.projects_dir('HOME' => '/child/home')).to eq('/child/home/.claude/projects')
+      expect(described_class.projects_dir(HOME: '/child/home', CLAUDE_CONFIG_DIR: nil))
+        .to eq('/child/home/.claude/projects')
+    end
+
+    context 'without a resolvable home directory (#120)' do
+      around do |example|
+        previous_home = ENV.fetch('HOME', nil) # rubocop:disable Style/EnvHome -- raw value; nil when unset
+        example.run
+      ensure
+        previous_home.nil? ? ENV.delete('HOME') : (ENV['HOME'] = previous_home)
+      end
+
+      before do
+        ENV.delete('HOME')
+        ENV.delete('CLAUDE_CONFIG_DIR')
+        allow(Dir).to receive(:home).and_raise(ArgumentError, "couldn't find home for uid `4242'")
+      end
+
+      it 'returns nil instead of raising when the default config dir is needed' do
+        # Reached by the transcript mirror of a FRESH store-backed session at
+        # connect: raising here aborted the session (the batcher reports the
+        # unmappable frames as MirrorErrorMessage instead).
+        expect(described_class.projects_dir(nil)).to be_nil
+        expect(described_class.projects_dir('CLAUDE_CONFIG_DIR' => nil)).to be_nil
+        expect(described_class.projects_dir('HOME' => 'relative/home')).to be_nil
+        expect(described_class.projects_dir('HOME' => '')).to be_nil
+      end
+
+      it 'still honors an explicit CLAUDE_CONFIG_DIR, which needs no home' do
+        expect(described_class.projects_dir('CLAUDE_CONFIG_DIR' => '/custom')).to eq('/custom/projects')
+        ENV['CLAUDE_CONFIG_DIR'] = '/ambient'
+        expect(described_class.projects_dir(nil)).to eq('/ambient/projects')
+      end
+
+      it "uses the child's HOME from options.env when the parent has none" do
+        expect(described_class.projects_dir('HOME' => '/child/home')).to eq('/child/home/.claude/projects')
+      end
+    end
   end
 end
 

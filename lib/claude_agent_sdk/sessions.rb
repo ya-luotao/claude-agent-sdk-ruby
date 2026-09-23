@@ -3,6 +3,7 @@
 require 'json'
 require 'open3'
 require 'pathname'
+require_relative 'errors'
 require_relative 'session_store'
 require_relative 'session_summary'
 require_relative 'transcript_mirror_batcher'
@@ -176,11 +177,51 @@ module ClaudeAgentSDK
     # Get the Claude config directory (respects CLAUDE_CONFIG_DIR; an empty
     # value is treated as unset, matching the Node CLI and the Python SDK).
     # NFC-normalized on both branches like Python's _get_claude_config_home_dir.
+    #
+    # @raise [ConfigDirError] when CLAUDE_CONFIG_DIR is unset and there is no
+    #   usable home directory (see .home_dir) for the default ~/.claude.
+    #   Python raises too (Path.home() -> RuntimeError); `~` expansion here
+    #   raised a bare ArgumentError from deep inside every disk session API.
     def config_dir
       dir = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
       return dir.unicode_normalize(:nfc) if dir && !dir.empty?
 
-      File.expand_path('~/.claude').unicode_normalize(:nfc)
+      home = home_dir
+      unless home
+        raise ConfigDirError,
+              'Cannot locate the Claude config directory: CLAUDE_CONFIG_DIR is unset and the home directory ' \
+              'could not be resolved (HOME is unset, empty or relative, and the user has no passwd entry). ' \
+              'Set CLAUDE_CONFIG_DIR to the directory holding your Claude Code data (normally ~/.claude).'
+      end
+
+      File.join(home, '.claude').unicode_normalize(:nfc)
+    end
+
+    # A usable home directory, or nil when there is none. The ONE definition
+    # of "home" for the SDK (CLI discovery, disk session APIs, the transcript
+    # mirror, store-backed resume seeding).
+    #
+    # Without +env+, the parent process's home: Dir.home raises ArgumentError
+    # when HOME is unset and the uid has no passwd entry (docker --user in a
+    # minimal image), and returns an empty or relative HOME verbatim — a path
+    # under "" or a cwd-relative dir is not where the user's data lives (and
+    # a relative CLI hit would be spawned from options.cwd, i.e. a different
+    # file), so both read as "no home".
+    #
+    # With +env+ (a ClaudeAgentOptions#env Hash), the home the CLI CHILD will
+    # see: a HOME key there wins, by key presence like the CLAUDE_CONFIG_DIR
+    # override, and must be absolute. An explicit nil (the transport unsets
+    # HOME for the child, which then falls back to its passwd entry) is also
+    # treated as no home rather than guessing that entry.
+    def home_dir(env = nil)
+      home = if env.respond_to?(:key?) && (env.key?('HOME') || env.key?(:HOME))
+               env['HOME'] || env[:HOME]
+             else
+               Dir.home
+             end
+      home if home.is_a?(String) && File.absolute_path?(home)
+    rescue ArgumentError
+      nil
     end
 
     # Find the project directory for a given path

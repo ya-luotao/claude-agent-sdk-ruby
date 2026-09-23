@@ -96,9 +96,9 @@ module ClaudeAgentSDK
     # Build a TranscriptMirrorBatcher for a configured session_store. Shared by
     # both entry points (Client#install_transcript_mirror and the one-shot
     # query()) so projects_dir resolution and the eager/batched threshold choice
-    # live in one place. +env+ supplies the CLAUDE_CONFIG_DIR override used to
-    # locate the projects dir (already repointed at the temp dir when resuming
-    # from a store). Eager flush mode zeroes the buffer thresholds so every
+    # live in one place. +env+ supplies the CLAUDE_CONFIG_DIR / HOME overrides
+    # used to locate the projects dir (already repointed at the temp dir when
+    # resuming from a store). Eager flush mode zeroes the buffer thresholds so every
     # transcript_mirror frame triggers a background flush.
     def build_mirror_batcher(store:, env:, on_error:, eager: false, callback_wrapper: nil)
       TranscriptMirrorBatcher.new(
@@ -326,13 +326,17 @@ module ClaudeAgentSDK
     # .claude.json lives at $CLAUDE_CONFIG_DIR/.claude.json when set, else
     # ~/.claude.json (NOT ~/.claude/.claude.json).
     #
-    # Without a usable home (see .home_dir) the home-relative sources are
-    # skipped like missing files: they cannot exist, and raising here aborted
-    # every store-backed resume on a HOME-less host — even API-key auth,
-    # which needs none of them.
+    # Both are resolved as the CHILD will see them: CLAUDE_CONFIG_DIR via
+    # env_value, and "~" as the HOME in options.env when it sets one (see
+    # Sessions.home_dir) — seeding from the parent's home would copy another
+    # user's credentials and settings than the ones the CLI would have read.
+    # Without a usable home the home-relative sources are skipped like
+    # missing files: they cannot exist, and raising here aborted every
+    # store-backed resume on a HOME-less host — even API-key auth, which
+    # needs none of them.
     def copy_auth_files(tmp_base, opt_env)
       caller_config_dir = env_value(opt_env, 'CLAUDE_CONFIG_DIR')
-      home = caller_config_dir ? nil : home_dir
+      home = caller_config_dir ? nil : Sessions.home_dir(opt_env)
       source_config_dir = caller_config_dir || (home && File.join(home, '.claude'))
 
       # read_if_present returns raw bytes; the credentials path parses and
@@ -758,24 +762,12 @@ module ClaudeAgentSDK
       value && (!value.respond_to?(:empty?) || !value.empty?) ? value : nil
     end
 
-    # The parent's home directory, or nil when none is usable. Dir.home raises
-    # ArgumentError when HOME is unset and the uid has no passwd entry (docker
-    # --user in a minimal image), and returns an empty or relative HOME
-    # verbatim — reading under "" or a cwd-relative path would seed files the
-    # CLI never looks at. SubprocessCLITransport#home_dir applies the same rule.
-    def home_dir
-      home = Dir.home
-      home if File.absolute_path?(home)
-    rescue ArgumentError
-      nil
-    end
-
     private_class_method :load_candidate, :resolve_continue_candidate, :with_timeout, :write_jsonl,
                          :copy_auth_files, :write_redacted_credentials, :read_keychain_credentials,
                          :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
                          :resolve_dir, :read_if_present, :chmod_owner_only, :copy_if_present, :env_value,
                          :strip_settings_for_resume, :parse_settings_bytes, :mask_surrogate_escapes,
-                         :redacted_credentials, :home_dir, :encode_candidate, :encode_jsonl_lines, :encode_entry,
+                         :redacted_credentials, :encode_candidate, :encode_jsonl_lines, :encode_entry,
                          :encode_agent_metadata
   end
 end
