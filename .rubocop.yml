@@ -20,7 +20,6 @@ Metrics/MethodLength:
     - 'lib/claude_agent_sdk/message_parser.rb'
     - 'lib/claude_agent_sdk/sdk_mcp_server.rb'
     - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-    - 'lib/claude_agent_sdk/types.rb'
     - 'lib/claude_agent_sdk/instrumentation/otel.rb'
 
 Metrics/ClassLength:
@@ -36,7 +35,6 @@ Metrics/ClassLength:
 Metrics/ModuleLength:
   Exclude:
     - 'lib/claude_agent_sdk.rb'
-    - 'lib/claude_agent_sdk/types.rb'
 
 Metrics/BlockLength:
   Exclude:

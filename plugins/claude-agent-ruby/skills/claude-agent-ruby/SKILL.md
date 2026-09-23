@@ -89,7 +89,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 - Locate the gem: `bundle show claude-agent-sdk`
 - Read `<gem_path>/README.md` for the overview, install, and minimal API examples
 - Read `<gem_path>/docs/*.md` for topic subpages — `client.md` (bidirectional + custom transports), `mcp-servers.md` (SDK MCP tools/resources/prompts), `hooks-and-permissions.md` (27 hook events + permission callbacks), `configuration.md` (structured output, thinking, budget, sandbox, bare mode, file checkpointing), `sessions.md` (list/read/rename/tag/fork/resume + SessionStore mirroring/store-backed helpers), `observability.md` (OTel + Langfuse), `rails.md` (ActionCable, jobs, initializers), `types.md` (message/content-block/configuration types), `errors.md` (error hierarchy + timeout)
-- Inspect `<gem_path>/lib/claude_agent_sdk/types.rb` for all types
+- Inspect `<gem_path>/lib/claude_agent_sdk/types/` for all types (one file per area: messages, hooks, options, ...)
 - Inspect `<gem_path>/lib/claude_agent_sdk/message_parser.rb` for message parsing
 - Inspect `<gem_path>/lib/claude_agent_sdk/sessions.rb` for session browsing
 - Inspect `<gem_path>/lib/claude_agent_sdk/errors.rb` for error classes
