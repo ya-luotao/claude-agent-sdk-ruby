@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-23
+
+First-class Rails integration and a first-impressions pass. **Rails users:** if your initializer uses the previously documented `->(inv) { Rails.application.executor.wrap { inv.call } }` callback wrapper, switch to `ClaudeAgentSDK::Railtie.callback_wrapper` — the bare form can deadlock in development (see **Fixed**).
+
 ### Added
 - **Rails integration: `ClaudeAgentSDK::Railtie`**, loaded only when Rails is (`require_relative 'claude_agent_sdk/railtie' if defined?(Rails::Railtie)`, which Bundler.require satisfies in a Rails app); non-Rails processes load nothing new. It contributes a rake task and installs nothing into callback dispatch.
 - **`bin/rails generate claude_agent_sdk:install`** — writes `config/initializers/claude_agent_sdk.rb` (commented `model` / `permission_mode` / `cli_path` / OpenTelemetry defaults, `callback_wrapper: ClaudeAgentSDK::Railtie.callback_wrapper` enabled), appends `/vendor/claude/` to `.gitignore` once (any existing spelling counts), and prints the next steps.
@@ -20,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/rails.md` opens with a getting-started path (gem → generator → `install_cli` → first job), and its ActionCable, session-resumption and background-job examples use `ClaudeAgentSDK::Client.open` instead of hand-rolled `Async { connect … ensure disconnect }.wait`. README and gemspec description lead with the Rails integration.
 - **`#inspect` filters credential-bearing attributes** to `"[FILTERED]"` (Hash keys stay visible): `ClaudeAgentOptions#env` (usually carries `ANTHROPIC_API_KEY`), `McpStdioServerConfig#env`, and `McpHttpServerConfig` / `McpSSEServerConfig#headers`, since these objects end up in logs. The objects are not modified. Type subclasses declare such attributes with `inspect_filtered :name`. Typed `SystemMessage` subclasses (`InitMessage`, ...) leave the raw `@data` frame out of `#inspect`, since it repeats their attributes; a bare `SystemMessage` keeps it. Nothing sent to the CLI changes: wire output still goes through `#to_h`.
 - The README's `Client` section and the basic example in `docs/client.md` now lead with `Client.open`, which creates the reactor and always disconnects, instead of the `Async do … begin … ensure client.disconnect end.wait` boilerplate. The manual `connect` / `disconnect` form is still shown for code already running inside an `Async` reactor. No API changes.
+- The bundled `claude-agent-ruby` skill recommends `Client.open` and documents the install generator, the `install_cli` task and `Railtie.callback_wrapper`.
 - **Gem metadata names its maintainer** (`authors: ["ya-luotao"]`, with a contact email) instead of "Community Contributors". The stale `IMPLEMENTATION.md` is removed, and the past audit reports move from the repository root to `docs/history/`, which is not packaged with the gem.
 
 ### Fixed

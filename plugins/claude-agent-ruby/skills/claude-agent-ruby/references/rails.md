@@ -2,6 +2,16 @@
 
 Use `ClaudeAgentSDK::Client` when you need streaming chunks, long-running tasks, or session resumption.
 
+## Set up (generator + vendored CLI)
+
+```bash
+bin/rails generate claude_agent_sdk:install   # config/initializers/claude_agent_sdk.rb + /vendor/claude/ in .gitignore
+bin/rails claude_agent_sdk:install_cli        # PINNED_CLI_VERSION into Rails.root/vendor/claude
+bin/rails claude_agent_sdk:install_cli CLAUDE_CLI_VERSION=x.y.z   # or a version of your own ('stable' / 'latest')
+```
+
+The rake task does not boot the app, so it works as a Docker build step. Outside Rails, `require 'claude_agent_sdk/tasks'` in a Rakefile gives the same task. The `Railtie` loads only when `Rails::Railtie` is defined and installs nothing implicitly.
+
 ## Configure defaults once (initializer)
 
 Set shared defaults in `config/initializers/claude_agent_sdk.rb` so jobs/services stay consistent:
@@ -11,7 +21,11 @@ ClaudeAgentSDK.configure do |config|
   config.default_options = {
     model: 'claude-sonnet-5',
     permission_mode: 'bypassPermissions',
-    env: { 'ANTHROPIC_API_KEY' => ENV.fetch('ANTHROPIC_API_KEY') }
+    env: { 'ANTHROPIC_API_KEY' => ENV.fetch('ANTHROPIC_API_KEY') },
+    # AR connections go back to the pool after each callback. Never a bare
+    # `->(inv) { Rails.application.executor.wrap { inv.call } }`: that deadlocks
+    # with development code reloading in the default :thread scheduling.
+    callback_wrapper: ClaudeAgentSDK::Railtie.callback_wrapper
   }
 end
 ```
@@ -21,7 +35,7 @@ end
 Run the agent in an `ActiveJob`, broadcast assistant text as it arrives, and finalize on `ResultMessage`.
 
 Key ideas:
-- Wrap SDK calls in `Async do ... end.wait`.
+- Use `ClaudeAgentSDK::Client.open(options: options) { |client| ... }` (own reactor, always disconnects); inside the block use `next`, not `break`.
 - Extract text from `AssistantMessage` content blocks.
 - Broadcast `ResultMessage` fields (final `result`, `total_cost_usd`, `session_id`).
 

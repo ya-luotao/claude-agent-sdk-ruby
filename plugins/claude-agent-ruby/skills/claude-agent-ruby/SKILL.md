@@ -10,7 +10,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
 
 ## Decision Guide
 - Choose `ClaudeAgentSDK.query` for one-shot queries or streaming input. Internally uses the control protocol (streaming mode).
-- Choose `ClaudeAgentSDK::Client` for multi-turn sessions, hooks, permission callbacks, MCP server control, or dynamic model switching; wrap in `Async do ... end.wait`.
+- Choose `ClaudeAgentSDK::Client` for multi-turn sessions, hooks, permission callbacks, MCP server control, or dynamic model switching. Prefer `ClaudeAgentSDK::Client.open(options: ...) { |client| ... }` — it creates its own reactor and always disconnects (return a value instead of `break` outside a reactor); use `Client.new` + `connect` / `ensure disconnect` only inside an existing `Async` block.
 - Choose SDK MCP servers (`create_tool`, `create_sdk_mcp_server`) for in-process tools; choose external MCP configs for subprocess/HTTP servers.
 - Choose `ClaudeAgentSDK.list_sessions` / `ClaudeAgentSDK.get_session_messages` for browsing previous session transcripts (pure filesystem, no CLI needed).
 
@@ -100,5 +100,5 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 - Read `references/message-handling.md` to extract text/tool blocks, build streaming input, use Client runtime APIs, and capture UUIDs for rewind.
 - Read `references/options.md` to configure `ClaudeAgentOptions` (defaults, tools, permissions, skills, output formats, budgets, sandbox, sessions, agents, custom transports), and to browse/mutate sessions.
 - Read `references/mcp-servers.md` to define in-process SDK MCP tools/resources/prompts, configure external MCP servers, or manage MCP servers at runtime.
-- Read `references/rails.md` for initializers, background jobs, ActionCable streaming, and session resumption patterns.
+- Read `references/rails.md` for the install generator, the `claude_agent_sdk:install_cli` rake task, `Railtie.callback_wrapper`, background jobs, ActionCable streaming, and session resumption patterns.
 - Read `references/troubleshooting.md` for common setup/runtime errors and timeout tuning.
