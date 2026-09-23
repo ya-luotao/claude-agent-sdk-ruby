@@ -130,8 +130,7 @@ first gets an `isError` result naming the exception class
 (`"SystemExit: exit"`), so it is not left waiting on the tool call, and then
 the exception propagates as Ruby normally would (`exit` ends the process,
 Ctrl-C interrupts it). Called directly, without a session,
-`SdkMcpServer#call_tool` and `#handle_message` simply let such exceptions
-propagate. Cancellation of the tool call itself still propagates.
+`SdkMcpServer#call_tool` simply lets such exceptions propagate. Cancellation of the tool call itself still propagates.
 
 ## Mixed Server Support
 

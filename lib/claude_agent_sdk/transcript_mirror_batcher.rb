@@ -44,6 +44,8 @@ module ClaudeAgentSDK
   # may remain permanently HALF-applied in the store. The drop is surfaced
   # (MirrorErrorMessage, batches_dropped?); the local transcript remains the
   # source of truth.
+  #
+  # @api private
   class TranscriptMirrorBatcher
     # Eager-flush thresholds (exposed for tests).
     MAX_PENDING_ENTRIES = 500

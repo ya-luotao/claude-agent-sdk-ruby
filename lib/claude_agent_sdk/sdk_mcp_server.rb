@@ -100,6 +100,8 @@ module ClaudeAgentSDK
     # The gem validates arguments before injecting its server_context keyword.
     # Guard actual keys here, independent of schema composition/$ref support,
     # and retain this guard even when schema validation falls back to permissive.
+    #
+    # @api private
     class ToolInputSchema < MCP::Tool::InputSchema
       def validate_arguments(arguments)
         if arguments.is_a?(Hash) && (arguments.key?(:server_context) || arguments.key?('server_context'))
@@ -224,6 +226,7 @@ module ClaudeAgentSDK
     # Handle a JSON-RPC request
     # @param json_string [String] JSON-RPC request
     # @return [String] JSON-RPC response
+    # @api private
     def handle_json(json_string)
       @mcp_server.handle_json(json_string)
     end
@@ -245,6 +248,7 @@ module ClaudeAgentSDK
     # Responses are built from per-call locals (safe), but the gem's
     # instrumentation_callback attribution (@instrumentation_data ivar) can
     # cross-contaminate under concurrency — harmless with the default no-op.
+    # @api private
     def handle_message(message)
       original_id = message[:id]
       response = @mcp_server.handle(message.merge(jsonrpc: '2.0', id: 0))
