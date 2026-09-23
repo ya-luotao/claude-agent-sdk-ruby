@@ -22,7 +22,7 @@ The gem ships a Railtie, an install generator and a rake task for vendoring the 
 
    ```bash
    bin/rails claude_agent_sdk:install_cli                  # the version this gem release is tested with
-   bin/rails claude_agent_sdk:install_cli VERSION=x.y.z    # or a version of your own ('stable' / 'latest' float)
+   bin/rails claude_agent_sdk:install_cli CLAUDE_CLI_VERSION=x.y.z    # or a version of your own ('stable' / 'latest' float)
    ```
 
    The binary lands in `Rails.root/vendor/claude`, where the SDK finds it ahead of any `claude` on `PATH` whenever the process runs from the app root, as `bin/rails`, Puma and most job runners do (otherwise set `cli_path:`; the initializer has it commented). The task does not boot the app (no database or credentials needed), so the same line works as a cached Docker build step: `RUN bin/rails claude_agent_sdk:install_cli`. Installs are checksum-verified and idempotent — see [docs/cli-installer.md](cli-installer.md). The CLI authenticates from the environment, e.g. `ANTHROPIC_API_KEY`.

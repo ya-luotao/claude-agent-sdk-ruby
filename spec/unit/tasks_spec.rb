@@ -27,15 +27,15 @@ RSpec.describe 'claude_agent_sdk/tasks' do
   end
 
   it 'installs the pinned CLI relative to the working directory, loading only the installer' do
-    out, err, status = run_task('VERSION' => nil)
+    out, err, status = run_task('CLAUDE_CLI_VERSION' => nil)
 
     expect(status.exitstatus).to eq(0), err
     expect(err).to include('pinned dir=nil')
     expect(out).to include("(#{ClaudeAgentSDK::CLIInstaller::PINNED_CLI_VERSION}) installed at /fake/claude")
   end
 
-  it 'installs VERSION= instead of the pin when given' do
-    out, err, status = run_task('VERSION' => 'latest')
+  it 'installs CLAUDE_CLI_VERSION= instead of the pin when given' do
+    out, err, status = run_task('CLAUDE_CLI_VERSION' => 'latest')
 
     expect(status.exitstatus).to eq(0), err
     expect(err).to include('install latest dir=nil')

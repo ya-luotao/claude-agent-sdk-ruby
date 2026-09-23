@@ -7,14 +7,16 @@
 unless Rake::Task.task_defined?('claude_agent_sdk:install_cli')
   namespace :claude_agent_sdk do
     desc 'Install the Claude Code CLI into vendor/claude: the version this gem is tested with, ' \
-         'or VERSION=x.y.z / stable / latest'
+         'or CLAUDE_CLI_VERSION=x.y.z / stable / latest'
     task :install_cli do
       # Under Rails, anchor to the app root instead of the process cwd (the
       # app is not booted: no :environment dependency, so this runs in a
       # Docker build without credentials). Resolved when the task runs.
       root = Rails.root if defined?(Rails) && Rails.respond_to?(:root)
       dir = root&.join('vendor', 'claude')&.to_s
-      version = ENV.fetch('VERSION', '').strip
+      # Not the conventional rake `VERSION`: Rails' own db:migrate uses it and
+      # build environments often export it for the app's version or git SHA.
+      version = ENV.fetch('CLAUDE_CLI_VERSION', '').strip
 
       path = if version.empty?
                ClaudeAgentSDK::CLIInstaller.install_pinned(dir: dir)

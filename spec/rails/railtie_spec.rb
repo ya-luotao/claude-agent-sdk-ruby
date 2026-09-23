@@ -61,20 +61,20 @@ RSpec.describe ClaudeAgentSDK::Railtie do
       expect(ClaudeAgentSDK::CLIInstaller).to have_received(:install_pinned).with(dir: vendor_dir)
     end
 
-    it 'installs VERSION= instead of the pin when given' do
+    it 'installs CLAUDE_CLI_VERSION= instead of the pin when given' do
       allow(ClaudeAgentSDK::CLIInstaller).to receive(:install).and_return('/fake/claude')
       allow(ENV).to receive(:fetch).and_call_original
-      allow(ENV).to receive(:fetch).with('VERSION', '').and_return('2.1.200')
+      allow(ENV).to receive(:fetch).with('CLAUDE_CLI_VERSION', '').and_return('2.1.200')
 
       run_task
 
       expect(ClaudeAgentSDK::CLIInstaller).to have_received(:install).with(version: '2.1.200', dir: vendor_dir)
     end
 
-    it 'treats an empty VERSION= as unset' do
+    it 'treats an empty CLAUDE_CLI_VERSION= as unset' do
       allow(ClaudeAgentSDK::CLIInstaller).to receive(:install_pinned).and_return('/fake/claude')
       allow(ENV).to receive(:fetch).and_call_original
-      allow(ENV).to receive(:fetch).with('VERSION', '').and_return(' ')
+      allow(ENV).to receive(:fetch).with('CLAUDE_CLI_VERSION', '').and_return(' ')
 
       run_task
 

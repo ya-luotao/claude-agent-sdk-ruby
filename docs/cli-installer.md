@@ -63,16 +63,16 @@ require 'claude_agent_sdk/tasks'   # loads only CLIInstaller, not the whole SDK
 ```bash
 bin/rails claude_agent_sdk:install_cli                 # Rails: installs PINNED_CLI_VERSION into Rails.root/vendor/claude
 rake claude_agent_sdk:install_cli                      # elsewhere: into vendor/claude under the working directory
-rake claude_agent_sdk:install_cli VERSION=x.y.z        # a version of your own, or 'stable' / 'latest'
+rake claude_agent_sdk:install_cli CLAUDE_CLI_VERSION=x.y.z   # a version of your own, or 'stable' / 'latest'
 ```
 
-The task calls `install_pinned` (or `install(version:)` when `VERSION` is set), prints the installed path, and doesn't boot the Rails app, so it runs in a Docker build without a database or credentials:
+The task calls `install_pinned` (or `install(version:)` when `CLAUDE_CLI_VERSION` is set — the same variable the `bin/setup` example above reads), prints the installed path, and doesn't boot the Rails app, so it runs in a Docker build without a database or credentials:
 
 ```dockerfile
 RUN bin/rails claude_agent_sdk:install_cli
 ```
 
-`VERSION` is the conventional rake override variable. If your build environment exports `VERSION` for something else (an app version or git SHA), clear it for this step (`VERSION= bin/rails claude_agent_sdk:install_cli`) — an empty value means the gem's pin.
+The variable is deliberately not rake's conventional `VERSION`, which Rails' `db:migrate` uses and build environments often export for an app version or git SHA. An empty `CLAUDE_CLI_VERSION` means the gem's pin.
 
 ## Supported platforms
 
