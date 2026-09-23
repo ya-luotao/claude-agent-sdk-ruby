@@ -315,6 +315,55 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       end
     end
 
+    # Issue #121: residual disk/store disagreements over the same transcript.
+    describe 'disk and store agree on (issue #121)' do
+      let(:sid) { '12345678-1234-1234-1234-123456789abc' }
+
+      def read_both(dir, entries)
+        file_path = File.join(dir, "#{sid}.jsonl")
+        File.write(file_path, "#{entries.map(&:to_json).join("\n")}\n")
+        store = ClaudeAgentSDK::InMemorySessionStore.new
+        store.append({ 'project_key' => described_class.project_key_for_directory(dir), 'session_id' => sid },
+                     JSON.parse(JSON.generate(entries)))
+        [described_class.read_session_lite(file_path, described_class.canonicalize_path(dir)),
+         described_class.get_session_info_from_store(session_store: store, session_id: sid, directory: dir)]
+      end
+
+      # (3) Python: `_extract_first_prompt_from_head(head) or None` (disk) and
+      # the fold's unlocked first_prompt (store) are both None.
+      it 'first_prompt is nil, not "", when the session has no prompt' do
+        Dir.mktmpdir do |dir|
+          infos = read_both(dir, [
+                              { 'type' => 'custom-title', 'customTitle' => 'Titled' },
+                              { 'type' => 'assistant', 'uuid' => 'a1', 'message' => { 'content' => 'hi' } }
+                            ])
+          infos.each do |info|
+            expect(info.summary).to eq('Titled')
+            expect(info.first_prompt).to be_nil
+          end
+        end
+      end
+
+      # (4) The store fold takes the first non-blank cwd; the disk scan took
+      # the first cwd even when blank and then fell back to the project path.
+      # Blank reads as absent (#67), so both keep looking past it.
+      ['', '   '].each do |blank|
+        it "cwd skips a leading #{blank.inspect} cwd for the first non-blank one" do
+          Dir.mktmpdir do |dir|
+            infos = read_both(dir, [
+                                { 'type' => 'user', 'uuid' => 'u1', 'cwd' => blank, 'message' => { 'content' => 'Hi' } },
+                                # A cwd nested in a tool input is not the session's cwd (the fold reads
+                                # top-level keys only).
+                                { 'type' => 'assistant', 'uuid' => 'a1',
+                                  'message' => { 'content' => [{ 'type' => 'tool_use', 'input' => { 'cwd' => '/nested' } }] } },
+                                { 'type' => 'user', 'uuid' => 'u2', 'cwd' => '/real/cwd', 'message' => { 'content' => 'Again' } }
+                              ])
+            expect(infos.map(&:cwd)).to eq(['/real/cwd', '/real/cwd'])
+          end
+        end
+      end
+    end
+
     # Issue #75: sidechain classification must come from the same entry on
     # both paths. The store never holds an unparseable line (import skips
     # them; the fold skips non-object entries), so the disk path now skips
@@ -618,6 +667,69 @@ RSpec.describe ClaudeAgentSDK::Sessions do
     it 'returns empty array when no config dir exists' do
       allow(described_class).to receive(:config_dir).and_return('/nonexistent')
       expect(described_class.list_sessions).to eq([])
+    end
+
+    # Issue #121 (6): the same session in several project dirs is deduped to
+    # the newest copy, but on EQUAL mtimes the first copy seen won — and the
+    # global scan walked Dir.children in filesystem order, so which copy's
+    # metadata surfaced was arbitrary. Rule: newest last_modified, then the
+    # larger file (the more complete copy), then the project dir whose name
+    # sorts first.
+    describe 'duplicate session ids with equal mtimes (issue #121)' do
+      let(:uuid) { '12345678-1234-1234-1234-123456789abc' }
+
+      def write_copy(config_dir, project, prompt, mtime)
+        project_dir = File.join(config_dir, 'projects', project)
+        FileUtils.mkdir_p(project_dir)
+        path = File.join(project_dir, "#{uuid}.jsonl")
+        File.write(path, "#{{ type: 'user', uuid: 'u1', message: { content: prompt } }.to_json}\n")
+        File.utime(mtime, mtime, path)
+      end
+
+      def list_with_children_order(config_dir, order)
+        projects_dir = File.join(config_dir, 'projects')
+        allow(Dir).to receive(:children).and_call_original
+        allow(Dir).to receive(:children).with(projects_dir).and_return(order)
+        described_class.list_sessions
+      end
+
+      it 'keeps the larger copy regardless of scan order' do
+        Dir.mktmpdir do |config_dir|
+          allow(described_class).to receive(:config_dir).and_return(config_dir)
+          mtime = Time.at(1_700_000_000)
+          write_copy(config_dir, '-a', 'short', mtime)
+          write_copy(config_dir, '-b', 'a much longer prompt', mtime)
+
+          [%w[-a -b], %w[-b -a]].each do |order|
+            sessions = list_with_children_order(config_dir, order)
+            expect(sessions.map(&:summary)).to eq(['a much longer prompt'])
+          end
+        end
+      end
+
+      it 'keeps the copy in the project dir that sorts first when sizes tie too' do
+        Dir.mktmpdir do |config_dir|
+          allow(described_class).to receive(:config_dir).and_return(config_dir)
+          mtime = Time.at(1_700_000_000)
+          write_copy(config_dir, '-b', 'prompt B', mtime)
+          write_copy(config_dir, '-a', 'prompt A', mtime)
+
+          [%w[-a -b], %w[-b -a]].each do |order|
+            sessions = list_with_children_order(config_dir, order)
+            expect(sessions.map(&:summary)).to eq(['prompt A'])
+          end
+        end
+      end
+
+      it 'still keeps the newest copy first of all' do
+        Dir.mktmpdir do |config_dir|
+          allow(described_class).to receive(:config_dir).and_return(config_dir)
+          write_copy(config_dir, '-a', 'a much longer prompt', Time.at(1_700_000_000))
+          write_copy(config_dir, '-b', 'newer', Time.at(1_700_000_100))
+
+          expect(described_class.list_sessions.map(&:summary)).to eq(['newer'])
+        end
+      end
     end
 
     it 'respects limit parameter' do

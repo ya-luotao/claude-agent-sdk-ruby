@@ -193,7 +193,10 @@ module ClaudeAgentSDK
 
       sidechain_flags = sidechain_flags_from_summaries(store, project_key, timeout_s, scheduling, wrapper)
 
-      sessions.sort_by { |s| -Sessions.sortable_mtime(s['mtime']) }.each do |cand|
+      # Same order as the listings (#78): newest first, equal mtimes by
+      # session_id — sort_by is unstable, so an mtime-only key let equal
+      # mtimes resume whichever session the adapter happened to list first.
+      sessions.sort_by { |s| Sessions.listing_sort_key(s['mtime'], s['session_id']) }.each do |cand|
         sid = cand['session_id']
         next unless sid.is_a?(String) && sid.match?(Sessions::UUID_RE)
         # Skip known sidechains without downloading their transcript: the

@@ -483,6 +483,44 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       end
     end
 
+    # Issue #121 (2): --continue sorted by coerced mtime only, so equal mtimes
+    # (coarse adapter clocks, bulk imports) resumed whichever session the
+    # adapter happened to list first. Same key as the listings after #78:
+    # newest first, then session_id ascending.
+    it 'for continue_conversation breaks equal-mtime ties by session_id, like the listings' do
+      sids = Array.new(4) { SecureRandom.uuid }
+      sids.each { |s| store.append({ 'project_key' => project_key, 'session_id' => s }, [entry("p #{s}")]) }
+      tied_store = Class.new(ClaudeAgentSDK::SessionStore) do
+        attr_accessor :order
+
+        def initialize(inner)
+          super()
+          @inner = inner
+        end
+
+        def append(key, entries) = @inner.append(key, entries)
+        def load(key) = @inner.load(key)
+
+        def list_sessions(_project_key)
+          order.map { |sid| { 'session_id' => sid, 'mtime' => 1_700_000_000_000 } }
+        end
+      end.new(store)
+
+      [sids.sort.reverse, sids.sort.rotate(1), sids.sort.rotate(2), sids.sort].each do |order|
+        tied_store.order = order
+        mat = described_class.materialize_resume_session(
+          ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: tied_store, continue_conversation: true, cwd: cwd)
+        )
+        begin
+          expect(mat.resume_session_id).to eq(sids.min)
+          expect(ClaudeAgentSDK.list_sessions_from_store(session_store: tied_store, directory: cwd).first.session_id)
+            .to eq(mat.resume_session_id)
+        ensure
+          mat&.cleanup
+        end
+      end
+    end
+
     it 'enforces load_timeout_ms even without an Async reactor (hung adapter raises)' do
       slow = Class.new(ClaudeAgentSDK::SessionStore) do
         def append(_key, _entries); end
