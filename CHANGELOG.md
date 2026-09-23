@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Development only, nothing ships in the gem: TLA+ models in `formal/tla/` of the two most concurrency-sensitive designs. `CLIInstaller.tla` covers `CLIInstaller.install`'s publish order, the in-lock dist-tag resolve and the stale-temp sweep. `ControlProtocol.tla` covers the outbound control-request waiter protocol in `Query`. `formal/tla/run.sh` model-checks both with TLC. It confirms that the shipped design passes and that each alternative the source comments reject, including the historical rename-then-record order, produces a counterexample.
+
 ## [1.0.0] - 2026-09-23
 
 **1.0 is a stability commitment.** From here on the public API — everything documented in `docs/` plus the YARD docs without `@api private`, now also described by the RBS signatures in `sig/` — follows Semantic Versioning: no breaking changes within 1.x. Upgrading from 0.x? Read [UPGRADING-1.0.md](UPGRADING-1.0.md) and run your suite on 0.37 first.

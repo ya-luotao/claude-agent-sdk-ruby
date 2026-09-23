@@ -52,6 +52,8 @@ User code
 
 **Publication order is load-bearing**: the rename is last precisely because nothing can fail after it. A failed upgrade (download, checksum, metadata, or the rename itself) leaves the previously installed binary intact and runnable, and the next `install` redoes it cleanly — the earlier rename-then-record order let a metadata failure delete the freshly renamed binary and take the working install with it. That same invariant is why discovery (`installed_path` / `find_cli`) is deliberately lock-free: a reader only ever sees a complete binary.
 
+`formal/tla/CLIInstaller.tla` model-checks this ordering, the in-lock dist-tag resolve and the in-lock sweep (`formal/tla/run.sh`; see its README). Changing any of them means changing the model and `run.sh`'s expectations in the same change.
+
 The whole sequence runs under an exclusive `flock` on `<dir>/.install.lock`: sweep stale temp files (abandoned by an install killed before its `ensure`) → resolve the dist-tag → idempotency check → download → record → publish. Dist-tag resolution is deliberately *inside* the lock — resolving it outside let a slow installer read an old version, wait for a faster one to publish a newer one, and then downgrade it; the semantics are now "last resolver wins". Only the local version-format check runs before the lock, so malformed input never creates a directory. The idempotency shortcut re-hashes the binary against the recorded checksum and makes **no** network call (offline re-boot must work, given a pinned version); a mismatch or a legacy single-line `VERSION` triggers a clean reinstall.
 
 Four nested modules keep it testable without an HTTP stubbing library: `Http` (all network IO, redirect/timeout/size caps), `Platform` (host probing: `RUBY_PLATFORM` mapping, musl, Rosetta 2), `Release` (dist-tag + manifest reads), `Metadata` (the `VERSION` file). Specs stub those modules directly.
@@ -74,6 +76,8 @@ CLI outputs newline-delimited JSON. `SubprocessCLITransport.read_messages` parse
 Only active in streaming/Client mode. Uses `Async::Condition` for request-response coordination:
 - **Outbound requests** (SDK → CLI): `send_control_request` writes JSON, waits on condition, returns response
 - **Inbound requests** (CLI → SDK): `handle_control_request` dispatches to `can_use_tool`, `hook_callback`, or `mcp_message` handlers, writes response back
+
+The outbound waiter protocol (execution mode detected before the write, registration atomic with the stream-error check, slot checked before every wait, level-triggered `ThreadWaiter`) is model-checked by `formal/tla/ControlProtocol.tla`; keep it in step with `send_control_request` / `await_control_response`.
 
 ### Observer / Instrumentation
 
