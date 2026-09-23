@@ -156,14 +156,18 @@ result = ClaudeAgentSDK.fork_session(session_id: "uuid-here", up_to_message_id: 
 # List subagent transcripts for a session, then read one
 ids = ClaudeAgentSDK.list_subagents(session_id: "uuid-here", directory: "/path/to/project")
 msgs = ClaudeAgentSDK.get_subagent_messages(session_id: "uuid-here", agent_id: ids.first, limit: 50)
+
+# Any of the above against a SessionStore instead of local disk
+sessions = ClaudeAgentSDK.list_sessions(session_store: store, limit: 10)
+ClaudeAgentSDK.rename_session(session_id: "uuid-here", title: "My session", session_store: store)
 ```
 
 Return types:
 - `list_sessions` → `Array<SDKSessionInfo>` (fields: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`, `tag`, `created_at`)
 - `get_session_messages` → `Array<SessionMessage>` (fields: `type`, `uuid`, `session_id`, `message`, `parent_tool_use_id`)
 - `fork_session` → `ForkSessionResult` (field: `session_id`)
-- `list_subagents` → `Array<String>`; `get_subagent_messages` → `Array<SessionMessage>` (disk counterparts of the `*_from_store` pair)
-- `get_subagent_metadata` / `get_subagent_metadata_from_store` → string-keyed `Hash` with original CLI field names (`'toolUseId'`, `'parentAgentId'`, `'agentType'`, `'spawnDepth'`, …) or `nil`; `{}` is a valid empty sidecar. The disk reader needs the agent's transcript file to exist; the store reader returns the last `agent_metadata` entry without its `type` marker
+- `list_subagents` → `Array<String>`; `get_subagent_messages` → `Array<SessionMessage>`
+- `get_subagent_metadata` → string-keyed `Hash` with original CLI field names (`'toolUseId'`, `'parentAgentId'`, `'agentType'`, `'spawnDepth'`, …) or `nil`; `{}` is a valid empty sidecar. The disk reader needs the agent's transcript file to exist; the store reader returns the last `agent_metadata` entry without its `type` marker
 
 ## SessionStore: mirror transcripts to external storage
 
@@ -212,14 +216,17 @@ ClaudeAgentSDK.query(
   unchanged; invalid values raise `ArgumentError` at setup; conformance
   contract 17 validates the declaration. See docs/sessions.md "Fiber-native
   adapters".
-- Store-backed helpers mirror the disk family: `list_sessions_from_store`,
-  `get_session_info_from_store`, `get_session_messages_from_store`,
-  `list_subagents_from_store`, `get_subagent_messages_from_store`,
-  `rename_session_via_store`, `tag_session_via_store`,
-  `delete_session_via_store`, `fork_session_via_store`, and
-  `import_session_to_store` (migrate a local session into a store). Store
-  reads default `directory:` to the current working directory. Rename/tag/fork
-  via store raise `Errno::ENOENT` for a session the store has never seen
-  (no phantom sessions).
+- Every session function (`list_sessions`, `get_session_info`,
+  `get_session_messages`, `list_subagents`, `get_subagent_metadata`,
+  `get_subagent_messages`, `rename_session`, `tag_session`,
+  `delete_session`, `fork_session`) takes `session_store: store` to operate
+  on the store instead of local disk, e.g.
+  `ClaudeAgentSDK.list_sessions(session_store: store)`. With a store,
+  `directory: nil` means the current working directory (not every project),
+  and `include_worktrees:` raises `ArgumentError`. Rename/tag/fork raise
+  `Errno::ENOENT` for a session the store has never seen (no phantom
+  sessions). `import_session_to_store` migrates a local session into a
+  store. The old `*_from_store` / `*_via_store` functions are deprecated
+  (one-time warning, removed in 1.0).
 - Cannot combine `session_store` with `enable_file_checkpointing`;
   `continue_conversation` requires the store to implement `#list_sessions`.

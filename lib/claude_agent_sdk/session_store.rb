@@ -94,13 +94,13 @@ module ClaudeAgentSDK
     end
 
     # List sessions for a project_key as [{ 'session_id', 'mtime' }]. Optional —
-    # if unimplemented, list_sessions_from_store raises.
+    # if unimplemented, list_sessions(session_store:) raises.
     def list_sessions(_project_key)
       raise NotImplementedError
     end
 
     # Return incrementally-maintained summaries for all sessions in one call.
-    # Optional — if unimplemented, list_sessions_from_store falls back to
+    # Optional — if unimplemented, list_sessions(session_store:) falls back to
     # list_sessions + per-session load.
     def list_session_summaries(_project_key)
       raise NotImplementedError

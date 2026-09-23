@@ -7,7 +7,7 @@ module ClaudeAgentSDK
   # Incremental session-summary derivation for SessionStore adapters.
   #
   # fold_session_summary lets a store maintain a per-session summary sidecar
-  # incrementally inside #append so list_sessions_from_store can fetch all
+  # incrementally inside #append so list_sessions(session_store:) can fetch all
   # metadata in a single #list_session_summaries call instead of N per-session
   # #load calls. Every derived field is append-incremental (set-once or
   # last-wins) so adapters never need to re-read previously appended entries.

@@ -39,8 +39,8 @@
 #
 # Retention: this adapter never deletes objects on its own. Configure an S3
 # lifecycle policy on the bucket/prefix to expire transcripts. #delete is
-# implemented but only invoked when you call delete_session_via_store from the
-# SDK.
+# implemented but only invoked when you call
+# ClaudeAgentSDK.delete_session(session_id:, session_store: store).
 require 'json'
 require 'digest'
 require 'securerandom'
