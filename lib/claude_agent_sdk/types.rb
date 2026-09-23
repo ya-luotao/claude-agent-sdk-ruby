@@ -2438,13 +2438,17 @@ module ClaudeAgentSDK
     # A callable receiving a zero-arg invocation; it MUST call it and
     # return its value:
     #
-    #   callback_wrapper: ->(invocation) { Rails.application.executor.wrap { invocation.call } }
+    #   callback_wrapper: ->(invocation) { MyApm.trace('agent.callback') { invocation.call } }
     #
     # The wrapper runs on the same execution context as the callback —
-    # inside the worker thread in :thread mode (so executor.wrap checks AR
-    # connections back in when the callback ends), in place on the reactor
+    # inside the worker thread in :thread mode, in place on the reactor
     # fiber in :inline mode. Exceptions propagate through it unchanged; it
     # must not swallow them. Default nil (no wrapping).
+    #
+    # Rails apps: use ClaudeAgentSDK::Railtie.callback_wrapper, which runs
+    # callbacks in the Rails executor (AR connections check back in when the
+    # callback ends). A bare `Rails.application.executor.wrap` deadlocks
+    # under development code reloading in :thread mode.
     def callback_wrapper=(value)
       raise ArgumentError, "callback_wrapper must be a callable or nil (got #{value.inspect})" unless value.nil? || value.respond_to?(:call)
 

@@ -1,0 +1,20 @@
+# frozen_string_literal: true
+
+# CI Rails leg, newest supported Rails (see the `rails` job in
+# .github/workflows/ci.yml; rails_7_1.gemfile is the floor). Runs only the
+# Rails integration specs (spec/rails) in their own process — railties and
+# ActiveSupport patch core classes, so they never load into the main suite:
+#
+#   BUNDLE_GEMFILE=gemfiles/rails_8.gemfile bundle exec rspec --options spec/rails/.rspec
+#
+# Loaded through `path:` (runtime dependencies only, no dev/RuboCop deps).
+# railties alone is enough: the Railtie, rake tasks and generator need no
+# other Rails framework.
+
+source 'https://rubygems.org'
+
+gem 'claude-agent-sdk', path: '..'
+
+gem 'railties', '~> 8.0'
+
+gem 'rspec', '~> 3.0'

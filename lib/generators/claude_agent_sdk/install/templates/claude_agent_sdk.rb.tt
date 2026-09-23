@@ -1,0 +1,35 @@
+# frozen_string_literal: true
+
+# Claude Agent SDK defaults, merged into every ClaudeAgentSDK.query and
+# ClaudeAgentSDK::Client session; per-call ClaudeAgentOptions override them.
+# Guide: https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/rails.md
+
+# Uncomment together with `observers:` below (needs the opentelemetry-sdk gem).
+# require 'claude_agent_sdk/instrumentation'
+
+ClaudeAgentSDK.configure do |config|
+  config.default_options = {
+    # Model: full ID or alias ('opus', 'sonnet', 'haiku'). Unset, the CLI picks.
+    # model: 'claude-sonnet-5',
+    # model: 'claude-opus-5',
+    # model: 'claude-haiku-4-5',
+
+    # Tool permissions: 'default', 'acceptEdits', 'plan', 'dontAsk',
+    # 'bypassPermissions' (unattended jobs in a sandbox only), or 'auto'.
+    # permission_mode: 'default',
+
+    # The CLI is found in vendor/claude relative to the process cwd (Rails.root
+    # under bin/rails, Puma and most job runners). Pin it for other launchers:
+    # cli_path: Rails.root.join('vendor', 'claude', 'claude').to_s,
+
+    # OpenTelemetry tracing (Langfuse, Honeycomb, ...). A factory lambda gives
+    # every query/session its own observer — safe under Puma and job threads.
+    # observers: [-> { ClaudeAgentSDK::Instrumentation::OTelObserver.new }],
+
+    # Wraps every SDK callback (tool handlers, hooks, permission callbacks,
+    # message blocks, observers) so ActiveRecord connections go back to the
+    # pool. Not a bare `Rails.application.executor.wrap`: that deadlocks with
+    # development code reloading. See docs/rails.md ("callback_wrapper").
+    callback_wrapper: ClaudeAgentSDK::Railtie.callback_wrapper
+  }
+end

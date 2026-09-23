@@ -8,20 +8,22 @@
 [![Docs](https://img.shields.io/badge/docs-rubydoc.info-blue)](https://rubydoc.info/gems/claude-agent-sdk)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A Ruby SDK for the [Claude Code](https://docs.claude.com/en/docs/claude-code-overview) agent runtime. Build AI agents, automate coding workflows, and integrate Claude into Rails and other Ruby applications with the same capabilities as the official [TypeScript](https://github.com/anthropics/claude-agent-sdk-typescript) and [Python](https://github.com/anthropics/claude-agent-sdk-python) SDKs.
+A Ruby SDK for the [Claude Code](https://docs.claude.com/en/docs/claude-code-overview) agent runtime, built for running agents in production Ruby and Rails apps. It has the same capabilities as the official [TypeScript](https://github.com/anthropics/claude-agent-sdk-typescript) and [Python](https://github.com/anthropics/claude-agent-sdk-python) SDKs, plus what a Rails deploy needs around them: a generator and CLI-vendoring rake task, callbacks that are safe to touch ActiveRecord from, a pinned CLI binary, built-in OpenTelemetry tracing, and transcript mirroring to your own storage.
 
 > **Unofficial and community-maintained.** This project is not affiliated with or supported by Anthropic. It tracks the official SDKs release by release; see the [CHANGELOG](CHANGELOG.md) for the currently synced version.
 
 ## Highlights
 
+- **Rails integration.** `bin/rails generate claude_agent_sdk:install` writes the initializer and `bin/rails claude_agent_sdk:install_cli` vendors the CLI; [docs/rails.md](docs/rails.md) covers jobs, ActionCable streaming, session resumption, and solid_queue fiber workers (`callback_scheduling: :inline`).
+- **Callbacks that are safe around ActiveRecord.** Tool handlers, hooks, permission callbacks, and message blocks run on a plain thread by default, outside the SDK's fiber scheduler, so thread-keyed libraries (ActiveRecord, `pg`, per-thread caches) behave as they do everywhere else in your app. `ClaudeAgentSDK::Railtie.callback_wrapper` runs them in the Rails executor so connections go back to the pool, without deadlocking development code reloading.
+- **Hermetic deploys.** `CLIInstaller` vendors a checksum-verified CLI binary, pinned to the version each gem release is tested with, so production never depends on a global `npm install`.
+- **Built-in OpenTelemetry observer** with Langfuse support; no third-party instrumentation library required.
+- **Transcript mirroring.** A `SessionStore` adapter mirrors session transcripts to your own storage (reference adapters for Postgres, Redis, and S3, plus a conformance suite), and sessions can be resumed from it on another host.
 - **Same wire protocol as the official SDKs.** Spawns the `claude` CLI as a subprocess and speaks stream-JSON over stdin/stdout, so every feature of the runtime is available: sessions, subagents, sandboxing, structured output, file checkpointing and rewind.
 - **`query()` for one-shot calls, `Client` for bidirectional sessions** with interrupts, mid-session model switching, and streaming input from any `Enumerator`.
 - **In-process custom tools.** Define tools as Ruby blocks; they run inside your process with direct access to your app state (SDK MCP servers), with JSON-Schema-validated arguments.
 - **All 27 hook events and permission callbacks** with typed inputs, so you can gate, audit, or rewrite every tool call.
-- **Rails-ready.** Fiber-safe callback dispatch, an initializer-style `configure` block, ActionCable streaming, background-job session resumption, and a `callback_scheduling: :inline` mode for fiber workers.
-- **Built-in OpenTelemetry observer** with Langfuse support; no third-party instrumentation library required.
 - **Pluggable transport** to run the CLI somewhere else (an E2B microVM, a container, over SSH).
-- **Hermetic deploys.** `CLIInstaller` vendors a checksum-verified, pinned CLI binary into your project so production never depends on a global `npm install`.
 
 ## Installation
 
@@ -43,6 +45,30 @@ ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')  # => "/app/vendor/clau
 ```
 
 The vendored binary is found ahead of `PATH`, installs are idempotent and concurrency-safe, and a failed upgrade never breaks a working install. See [docs/cli-installer.md](docs/cli-installer.md) for the full behaviour, supported platforms, and the CLI discovery order.
+
+### Rails in a minute
+
+```bash
+bundle add claude-agent-sdk
+bin/rails generate claude_agent_sdk:install   # config/initializers/claude_agent_sdk.rb + .gitignore entry
+bin/rails claude_agent_sdk:install_cli        # the tested CLI into vendor/claude (also a Docker build step)
+```
+
+```ruby
+# app/jobs/summarize_ticket_job.rb
+class SummarizeTicketJob < ApplicationJob
+  def perform(ticket)
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: [], max_turns: 1)
+    prompt = "Summarize this support ticket in two sentences:\n\n#{ticket.body}"
+
+    ClaudeAgentSDK.query(prompt: prompt, options: options) do |message|
+      ticket.update!(summary: message.result) if message.is_a?(ClaudeAgentSDK::ResultMessage)
+    end
+  end
+end
+```
+
+The block runs on a plain thread, so ActiveRecord calls inside it just work. [docs/rails.md](docs/rails.md) continues with multi-turn sessions, ActionCable streaming, and fiber workers.
 
 ## Quick Start
 
@@ -156,7 +182,7 @@ See [docs/hooks-and-permissions.md](docs/hooks-and-permissions.md) for the full 
 | Session listing, reading, renaming, tagging, forking, resume-at-message | [docs/sessions.md](docs/sessions.md) |
 | Subagent capabilities, event contracts, and minimal example | [docs/subagents.md](docs/subagents.md) |
 | OpenTelemetry tracing, Langfuse, custom observers | [docs/observability.md](docs/observability.md) |
-| Rails: fiber safety, solid_queue fiber workers, ActionCable, jobs, initializer | [docs/rails.md](docs/rails.md) |
+| Rails: generator, `install_cli` task, callback wrapper, fiber safety, solid_queue fiber workers, ActionCable, jobs | [docs/rails.md](docs/rails.md) |
 | Vendoring a pinned CLI binary and CLI discovery order | [docs/cli-installer.md](docs/cli-installer.md) |
 | Message, content block, and configuration type reference | [docs/types.md](docs/types.md) |
 | Error handling, exception hierarchy, timeouts | [docs/errors.md](docs/errors.md) |
@@ -218,9 +244,10 @@ bundle install
 bundle exec rspec                    # unit suite
 bundle exec rubocop                  # lint
 RUN_INTEGRATION=1 bundle exec rspec  # also run the real-CLI integration suite (needs `claude` and ANTHROPIC_API_KEY)
+BUNDLE_GEMFILE=gemfiles/rails_8.gemfile bundle exec rspec --options spec/rails/.rspec  # Rails integration specs
 ```
 
-CI runs the suite and RuboCop on Ruby 3.2, 3.3, and 3.4. See [spec/README.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/spec/README.md) for the test layout.
+CI runs the suite and RuboCop on Ruby 3.2, 3.3, and 3.4, and the Rails specs against Rails 7.1 and 8. See [spec/README.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/spec/README.md) for the test layout.
 
 ## Contributing
 

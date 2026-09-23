@@ -8,8 +8,12 @@ Gem::Specification.new do |spec|
   spec.authors = ['ya-luotao']
   spec.email = ['luotao@hey.com']
 
-  spec.summary = 'Unofficial Ruby SDK for Claude Agent'
-  spec.description = 'Unofficial Ruby SDK for interacting with Claude Code, supporting bidirectional conversations, custom tools, and hooks. Not officially maintained by Anthropic.'
+  spec.summary = 'Unofficial Ruby SDK for Claude Agent, with Rails integration'
+  spec.description = 'Unofficial Ruby SDK for the Claude Code agent runtime: one-shot queries and bidirectional ' \
+                     'sessions, in-process custom tools, hooks and permission callbacks. Includes Rails ' \
+                     'integration (Railtie, install generator, CLI-vendoring rake task, executor-aware callback ' \
+                     'wrapper), a pinned CLI installer, OpenTelemetry tracing, and session transcript mirroring. ' \
+                     'Not affiliated with or officially maintained by Anthropic.'
   spec.homepage = 'https://github.com/ya-luotao/claude-agent-sdk-ruby'
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 3.2.0'
@@ -38,7 +42,9 @@ Gem::Specification.new do |spec|
   end
   # docs/history/ (past audit reports) is repository archive, not user docs.
   spec.files = (if tracked.empty?
-                  Dir.glob(['lib/**/*.rb', 'docs/**/*.md', 'README.md', 'LICENSE', 'CHANGELOG.md'], base: __dir__)
+                  # .rake: the Railtie's tasks; .tt: the Rails generator's templates.
+                  Dir.glob(['lib/**/*.{rb,rake,tt}', 'docs/**/*.md', 'README.md', 'LICENSE', 'CHANGELOG.md'],
+                           base: __dir__)
                 else
                   tracked
                 end).reject { |path| path.start_with?('docs/history/') }

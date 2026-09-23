@@ -51,6 +51,29 @@ version = ENV.fetch('CLAUDE_CLI_VERSION', ClaudeAgentSDK::CLIInstaller::PINNED_C
 puts ClaudeAgentSDK::CLIInstaller.install(version: version)
 ```
 
+## Rake task
+
+Rails apps get `claude_agent_sdk:install_cli` from the gem's Railtie; any other project can load it from its `Rakefile`:
+
+```ruby
+# Rakefile (non-Rails)
+require 'claude_agent_sdk/tasks'   # loads only CLIInstaller, not the whole SDK
+```
+
+```bash
+bin/rails claude_agent_sdk:install_cli                 # Rails: installs PINNED_CLI_VERSION into Rails.root/vendor/claude
+rake claude_agent_sdk:install_cli                      # elsewhere: into vendor/claude under the working directory
+rake claude_agent_sdk:install_cli CLAUDE_CLI_VERSION=x.y.z   # a version of your own, or 'stable' / 'latest'
+```
+
+The task calls `install_pinned` (or `install(version:)` when `CLAUDE_CLI_VERSION` is set — the same variable the `bin/setup` example above reads), prints the installed path, and doesn't boot the Rails app, so it runs in a Docker build without a database or credentials:
+
+```dockerfile
+RUN bin/rails claude_agent_sdk:install_cli
+```
+
+The variable is deliberately not rake's conventional `VERSION`, which Rails' `db:migrate` uses and build environments often export for an app version or git SHA. An empty `CLAUDE_CLI_VERSION` means the gem's pin.
+
 ## Supported platforms
 
 `darwin-arm64`, `darwin-x64` (Rosetta 2 gets the arm64 build), `linux-x64`, `linux-arm64`, and the `-musl` variants. Windows is not supported.
