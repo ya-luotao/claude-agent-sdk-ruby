@@ -1461,6 +1461,103 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'control request send lifecycle' do
+    let(:transport) { mock_transport }
+    let(:query) { described_class.new(transport: transport, is_streaming_mode: true) }
+
+    def expect_no_control_waiters
+      expect(query.instance_variable_get(:@pending_control_responses)).to be_empty
+      expect(query.instance_variable_get(:@pending_control_results)).to be_empty
+    end
+
+    it 'cleans registration when serialization fails' do
+      expect(transport).not_to receive(:write)
+      request = { subtype: 'test', input: "\xff" }
+      expect { query.send(:send_control_request, request) }.to raise_error(JSON::GeneratorError)
+      expect_no_control_waiters
+    end
+
+    it 'cleans registration when write fails' do
+      allow(transport).to receive(:write).and_raise(ClaudeAgentSDK::CLIConnectionError, 'broken pipe')
+      expect { query.interrupt }.to raise_error(ClaudeAgentSDK::CLIConnectionError, 'broken pipe')
+      expect_no_control_waiters
+    end
+
+    it 'preserves a schedulerless transport timeout rather than relabeling it' do
+      error = Timeout::Error.new('remote transport read deadline')
+      allow(transport).to receive(:write).and_raise(error)
+      expect { query.interrupt }.to(raise_error { |raised| expect(raised).to equal(error) })
+      expect_no_control_waiters
+    end
+
+    it 'preserves an outer schedulerless deadline rather than relabeling it' do
+      allow(query).to receive(:control_request_timeout_seconds).and_return(10)
+      allow(transport).to receive(:write) { sleep 10 }
+      expect { Timeout.timeout(0.01) { query.interrupt } }.to raise_error(Timeout::Error)
+      expect_no_control_waiters
+    end
+
+    it 'cleans registration when the sender is stopped inside write' do
+      entered = Thread::Queue.new
+      release = Thread::Queue.new
+      allow(transport).to receive(:write) {
+        entered << true
+        release.pop
+      }
+      Async do |task|
+        sender = task.async { query.interrupt }
+        entered.pop
+        sender.stop
+        expect_no_control_waiters
+      ensure
+        release.close
+        sender&.stop
+      end.wait
+    end
+
+    %i[thread reactor].each do |mode|
+      it "bounds a blocked #{mode} write without leaving a late sender" do
+        release = Thread::Queue.new
+        allow(query).to receive(:control_request_timeout_seconds).and_return(0.02)
+        # Match the real transport's StandardError wrapping. The deadline
+        # must escape that rescue and be translated at the request boundary.
+        allow(transport).to receive(:write) do
+          release.pop
+        rescue StandardError => e
+          raise ClaudeAgentSDK::CLIConnectionError, "write wrapped: #{e.message}"
+        end
+
+        if mode == :thread
+          worker = Thread.new do
+            query.interrupt
+          rescue StandardError => e
+            e
+          end
+          expect(worker.join(1)).not_to be_nil
+          expect(worker.value).to be_a(ClaudeAgentSDK::ControlRequestTimeoutError)
+        else
+          Async do |task|
+            expect { task.with_timeout(1) { query.interrupt } }
+              .to raise_error(ClaudeAgentSDK::ControlRequestTimeoutError, /interrupt/)
+          end.wait
+        end
+        expect_no_control_waiters
+      ensure
+        release.close
+        worker&.join
+      end
+    end
+
+    it 'does not relabel an outer reactor deadline as the control-request timeout' do
+      allow(query).to receive(:control_request_timeout_seconds).and_return(10)
+      allow(transport).to receive(:write) { sleep 10 }
+      Async do |task|
+        expect { task.with_timeout(0.01) { query.interrupt } }.to raise_error(Async::TimeoutError)
+        expect_no_control_waiters
+      end.wait
+    end
+  end
+
   describe 'control request waiting (reentrancy + level-trigger)' do
     def queue_driven_transport(thread_queue)
       transport = mock_transport
