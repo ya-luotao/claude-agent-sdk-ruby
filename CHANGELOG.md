@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **SDK internals are now tagged `@api private` and hidden from the YARD docs** ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)). The tagged namespaces are `Query`, `MessageParser`, `TranscriptMirrorBatcher`, `Sessions`, `SessionMutations`, `SessionResume`, `MaterializedResume`, `SessionSummary`, `SessionStores`, `OptionWarnings` and `FiberBoundary`, including everything nested in them. Some public classes also have internal members, and those are tagged individually: `SubprocessCLITransport`'s methods outside the `Transport` interface and its constants; `CommandBuilder`'s constants (`.new` and `#build` stay public); `CLIInstaller::Http`, `Platform`, `Release` and `Metadata` and the installer's constants other than `PINNED_CLI_VERSION`; `SdkMcpServer#handle_json`, `#handle_message` and `SdkMcpServer::ToolInputSchema`; `Client#query_handler`; and `ClaudeAgentSDK::OBSERVER_INTERFACE`. Their public faces are unchanged: `ClaudeAgentSDK.offload`, `fold_session_summary`, the session functions and `SDKSessionInfo` / `SessionMessage` remain public. Nothing changes at runtime. No method or constant was renamed, removed or made private, so every existing call keeps working. From 1.0, SemVer covers `docs/` and the YARD API without `@api private`; objects tagged `@api private` are not covered and may change in any release. `CONTRIBUTING.md` has a new "What is public API" section.
+
 ## [0.36.0] - 2026-09-23
 
 The first step on the [road to 1.0](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126): one `session_store:` argument for every session function (the store-specific twins are deprecated), `ClaudeAgentSDK.ask`, String tool results, and the last audit follow-ups (#119–#121). **Read before upgrading:**

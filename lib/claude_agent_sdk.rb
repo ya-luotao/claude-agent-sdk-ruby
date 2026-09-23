@@ -32,6 +32,8 @@ require 'securerandom'
 module ClaudeAgentSDK
   # The duck-typed observer surface probed by resolve_observers — implementing
   # any one of these counts as an observer (see Observer's no-op defaults).
+  #
+  # @api private
   OBSERVER_INTERFACE = %i[on_user_prompt on_message on_error on_close].freeze
 
   # Resolve observers array: callables (Proc/lambda) are invoked to produce
@@ -621,6 +623,7 @@ module ClaudeAgentSDK
   # Replay a local on-disk session transcript into a SessionStore (migration /
   # gap-backfill). Keys under the on-disk project dir so the imported session is
   # resumable via session_store + resume from the original cwd.
+  # @param batch_size [Integer] entries per SessionStore#append call (default 500)
   # @raise [ArgumentError] if session_id is not a valid UUID
   # @raise [Errno::ENOENT] if the session JSONL cannot be found
   def self.import_session_to_store(session_id:, session_store:, directory: nil, include_subagents: true,
@@ -917,6 +920,9 @@ module ClaudeAgentSDK
   #   )
   #   client = ClaudeAgentSDK::Client.new(options: options)
   class Client
+    # The session's control-protocol handler (nil until #connect).
+    #
+    # @api private
     attr_reader :query_handler
 
     # @param options [ClaudeAgentOptions, nil] Configuration options
@@ -1226,7 +1232,7 @@ module ClaudeAgentSDK
     # Get server initialization info
     # @return [Hash, nil] Server info or nil
     def server_info
-      @query_handler&.instance_variable_get(:@initialization_result)
+      @query_handler&.initialization_result
     end
 
     # Get a breakdown of current context window usage by category.

@@ -16,6 +16,8 @@ module ClaudeAgentSDK
   # (string keys from JSON), and the summary's opaque +data+ dict is persisted
   # verbatim by adapters — string keys survive a JSON round-trip (Postgres
   # JSONB, Redis) losslessly, whereas symbol keys would not.
+  #
+  # @api private
   module SessionSummary
     # JSONL entry keys -> summary data keys for last-wins string fields. Each
     # appended entry overwrites the previous value when present.

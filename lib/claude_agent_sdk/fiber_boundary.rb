@@ -71,6 +71,8 @@ module ClaudeAgentSDK
   # scheduler-aware and park only the stream task; CPU-bound or
   # scheduler-opaque work must be moved by the user (a producer Thread
   # feeding a Thread::Queue, or FiberBoundary.invoke inside the enumerator).
+  #
+  # @api private
   module FiberBoundary
     # Raised by .invoke when a timeout-bounded call exceeds its allotted time.
     # The worker thread is abandoned (cancellation is best-effort; the

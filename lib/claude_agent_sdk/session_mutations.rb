@@ -13,6 +13,8 @@ module ClaudeAgentSDK
   # Ported from Python SDK's _internal/session_mutations.py.
   # Appends typed metadata entries to the session's JSONL file,
   # matching the CLI pattern. Safe to call from any SDK host process.
+  #
+  # @api private
   module SessionMutations # rubocop:disable Metrics/ModuleLength
     module_function
 

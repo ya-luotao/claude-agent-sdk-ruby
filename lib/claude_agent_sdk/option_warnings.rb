@@ -2,6 +2,8 @@
 
 module ClaudeAgentSDK
   # Advisory warnings for option combinations that silently change behavior.
+  #
+  # @api private
   module OptionWarnings
     @emitted = Set.new
     @mutex = Mutex.new

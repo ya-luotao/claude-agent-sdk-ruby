@@ -17,6 +17,8 @@ module ClaudeAgentSDK
   # +config_dir+ is a temp directory laid out like ~/.claude/ — point the
   # subprocess at it via CLAUDE_CONFIG_DIR. +resume_session_id+ is passed as
   # --resume. Call #cleanup after the subprocess exits to remove the temp dir.
+  #
+  # @api private
   class MaterializedResume
     attr_reader :config_dir, :resume_session_id
 
@@ -55,6 +57,8 @@ module ClaudeAgentSDK
   # store. The CLI only resumes from a local file. This module loads the session
   # from the store, writes it to a temp dir laid out like ~/.claude/, and returns
   # the path so the caller can point the subprocess at it via CLAUDE_CONFIG_DIR.
+  #
+  # @api private
   module SessionResume # rubocop:disable Metrics/ModuleLength
     # User settings files seeded into the temp config dir. cowork_settings.json
     # is the alternate filename the CLI reads in cowork-plugins mode.

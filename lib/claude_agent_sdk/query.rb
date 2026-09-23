@@ -19,8 +19,16 @@ module ClaudeAgentSDK
   # - Tool permission callbacks
   # - Message streaming
   # - Initialization handshake
+  #
+  # @api private
   class Query
     attr_reader :transport, :is_streaming_mode, :sdk_mcp_servers
+
+    # The CLI's response to the initialize control request (nil before
+    # #initialize_protocol completes). Read by Client#server_info.
+    #
+    # @api private
+    attr_reader :initialization_result
 
     CONTROL_REQUEST_TIMEOUT_ENV_VAR = 'CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS'
     DEFAULT_CONTROL_REQUEST_TIMEOUT_SECONDS = 1200.0
