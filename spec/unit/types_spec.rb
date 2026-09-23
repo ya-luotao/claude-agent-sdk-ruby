@@ -2879,6 +2879,18 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.inspect).to include("can_use_tool=#{callback.inspect}")
       end
 
+      it 'never raises on values it cannot inspect' do
+        raising = Class.new { def inspect = raise('no inspect for you') }
+        stub_const('RaisingInspect', raising)
+        block = ClaudeAgentSDK::ToolUseBlock.new(
+          input: { basic: BasicObject.new, raising: RaisingInspect.new, delegator: SimpleDelegator.new([1, 2]) }
+        )
+
+        expect(block.inspect).to eq('#<ClaudeAgentSDK::ToolUseBlock input={basic: #<?>, raising: #<RaisingInspect>, ' \
+                                    'delegator: [1, 2]}>')
+        expect { block.to_s }.not_to raise_error
+      end
+
       it 'leaves the wire form (#to_h) of a typed config alone' do
         config = ClaudeAgentSDK::McpStdioServerConfig.new(command: 'npx', args: ['server'])
 

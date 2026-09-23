@@ -263,13 +263,28 @@ module ClaudeAgentSDK
       "#{string[0, INSPECT_MAX_STRING].inspect}…(+#{string.length - INSPECT_MAX_STRING} chars)"
     end
 
+    # Printing must never raise (it runs inside loggers and `puts`), so an
+    # object whose #inspect raises, or a BasicObject without one, falls back
+    # to a placeholder.
     def inspect_leaf(value)
-      return "#<#{value.class}>" if Kernel.instance_method(:method).bind_call(value, :inspect).owner == Kernel
+      return "#<#{value.class}>" if kernel_inspect_only?(value)
 
       rendered = value.inspect
       return rendered if rendered.length <= INSPECT_MAX_STRING
 
       "#{rendered[0, INSPECT_MAX_STRING]}…(+#{rendered.length - INSPECT_MAX_STRING} chars)"
+    rescue StandardError
+      begin
+        "#<#{value.class}>"
+      rescue StandardError
+        '#<?>'
+      end
+    end
+
+    def kernel_inspect_only?(value)
+      Kernel.instance_method(:method).bind_call(value, :inspect).owner == Kernel
+    rescue TypeError # not a Kernel object: BasicObject, Delegator
+      false
     end
 
     # Allow camelCase attribute access
