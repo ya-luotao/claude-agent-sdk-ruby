@@ -44,11 +44,13 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   # Runtime dependencies
-  # >= 2.6.4: the oldest release the suite passes on (gemfiles/floor.gemfile
-  # pins it in CI). 2.0.x cannot run on Ruby 3.2+ at all (its scheduler
-  # io_write hook has the wrong arity), and releases before 2.6.4 break
-  # HookMatcher timeouts and pending-control-request error delivery.
-  spec.add_dependency 'async', '>= 2.6.4', '< 3'
+  # >= 2.10: Task#defer_stop, which Query#close relies on to finish its
+  # teardown when called from inside a task it stops (an inline callback or
+  # a streaming-input enumerator). Older releases also fail outright: 2.0.x
+  # cannot run on Ruby 3.2+ (its scheduler io_write hook has the wrong
+  # arity), and before 2.6.4 HookMatcher timeouts and pending-control-request
+  # error delivery break. gemfiles/floor.gemfile pins this floor in CI.
+  spec.add_dependency 'async', '>= 2.10', '< 3'
   # >= 0.22: 0.19 and older validate through the json-schema gem, whose
   # JSON.parse(s, quirks_mode: true) raises under json 3.x (strict keywords)
   # and fails every SDK MCP tools/call — and a fresh bundle resolves json 3.x
