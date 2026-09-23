@@ -77,29 +77,15 @@ module ClaudeAgentSDK
     end
   end
 
-  # Internal: call a tool handler, reporting SystemExit / SignalException
-  # (Interrupt included) as an ordinary handler failure — re-raised as a
-  # RuntimeError (#cause holds the original) that both tools/call dispatch
-  # boundaries turn into an in-band isError result, so the pending control
-  # response is always written. Must run INSIDE the FiberBoundary.invoke
-  # block: a worker thread that dies with SystemExit has it re-raised by
-  # Ruby on the MAIN thread, tearing down the reactor, while the dispatcher
-  # only sees Async::Stop — a rescue after the hop cannot catch it in
-  # :thread mode. A callback_wrapper therefore observes the RuntimeError.
-  # Deliberately not `rescue Exception`: cancellation (Async::Stop, and
-  # InlineCancellation at an :inline suspension point) must propagate.
-  #
-  # Also the one place both dispatch paths share, so it expands the String
-  # shorthand: a String return becomes a single text block. Every other
-  # value passes through untouched — Hash results behave exactly as before,
-  # and any other non-Hash value still gets the "must return a hash"
-  # diagnostic from the caller.
+  # Internal: expand a tool handler's String shorthand into a single text
+  # block. Every other value passes through untouched — Hash results behave
+  # exactly as before, and any other non-Hash value still gets the "must
+  # return a hash" diagnostic from the caller. Applied inside the callback
+  # dispatch at both tools/call paths, so a callback_wrapper sees the
+  # expanded Hash.
   # @api private
-  def self.call_tool_handler(handler, arguments)
-    result = handler.call(arguments)
+  def self.normalize_tool_result(result)
     result.is_a?(String) ? { content: [{ type: 'text', text: result }] } : result
-  rescue SystemExit, SignalException => e
-    raise e.message
   end
 
   # SDK MCP Server - wraps official MCP::Server with block-based API
@@ -301,8 +287,10 @@ module ClaudeAgentSDK
       # gem's Fiber scheduler is not visible to user code (which may hit
       # AR/PG); in :inline mode it runs in place on the reactor fiber.
       scheduling, wrapper = effective_callback_dispatch
-      result = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
-        ClaudeAgentSDK.call_tool_handler(tool.handler, arguments)
+      # exit / Interrupt from the handler propagate (never an isError
+      # result): see FiberBoundary.invoke_callback.
+      result = FiberBoundary.invoke_callback(scheduling: scheduling, wrapper: wrapper) do
+        ClaudeAgentSDK.normalize_tool_result(tool.handler.call(arguments))
       end
 
       # Guard before flexible_fetch: it raises on non-Hash inputs.
@@ -339,7 +327,7 @@ module ClaudeAgentSDK
       # as `call_tool` above: reader blocks may touch Thread.current-keyed
       # libraries (ActiveRecord, pg, ...) and must run on a plain thread.
       scheduling, wrapper = effective_callback_dispatch
-      content = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
+      content = FiberBoundary.invoke_callback(scheduling: scheduling, wrapper: wrapper) do
         resource.reader.call
       end
 
@@ -374,7 +362,7 @@ module ClaudeAgentSDK
       # Hop off the Fiber scheduler before invoking user code — same reason
       # as `call_tool` above.
       scheduling, wrapper = effective_callback_dispatch
-      result = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
+      result = FiberBoundary.invoke_callback(scheduling: scheduling, wrapper: wrapper) do
         prompt.generator.call(arguments)
       end
 
@@ -487,8 +475,11 @@ module ClaudeAgentSDK
               # Hop to a plain thread (default) so user handlers don't see
               # the Fiber scheduler; :inline runs in place on the reactor.
               scheduling, wrapper = @sdk_server.effective_callback_dispatch
-              result = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
-                ClaudeAgentSDK.call_tool_handler(@tool_def.handler, args)
+              # exit / Interrupt propagate past the gem (it rescues only
+              # StandardError) to Query#handle_control_request, which
+              # answers with an isError result and then re-raises them.
+              result = FiberBoundary.invoke_callback(scheduling: scheduling, wrapper: wrapper) do
+                ClaudeAgentSDK.normalize_tool_result(@tool_def.handler.call(args))
               end
 
               # Guard BEFORE flexible_fetch: on a non-Hash it raises

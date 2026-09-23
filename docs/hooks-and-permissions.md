@@ -193,3 +193,25 @@ never raises — shadowing can be intentional, e.g. a callback used solely for
 tools outside `allowed_tools`. To gate every tool call including
 auto-approved ones, use a `PreToolUse` hook instead (note that a `PreToolUse`
 hook returning an allow decision also skips this callback).
+
+## When a callback raises
+
+An exception raised inside a hook or a `can_use_tool` callback fails that
+control request: the CLI receives an error response carrying the exception
+message, and the session carries on with later requests. The request's
+cancellation signal is invalidated, as for any other callback failure.
+
+`exit`, `Interrupt` and other signal exceptions are never swallowed. If one
+is raised while a callback runs (by the callback itself, or a real Ctrl-C /
+`SIGTERM` arriving while an `:inline` callback runs on the main thread), the
+CLI first gets the same error response, naming the exception class
+(`"SystemExit: exit"`, `"Interrupt"`), and then the exception propagates as
+Ruby normally would: `exit 3` ends the process with status 3, and Ctrl-C
+interrupts it. This holds in both `:thread` and `:inline` scheduling, and also
+when a `:thread` hook calls `exit` after its `HookMatcher#timeout` has already
+expired. A `callback_wrapper` sees the exception wrapped in an internal
+`StandardError` whose `#cause` is the original, so ensure-based wrappers (such
+as `Rails.application.executor.wrap`) still clean up. The original is raised
+again after the wrapper returns, even if the wrapper swallows the error.
+Cancellation (`control_cancel_request`, `HookMatcher#timeout`, disconnect)
+still propagates as before.

@@ -133,6 +133,58 @@ module ClaudeAgentSDK
       end
     end
 
+    # Carries a SystemExit / SignalException (Interrupt included) raised by
+    # a user callback out of the FiberBoundary hop — see .invoke_callback.
+    # A StandardError so the hop ends normally: a :thread worker that died
+    # with SystemExit would have it re-raised by Ruby on the MAIN thread,
+    # asynchronously, before the SDK could answer the pending request.
+    # #cause (and #original) is the exception it carries. A callback_wrapper
+    # sees this carrier, never the original.
+    # @api private
+    class ProcessExitCarrier < StandardError
+      attr_reader :original
+
+      def initialize(original)
+        @original = original
+        super(FiberBoundary.process_exit_message(original))
+      end
+    end
+
+    # Hands a callback's process-exit exception from the code running the
+    # callback to the SDK code waiting for it — or, once that waiter has
+    # stopped waiting (hook timeout, cancelled request), lets the callback
+    # side re-raise it where it is, as plain Ruby would. Either way it is
+    # never dropped.
+    # @api private
+    class ProcessExitHandoff
+      def initialize
+        @mutex = Mutex.new
+        @state = :waiting
+        @original = nil
+      end
+
+      # Callback side: true when the waiter will receive +original+.
+      def hand_off(original)
+        @mutex.synchronize do
+          next false unless @state == :waiting
+
+          @state = :handed_off
+          @original = original
+          true
+        end
+      end
+
+      # Waiter side, when it stops waiting: the exception handed off but not
+      # yet received, if any.
+      def abandon
+        @mutex.synchronize do
+          handed_off = @state == :handed_off
+          @state = :abandoned
+          handed_off ? @original : nil
+        end
+      end
+    end
+
     # Sentinel returned by .invoke_iteration when the user block attempted `break`.
     class Break
       attr_reader :value
@@ -143,6 +195,63 @@ module ClaudeAgentSDK
     end
 
     module_function
+
+    # Invoke a user callback that answers a CLI control request (hook,
+    # can_use_tool, SDK MCP tool / resource / prompt handler) across the
+    # boundary, like .invoke. A SystemExit or SignalException (Interrupt
+    # included) raised while the callback runs is never swallowed: it is
+    # re-raised here, on the calling fiber, as the ORIGINAL exception, so
+    # Query#handle_control_request can answer the request first and then let
+    # it terminate the process as Ruby normally would.
+    #
+    # The conversion must sit INSIDE the hop, innermost around the user
+    # call: in :thread mode a worker dying with SystemExit has it re-raised
+    # by Ruby on the main thread at an arbitrary point, before any response
+    # is written. So the worker ends with a ProcessExitCarrier instead, and
+    # the carrier is unwrapped once control is back on the calling fiber. In
+    # :inline mode the callback runs on the reactor fiber — usually the main
+    # thread — so this also covers a real Ctrl-C / SIGTERM delivered while
+    # the callback runs. A callback_wrapper sees the carrier (a
+    # StandardError, #cause = the original); ensure-based wrappers still
+    # run their cleanup, and a wrapper that swallows the carrier cannot
+    # swallow the exit (the handoff re-raises it).
+    #
+    # If the caller stops waiting first (hook timeout, cancelled request),
+    # the exception is re-raised in the abandoned worker thread instead — a
+    # SystemExit from a non-main thread then ends the process, as in plain
+    # Ruby. Cancellation (Async::Stop, InlineCancellation) is not a
+    # SignalException and passes through untouched.
+    # @api private
+    def invoke_callback(scheduling: :thread, wrapper: nil, &callback)
+      handoff = ProcessExitHandoff.new
+      received = false
+      begin
+        invoke(scheduling: scheduling, wrapper: wrapper) do
+          callback.call
+        rescue SystemExit, SignalException => e
+          raise unless handoff.hand_off(e)
+
+          raise ProcessExitCarrier, e
+        end
+      rescue ProcessExitCarrier => e
+        received = true
+        raise e.original
+      ensure
+        unless received
+          pending = handoff.abandon
+          raise pending if pending
+        end
+      end
+    end
+
+    # Text reporting a process-exit exception to the CLI: its class, plus
+    # its message when that adds anything ("SystemExit: exit",
+    # "SignalException: SIGTERM", "Interrupt").
+    # @api private
+    def process_exit_message(error)
+      detail = error.message
+      detail.empty? || detail == error.class.name ? error.class.name : "#{error.class}: #{detail}"
+    end
 
     # Capture only the optional OTel context before crossing a fiber/thread
     # boundary. OTel keeps its current context fiber-local; copying generic

@@ -125,9 +125,13 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 An exception raised inside a handler is returned to the model as an
 `isError: true` result carrying the exception message, so it can self-correct.
-This includes `exit`, `Interrupt` and other signal exceptions: they are reported
-the same way instead of escaping the session and leaving the CLI waiting on the
-tool call. Cancellation of the tool call itself still propagates.
+`exit`, `Interrupt` and other signal exceptions are never swallowed: the CLI
+first gets an `isError` result naming the exception class
+(`"SystemExit: exit"`), so it is not left waiting on the tool call, and then
+the exception propagates as Ruby normally would (`exit` ends the process,
+Ctrl-C interrupts it). Called directly, without a session,
+`SdkMcpServer#call_tool` and `#handle_message` simply let such exceptions
+propagate. Cancellation of the tool call itself still propagates.
 
 ## Mixed Server Support
 
@@ -191,5 +195,11 @@ server = ClaudeAgentSDK.create_sdk_mcp_server(
   prompts: [review_prompt]
 )
 ```
+
+An exception raised inside a resource reader or prompt generator is answered
+with a JSON-RPC internal error (`-32603`) carrying the exception message. For
+`exit`, `Interrupt` and other signal exceptions the CLI gets that error first,
+naming the exception class, and then the exception propagates as Ruby normally
+would.
 
 See [examples/mcp_calculator.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/mcp_calculator.rb) and [examples/mcp_resources_prompts_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/mcp_resources_prompts_example.rb) for complete examples.
