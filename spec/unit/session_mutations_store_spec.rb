@@ -64,6 +64,49 @@ RSpec.describe 'SessionStore-backed mutations' do
     end
   end
 
+  # Issue #85: appending metadata to a never-written key used to CREATE a
+  # phantom session (permanent on WORM stores). The disk counterparts raise
+  # Errno::ENOENT for a missing session; the store path now does too.
+  describe 'mutating a session the store has never seen' do
+    {
+      rename_session_via_store: { title: 'Renamed' },
+      tag_session_via_store: { tag: 'important' }
+    }.each do |method, args|
+      it "#{method} raises Errno::ENOENT and writes nothing" do
+        expect { ClaudeAgentSDK.public_send(method, session_store: store, session_id: session_id, **args) }
+          .to raise_error(Errno::ENOENT, /Session #{session_id} not found/)
+        expect(store.load(key)).to be_nil
+        expect(store.size).to eq(0)
+      end
+
+      it "#{method} probes the directory's project key, not just the session id" do
+        seed_transcript # exists under the cwd project key only
+        expect do
+          ClaudeAgentSDK.public_send(method, session_store: store, session_id: session_id,
+                                             directory: '/nonexistent/other-project', **args)
+        end.to raise_error(Errno::ENOENT)
+        other = { 'project_key' => ClaudeAgentSDK.project_key_for_directory('/nonexistent/other-project'),
+                  'session_id' => session_id }
+        expect(store.load(other)).to be_nil
+      end
+
+      it "#{method} works on a minimal append+load store and treats an empty load as missing" do
+        loads = { key => [] }
+        minimal = Object.new
+        minimal.define_singleton_method(:load) { |k| loads[k] }
+        minimal.define_singleton_method(:append) { |k, entries| (loads[k] ||= []).concat(entries) }
+
+        expect { ClaudeAgentSDK.public_send(method, session_store: minimal, session_id: session_id, **args) }
+          .to raise_error(Errno::ENOENT)
+        expect(loads[key]).to eq([])
+
+        loads[key] = [{ 'type' => 'user', 'uuid' => 'u1' }]
+        ClaudeAgentSDK.public_send(method, session_store: minimal, session_id: session_id, **args)
+        expect(loads[key].size).to eq(2)
+      end
+    end
+  end
+
   describe '.delete_session_via_store' do
     it 'cascades to subkeys on a store that implements #delete' do
       seed_transcript

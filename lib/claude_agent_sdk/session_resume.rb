@@ -138,18 +138,18 @@ module ClaudeAgentSDK
           # prevent traversal and match every other resume path.
           return nil unless options.resume.match?(Sessions::UUID_RE)
 
-          load_candidate(store, project_key, options.resume, timeout_s, scheduling, wrapper)
+          encode_candidate(load_candidate(store, project_key, options.resume, timeout_s, scheduling, wrapper))
         else
           resolve_continue_candidate(store, project_key, timeout_s, scheduling, wrapper)
         end
       return nil if resolved.nil?
 
-      session_id, entries = resolved
+      session_id, lines = resolved
       tmp_base = Dir.mktmpdir('claude-resume-')
       begin
         project_dir = File.join(tmp_base, 'projects', project_key)
         FileUtils.mkdir_p(project_dir)
-        write_jsonl(File.join(project_dir, "#{session_id}.jsonl"), entries)
+        write_jsonl(File.join(project_dir, "#{session_id}.jsonl"), lines)
 
         # The subprocess runs with CLAUDE_CONFIG_DIR=tmp_base; copy auth config
         # so it can authenticate. Missing files are fine (API-key auth, etc.).
@@ -171,6 +171,7 @@ module ClaudeAgentSDK
     # -- Helpers --
 
     # Load entries for session_id; return [session_id, entries] or nil if empty.
+    # Callers pass the result through encode_candidate before writing.
     def load_candidate(store, project_key, session_id, timeout_s, scheduling, wrapper)
       entries = with_timeout(timeout_s, "SessionStore#load for session #{session_id}", scheduling, wrapper) do
         store.load('project_key' => project_key, 'session_id' => session_id)
@@ -206,9 +207,41 @@ module ClaudeAgentSDK
         first = loaded[1][0]
         next if first.is_a?(Hash) && first['isSidechain'] == true
 
-        return loaded
+        encoded = encode_candidate(loaded)
+        return encoded if encoded
       end
       nil
+    end
+
+    # [session_id, entries] -> [session_id, jsonl_lines], or nil when no entry
+    # survives encoding. Encoding happens BEFORE the temp dir exists so a
+    # session whose entries are all unusable behaves exactly like an empty one:
+    # --resume falls through to the normal spawn path and --continue moves on to
+    # the next candidate.
+    def encode_candidate(loaded)
+      return nil if loaded.nil?
+
+      session_id, entries = loaded
+      lines = encode_jsonl_lines(entries, "session #{session_id}")
+      lines.empty? ? nil : [session_id, lines]
+    end
+
+    # Encode store entries as compact JSON lines, skipping any entry that
+    # cannot be serialized (NaN/Infinity, invalid UTF-8, circular or
+    # over-deep nesting — JSON::NestingError is a ParserError, hence the
+    # JSONError rescue). Entries are opaque adapter pass-through, so one
+    # poisoned entry must not abort the whole resume: like an unusable sidecar
+    # on the disk side, an unusable entry is treated as absent (with a
+    # warning naming its uuid when it has one).
+    def encode_jsonl_lines(entries, what)
+      entries.filter_map do |entry|
+        JSON.generate(entry)
+      rescue JSON::JSONError => e
+        uuid = entry.is_a?(Hash) ? entry['uuid'] : nil
+        warn "Claude SDK: [SessionStore] resume: skipping unserializable entry#{" uuid=#{uuid.inspect}" if uuid} " \
+             "in #{what} (#{e.class}: #{e.message})"
+        nil
+      end
     end
 
     # session_id => true for sessions the summary sidecar marks as sidechains;
@@ -270,12 +303,13 @@ module ClaudeAgentSDK
       raise "#{what} failed during resume materialization: #{e}"
     end
 
-    # Stream-write entries as one compact JSON line each (mode 0600).
-    def write_jsonl(path, entries)
+    # Write pre-encoded JSON lines (see encode_jsonl_lines), one per line,
+    # mode 0600.
+    def write_jsonl(path, lines)
       FileUtils.mkdir_p(File.dirname(path))
       File.open(path, 'w') do |f|
-        entries.each do |entry|
-          f.write(JSON.generate(entry))
+        lines.each do |line|
+          f.write(line)
           f.write("\n")
         end
       end
@@ -565,22 +599,40 @@ module ClaudeAgentSDK
       metadata, transcript = Sessions.split_agent_metadata(entries)
       sub_file = File.join(session_dir, "#{subpath}.jsonl")
 
-      write_jsonl(sub_file, transcript) unless transcript.empty?
+      lines = encode_jsonl_lines(transcript, "subpath #{subpath}")
+      write_jsonl(sub_file, lines) unless lines.empty?
 
       return if metadata.nil?
 
       # Strip the synthetic type field.
-      meta_content = metadata.except('type')
+      meta_json = encode_agent_metadata(metadata.except('type'), subpath)
+      return if meta_json.nil?
+
       meta_file = Sessions.agent_metadata_sidecar_path(sub_file)
       FileUtils.mkdir_p(File.dirname(meta_file))
-      File.write(meta_file, JSON.generate(meta_content))
+      File.write(meta_file, meta_json)
       chmod_owner_only(meta_file)
     end
 
-    # Reject subpaths that are empty, absolute, drive/UNC-prefixed, contain "."
-    # or ".." components or a NUL byte, or escape session_dir after resolution.
+    # An unserializable metadata sidecar is skipped (unusable = absent, as on
+    # the disk side) rather than aborting the resume.
+    def encode_agent_metadata(meta_content, subpath)
+      JSON.generate(meta_content)
+    rescue JSON::JSONError => e
+      warn "Claude SDK: [SessionStore] resume: skipping unserializable agent metadata " \
+           "for subpath #{subpath} (#{e.class}: #{e.message})"
+      nil
+    end
+
+    # Reject subpaths that are not Strings, empty, absolute, drive/UNC-prefixed,
+    # contain "." or ".." components or a NUL byte, or escape session_dir after
+    # resolution. A non-String subkey (Symbol, Integer) is an adapter contract
+    # violation: reject it like any other unsafe subkey (skip that entry)
+    # rather than guess at a coercion — calling String methods on it used to
+    # raise NoMethodError and abort the whole resume.
     def safe_subpath?(subpath, session_dir)
-      return false if subpath.nil? || subpath.empty?
+      return false unless subpath.is_a?(String)
+      return false if subpath.empty?
       return false if subpath.start_with?('/', '\\')
       return false if subpath.match?(/\A[a-zA-Z]:/) # drive-prefixed (C:foo) / UNC
       return false if subpath.split(%r{[\\/]}).any? { |part| ['.', '..'].include?(part) }

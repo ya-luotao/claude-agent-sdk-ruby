@@ -214,6 +214,8 @@ ClaudeAgentSDK.query(
   `rename_session_via_store`, `tag_session_via_store`,
   `delete_session_via_store`, `fork_session_via_store`, and
   `import_session_to_store` (migrate a local session into a store). Store
-  reads default `directory:` to the current working directory.
+  reads default `directory:` to the current working directory. Rename/tag/fork
+  via store raise `Errno::ENOENT` for a session the store has never seen
+  (no phantom sessions).
 - Cannot combine `session_store` with `enable_file_checkpointing`;
   `continue_conversation` requires the store to implement `#list_sessions`.
