@@ -628,9 +628,13 @@ module ClaudeAgentSDK
       # so AR/PG calls inside it aren't intercepted by the Fiber scheduler;
       # with callback_scheduling: :inline it runs in place on this control-
       # request task, where control_cancel_request (task.stop) can actually
-      # cancel it at suspension points.
+      # cancel it at suspension points. exit / Interrupt from the callback
+      # become an ordinary callback failure (an error control response)
+      # INSIDE the hop — see FiberBoundary.contain_process_exit.
       response = FiberBoundary.invoke(scheduling: @callback_scheduling, wrapper: @callback_wrapper) do
-        @can_use_tool.call(request_data[:tool_name], request_data[:input], context)
+        FiberBoundary.contain_process_exit do
+          @can_use_tool.call(request_data[:tool_name], request_data[:input], context)
+        end
       end
       # A worker may return a decision after the read loop invalidated the
       # request. Never turn that late decision into an allow response.
@@ -684,9 +688,12 @@ module ClaudeAgentSDK
       # genuine cooperative cancellation: the hook is interrupted at its next
       # suspension point and its ensure blocks run (Python parity — anyio
       # cancels the coroutine). A CPU-stuck inline hook cannot be timed out.
+      # In all three variants exit / Interrupt from the hook become an
+      # ordinary callback failure (an error control response) INSIDE the
+      # hop — see FiberBoundary.contain_process_exit.
       unless @hook_callback_timeouts[callback_id]
         hook_output = FiberBoundary.invoke(scheduling: @callback_scheduling, wrapper: @callback_wrapper) do
-          callback.call(hook_input, request_data[:tool_use_id], context)
+          FiberBoundary.contain_process_exit { callback.call(hook_input, request_data[:tool_use_id], context) }
         end
       end
 
@@ -710,13 +717,13 @@ module ClaudeAgentSDK
               on_timeout: -> { Async::TimeoutError.new('execution expired') }
             ) do
               FiberBoundary.invoke(scheduling: :inline, wrapper: @callback_wrapper) do
-                callback.call(hook_input, request_data[:tool_use_id], context)
+                FiberBoundary.contain_process_exit { callback.call(hook_input, request_data[:tool_use_id], context) }
               end
             end
           else
             Async::Task.current.with_timeout(timeout) do
               FiberBoundary.invoke(wrapper: @callback_wrapper) do
-                callback.call(hook_input, request_data[:tool_use_id], context)
+                FiberBoundary.contain_process_exit { callback.call(hook_input, request_data[:tool_use_id], context) }
               end
             end
           end

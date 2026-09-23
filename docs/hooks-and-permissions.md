@@ -193,3 +193,19 @@ never raises — shadowing can be intentional, e.g. a callback used solely for
 tools outside `allowed_tools`. To gate every tool call including
 auto-approved ones, use a `PreToolUse` hook instead (note that a `PreToolUse`
 hook returning an allow decision also skips this callback).
+
+## When a callback raises
+
+An exception raised inside a hook or a `can_use_tool` callback fails that
+control request: the CLI receives an error response carrying the exception
+message, and the session carries on with later requests. The request's
+cancellation signal is invalidated, as for any other callback failure.
+
+`exit`, `Interrupt` and other signal exceptions raised by the callback are
+reported the same way, as the exception class and message (`"SystemExit: exit"`,
+`"Interrupt: Interrupt"`). They do not end your process, including in the
+default `:thread` scheduling, where Ruby would otherwise re-raise a worker
+thread's `SystemExit` on the main thread. A `callback_wrapper` sees these as a
+`RuntimeError` whose `#cause` is the original exception. Cancellation
+(`control_cancel_request`, `HookMatcher#timeout`, disconnect) still propagates
+as before.

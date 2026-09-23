@@ -69,7 +69,7 @@ Tool arguments are JSON-Schema-validated (draft4) before the handler runs — th
 
 ## Resources and prompts (SDK MCP)
 
-SDK MCP servers can also expose resources and prompts via `ClaudeAgentSDK.create_resource` and `ClaudeAgentSDK.create_prompt`.
+SDK MCP servers can also expose resources and prompts via `ClaudeAgentSDK.create_resource` and `ClaudeAgentSDK.create_prompt`. A reader/generator exception (including `exit`/`Interrupt`/signals) is answered with a JSON-RPC `-32603` error carrying the message; it never ends the process.
 
 ## MCP runtime control (Client only)
 

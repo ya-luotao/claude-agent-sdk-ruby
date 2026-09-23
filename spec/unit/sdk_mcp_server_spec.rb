@@ -882,7 +882,7 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer, 'process-exit exceptions raised by 
 
           result = Sync { server.call_tool('boom', {}) }
 
-          expect(result).to eq(content: [{ type: 'text', text: exception.message }], isError: true)
+          expect(result).to eq(content: [{ type: 'text', text: "#{exception.class}: #{exception.message}" }], isError: true)
         end
 
         it "reports #{label} from a routed tools/call as an in-band isError result" do
@@ -895,7 +895,7 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer, 'process-exit exceptions raised by 
           expect(response[:error]).to be_nil
           expect(response[:id]).to eq(7)
           expect(response.dig(:result, :isError)).to be(true)
-          expect(response.dig(:result, :content, 0, :text)).to eq(exception.message)
+          expect(response.dig(:result, :content, 0, :text)).to eq("#{exception.class}: #{exception.message}")
         end
       end
 
@@ -926,7 +926,7 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer, 'process-exit exceptions raised by 
         response = writes.first.fetch('response')
         expect(response).to include('subtype' => 'success', 'request_id' => 'req_exit')
         expect(response.dig('response', 'mcp_response', 'result', 'isError')).to be(true)
-        expect(response.dig('response', 'mcp_response', 'result', 'content', 0, 'text')).to eq('handler called exit')
+        expect(response.dig('response', 'mcp_response', 'result', 'content', 0, 'text')).to eq('SystemExit: handler called exit')
       end
     end
   end

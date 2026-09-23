@@ -73,21 +73,12 @@ module ClaudeAgentSDK
   end
 
   # Internal: call a tool handler, reporting SystemExit / SignalException
-  # (Interrupt included) as an ordinary handler failure — re-raised as a
-  # RuntimeError (#cause holds the original) that both tools/call dispatch
-  # boundaries turn into an in-band isError result, so the pending control
-  # response is always written. Must run INSIDE the FiberBoundary.invoke
-  # block: a worker thread that dies with SystemExit has it re-raised by
-  # Ruby on the MAIN thread, tearing down the reactor, while the dispatcher
-  # only sees Async::Stop — a rescue after the hop cannot catch it in
-  # :thread mode. A callback_wrapper therefore observes the RuntimeError.
-  # Deliberately not `rescue Exception`: cancellation (Async::Stop, and
-  # InlineCancellation at an :inline suspension point) must propagate.
+  # (Interrupt included) as an ordinary handler failure that both tools/call
+  # dispatch boundaries turn into an in-band isError result. Must run INSIDE
+  # the FiberBoundary.invoke block — see FiberBoundary.contain_process_exit.
   # @api private
   def self.call_tool_handler(handler, arguments)
-    handler.call(arguments)
-  rescue SystemExit, SignalException => e
-    raise e.message
+    FiberBoundary.contain_process_exit { handler.call(arguments) }
   end
 
   # SDK MCP Server - wraps official MCP::Server with block-based API
@@ -327,8 +318,10 @@ module ClaudeAgentSDK
       # as `call_tool` above: reader blocks may touch Thread.current-keyed
       # libraries (ActiveRecord, pg, ...) and must run on a plain thread.
       scheduling, wrapper = effective_callback_dispatch
+      # exit / Interrupt from the reader become an ordinary failure INSIDE
+      # the hop (see FiberBoundary.contain_process_exit).
       content = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
-        resource.reader.call
+        FiberBoundary.contain_process_exit { resource.reader.call }
       end
 
       # Ensure content has the expected format (symbol or string keys; guard
@@ -363,7 +356,7 @@ module ClaudeAgentSDK
       # as `call_tool` above.
       scheduling, wrapper = effective_callback_dispatch
       result = FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) do
-        prompt.generator.call(arguments)
+        FiberBoundary.contain_process_exit { prompt.generator.call(arguments) }
       end
 
       # Ensure result has the expected format (symbol or string keys)

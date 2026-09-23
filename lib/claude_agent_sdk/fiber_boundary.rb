@@ -144,6 +144,29 @@ module ClaudeAgentSDK
 
     module_function
 
+    # Run a user callback, reporting SystemExit / SignalException (Interrupt
+    # included) raised by it as an ordinary callback failure: re-raised as a
+    # RuntimeError named after the original class ("SystemExit: exit"), with
+    # #cause holding the original. Each dispatch site's existing
+    # StandardError handling then produces its usual in-band error (isError
+    # tool result, error control response, JSON-RPC error), so the pending
+    # control response is always written and the process keeps running.
+    #
+    # Must run INSIDE the block passed to .invoke, around the user call
+    # itself: a worker thread that dies with SystemExit has it re-raised by
+    # Ruby on the MAIN thread, tearing down the reactor while the dispatcher
+    # only sees Async::Stop — a rescue after the hop cannot catch it in
+    # :thread mode. A callback_wrapper therefore observes the RuntimeError.
+    # Deliberately not `rescue Exception`: cancellation (Async::Stop, and
+    # InlineCancellation delivered at an :inline suspension point) must
+    # propagate.
+    # @api private
+    def contain_process_exit
+      yield
+    rescue SystemExit, SignalException => e
+      raise "#{e.class}: #{e.message}"
+    end
+
     # Capture only the optional OTel context before crossing a fiber/thread
     # boundary. OTel keeps its current context fiber-local; copying generic
     # thread locals would also copy unsafe connection/request state. The
