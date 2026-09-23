@@ -18,9 +18,9 @@ ClaudeAgentSDK.configure do |config|
     # 'bypassPermissions' (unattended jobs in a sandbox only), or 'auto'.
     # permission_mode: 'default',
 
-    # The CLI is found in vendor/claude relative to the process cwd (Rails.root
-    # under bin/rails, Puma and most job runners). Pin it for other launchers:
-    # cli_path: Rails.root.join('vendor', 'claude', 'claude').to_s,
+    # The CLI is found in Rails.root/vendor/claude (bin/rails claude_agent_sdk:install_cli),
+    # whatever the process cwd. To run a binary from somewhere else instead:
+    # cli_path: '/usr/local/bin/claude',
 
     # OpenTelemetry tracing (Langfuse, Honeycomb, ...). A factory lambda gives
     # every query/session its own observer — safe under Puma and job threads.

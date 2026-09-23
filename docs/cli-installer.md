@@ -33,6 +33,20 @@ Failures (unsupported platform, invalid version, HTTP error, response-size cap, 
 
 **A failed install never breaks a working one.** The new binary is downloaded to a temp file, checksum-verified and recorded, and only then renamed into place — the rename is the last step, and nothing can fail after it. So a failed upgrade leaves the previously installed binary intact and runnable (the SDK keeps working), and the next `install` redoes it cleanly. A first install that fails leaves nothing behind at all.
 
+## Where `vendor/claude` is
+
+With no `dir:`, `install`, `install_pinned` and `installed_path` use `CLIInstaller.default_dir`: `vendor/claude` under `CLIInstaller.root`, or under the process's working directory at call time while `root` is unset (the default). Transport discovery uses the same directory, so installing and finding the binary agree.
+
+Set `root` when a process that runs agents does not start in the project root — a daemonized worker, a job runner launched from `/`, a systemd unit without `WorkingDirectory=`. Otherwise that process looks for `vendor/claude` under its own working directory, misses the vendored binary, and falls through to whatever `claude` is on `PATH`:
+
+```ruby
+# early in boot, before the first query
+ClaudeAgentSDK::CLIInstaller.root = '/srv/myapp'   # a String or a Pathname
+ClaudeAgentSDK::CLIInstaller.default_dir           # => "/srv/myapp/vendor/claude"
+```
+
+A relative path is resolved against the working directory once, when you set it. `nil` restores the working-directory default. In a Rails app you don't need this line: the Railtie sets `root` to `Rails.root` during boot (see [docs/rails.md](rails.md)). An explicit `dir:` argument always wins over `root`.
+
 > The vendored directory is trusted input: anything that can write to it can replace the binary the SDK executes. Keep it inside your deploy artifact, owned by the deploy user and not world-writable, exactly as you would treat `bin/`.
 
 ## Docker and `bin/setup`
@@ -62,7 +76,7 @@ require 'claude_agent_sdk/tasks'   # loads only CLIInstaller, not the whole SDK
 
 ```bash
 bin/rails claude_agent_sdk:install_cli                 # Rails: installs PINNED_CLI_VERSION into Rails.root/vendor/claude
-rake claude_agent_sdk:install_cli                      # elsewhere: into vendor/claude under the working directory
+rake claude_agent_sdk:install_cli                      # elsewhere: into CLIInstaller.default_dir (vendor/claude under the working directory unless root is set)
 rake claude_agent_sdk:install_cli CLAUDE_CLI_VERSION=x.y.z   # a version of your own, or 'stable' / 'latest'
 ```
 
@@ -83,6 +97,6 @@ The variable is deliberately not rake's conventional `VERSION`, which Rails' `db
 With no explicit `cli_path:` in `ClaudeAgentOptions`, the transport probes in this order:
 
 1. `CLAUDE_CLI_PATH` — an explicit path to an executable, no discovery at all (a relative value is resolved against the process's working directory, not `cwd:`)
-2. The vendored binary (`CLIInstaller.installed_path`) — deliberately ahead of `PATH`, so a pinned install beats whatever is installed globally
+2. The vendored binary (`CLIInstaller.installed_path`, i.e. `vendor/claude` under `CLIInstaller.root` or the working directory — see [above](#where-vendorclaude-is)) — deliberately ahead of `PATH`, so a pinned install beats whatever is installed globally
 3. `which claude`
 4. Common install locations (`~/.claude/local/claude`, `/usr/local/bin/claude`, …) — only an executable regular file counts, and the `~` ones are skipped when there is no usable home directory (HOME unset with no passwd entry, or a non-absolute HOME)

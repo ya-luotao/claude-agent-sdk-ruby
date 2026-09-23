@@ -9,11 +9,18 @@ unless Rake::Task.task_defined?('claude_agent_sdk:install_cli')
     desc 'Install the Claude Code CLI into vendor/claude: the version this gem is tested with, ' \
          'or CLAUDE_CLI_VERSION=x.y.z / stable / latest'
     task :install_cli do
-      # Under Rails, anchor to the app root instead of the process cwd (the
-      # app is not booted: no :environment dependency, so this runs in a
-      # Docker build without credentials). Resolved when the task runs.
-      root = Rails.root if defined?(Rails) && Rails.respond_to?(:root)
-      dir = root&.join('vendor', 'claude')&.to_s
+      # Install where discovery looks. An explicitly set CLIInstaller.root
+      # (config/application.rb, the Rakefile) wins: nil dir means
+      # CLIInstaller.default_dir, i.e. <root>/vendor/claude. Otherwise, under
+      # Rails, anchor to the app root instead of the process cwd — the same
+      # root the Railtie gives discovery at boot. The app is not booted here
+      # (no :environment dependency, so this runs in a Docker build without
+      # credentials), so that initializer has not run. Resolved when the
+      # task runs.
+      unless ClaudeAgentSDK::CLIInstaller.root
+        root = Rails.root if defined?(Rails) && Rails.respond_to?(:root)
+        dir = root&.join('vendor', 'claude')&.to_s
+      end
       # Not the conventional rake `VERSION`: Rails' own db:migrate uses it and
       # build environments often export it for the app's version or git SHA.
       version = ENV.fetch('CLAUDE_CLI_VERSION', '').strip
