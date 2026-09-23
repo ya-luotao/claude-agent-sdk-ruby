@@ -20,39 +20,6 @@ Gemspec/RequireMFA:
   Exclude:
     - 'claude-agent-sdk.gemspec'
 
-# Offense count: 1
-# This cop supports unsafe autocorrection (--autocorrect-all).
-# Configuration parameters: AllowSafeAssignment.
-Lint/AssignmentInCondition:
-  Exclude:
-    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-
-# Offense count: 4
-# Configuration parameters: IgnoreLiteralBranches, IgnoreConstantBranches, IgnoreDuplicateElseBranch.
-Lint/DuplicateBranch:
-  Exclude:
-    - 'lib/claude_agent_sdk/sdk_mcp_server.rb'
-
-# Offense count: 2
-# Configuration parameters: AllowedParentClasses.
-Lint/MissingSuper:
-  Exclude:
-    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-
-# Offense count: 3
-# This cop supports safe autocorrection (--autocorrect).
-# Configuration parameters: AllowUnusedKeywordArguments, IgnoreEmptyMethods, IgnoreNotImplementedMethods, NotImplementedExceptions.
-# NotImplementedExceptions: NotImplementedError
-Lint/UnusedMethodArgument:
-  Exclude:
-    - 'lib/claude_agent_sdk/sdk_mcp_server.rb'
-
-# Offense count: 4
-# This cop supports safe autocorrection (--autocorrect).
-Lint/UselessAssignment:
-  Exclude:
-    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-
 # Offense count: 40
 # Configuration parameters: AllowedMethods, AllowedPatterns, CountRepeatedAttributes.
 Metrics/AbcSize:
@@ -89,28 +56,4 @@ Naming/AccessorMethodName:
   Exclude:
     - 'lib/claude_agent_sdk.rb'
     - 'lib/claude_agent_sdk/query.rb'
-
-# Offense count: 2
-# This cop supports unsafe autocorrection (--autocorrect-all).
-# Configuration parameters: EnforcedStyle, AllowedCompactTypes.
-# SupportedStyles: compact, exploded
-Style/RaiseArgs:
-  Exclude:
-    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
-
-# Offense count: 22
-# This cop supports unsafe autocorrection (--autocorrect-all).
-# Configuration parameters: Mode.
-Style/StringConcatenation:
-  Exclude:
-    - 'lib/claude_agent_sdk.rb'
-    - 'lib/claude_agent_sdk/streaming.rb'
-
-# Offense count: 1
-# This cop supports unsafe autocorrection (--autocorrect-all).
-# Configuration parameters: AllowMethodsWithArguments, AllowedMethods, AllowedPatterns, AllowComments.
-# AllowedMethods: define_method
-Style/SymbolProc:
-  Exclude:
-    - 'lib/claude_agent_sdk/subprocess_cli_transport.rb'
 

@@ -782,7 +782,7 @@ module ClaudeAgentSDK
             parent_tool_use_id: nil,
             session_id: ''
           }
-          transport.write(JSON.generate(message) + "\n")
+          transport.write("#{JSON.generate(message)}\n")
           # Background-spawn so messages stream to the user block while stdin
           # close waits (without timeout) for the first result; a synchronous
           # call would defer all delivery until the turn completes (mirrors

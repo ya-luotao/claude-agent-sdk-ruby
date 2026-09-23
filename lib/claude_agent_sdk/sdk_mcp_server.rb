@@ -74,7 +74,7 @@ module ClaudeAgentSDK
     when :integer, Integer then { type: 'integer' }
     when :float, Float, :number then { type: 'number' }
     when :boolean, TrueClass, FalseClass then { type: 'boolean' }
-    else { type: 'string' } # Default fallback
+    else { type: 'string' } # rubocop:disable Lint/DuplicateBranch -- default fallback; the :string arm stays explicit
     end
   end
 
@@ -479,7 +479,7 @@ module ClaudeAgentSDK
               @tool_def.meta
             end
 
-            def call(server_context: nil, **args)
+            def call(server_context: nil, **args) # rubocop:disable Lint/UnusedMethodArgument -- declared to strip it from args
               # Filter out server_context and pass remaining args to handler.
               # Hop to a plain thread (default) so user handlers don't see
               # the Fiber scheduler; :inline runs in place on the reactor.

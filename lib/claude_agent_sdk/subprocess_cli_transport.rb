@@ -114,6 +114,7 @@ module ClaudeAgentSDK
     end
 
     def initialize(options_or_prompt = nil, options = nil)
+      super() # Transport defines no state today; keep the chain intact if it ever does
       # Support both new single-arg form and legacy two-arg form
       @options = options.nil? ? options_or_prompt : options
       @cli_path = @options.cli_path || find_cli
@@ -210,18 +211,17 @@ module ClaudeAgentSDK
         return path if File.file?(path) && File.executable?(path)
       end
 
-      raise CLINotFoundError.new(
-        "Claude Code not found. Install with:\n  " \
-        "npm install -g @anthropic-ai/claude-code\n" \
-        "\nIf already installed locally, try:\n  " \
-        'export PATH="$HOME/node_modules/.bin:$PATH"' \
-        "\n\nOr provide the path via ClaudeAgentOptions:\n  " \
-        "ClaudeAgentOptions.new(cli_path: '/path/to/claude')" \
-        "\n\nFor hermetic deploys (Docker/CI), vendor a pinned CLI into the project:\n  " \
-        "ClaudeAgentSDK::CLIInstaller.install_pinned  # installs #{CLIInstaller::PINNED_CLI_VERSION}" \
-        "\n\nOr point the SDK at an existing binary:\n  " \
-        "export #{CLI_PATH_ENV_VAR}=/path/to/claude"
-      )
+      raise CLINotFoundError,
+            "Claude Code not found. Install with:\n  " \
+            "npm install -g @anthropic-ai/claude-code\n" \
+            "\nIf already installed locally, try:\n  " \
+            'export PATH="$HOME/node_modules/.bin:$PATH"' \
+            "\n\nOr provide the path via ClaudeAgentOptions:\n  " \
+            "ClaudeAgentOptions.new(cli_path: '/path/to/claude')" \
+            "\n\nFor hermetic deploys (Docker/CI), vendor a pinned CLI into the project:\n  " \
+            "ClaudeAgentSDK::CLIInstaller.install_pinned  # installs #{CLIInstaller::PINNED_CLI_VERSION}" \
+            "\n\nOr point the SDK at an existing binary:\n  " \
+            "export #{CLI_PATH_ENV_VAR}=/path/to/claude"
     end
 
     # Inject W3C trace context (TRACEPARENT/TRACESTATE, plus BAGGAGE) into the
@@ -271,7 +271,7 @@ module ClaudeAgentSDK
 
       # Build environment
       # Convert symbol keys to strings for spawn compatibility
-      custom_env = @options.env.transform_keys { |k| k.to_s }
+      custom_env = @options.env.transform_keys(&:to_s)
       # Explicitly unset CLAUDECODE to prevent "nested session" detection when the SDK
       # launches Claude Code from within an existing Claude Code terminal.
       # NOTE: Must set to nil (not just omit the key) — Ruby's spawn only overlays
@@ -337,7 +337,7 @@ module ClaudeAgentSDK
 
         # Always keep stdin open — streaming mode uses it for the control protocol
         @ready = true
-      rescue Errno::ENOENT => e
+      rescue Errno::ENOENT
         # Check if error is from cwd or CLI
         if @cwd && !File.directory?(@cwd.to_s)
           error = CLIConnectionError.new("Working directory does not exist: #{@cwd}")
@@ -909,7 +909,7 @@ module ClaudeAgentSDK
         # stdout chunk): this searches anywhere in stdout+stderr, so leading
         # noise (a shim's own version line) could be mistaken for the CLI
         # version. Pre-existing shape; the check is best-effort only.
-        if match = output.match(/([0-9]+\.[0-9]+\.[0-9]+)/)
+        if (match = output.match(/([0-9]+\.[0-9]+\.[0-9]+)/))
           version = match[1]
           version_parts = version.split('.').map(&:to_i)
           min_parts = MINIMUM_CLAUDE_CODE_VERSION.split('.').map(&:to_i)
