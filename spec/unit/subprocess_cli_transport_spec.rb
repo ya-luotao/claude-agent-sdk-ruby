@@ -1428,6 +1428,45 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       [r, w].each { |io| io&.close unless io&.closed? }
     end
 
+    # Two fiber writers: the second is queued on IO#write's internal lock
+    # behind the first. Waking the lock holder first let its unlock schedule
+    # the queued writer (scheduler.unblock); after that writer was woken and
+    # unwound, the stale wakeup cut its NEXT suspension short. A sleep
+    # after the error exposes it (only a lower bound is asserted, so a slow
+    # runner can't make this flaky).
+    it '#end_input wakes queued fiber writers without leaving a stale wakeup behind' do
+      r, w, = wire_pipe(transport)
+      caught = []
+      after_error = []
+
+      Async do |task|
+        first = park_fiber_writer(task, transport, payload, caught)
+        second = task.async do
+          transport.write(payload)
+        rescue ClaudeAgentSDK::CLIConnectionError => e
+          caught << e
+          started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          sleep 0.3
+          after_error << (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started)
+        end
+        expect(second).not_to be_finished
+
+        task.with_timeout(5, hang) { transport.end_input }
+        second.wait
+
+        expect(first).to be_finished
+        expect(caught.size).to eq(2)
+        expect(caught).to all(be_a(ClaudeAgentSDK::CLIConnectionError))
+        expect(after_error.size).to eq(1)
+        expect(after_error.first).to be >= 0.25
+      ensure
+        first&.stop
+        second&.stop
+      end.wait
+    ensure
+      [r, w].each { |io| io&.close unless io&.closed? }
+    end
+
     it '#close returns on the reactor while a plain (FiberBoundary worker) thread is parked in IO#write' do
       r, w, child_exited = wire_pipe(transport)
       outcome = Queue.new
@@ -1539,10 +1578,12 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
     # A real child that releases its stdout (EOF for the reader) and then
     # keeps running — the pathological CLI the bound exists for. reopen, not
-    # close: IO#close on fd 0-2 leaves the kernel descriptor open.
-    def spawn_child(script)
+    # close: IO#close on fd 0-2 leaves the kernel descriptor open. +prelude+
+    # runs BEFORE the reopen: the grace period starts at EOF, so setup such
+    # as a TERM trap must already be in place on a slow runner.
+    def spawn_child(script, prelude: '')
       stdin, stdout, stderr, waiter = Open3.popen3(
-        RbConfig.ruby, '--disable-gems', '-e', "STDOUT.reopen(File::NULL); #{script}"
+        RbConfig.ruby, '--disable-gems', '-e', "#{prelude}STDOUT.reopen(File::NULL); #{script}"
       )
       stdin.close
       transport.instance_variable_set(:@stdout, stdout)
@@ -1579,7 +1620,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
 
     it 'escalates TERM then KILL for a child that ignores TERM, surfacing a ProcessError like the signal path' do
-      stdout, stderr, waiter = spawn_child('trap("TERM") {}; sleep')
+      stdout, stderr, waiter = spawn_child('sleep', prelude: 'trap("TERM") {}; ')
 
       error = read_to_end(transport)
       expect(error).to be_a(ClaudeAgentSDK::ProcessError)
@@ -1630,6 +1671,9 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
 
     it 'does not signal a child that exits on its own within the grace period' do
+      # A generous grace here: interpreter exit + reap must fit inside it even
+      # on a slow CI runner, or the example would signal a healthy child.
+      stub_const("#{described_class}::EOF_EXIT_GRACE_SECONDS", 5)
       expect(Process).not_to receive(:kill)
       stdout, stderr, waiter = spawn_child('exit 0')
 

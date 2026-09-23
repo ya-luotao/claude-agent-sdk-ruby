@@ -949,8 +949,16 @@ module ClaudeAgentSDK
       return unless scheduler
 
       # to_a: one GVL-atomic snapshot — iterating the live Hash would let a
-      # concurrent insert raise in the writer.
-      @inflight_writers.to_a.each do |fiber, owner|
+      # concurrent insert raise in the writer. Newest first: a later writer
+      # is queued on IO#write's internal lock behind an earlier one, and
+      # waking the lock holder first makes its unlock hand the lock to the
+      # queued writer (scheduler.unblock) — a stale wakeup that would then
+      # cut that writer's NEXT suspension short. Woken first, the queued
+      # writer leaves the lock's wait queue in its own unwinding. Re-check
+      # registration before each raise: a writer that already unwound must
+      # not be interrupted wherever it is now.
+      @inflight_writers.to_a.reverse_each do |fiber, owner|
+        next unless @inflight_writers.key?(fiber)
         next unless owner.equal?(scheduler) && !fiber.equal?(Fiber.current) && fiber.alive?
 
         scheduler.raise(fiber, IOError, 'stdin closed while a write was in progress')
