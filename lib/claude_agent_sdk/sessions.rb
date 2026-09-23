@@ -213,6 +213,8 @@ module ClaudeAgentSDK
     # override, and must be absolute. An explicit nil (the transport unsets
     # HOME for the child, which then falls back to its passwd entry) is also
     # treated as no home rather than guessing that entry.
+    #
+    # @api private
     def home_dir(env = nil)
       home = if env.respond_to?(:key?) && (env.key?('HOME') || env.key?(:HOME))
                env['HOME'] || env[:HOME]
@@ -379,6 +381,8 @@ module ClaudeAgentSDK
     # a NoMethodError from deep inside (`123.match?`, `123.empty?`) — and so
     # does an invalidly encoded String, on which the regexp match itself
     # raises ArgumentError ("invalid byte sequence").
+    #
+    # @api private
     def valid_session_id?(session_id)
       session_id.is_a?(String) && session_id.valid_encoding? && session_id.match?(UUID_RE)
     end
@@ -413,6 +417,8 @@ module ClaudeAgentSDK
     # An adapter mtime as SDKSessionInfo#last_modified promises it: Integer
     # epoch milliseconds. Same coercion as sortable_mtime (so a row reports
     # the value it is ordered by), truncated to whole milliseconds.
+    #
+    # @api private
     def epoch_ms_mtime(value)
       sortable_mtime(value).to_i
     end
@@ -422,6 +428,8 @@ module ClaudeAgentSDK
     # the secondary key equal mtimes (coarse adapter clocks, bulk imports)
     # ordered arbitrarily between calls and offset/limit paging could skip or
     # repeat sessions; one key also keeps the two paths in the same order.
+    #
+    # @api private
     def listing_sort_key(mtime, session_id)
       [-sortable_mtime(mtime), session_id.to_s]
     end
