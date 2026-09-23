@@ -322,7 +322,9 @@ module ClaudeAgentSDK
     # whitespace summary the disk path hid.
     def presence(val)
       return nil if val.nil?
-      return nil if val.is_a?(String) && val.strip.empty?
+      # An invalidly encoded String (JSON.parse accepts raw invalid UTF-8
+      # inside strings) is unusable metadata, and String#strip would raise.
+      return nil if val.is_a?(String) && (!val.valid_encoding? || val.strip.empty?)
 
       val
     end
@@ -451,7 +453,8 @@ module ClaudeAgentSDK
     def sidechain_head?(head, window_truncated)
       lines = head.lines
       lines.each_with_index do |line, idx|
-        next if line.strip.empty?
+        # (An invalidly encoded line isn't blank — and strip would raise on it.)
+        next if line.valid_encoding? && line.strip.empty?
 
         begin
           entry = JSON.parse(line)

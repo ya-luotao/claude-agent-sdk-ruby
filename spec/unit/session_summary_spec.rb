@@ -149,6 +149,15 @@ RSpec.describe ClaudeAgentSDK::SessionSummary do
       expect(described_class.summary_entry_to_sdk_info(summary_with('last_prompt' => '   '), nil)).to be_nil
     end
 
+    it 'treats invalidly encoded metadata as absent instead of raising' do
+      info = described_class.summary_entry_to_sdk_info(
+        summary_with('custom_title' => "\xFF\xFE", 'last_prompt' => 'real', 'git_branch' => "\xFF"), nil
+      )
+      expect(info.summary).to eq('real')
+      expect(info.custom_title).to be_nil
+      expect(info.git_branch).to be_nil
+    end
+
     it 'uses project_path as the cwd fallback' do
       info = described_class.summary_entry_to_sdk_info(summary_with('last_prompt' => 'x'), '/fallback')
       expect(info.cwd).to eq('/fallback')

@@ -327,7 +327,8 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       ['a corrupt first line mentioning isSidechain before a main entry',
        ['{"isSidechain":true,"type":"us', main_line], 'Main'],
       ['a non-object first line before a sidechain entry', ['42', sidechain_line], nil],
-      ['a blank first line before a sidechain entry', ['', sidechain_line], nil]
+      ['a blank first line before a sidechain entry', ['', sidechain_line], nil],
+      ['an invalidly encoded first line before a main entry', ["\xFF\xFE garbage", main_line], 'Main']
     ].each do |label, lines, expected_summary|
       it "classifies sidechain-ness identically on disk and store for #{label}" do
         Dir.mktmpdir do |dir|
