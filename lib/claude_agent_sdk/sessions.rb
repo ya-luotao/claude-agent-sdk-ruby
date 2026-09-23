@@ -230,7 +230,8 @@ module ClaudeAgentSDK
     # which reads only top-level keys — disagreed. A line that doesn't parse
     # (truncated at the head/tail window edge) keeps the raw-scan value: its
     # top-level shape can't be checked, and dropping it would regress the
-    # common case of a true entry cut by the 64KB window.
+    # common case of a true entry cut by the 64KB window. Unverified blanks
+    # cannot clear a previously verified value: they may be nested tool inputs.
     def extract_top_level_string_field(text, key, last: false)
       positions = field_match_positions(text, key)
       positions.reverse! if last
@@ -247,7 +248,8 @@ module ClaudeAgentSDK
           next # parseable line without a top-level string value: nested/false match
         end
         value = extract_json_string_value(text, value_start)
-        return unescape_json_string(value) if value
+        value = presence(unescape_json_string(value)) if value
+        return value if value
       end
       nil
     end
@@ -417,17 +419,17 @@ module ClaudeAgentSDK
 
     def build_session_info(file_path, head, tail, stat, project_path)
       # User-set title (customTitle) wins over AI-generated title (aiTitle).
-      # Head fallback covers short sessions where the title entry may not be in tail.
-      # Each candidate passes through presence so a blank value (e.g. a
-      # trailing title-clearing entry) falls through instead of short-circuiting.
+      # Consult the head only when the tail has no occurrence of that field.
+      # Normalize blanks AFTER choosing the latest occurrence: an explicit
+      # clearing entry must not resurrect an older title from the head.
       # Summary-chain fields use the top-level-verified scan: a raw byte scan
       # also matches these keys nested inside tool_use inputs, reporting tool
       # arguments as the session title/summary (and diverging from the store
       # fold, which reads top-level keys only).
-      custom_title = presence(extract_top_level_string_field(tail, 'customTitle', last: true)) ||
-                     presence(extract_top_level_string_field(head, 'customTitle', last: true)) ||
-                     presence(extract_top_level_string_field(tail, 'aiTitle', last: true)) ||
-                     presence(extract_top_level_string_field(head, 'aiTitle', last: true))
+      custom_title = presence(extract_top_level_string_field(tail, 'customTitle', last: true) ||
+                              extract_top_level_string_field(head, 'customTitle', last: true)) ||
+                     presence(extract_top_level_string_field(tail, 'aiTitle', last: true) ||
+                              extract_top_level_string_field(head, 'aiTitle', last: true))
       first_prompt = extract_first_prompt_from_head(head)
       # lastPrompt tail entry shows what the user was most recently doing.
       summary = custom_title ||
@@ -596,6 +598,25 @@ module ClaudeAgentSDK
       collect_agent_files(subagents_dir).map(&:first)
     end
 
+    # Read the optional subagent metadata sidecar without reading its transcript.
+    # Uses the same project scoping and sorted first-match rule as the message
+    # reader. This is historical metadata, not a live status query.
+    # @return [Hash{String => Object}, nil] Original CLI fields, or nil if unavailable
+    def get_subagent_metadata(session_id:, agent_id:, directory: nil)
+      return nil unless session_id.match?(UUID_RE)
+      return nil if agent_id.nil? || agent_id.empty?
+
+      subagents_dir = resolve_subagents_dir(session_id, directory)
+      return nil if subagents_dir.nil?
+
+      _id, path = collect_agent_files(subagents_dir).find { |id, _path| id == agent_id }
+      return nil if path.nil?
+
+      read_agent_metadata_sidecar(path)
+    rescue SystemCallError
+      nil
+    end
+
     # Read a subagent's conversation messages from local disk (counterpart to
     # get_subagent_messages_from_store). First match in sorted walk order wins
     # when the same agent id exists at multiple depths (mirrors Python).
@@ -758,6 +779,24 @@ module ClaudeAgentSDK
         seen[agent_id] = true
         agent_id
       end
+    end
+
+    # Store counterpart to get_subagent_metadata. The last agent_metadata entry
+    # wins, including when no conversation messages have been mirrored yet.
+    # The synthetic `type` marker is omitted; all other string-keyed fields
+    # remain unchanged. Adapter failures propagate, like other store readers.
+    # @return [Hash{String => Object}, nil]
+    def get_subagent_metadata_from_store(session_store:, session_id:, agent_id:, directory: nil)
+      return nil unless session_id.match?(UUID_RE)
+      return nil if agent_id.nil? || agent_id.empty?
+
+      project_key = project_key_for_directory(directory)
+      subpath = resolve_subagent_subpath(session_store, project_key, session_id, agent_id)
+      return nil if subpath.nil?
+
+      entries = session_store.load('project_key' => project_key, 'session_id' => session_id, 'subpath' => subpath)
+      metadata, = split_agent_metadata(entries || [])
+      metadata&.except('type')
     end
 
     # Read a subagent's conversation messages from a SessionStore. Subagents may

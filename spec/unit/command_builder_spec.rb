@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'tmpdir'
 
 RSpec.describe ClaudeAgentSDK::CommandBuilder do
   subject(:cmd) { described_class.new('/usr/bin/claude', options).build }
@@ -68,6 +69,65 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
       )
       cmd = described_class.new('/usr/bin/claude', options).build
       expect(cmd).to include('--append-system-prompt', 'Extra')
+    end
+
+    # Python #1268: the custom form reaches the CLI exactly like a String
+    # does. snapshot is negotiated on initialize and must never become a flag.
+    describe 'custom form' do
+      ['Be helpful', '', '--help'].each do |prompt|
+        it "passes SystemPromptCustom #{prompt.inspect} via --system-prompt" do
+          custom = ClaudeAgentSDK::SystemPromptCustom.new(prompt: prompt, snapshot: false)
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: custom)
+          cmd = described_class.new('/usr/bin/claude', options).build
+
+          expect(cmd[cmd.index('--system-prompt') + 1]).to eq(prompt)
+          expect(cmd).not_to include('--append-system-prompt')
+          expect(cmd).not_to include('--system-prompt-snapshot')
+        end
+
+        it "passes Hash with type custom and prompt #{prompt.inspect} via --system-prompt" do
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+            system_prompt: { type: 'custom', prompt: prompt, snapshot: false }
+          )
+          cmd = described_class.new('/usr/bin/claude', options).build
+
+          expect(cmd[cmd.index('--system-prompt') + 1]).to eq(prompt)
+          expect(cmd).not_to include('--append-system-prompt')
+          expect(cmd).not_to include('--system-prompt-snapshot')
+        end
+      end
+
+      it 'handles Hash with string keys for type custom' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+          system_prompt: { 'type' => 'custom', 'prompt' => 'Be helpful' }
+        )
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).to include('--system-prompt', 'Be helpful')
+      end
+
+      it 'does not pass --system-prompt-snapshot for SystemPromptPreset either' do
+        preset = ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: 'Extra', snapshot: false)
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: preset)
+        cmd = described_class.new('/usr/bin/claude', options).build
+        expect(cmd).to include('--append-system-prompt', 'Extra')
+        expect(cmd).not_to include('--system-prompt')
+        expect(cmd).not_to include('--system-prompt-snapshot')
+      end
+
+      # A custom prompt with no text must not fall through and silently
+      # activate the default Claude Code prompt (Python raises KeyError here).
+      it 'rejects a custom Hash without a prompt' do
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: { type: 'custom', snapshot: false })
+        expect { described_class.new('/usr/bin/claude', options).build }
+          .to raise_error(ArgumentError, /type 'custom' requires a :prompt String/)
+      end
+
+      it 'rejects a SystemPromptCustom without a prompt' do
+        custom = ClaudeAgentSDK::SystemPromptCustom.new(snapshot: true)
+        options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: custom)
+        expect { described_class.new('/usr/bin/claude', options).build }
+          .to raise_error(ArgumentError, /type 'custom' requires a :prompt String/)
+      end
     end
   end
 
@@ -626,6 +686,65 @@ RSpec.describe ClaudeAgentSDK::CommandBuilder do
   end
 
   describe 'settings + sandbox merge' do
+    it 'merges the settings file relative to the CLI cwd, not the parent cwd' do
+      Dir.mktmpdir do |parent|
+        project = File.join(parent, 'project')
+        Dir.mkdir(project)
+        File.write(File.join(parent, 'settings.json'), JSON.generate(permissions: { allow: ['Bash'] }))
+        File.write(File.join(project, 'settings.json'), JSON.generate(permissions: { deny: ['Bash'] }))
+
+        Dir.chdir(parent) do
+          [project, 'project'].each do |cwd|
+            options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+              cwd: cwd, settings: 'settings.json', sandbox: { enabled: true }
+            )
+            cmd = described_class.new('/usr/bin/claude', options).build
+            expect(JSON.parse(cmd[cmd.index('--settings') + 1])).to eq(
+              'permissions' => { 'deny' => ['Bash'] }, 'sandbox' => { 'enabled' => true }
+            )
+          end
+        end
+      end
+    end
+
+    it 'preserves filesystem resolution of symlinks followed by parent-directory components' do
+      Dir.mktmpdir do |parent|
+        actual = File.join(parent, 'actual')
+        Dir.mkdir(actual)
+        Dir.mkdir(File.join(actual, 'child'))
+        File.symlink(File.join(actual, 'child'), File.join(parent, 'link'))
+        File.write(File.join(parent, 'settings.json'), JSON.generate(permissions: { allow: ['Bash'] }))
+        File.write(File.join(actual, 'settings.json'), JSON.generate(permissions: { deny: ['Bash'] }))
+
+        Dir.chdir(parent) do
+          [['link/..', 'settings.json'], ['.', 'link/../settings.json'],
+           ['.', File.join(parent, 'link/../settings.json')]].each do |cwd, settings|
+            options = ClaudeAgentSDK::ClaudeAgentOptions.new(cwd: cwd, settings: settings, sandbox: false)
+            cmd = described_class.new('/usr/bin/claude', options).build
+            expect(JSON.parse(cmd[cmd.index('--settings') + 1])).to eq(
+              'permissions' => { 'deny' => ['Bash'] }, 'sandbox' => false
+            )
+          end
+        end
+      end
+    end
+
+    it 'preserves absolute paths and defaults relative paths to the parent cwd when cwd is unset' do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, 'settings.json')
+        File.write(path, JSON.generate(permissions: { deny: ['Write'] }))
+        Dir.chdir(dir) do
+          [[nil, 'settings.json'], [File.dirname(dir), path]].each do |cwd, settings|
+            options = ClaudeAgentSDK::ClaudeAgentOptions.new(cwd: cwd, settings: settings, sandbox: false)
+            cmd = described_class.new('/usr/bin/claude', options).build
+            expect(JSON.parse(cmd[cmd.index('--settings') + 1])).to eq(
+              'permissions' => { 'deny' => ['Write'] }, 'sandbox' => false
+            )
+          end
+        end
+      end
+    end
+
     it 'merges a SandboxSettings into an inline settings hash' do
       sandbox = ClaudeAgentSDK::SandboxSettings.new(enabled: true)
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(

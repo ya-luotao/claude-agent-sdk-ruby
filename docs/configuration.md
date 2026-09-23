@@ -58,7 +58,7 @@ Use the `effort` option to control the model's effort level:
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(effort: 'xhigh')
 ```
 
-Valid levels live in `ClaudeAgentSDK::EFFORT_LEVELS` (`low`, `medium`, `high`, `xhigh`, `max`). The set of *supported* levels is model-dependent — `xhigh` is available on Opus 4.7 and the CLI falls back to the highest supported level at or below the one you set (e.g. `xhigh` → `high` on Opus 4.6). When `effort` is `nil`, the CLI picks a model-native default (Opus 4.7 → `xhigh`).
+Valid levels live in `ClaudeAgentSDK::EFFORT_LEVELS` (`low`, `medium`, `high`, `xhigh`, `max`). The set of *supported* levels is model-dependent — `xhigh` is available on Opus 4.7 and later models, and the CLI falls back to the highest supported level at or below the one you set (e.g. `xhigh` → `high` on Opus 4.6). When `effort` is `nil`, the CLI picks a model-native default (e.g. Opus 4.7 → `xhigh`).
 
 > **Note:** When `system_prompt` is `nil` (the default), the SDK passes `--system-prompt ""` to the CLI, which suppresses the default Claude Code system prompt. To use the default system prompt, use a `SystemPromptPreset`.
 
@@ -77,6 +77,28 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 ```
 
 When set, the CLI strips per-user dynamic sections (working directory, auto-memory, git status) from the system prompt and re-injects them into the first user message instead. Older CLIs silently ignore this option.
+
+### System Prompt Snapshot
+
+By default, Claude Code builds the system prompt on a session's first request, records it, and reuses it on every later request, including after you resume the session. A changed custom prompt, or changed `append` text on the `claude_code` preset, then has no effect until the session is compacted or you start a new session. To rebuild the prompt on every request instead, for example while you iterate on its wording, set `snapshot: false` on a `SystemPromptPreset` or on `SystemPromptCustom` (the object form of a String prompt, which exists so `snapshot` can be set alongside it):
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  system_prompt: ClaudeAgentSDK::SystemPromptCustom.new(
+    prompt: 'You are a release bot.',
+    snapshot: false
+  )
+)
+
+# Hash forms work too:
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  system_prompt: { type: 'preset', preset: 'claude_code', append: '...', snapshot: false }
+)
+```
+
+`snapshot` is sent on the control-protocol `initialize` request (never as a CLI flag), so it applies to both `query()` and `Client`. When omitted it acts as `true`, except in bare mode (`bare: true`), where it acts as `false`. A `SystemPromptFile` has no `snapshot`.
+
+Requires Claude Code CLI 2.1.257 or later. Before 2.1.265, a session with an `append` or custom prompt recorded it only when `snapshot` was `true`. See [Modifying system prompts](https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts#change-the-prompt-of-an-existing-session) for details.
 
 ## Budget Control
 
@@ -97,8 +119,8 @@ See [examples/budget_control_example.rb](https://github.com/ya-luotao/claude-age
 
 ```ruby
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-  model: 'claude-sonnet-4-20250514',
-  fallback_model: 'claude-3-5-haiku-20241022'
+  model: 'claude-sonnet-5',
+  fallback_model: 'claude-haiku-4-5'
 )
 ```
 
@@ -114,7 +136,7 @@ receives the full conversation.
 ```ruby
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   model: 'haiku',
-  advisor_model: 'opus'  # alias or full model ID, e.g. 'claude-opus-4-8'
+  advisor_model: 'opus'  # alias or full model ID, e.g. 'claude-opus-5'
 )
 ```
 
@@ -239,6 +261,39 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(forward_subagent_text: true)
 Matches the TypeScript SDK's `forwardSubagentText`. The capability is
 negotiated on the control-protocol handshake, so it applies to both
 `ClaudeAgentSDK.query` and `Client`.
+
+## Subagent Progress Summaries
+
+Set `agent_progress_summaries` to **request** model-generated one-line progress
+summaries for subagent (`local_agent`) tasks. While the CLI has generation
+enabled, a subagent's `TaskProgressMessage#summary` **may** be present; the
+field stays optional on the wire, so not every progress frame carries one —
+read it nil-safely:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(agent_progress_summaries: true)
+
+# ...
+when ClaudeAgentSDK::TaskProgressMessage
+  puts "#{message.task_id}: #{message.summary}" if message.summary
+```
+
+`false` and `nil` do not enable generation. They do not promise suppression
+either: a process that already enabled summaries keeps producing them, and a
+backgrounded `mcp_task` reports its own status in `summary` regardless of this
+option.
+
+The option is tri-state: `nil` (the default) omits the key from the `initialize`
+control request, while `true` and `false` are forwarded verbatim as
+`agentProgressSummaries`. It is an **enable switch, not a live toggle**: CLI
+2.1.278 only acts on a truthy value, so `false` is schema-valid but equivalent
+to leaving the option unset — it does not switch summaries off on a process that
+already enabled them. With `ClaudeAgentSDK.configure` defaults, a per-call
+`false` overrides a global `true`, and an unset per-call value inherits the
+global one. It applies to both `ClaudeAgentSDK.query` and `Client`. The key was
+read from the schema embedded in Claude Code CLI 2.1.278 and has not been
+verified against a live run. See
+[subagent capabilities](subagents.md).
 
 ## File Checkpointing & Rewind
 

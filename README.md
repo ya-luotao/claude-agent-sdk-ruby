@@ -1,3 +1,5 @@
+![Claude Agent SDK for Ruby — a ruby connecting code to terminal, tools, and messages](assets/readme-banner.webp)
+
 # Claude Agent SDK for Ruby
 
 [![Gem Version](https://img.shields.io/gem/v/claude-agent-sdk)](https://rubygems.org/gems/claude-agent-sdk)
@@ -25,7 +27,7 @@ A Ruby SDK for the [Claude Code](https://docs.claude.com/en/docs/claude-code-ove
 
 ```ruby
 # Gemfile
-gem 'claude-agent-sdk', '~> 0.32.0'
+gem 'claude-agent-sdk', '~> 0.33.1'
 ```
 
 Then `bundle install`, or install directly with `gem install claude-agent-sdk`. To track unreleased changes, point the Gemfile at GitHub: `gem 'claude-agent-sdk', github: 'ya-luotao/claude-agent-sdk-ruby'`.
@@ -36,10 +38,8 @@ Then `bundle install`, or install directly with `gem install claude-agent-sdk`. 
 - Claude Code CLI 2.0.0 or newer, either installed globally (`npm install -g @anthropic-ai/claude-code`) or vendored with `CLIInstaller`:
 
 ```ruby
-# bin/setup or a cached Docker layer — installs the CLI version this gem
-# release was tested against (CLIInstaller::PINNED_CLI_VERSION), so bumping
-# the gem carries the CLI forward with it
-ClaudeAgentSDK::CLIInstaller.install_pinned  # => "/app/vendor/claude/claude"
+# bin/setup or a cached Docker layer — pin a concrete version in production
+ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')  # => "/app/vendor/claude/claude"
 ```
 
 The vendored binary is found ahead of `PATH`, installs are idempotent and concurrency-safe, and a failed upgrade never breaks a working install. See [docs/cli-installer.md](docs/cli-installer.md) for the full behaviour, supported platforms, and the CLI discovery order.
@@ -146,6 +146,7 @@ See [docs/hooks-and-permissions.md](docs/hooks-and-permissions.md) for the full 
 | All hook events, typed inputs, permission callbacks | [docs/hooks-and-permissions.md](docs/hooks-and-permissions.md) |
 | Structured output, thinking, budget, fallback and advisor models, sandbox, bare mode, checkpointing | [docs/configuration.md](docs/configuration.md) |
 | Session listing, reading, renaming, tagging, forking, resume-at-message | [docs/sessions.md](docs/sessions.md) |
+| Subagent capabilities, event contracts, and minimal example | [docs/subagents.md](docs/subagents.md) |
 | OpenTelemetry tracing, Langfuse, custom observers | [docs/observability.md](docs/observability.md) |
 | Rails: fiber safety, solid_queue fiber workers, ActionCable, jobs, initializer | [docs/rails.md](docs/rails.md) |
 | Vendoring a pinned CLI binary and CLI discovery order | [docs/cli-installer.md](docs/cli-installer.md) |
@@ -180,7 +181,7 @@ All three SDKs drive the same CLI over the same protocol, so capabilities line u
 | Hooks (all 27 events) | ✅ | ✅ | ✅ |
 | Permission callbacks | ✅ | ✅ | ✅ |
 | Structured output | ✅ | ✅ | ✅ |
-| All 25 message types | ✅ | partial | ✅ |
+| All 28 message types | ✅ | partial | ✅ |
 | [Sandbox](https://github.com/anthropic-experimental/sandbox-runtime) settings | ✅ | partial | ✅ |
 | Bare mode (`--bare`) | ✅ | ✅ | ✅ |
 | File checkpointing & rewind | ✅ | ✅ | ✅ |

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# No services or authentication need repair for the default offline test suite.
+# Tool paths are persisted by setup for new login shells. Never install here.
+echo 'Orb ready. Live CLI tests require ANTHROPIC_API_KEY and RUN_INTEGRATION=1.'

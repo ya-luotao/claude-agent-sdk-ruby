@@ -50,25 +50,55 @@ end
 
 # Typed subclasses (all inherit from SystemMessage, so is_a?(SystemMessage) still works)
 class TaskStartedMessage < SystemMessage
-  attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type, :workflow_name, :prompt
+  attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type, :workflow_name, :prompt,
+                :subagent_type,    # String | nil
+                :is_backgrounded,  # true (background) | false (foreground, tool call blocking) | nil (not reported)
+                :spawn_depth,      # Integer | nil (1 = top-level subagent)
+                :skip_transcript,  # true | false | nil — hide from the inline transcript (a tasks panel may still show it)
+                :ambient           # true | false | nil — not activity; exclude from activity indicators
 end
 
 class TaskProgressMessage < SystemMessage
-  attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name, :summary
+  attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name, :summary,
+                :subagent_type     # String | nil
 end
 
 class TaskNotificationMessage < SystemMessage
-  attr_accessor :task_id, :status, :output_file, :summary, :uuid, :session_id, :tool_use_id, :usage
+  attr_accessor :task_id, :status, :output_file, :summary, :uuid, :session_id, :tool_use_id, :usage,
+                :reason,           # 'worker_restart' | nil
+                :resource_links,   # Array<Hash> | nil — raw, symbol keys with wire spelling (:uri, :name, :mimeType, ...)
+                :skip_transcript,  # true | false | nil — same meaning as on TaskStartedMessage
+                :ambient           # true | false | nil — the SDK never filters on either flag
 end
 
 # Background task lifecycle state change. `status` is derived from patch["status"].
 # A terminal task can arrive *only* as a TaskUpdatedMessage (no TaskNotificationMessage) —
 # e.g. a TaskStop-killed task reports status "killed" here. Clear tracked task IDs on a
 # terminal status (see TERMINAL_TASK_STATUSES) from *either* message.
+# The other patch readers are derived the same way; nil means "not in this patch".
 class TaskUpdatedMessage < SystemMessage
-  attr_accessor :task_id, :patch, :status, :uuid, :session_id
+  attr_accessor :task_id, :patch, :status, :uuid, :session_id,
+                :description, :error, :end_time, :total_paused_ms,
+                :is_backgrounded   # true = moved to the background | false | nil (patch does not mention it)
+end
+
+# Full set of live background tasks; REPLACE semantics (swap your set for each payload).
+class BackgroundTasksChangedMessage < SystemMessage
+  attr_accessor :tasks,            # Array<Hash> — raw { task_id:, task_type:, description:, ambient: }
+                :uuid, :session_id
+end
+
+# A tool call auto-denied without an interactive prompt. Best-effort advisory, not a
+# complete denial feed; ResultMessage#permission_denials is the authoritative record.
+class PermissionDeniedMessage < SystemMessage
+  attr_accessor :tool_name, :tool_use_id, :message, :uuid, :session_id,
+                :agent_id,              # String | nil — subagent id for routing (NOT a permission request_id)
+                :decision_reason_type,  # String | nil — open string ('classifier', 'asyncAgent', 'mode', 'rule', ...)
+                :decision_reason        # String | nil
 end
 ```
+
+See [subagent capabilities](subagents.md) for the contracts behind these fields.
 
 ### ResultMessage
 
@@ -267,7 +297,9 @@ end
 | `SandboxSettings` | Sandbox settings for isolated command execution |
 | `SandboxNetworkConfig` | Network configuration for sandbox |
 | `SandboxIgnoreViolations` | Configure which sandbox violations to ignore |
-| `SystemPromptPreset` | System prompt preset configuration |
+| `SystemPromptPreset` | System prompt preset configuration (`preset`, `append`, `exclude_dynamic_sections`, `snapshot`) |
+| `SystemPromptCustom` | Custom system prompt configuration — the object form of a String prompt, so `snapshot` can be set alongside it |
+| `SystemPromptFile` | System prompt loaded from a file path |
 | `ToolsPreset` | Tools preset configuration for base tools selection |
 
 ## Constants

@@ -397,6 +397,36 @@ RSpec.describe ClaudeAgentSDK do
         expect(msg.tool_use_id).to eq('toolu_1')
         expect(msg.task_type).to eq('background')
       end
+
+      it 'stores subagent_type, is_backgrounded and spawn_depth' do
+        msg = described_class.new(task_id: 't', task_type: 'local_agent', subagent_type: 'reviewer',
+                                  is_backgrounded: true, spawn_depth: 2)
+
+        expect(msg.subagent_type).to eq('reviewer')
+        expect(msg.is_backgrounded).to be(true)
+        expect(msg.spawn_depth).to eq(2)
+      end
+
+      it 'keeps an explicit false is_backgrounded distinct from an absent one' do
+        expect(described_class.new(task_id: 't', is_backgrounded: false).is_backgrounded).to be(false)
+        expect(described_class.new('task_id' => 't', 'is_backgrounded' => false).is_backgrounded).to be(false)
+        expect(described_class.new(task_id: 't', isBackgrounded: false).is_backgrounded).to be(false)
+        expect(described_class.new(task_id: 't').is_backgrounded).to be_nil
+        expect(described_class.new(task_id: 't').spawn_depth).to be_nil
+        expect(described_class.new(task_id: 't').subagent_type).to be_nil
+      end
+
+      it 'stores the skip_transcript / ambient display flags, keeping false distinct from absent' do
+        flagged = described_class.new(task_id: 't', skip_transcript: true, ambient: true)
+        cleared = described_class.new('task_id' => 't', 'skip_transcript' => false, 'ambient' => false)
+        absent = described_class.new(task_id: 't')
+
+        expect([flagged.skip_transcript, flagged.ambient]).to eq([true, true])
+        expect(cleared.skip_transcript).to be(false)
+        expect(cleared.ambient).to be(false)
+        expect(absent.skip_transcript).to be_nil
+        expect(absent.ambient).to be_nil
+      end
     end
 
     describe ClaudeAgentSDK::TaskProgressMessage do
@@ -472,6 +502,20 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::TaskNotificationMessage, 'display flags' do
+      it 'stores skip_transcript / ambient, keeping false distinct from absent' do
+        flagged = described_class.new(task_id: 't', status: 'completed', skip_transcript: true, ambient: true)
+        cleared = described_class.new('task_id' => 't', 'skip_transcript' => false, 'ambient' => false)
+        absent = described_class.new(task_id: 't', status: 'completed')
+
+        expect([flagged.skip_transcript, flagged.ambient]).to eq([true, true])
+        expect(cleared.skip_transcript).to be(false)
+        expect(cleared.ambient).to be(false)
+        expect(absent.skip_transcript).to be_nil
+        expect(absent.ambient).to be_nil
+      end
+    end
+
     describe ClaudeAgentSDK::TaskUpdatedMessage do
       it 'is a SystemMessage subclass and derives status from the patch' do
         msg = described_class.new(
@@ -500,6 +544,141 @@ RSpec.describe ClaudeAgentSDK do
 
         expect(msg.patch).to eq({})
         expect(msg.status).to be_nil
+        expect(msg.is_backgrounded).to be_nil
+      end
+
+      it 'derives the remaining patch fields' do
+        msg = described_class.new(
+          task_id: 't',
+          patch: { status: 'failed', description: 'renamed', error: 'boom', end_time: 1_780_405_729_183,
+                   total_paused_ms: 250, is_backgrounded: true }
+        )
+
+        expect(msg.description).to eq('renamed')
+        expect(msg.error).to eq('boom')
+        expect(msg.end_time).to eq(1_780_405_729_183)
+        expect(msg.total_paused_ms).to eq(250)
+        expect(msg.is_backgrounded).to be(true)
+      end
+
+      it 'keeps an explicit false is_backgrounded distinct from an absent one' do
+        expect(described_class.new(task_id: 't', patch: { is_backgrounded: false }).is_backgrounded).to be(false)
+        expect(described_class.new(task_id: 't', patch: { status: 'running' }).is_backgrounded).to be_nil
+        expect(described_class.new(task_id: 't', patch: { is_backgrounded: nil }).is_backgrounded).to be_nil
+      end
+
+      it 'reads a string-keyed patch too, false included' do
+        msg = described_class.new('task_id' => 't', 'patch' => { 'status' => 'running', 'is_backgrounded' => false,
+                                                                 'total_paused_ms' => 0 })
+
+        expect(msg.task_id).to eq('t')
+        expect(msg.status).to eq('running')
+        expect(msg.is_backgrounded).to be(false)
+        expect(msg.total_paused_ms).to eq(0)
+      end
+
+      it 'keeps a zero end_time / total_paused_ms distinct from an absent one' do
+        zero = described_class.new(task_id: 't', patch: { end_time: 0, total_paused_ms: 0 })
+        absent = described_class.new(task_id: 't', patch: { status: 'running' })
+
+        expect(zero.end_time).to eq(0)
+        expect(zero.total_paused_ms).to eq(0)
+        expect(absent.end_time).to be_nil
+        expect(absent.total_paused_ms).to be_nil
+      end
+
+      it 'reads string outer keys with a string-keyed nested patch, zero and false included' do
+        msg = described_class.new('subtype' => 'task_updated', 'task_id' => 't', 'session_id' => 's',
+                                  'patch' => { 'status' => 'completed', 'description' => 'renamed', 'error' => 'boom',
+                                               'end_time' => 0, 'total_paused_ms' => 0, 'is_backgrounded' => false })
+
+        expect(msg.session_id).to eq('s')
+        expect(msg.status).to eq('completed')
+        expect(msg.description).to eq('renamed')
+        expect(msg.error).to eq('boom')
+        expect(msg.end_time).to eq(0)
+        expect(msg.total_paused_ms).to eq(0)
+        expect(msg.is_backgrounded).to be(false)
+        expect(msg.patch).to eq('status' => 'completed', 'description' => 'renamed', 'error' => 'boom',
+                                'end_time' => 0, 'total_paused_ms' => 0, 'is_backgrounded' => false) # raw patch untouched
+      end
+
+      ['completed', ['completed'], 42, nil].each do |patch|
+        it "leaves every derived reader nil for a non-Hash patch (#{patch.inspect})" do
+          msg = described_class.new(task_id: 't', patch: patch)
+
+          expect(msg.patch).to eq({})
+          %i[status description error end_time total_paused_ms is_backgrounded].each do |reader|
+            expect(msg.public_send(reader)).to be_nil
+          end
+        end
+      end
+
+      it 'prefers the symbol key when a patch carries both spellings' do
+        msg = described_class.new(task_id: 't', patch: { is_backgrounded: false, 'is_backgrounded' => true })
+
+        expect(msg.is_backgrounded).to be(false)
+      end
+
+      it 'derives patch fields from the patch only, never from a top-level key' do
+        msg = described_class.new(task_id: 't', is_backgrounded: true, description: 'top', patch: {})
+
+        expect(msg.is_backgrounded).to be_nil
+        expect(msg.description).to be_nil
+      end
+    end
+
+    describe ClaudeAgentSDK::BackgroundTasksChangedMessage do
+      it 'is a SystemMessage subclass that stores the raw task list' do
+        tasks = [{ task_id: 'bg-1', task_type: 'local_agent', description: 'Review', ambient: false }]
+        msg = described_class.new(subtype: 'background_tasks_changed', tasks: tasks, uuid: 'u', session_id: 's')
+
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.subtype).to eq('background_tasks_changed')
+        expect(msg.tasks).to be(tasks)
+        expect(msg.uuid).to eq('u')
+        expect(msg.session_id).to eq('s')
+      end
+
+      it 'keeps an explicitly empty set distinct from an absent one' do
+        expect(described_class.new(tasks: []).tasks).to eq([])
+        expect(described_class.new.tasks).to be_nil
+      end
+
+      it 'accepts string-keyed input' do
+        msg = described_class.new('subtype' => 'background_tasks_changed', 'tasks' => [], 'session_id' => 's')
+
+        expect(msg.tasks).to eq([])
+        expect(msg.session_id).to eq('s')
+      end
+    end
+
+    describe ClaudeAgentSDK::PermissionDeniedMessage do
+      it 'is a SystemMessage subclass with the denial fields' do
+        msg = described_class.new(
+          subtype: 'permission_denied', tool_name: 'Bash', tool_use_id: 'toolu_1', agent_id: 'agent_1',
+          decision_reason_type: 'rule', decision_reason: 'Denied by rule', message: 'Permission denied',
+          uuid: 'u', session_id: 's'
+        )
+
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.tool_name).to eq('Bash')
+        expect(msg.tool_use_id).to eq('toolu_1')
+        expect(msg.agent_id).to eq('agent_1')
+        expect(msg.decision_reason_type).to eq('rule')
+        expect(msg.decision_reason).to eq('Denied by rule')
+        expect(msg.message).to eq('Permission denied')
+      end
+
+      it 'leaves optional fields nil and does not model the internal decision_reason_code' do
+        msg = described_class.new(subtype: 'permission_denied', tool_name: 'Bash', tool_use_id: 'toolu_1',
+                                  message: 'no', decision_reason_code: 'memory_paused')
+
+        expect(msg.agent_id).to be_nil
+        expect(msg.decision_reason_type).to be_nil
+        expect(msg.decision_reason).to be_nil
+        expect(msg).not_to respond_to(:decision_reason_code)
+        expect(msg.data[:decision_reason_code]).to eq('memory_paused')
       end
     end
 
@@ -714,6 +893,28 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.include_hook_events).to eq(false)
         expect(options.strict_mcp_config).to eq(false)
         expect(options.forward_subagent_text).to eq(false)
+        expect(options.agent_progress_summaries).to be_nil
+      end
+
+      it 'keeps agent_progress_summaries tri-state: nil (unset), true, and an explicit false' do
+        expect(described_class.new(agent_progress_summaries: true).agent_progress_summaries).to be(true)
+        expect(described_class.new(agent_progress_summaries: false).agent_progress_summaries).to be(false)
+        expect(described_class.new(agent_progress_summaries: nil).agent_progress_summaries).to be_nil
+        expect(described_class.new(agent_progress_summaries: 'true').agent_progress_summaries).to be(true)
+        expect(described_class.new(agent_progress_summaries: 'false').agent_progress_summaries).to be(false)
+        expect(described_class.new('agent_progress_summaries' => false).agent_progress_summaries).to be(false)
+
+        base = described_class.new(agent_progress_summaries: true)
+        expect(base.dup_with(agent_progress_summaries: false).agent_progress_summaries).to be(false)
+        expect(base.agent_progress_summaries).to be(true)
+      end
+
+      it 'carries an explicit false and an unset agent_progress_summaries through dup_with unchanged' do
+        expect(described_class.new(agent_progress_summaries: false).dup_with(model: 'opus')
+                              .agent_progress_summaries).to be(false)
+        expect(described_class.new.dup_with(model: 'opus').agent_progress_summaries).to be_nil
+        expect(described_class.new(agent_progress_summaries: true).dup_with(agent_progress_summaries: nil)
+                              .agent_progress_summaries).to be_nil
       end
 
       it 'accepts session store options and preserves an explicit zero load_timeout_ms' do
@@ -1600,6 +1801,40 @@ RSpec.describe ClaudeAgentSDK do
         hash = preset.to_h
 
         expect(hash.key?(:exclude_dynamic_sections)).to eq(false)
+      end
+
+      # Python #1268: snapshot on the preset form. false is the primary use
+      # case, so to_h must keep it rather than treating it as unset.
+      it 'stores snapshot and keeps false in to_h' do
+        preset = described_class.new(preset: 'claude_code', append: 'Be concise.', snapshot: false)
+        expect(preset.snapshot).to be(false)
+        expect(preset.to_h).to eq(
+          type: 'preset', preset: 'claude_code', append: 'Be concise.', snapshot: false
+        )
+      end
+
+      it 'omits snapshot from to_h when nil' do
+        preset = described_class.new(preset: 'claude_code')
+        expect(preset.to_h.key?(:snapshot)).to eq(false)
+      end
+    end
+
+    describe ClaudeAgentSDK::SystemPromptCustom do
+      it 'stores prompt and snapshot with type custom' do
+        custom = described_class.new(prompt: 'You are a release bot.', snapshot: true)
+        expect(custom.type).to eq('custom')
+        expect(custom.prompt).to eq('You are a release bot.')
+        expect(custom.snapshot).to be(true)
+      end
+
+      it 'converts to hash, keeping a false snapshot' do
+        custom = described_class.new(prompt: 'You are a release bot.', snapshot: false)
+        expect(custom.to_h).to eq(type: 'custom', prompt: 'You are a release bot.', snapshot: false)
+      end
+
+      it 'omits snapshot from to_h when nil' do
+        custom = described_class.new(prompt: 'Be helpful')
+        expect(custom.to_h).to eq(type: 'custom', prompt: 'Be helpful')
       end
     end
 

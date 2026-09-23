@@ -258,6 +258,55 @@ RSpec.describe ClaudeAgentSDK::Query do
       end
     end
 
+    # background_tasks_changed is typed for consumers (BackgroundTasksChangedMessage)
+    # but must stay invisible to the stdin-close bookkeeping, in both
+    # directions — see the comment above Query#track_task_lifecycle.
+    it 'does not narrow the in-flight set from an empty background_tasks_changed snapshot' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+
+        # A foreground subagent is absent from the *background* snapshot.
+        queue.enqueue({ type: 'system', subtype: 'task_started', task_id: 'fg-1', task_type: 'local_agent' })
+        queue.enqueue({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+        queue.enqueue(sample_result_message)
+        task.sleep 0.05
+        expect(query.instance_variable_get(:@inflight_tasks).to_a).to eq(%w[fg-1])
+        expect(ended).to be_empty # fg-1 still in flight despite the empty snapshot
+
+        queue.enqueue({ type: 'system', subtype: 'task_notification', task_id: 'fg-1', status: 'completed' })
+        queue.enqueue(sample_result_message)
+        waiter.wait
+        expect(ended).not_to be_empty
+      ensure
+        query.close
+      end.wait
+    end
+
+    it 'does not widen the in-flight set from a background_tasks_changed snapshot' do
+      queue = Async::Queue.new
+      transport, ended = queue_fed_transport(queue)
+      query = described_class.new(transport: transport, is_streaming_mode: true, hooks: hooks_config)
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+
+        queue.enqueue({ type: 'system', subtype: 'background_tasks_changed',
+                        tasks: [{ task_id: 'bg-9', task_type: 'local_agent', description: 'observer' }] })
+        queue.enqueue(sample_result_message)
+        task.with_timeout(2.0) { waiter.wait }
+        expect(query.instance_variable_get(:@inflight_tasks)).to be_empty
+        expect(ended).not_to be_empty # first result still closes stdin
+      ensure
+        query.close
+      end.wait
+    end
+
     it 'closes stdin on the first result when the started task is not a deferring type' do
       # A background shell may never reach a terminal status; tracking it
       # would withhold the close forever (the CLI only exits on stdin EOF).
@@ -387,6 +436,16 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(inflight.to_a).to eq(%w[a])
     end
 
+    it 'ignores background_tasks_changed in both directions' do
+      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
+      track({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      expect(inflight.to_a).to eq(%w[a])
+
+      track({ type: 'system', subtype: 'background_tasks_changed',
+              tasks: [{ task_id: 'b', task_type: 'local_agent', description: 'other' }] })
+      expect(inflight.to_a).to eq(%w[a])
+    end
+
     it 'is a no-op for terminal frames about unknown task ids' do
       track({ type: 'system', subtype: 'task_notification', task_id: 'ghost', status: 'completed' })
       track({ type: 'system', subtype: 'task_updated', task_id: 'ghost', patch: { status: 'failed' } })
@@ -431,6 +490,146 @@ RSpec.describe ClaudeAgentSDK::Query do
                                                              task_id: 'task_abc123'
                                                            })
       query.stop_task('task_abc123')
+    end
+  end
+
+  describe '#background_tasks' do
+    let(:transport) { instance_double(ClaudeAgentSDK::Transport, write: nil) }
+    let(:query) { described_class.new(transport: transport, is_streaming_mode: true) }
+
+    it 'omits tool_use_id entirely when backgrounding every foreground task' do
+      expect(query).to receive(:send_control_request).with({ subtype: 'background_tasks' }).and_return({})
+      expect(query.background_tasks).to eq({})
+    end
+
+    it 'omits tool_use_id when it is explicitly nil' do
+      expect(query).to receive(:send_control_request).with({ subtype: 'background_tasks' }).and_return({})
+      query.background_tasks(tool_use_id: nil)
+    end
+
+    it 'targets a single task by its spawning tool_use_id and returns the CLI payload' do
+      expect(query).to receive(:send_control_request)
+        .with({ subtype: 'background_tasks', tool_use_id: 'toolu_42' })
+        .and_return({ backgrounded: false })
+      expect(query.background_tasks(tool_use_id: 'toolu_42')).to eq({ backgrounded: false })
+    end
+
+    # The CLI normalizes "" to "background ALL foreground tasks" — a selector
+    # built from a missing id must never reach it.
+    #
+    # send_control_request is replaced with a recorder, so a regressed guard
+    # fails these examples immediately instead of falling into the real control
+    # path and parking on the (20-minute default) control timeout.
+    describe 'selector guard' do
+      let(:sent) { [] }
+
+      before do
+        allow(query).to receive(:send_control_request) do |request|
+          sent << request
+          {}
+        end
+      end
+
+      {
+        'an empty String' => '', 'a frozen empty String' => ''.dup.freeze, 'a Symbol' => :toolu,
+        'an Integer' => 42, 'false' => false, 'an Array' => [], 'a Hash' => {}, 'an arbitrary Object' => Object.new
+      }.each do |label, bad|
+        it "rejects #{label} as a tool_use_id and sends nothing" do
+          expect { query.background_tasks(tool_use_id: bad) }
+            .to raise_error(ArgumentError, /non-empty String.*pass nil explicitly/)
+          expect(sent).to be_empty
+          expect(transport).not_to have_received(:write)
+        end
+      end
+
+      it 'rejects an empty String subclass whose empty? lies, and sends nothing' do
+        lying = Class.new(String) { def empty? = false }.new('')
+
+        expect { query.background_tasks(tool_use_id: lying) }
+          .to raise_error(ArgumentError, /non-empty String.*pass nil explicitly/)
+        expect(sent).to be_empty
+      end
+
+      it 'sends a private plain-String copy, not the caller\'s object' do
+        caller_id = +'toolu_42'
+        query.background_tasks(tool_use_id: caller_id)
+
+        selector = sent.first.fetch(:tool_use_id)
+        expect(sent.size).to eq(1)
+        expect(selector).to eq('toolu_42')
+        expect(selector).to be_instance_of(String)
+        expect(selector).not_to equal(caller_id)
+
+        caller_id.clear # a later mutation of the caller's String cannot reach the request
+        expect(sent.first.fetch(:tool_use_id)).to eq('toolu_42')
+      end
+
+      it 'copies a String subclass down to a plain String with the real id' do
+        subclass_id = Class.new(String).new('toolu_42')
+        query.background_tasks(tool_use_id: subclass_id)
+
+        expect(sent.first.fetch(:tool_use_id)).to eq('toolu_42')
+        expect(sent.first.fetch(:tool_use_id)).to be_instance_of(String)
+      end
+
+      it 'accepts a frozen valid String' do
+        frozen_id = (+'toolu_42').freeze
+        expect(frozen_id).to be_frozen
+        query.background_tasks(tool_use_id: frozen_id)
+
+        expect(sent).to eq([{ subtype: 'background_tasks', tool_use_id: 'toolu_42' }])
+      end
+
+      it 'keeps a whitespace-only id as a targeted selector, byte for byte (never stripped or widened)' do
+        query.background_tasks(tool_use_id: " \t\n ")
+
+        expect(sent).to eq([{ subtype: 'background_tasks', tool_use_id: " \t\n " }])
+      end
+    end
+
+    # Drives the real send_control_request / JSON writer / control_response
+    # path, bounded so a request that is never written fails fast.
+    def background_tasks_over_the_wire(payload, **kwargs)
+      written = []
+      allow(transport).to receive(:write) { |line| written << JSON.parse(line) }
+
+      result = nil
+      Async do |task|
+        task.with_timeout(2.0) do
+          sender = task.async { query.background_tasks(**kwargs) }
+          task.sleep 0.01 until written.any?
+          query.send(:handle_control_response,
+                     { type: 'control_response',
+                       response: { subtype: 'success', request_id: written.first.fetch('request_id'),
+                                   response: payload } })
+          result = sender.wait
+        end
+      end.wait
+      [result, written]
+    end
+
+    # Resolved through the real control_response path, so the documented
+    # return contract is what send_control_request actually unwraps.
+    [
+      [{ tool_use_id: 'toolu_42' }, { backgrounded: true }, { 'subtype' => 'background_tasks', 'tool_use_id' => 'toolu_42' }],
+      [{ tool_use_id: 'toolu_42' }, { backgrounded: false }, { 'subtype' => 'background_tasks', 'tool_use_id' => 'toolu_42' }],
+      [{}, {}, { 'subtype' => 'background_tasks' }]
+    ].each do |kwargs, payload, wire_request|
+      it "returns #{payload.inspect} unchanged for #{kwargs.inspect}" do
+        result, written = background_tasks_over_the_wire(payload, **kwargs)
+
+        expect(result).to eq(payload)
+        expect(written.size).to eq(1)
+        expect(written.first).to include('type' => 'control_request')
+        expect(written.first.fetch('request')).to eq(wire_request)
+      end
+    end
+
+    it 'serializes the real id even when a String subclass overrides to_json' do
+      forged = Class.new(String) { def to_json(*) = '""' }.new('toolu_42')
+      _result, written = background_tasks_over_the_wire({ backgrounded: true }, tool_use_id: forged)
+
+      expect(written.first.fetch('request')).to eq('subtype' => 'background_tasks', 'tool_use_id' => 'toolu_42')
     end
   end
 
@@ -741,9 +940,21 @@ RSpec.describe ClaudeAgentSDK::Query do
 
       expect(response[:error]).to be_nil
       expect(response.dig(:result, :isError)).to eq(true)
-      # gem text ("Internal error calling tool X: msg"); Python says
-      # "msg" bare — same semantics, different prefix (accepted divergence)
-      expect(response.dig(:result, :content).first[:text]).to include('kaboom from user handler')
+      # Bare message like Python's str(e). Rescued inside the SDK's tool
+      # class, so the text is independent of the mcp gem version — mcp >= 1.2
+      # redacts e.message from its own "Internal error calling tool X".
+      expect(response.dig(:result, :content).first[:text]).to eq('kaboom from user handler')
+    end
+
+    it 'reports a malformed handler result in-band with the SDK diagnostic intact' do
+      server = server_with('not_hash') { |_args| 'oops' }
+
+      response = dispatch(server, { id: 3, method: 'tools/call', params: { name: 'not_hash', arguments: {} } })
+
+      expect(response[:error]).to be_nil
+      expect(response.dig(:result, :isError)).to eq(true)
+      expect(response.dig(:result, :content).first[:text])
+        .to eq("Tool 'not_hash' must return a hash with :content key")
     end
 
     it 'reports unknown tools in-band with isError' do
@@ -868,6 +1079,34 @@ RSpec.describe ClaudeAgentSDK::Query do
       end
     end
 
+    # Python #1268: systemPromptSnapshot rides on initialize. false is
+    # meaningful (rebuild every request), so it is sent explicitly; only an
+    # unset value is omitted.
+    it 'sends systemPromptSnapshot in initialize, including an explicit false' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      [true, false].each do |snapshot|
+        query = described_class.new(transport: transport, is_streaming_mode: true, system_prompt_snapshot: snapshot)
+        allow(query).to receive(:send_control_request) do |request|
+          expect(request[:subtype]).to eq('initialize')
+          expect(request[:systemPromptSnapshot]).to be(snapshot)
+          {}
+        end
+        query.initialize_protocol
+      end
+    end
+
+    it 'omits systemPromptSnapshot from initialize when unset' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      query = described_class.new(transport: transport, is_streaming_mode: true)
+      allow(query).to receive(:send_control_request) do |request|
+        expect(request).not_to have_key(:systemPromptSnapshot)
+        {}
+      end
+      query.initialize_protocol
+    end
+
     it 'sends forwardSubagentText in initialize only when enabled' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
 
@@ -885,6 +1124,35 @@ RSpec.describe ClaudeAgentSDK::Query do
           {}
         end
         query.initialize_protocol
+      end
+    end
+
+    it 'sends agentProgressSummaries in initialize whenever it is set, false included' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      [true, false].each do |value|
+        query = described_class.new(transport: transport, is_streaming_mode: true, agent_progress_summaries: value)
+        requests = []
+        allow(query).to receive(:send_control_request) { |request| requests << request and {} }
+        query.initialize_protocol
+
+        expect(requests.size).to eq(1)
+        expect(requests.first).to have_key(:agentProgressSummaries)
+        expect(requests.first[:agentProgressSummaries]).to be(value)
+      end
+    end
+
+    it 'omits agentProgressSummaries from initialize when unset' do
+      transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
+
+      [{}, { agent_progress_summaries: nil }].each do |kwargs|
+        query = described_class.new(transport: transport, is_streaming_mode: true, **kwargs)
+        requests = []
+        allow(query).to receive(:send_control_request) { |request| requests << request and {} }
+        query.initialize_protocol
+
+        expect(requests.size).to eq(1)
+        expect(requests.first).not_to have_key(:agentProgressSummaries)
       end
     end
 
@@ -947,6 +1215,30 @@ RSpec.describe ClaudeAgentSDK::Query do
   end
 
   describe '#parse_hook_input' do
+    %w[Stop SubagentStop].each do |event|
+      it "preserves #{event} background snapshots, including unknown fields and nil versus empty" do
+        query = described_class.new(transport: mock_transport, is_streaming_mode: true)
+        tasks = [{ id: 'bg-1', type: 'subagent', status: 'running', agent_type: 'reviewer', future: false }]
+        crons = [{ id: 'cron-2', schedule: '*/5 * * * *', prompt: 'Check' }]
+        payload = { hook_event_name: event, background_tasks: tasks, session_crons: crons }
+        parsed = query.send(:parse_hook_input, payload)
+        expect(parsed.background_tasks).to eq(tasks)
+        expect(parsed.session_crons).to eq(crons)
+
+        string_payload = JSON.parse(JSON.generate(payload))
+        parsed = query.send(:parse_hook_input, string_payload)
+        expect(parsed.background_tasks).to eq(string_payload['background_tasks'])
+        expect(parsed.session_crons).to eq(string_payload['session_crons'])
+
+        absent = query.send(:parse_hook_input, { hook_event_name: event })
+        expect(absent.background_tasks).to be_nil
+        expect(absent.session_crons).to be_nil
+        empty = query.send(:parse_hook_input, { hook_event_name: event, background_tasks: [], session_crons: [] })
+        expect(empty.background_tasks).to eq([])
+        expect(empty.session_crons).to eq([])
+      end
+    end
+
     it 'preserves the event name and raw payload for unknown hook events' do
       transport = instance_double(ClaudeAgentSDK::Transport, write: nil)
       query = described_class.new(transport: transport, is_streaming_mode: true)
@@ -1169,6 +1461,103 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
   end
 
+  describe 'control request send lifecycle' do
+    let(:transport) { mock_transport }
+    let(:query) { described_class.new(transport: transport, is_streaming_mode: true) }
+
+    def expect_no_control_waiters
+      expect(query.instance_variable_get(:@pending_control_responses)).to be_empty
+      expect(query.instance_variable_get(:@pending_control_results)).to be_empty
+    end
+
+    it 'cleans registration when serialization fails' do
+      expect(transport).not_to receive(:write)
+      request = { subtype: 'test', input: "\xff" }
+      expect { query.send(:send_control_request, request) }.to raise_error(JSON::GeneratorError)
+      expect_no_control_waiters
+    end
+
+    it 'cleans registration when write fails' do
+      allow(transport).to receive(:write).and_raise(ClaudeAgentSDK::CLIConnectionError, 'broken pipe')
+      expect { query.interrupt }.to raise_error(ClaudeAgentSDK::CLIConnectionError, 'broken pipe')
+      expect_no_control_waiters
+    end
+
+    it 'preserves a schedulerless transport timeout rather than relabeling it' do
+      error = Timeout::Error.new('remote transport read deadline')
+      allow(transport).to receive(:write).and_raise(error)
+      expect { query.interrupt }.to(raise_error { |raised| expect(raised).to equal(error) })
+      expect_no_control_waiters
+    end
+
+    it 'preserves an outer schedulerless deadline rather than relabeling it' do
+      allow(query).to receive(:control_request_timeout_seconds).and_return(10)
+      allow(transport).to receive(:write) { sleep 10 }
+      expect { Timeout.timeout(0.01) { query.interrupt } }.to raise_error(Timeout::Error)
+      expect_no_control_waiters
+    end
+
+    it 'cleans registration when the sender is stopped inside write' do
+      entered = Thread::Queue.new
+      release = Thread::Queue.new
+      allow(transport).to receive(:write) {
+        entered << true
+        release.pop
+      }
+      Async do |task|
+        sender = task.async { query.interrupt }
+        entered.pop
+        sender.stop
+        expect_no_control_waiters
+      ensure
+        release.close
+        sender&.stop
+      end.wait
+    end
+
+    %i[thread reactor].each do |mode|
+      it "bounds a blocked #{mode} write without leaving a late sender" do
+        release = Thread::Queue.new
+        allow(query).to receive(:control_request_timeout_seconds).and_return(0.02)
+        # Match the real transport's StandardError wrapping. The deadline
+        # must escape that rescue and be translated at the request boundary.
+        allow(transport).to receive(:write) do
+          release.pop
+        rescue StandardError => e
+          raise ClaudeAgentSDK::CLIConnectionError, "write wrapped: #{e.message}"
+        end
+
+        if mode == :thread
+          worker = Thread.new do
+            query.interrupt
+          rescue StandardError => e
+            e
+          end
+          expect(worker.join(1)).not_to be_nil
+          expect(worker.value).to be_a(ClaudeAgentSDK::ControlRequestTimeoutError)
+        else
+          Async do |task|
+            expect { task.with_timeout(1) { query.interrupt } }
+              .to raise_error(ClaudeAgentSDK::ControlRequestTimeoutError, /interrupt/)
+          end.wait
+        end
+        expect_no_control_waiters
+      ensure
+        release.close
+        worker&.join
+      end
+    end
+
+    it 'does not relabel an outer reactor deadline as the control-request timeout' do
+      allow(query).to receive(:control_request_timeout_seconds).and_return(10)
+      allow(transport).to receive(:write) { sleep 10 }
+      Async do |task|
+        expect { task.with_timeout(0.01) { query.interrupt } }.to raise_error(Async::TimeoutError)
+        expect_no_control_waiters
+      end.wait
+    end
+  end
+
   describe 'control request waiting (reentrancy + level-trigger)' do
     def queue_driven_transport(thread_queue)
       transport = mock_transport
@@ -1176,6 +1565,41 @@ RSpec.describe ClaudeAgentSDK::Query do
         loop { blk.call(thread_queue.pop) } # Thread::Queue#pop is scheduler-aware
       end
       transport
+    end
+
+    %i[thread inline].each do |scheduling|
+      %i[pending after_eof].each do |timing|
+        it "rejects #{scheduling} control requests on clean EOF (#{timing})" do
+          eof = Thread::Queue.new
+          transport = mock_transport
+          allow(transport).to receive(:read_messages) { eof.pop }
+          query = described_class.new(transport: transport, is_streaming_mode: true)
+          allow(query).to receive(:control_request_timeout_seconds).and_return(0.05)
+
+          Async do |task|
+            query.start
+            if timing == :pending
+              expect(transport).to receive(:write) { eof << true }
+            else
+              eof << true
+              query.instance_variable_get(:@task).wait
+              expect(transport).not_to receive(:write)
+            end
+
+            task.with_timeout(1) do
+              expect do
+                ClaudeAgentSDK::FiberBoundary.invoke(scheduling: scheduling) { query.initialize_protocol }
+              end.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Control stream ended/)
+            end
+            expect(query.instance_variable_get(:@pending_control_responses)).to be_empty
+            expect(query.instance_variable_get(:@pending_control_results)).to be_empty
+            # Clean EOF is still a normal end for the SDK message consumer.
+            expect { query.receive_messages { |_| nil } }.not_to raise_error
+          ensure
+            query.close
+          end.wait
+        end
+      end
     end
 
     it 'supports control requests from a FiberBoundary worker thread (in-callback reentrancy)' do

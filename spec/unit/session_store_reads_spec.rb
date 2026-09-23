@@ -237,6 +237,42 @@ RSpec.describe 'SessionStore-backed reads' do
         .to eq(['abc'])
     end
 
+    it 'reads the last metadata even before messages arrive and preserves future fields' do
+      key = { 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/workflows/run-1/agent-meta' }
+      latest = { 'type' => 'agent_metadata', 'agentType' => 'reviewer', 'toolUseId' => 'spawn-new',
+                 'parentAgentId' => 'parent-2', 'spawnDepth' => 2, 'futureField' => false }
+      store.append(key, [{ 'type' => 'agent_metadata', 'toolUseId' => 'spawn-old' }, latest])
+
+      expect(ClaudeAgentSDK.get_subagent_metadata_from_store(
+               session_store: store, session_id: sid2, agent_id: 'meta', directory: dir
+             )).to eq('agentType' => 'reviewer', 'toolUseId' => 'spawn-new', 'parentAgentId' => 'parent-2',
+                      'spawnDepth' => 2, 'futureField' => false)
+      expect(store.load(key).last).to eq(latest) # do not mutate an adapter-owned entry
+    end
+
+    it 'prefers canonical metadata over a nested duplicate and scopes to the requested session' do
+      key = { 'project_key' => project_key, 'session_id' => sid2 }
+      store.append(key.merge('subpath' => 'subagents/workflows/run-1/agent-meta'),
+                   [{ 'type' => 'agent_metadata', 'toolUseId' => 'nested' }])
+      store.append(key.merge('subpath' => 'subagents/agent-meta'),
+                   [{ 'type' => 'agent_metadata', 'toolUseId' => 'canonical' }])
+      args = { session_store: store, session_id: sid2, agent_id: 'meta', directory: dir }
+      expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args)).to eq('toolUseId' => 'canonical')
+      expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args, session_id: sid1)).to be_nil
+    end
+
+    it 'falls back to the direct subpath without list_subkeys and propagates adapter errors' do
+      adapter = double('load-only store')
+      key = { 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/agent-meta' }
+      allow(adapter).to receive(:load).with(key).and_return([{ 'type' => 'agent_metadata' }])
+      args = { session_store: adapter, session_id: sid2, agent_id: 'meta', directory: dir }
+      expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args)).to eq({})
+      allow(adapter).to receive(:load).with(key).and_return(nil)
+      expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args)).to be_nil
+      allow(adapter).to receive(:load).with(key).and_raise(IOError, 'offline')
+      expect { ClaudeAgentSDK.get_subagent_metadata_from_store(**args) }.to raise_error(IOError, 'offline')
+    end
+
     it 'reads subagent messages, dropping synthetic agent_metadata entries' do
       msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
         session_store: store, session_id: sid2, agent_id: 'abc', directory: dir

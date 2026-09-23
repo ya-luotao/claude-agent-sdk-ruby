@@ -59,7 +59,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     hook_fn = ->(_input, _tool_use_id, _context) { {} }
     matcher = ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash', hooks: [hook_fn], timeout: 30)
     options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-      hooks: { 'PreToolUse' => [matcher] }
+      hooks: { 'PostToolUse' => nil, 'Stop' => [], PreToolUse: [matcher] }
     )
 
     writes = []
@@ -102,7 +102,7 @@ RSpec.describe ClaudeAgentSDK, '.query' do
 
   it 'passes nil hooks when all matcher lists are empty' do
     options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-      hooks: { 'PreToolUse' => [] }
+      hooks: { 'PreToolUse' => [], 'PostToolUse' => nil }
     )
 
     captured_query_args = nil
@@ -538,6 +538,46 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     expect(captured_query_args[:exclude_dynamic_sections]).to be(true)
   end
 
+  # Python #1268: query() hands snapshot to Query only for the preset and
+  # custom forms, and a false value survives the trip.
+  {
+    [{ type: 'custom', prompt: 'Be helpful', snapshot: false }] => false,
+    [{ type: 'preset', preset: 'claude_code', snapshot: true }] => true,
+    [{ type: 'preset', preset: 'claude_code' }] => nil,
+    [{ type: 'file', path: '/p.md', snapshot: false }] => nil,
+    ['Be helpful'] => nil
+  }.each do |(system_prompt), expected|
+    it "passes system_prompt_snapshot #{expected.inspect} for #{system_prompt.inspect} to the control protocol" do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: system_prompt)
+
+      captured_query_args = nil
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+      allow(transport).to receive(:write)
+
+      query_handler = instance_double(
+        ClaudeAgentSDK::Query,
+        start: true,
+        initialize_protocol: nil,
+        wait_for_result_and_end_input: nil,
+        close: nil
+      )
+      allow(query_handler).to receive(:receive_messages)
+      allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        captured_query_args = kwargs
+        query_handler
+      end
+
+      Async do
+        described_class.query(prompt: 'hello', options: options) { |_message| nil }
+      end.wait
+
+      expect(captured_query_args.fetch(:system_prompt_snapshot)).to be(expected)
+    end
+  end
+
   it 'passes forward_subagent_text from the options to the control protocol' do
     transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
     allow(transport).to receive(:write)
@@ -566,6 +606,38 @@ RSpec.describe ClaudeAgentSDK, '.query' do
       end.wait
 
       expect(captured_query_args[:forward_subagent_text]).to be(enabled)
+    end
+  end
+
+  it 'passes agent_progress_summaries from the options to the control protocol, preserving nil vs false' do
+    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+    allow(transport).to receive(:write)
+
+    query_handler = instance_double(
+      ClaudeAgentSDK::Query,
+      start: true,
+      initialize_protocol: nil,
+      wait_for_result_and_end_input: nil,
+      close: nil
+    )
+    allow(query_handler).to receive(:receive_messages)
+    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
+    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+
+    [true, false, nil].each do |value|
+      captured_query_args = nil
+      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
+        captured_query_args = kwargs
+        query_handler
+      end
+
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(agent_progress_summaries: value)
+      Async do
+        described_class.query(prompt: 'hello', options: options) { |_message| nil }
+      end.wait
+
+      expect(captured_query_args).to have_key(:agent_progress_summaries)
+      expect(captured_query_args[:agent_progress_summaries]).to be(value)
     end
   end
 end

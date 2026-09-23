@@ -47,7 +47,7 @@ module ClaudeAgentSDK
     # Single source of truth: bumped here (and only here) by
     # .github/workflows/cli-pin-bump.yml or a Python-sync release, so a
     # Dependabot bump of the gem carries the CLI forward with it.
-    PINNED_CLI_VERSION = '2.1.259'
+    PINNED_CLI_VERSION = '2.1.280'
     BINARY_NAME = 'claude'
     VERSION_FILE = 'VERSION'
     LOCK_FILE = '.install.lock'
@@ -272,34 +272,33 @@ module ClaudeAgentSDK
       end
     end
 
-    # The VERSION file: line 1 the installed version, line 2 the SHA-256 of the
-    # binary that was verified at install time. The checksum is what lets the
-    # idempotency shortcut trust the vendored binary without a network call —
-    # a truncated, swapped or half-written binary no longer looks installed.
-    # An older single-line VERSION file simply reads as "no metadata", which
-    # triggers a clean reinstall.
+    # The VERSION file: version, verified SHA-256, and target platform, one
+    # per line. Both platform and checksum must match before trusting a cached
+    # binary offline: a cache copied between OS/CPU/libc targets is not usable.
+    # Older one- or two-line files lack that proof and trigger a clean reinstall.
     module Metadata
       class << self
         def read(dir)
           path = File.join(dir, VERSION_FILE)
           return nil unless File.file?(path)
 
-          version, checksum = File.read(path, METADATA_READ_LIMIT).to_s.split("\n", 3)
+          version, checksum, platform = File.read(path, METADATA_READ_LIMIT).to_s.split("\n", 4)
           version = version.to_s.strip
           checksum = checksum.to_s.strip.downcase
-          return nil unless version.match?(VERSION_PATTERN) && checksum.match?(CHECKSUM_PATTERN)
+          platform = platform.to_s.strip
+          return nil unless version.match?(VERSION_PATTERN) && checksum.match?(CHECKSUM_PATTERN) && !platform.empty?
 
-          { version: version, checksum: checksum }
+          { version: version, checksum: checksum, platform: platform }
         end
 
         # Atomic: an unpredictable temp name opened O_EXCL, then renamed over
         # the old file. Without this a reader could observe a half-written
         # VERSION, or (worse) the previous version paired with a new binary.
-        def write(dir, version, checksum)
+        def write(dir, version, checksum, platform)
           tmp = File.join(dir, "#{VERSION_FILE}.#{SecureRandom.hex(8)}.tmp")
           begin
             File.open(tmp, File::WRONLY | File::CREAT | File::EXCL, 0o644) do |file|
-              file.write("#{version}\n#{checksum}\n")
+              file.write("#{version}\n#{checksum}\n#{platform}\n")
             end
             File.rename(tmp, File.join(dir, VERSION_FILE))
           ensure
@@ -343,9 +342,9 @@ module ClaudeAgentSDK
         with_install_lock(dir) do
           sweep_stale_temp_files(dir)
           resolved = Release.resolve_version(requested)
-          next binary if installed?(dir, resolved)
-
           platform = Platform.detect
+          next binary if installed?(dir, resolved, platform)
+
           publish(dir, binary, resolved, platform, Release.platform_entry(resolved, platform))
           binary
         end
@@ -417,13 +416,13 @@ module ClaudeAgentSDK
       end
 
       # True only when the vendored binary is byte-for-byte the one recorded
-      # by a previous install of this exact version. No network access.
-      def installed?(dir, version)
+      # by a previous install of this exact version and platform. No network access.
+      def installed?(dir, version, platform)
         binary = installed_path(dir: dir)
         return false unless binary
 
         recorded = Metadata.read(dir)
-        return false unless recorded && recorded[:version] == version
+        return false unless recorded && recorded[:version] == version && recorded[:platform] == platform
 
         Digest::SHA256.file(binary).hexdigest == recorded[:checksum]
       rescue SystemCallError
@@ -451,7 +450,7 @@ module ClaudeAgentSDK
         tmp = "#{binary}.download.#{SecureRandom.hex(8)}"
         begin
           fetch_verified(version, platform, entry, tmp)
-          Metadata.write(dir, version, entry[:checksum])
+          Metadata.write(dir, version, entry[:checksum], platform)
           File.rename(tmp, binary)
         ensure
           FileUtils.rm_f(tmp)

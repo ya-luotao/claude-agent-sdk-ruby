@@ -25,6 +25,83 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       server = described_class.new(name: 'test', tools: [tool])
       expect(server.tools).to eq([tool])
     end
+
+    it 'rejects reserved top-level arguments when registering raw or convenience tool definitions' do
+      [
+        { server_context: :string },
+        { 'server_context' => :string },
+        { type: 'object', properties: { server_context: { type: 'string' } } },
+        { 'type' => 'object', 'properties' => { 'server_context' => { 'type' => 'string' } } }
+      ].each do |schema|
+        handler = ->(_) { raise 'must not invoke a rejected tool' }
+        tool = ClaudeAgentSDK::SdkMcpTool.new(name: 'lookup', description: 'Lookup', input_schema: schema, handler: handler)
+        expect { described_class.new(name: 'test', tools: [tool]) }
+          .to raise_error(ArgumentError, /lookup.*server_context.*reserved.*rename/i)
+
+        tool = ClaudeAgentSDK.create_tool('lookup', 'Lookup', schema, &handler)
+        expect { ClaudeAgentSDK.create_sdk_mcp_server(name: 'test', tools: [tool]) }
+          .to raise_error(ArgumentError, /lookup.*server_context.*reserved.*rename/i)
+      end
+    end
+
+    it 'preserves renamed and nested context arguments through actual tools/call dispatch' do
+      schema = {
+        type: 'object',
+        properties: {
+          request_context: { type: 'string' },
+          payload: { type: 'object', properties: { server_context: { type: 'string' } } }
+        },
+        required: %w[request_context payload]
+      }
+      received = []
+      tool = ClaudeAgentSDK.create_tool('lookup', 'Lookup', schema) do |args|
+        received << args
+        { content: [{ type: 'text', text: JSON.generate(args) }] }
+      end
+      server = described_class.new(name: 'test', tools: [tool])
+      arguments = { request_context: 'outer', payload: { server_context: 'nested' } }
+      response = server.handle_message(id: 1, method: 'tools/call', params: { name: 'lookup', arguments: arguments })
+
+      expect(response.dig(:result, :isError)).to be false
+      expect(JSON.parse(response.dig(:result, :content, 0, :text), symbolize_names: true)).to eq(arguments)
+      expect(received).to eq([arguments])
+    end
+  end
+
+  describe 'reserved arguments before MCP context injection' do
+    [
+      { type: 'object', allOf: [{ properties: { server_context: { type: 'string' } } }] },
+      { type: 'object', '$ref' => '#/$defs/args', '$defs' => { args: { properties: { server_context: { type: 'string' } } } } },
+      { type: 'object', additionalProperties: true }
+    ].each_with_index do |schema, index|
+      it "rejects reserved arguments without losing data for schema #{index}, through both MCP entry points" do
+        received = []
+        tool = ClaudeAgentSDK.create_tool('echo', 'Echo', schema) do |args|
+          received << args
+          { content: [{ type: 'text', text: JSON.generate(args) }] }
+        end
+        server = described_class.new(name: 'test', tools: [tool])
+
+        %i[handle_message handle_json].each do |entry_point|
+          [:server_context, 'server_context'].each do |key|
+            request = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: { key => 'keep' } } }
+            response = if entry_point == :handle_json
+                         JSON.parse(server.handle_json(JSON.generate(request)), symbolize_names: true)
+                       else
+                         server.handle_message(request)
+                       end
+            expect(response.dig(:result, :isError)).to be true
+            expect(response.dig(:result, :content, 0, :text)).to match(/server_context.*reserved.*rename/i)
+          end
+        end
+        expect(received).to be_empty
+
+        arguments = { request_context: 'outer', payload: { server_context: 'nested' } }
+        result = server.handle_message(id: 2, method: 'tools/call', params: { name: 'echo', arguments: arguments })
+        expect(result.dig(:result, :isError)).to be false
+        expect(received).to eq([arguments])
+      end
+    end
   end
 
   describe '#list_tools' do
@@ -460,7 +537,7 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       # a given mcp version's metaschema happens to reject: simulate the gem
       # raising ArgumentError on the tool's real schema (non-empty properties),
       # while still letting the permissive fallback ({} properties) build.
-      allow(MCP::Tool::InputSchema).to receive(:new).and_wrap_original do |orig, schema|
+      allow(described_class::ToolInputSchema).to receive(:new).and_wrap_original do |orig, schema|
         props = schema[:properties] || schema['properties']
         raise ArgumentError, 'simulated draft4 incompatibility' if props && !props.empty?
 
@@ -479,6 +556,13 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
       end.to output(/argument validation disabled/).to_stderr
       expect(res.dig(:result, :content, 0, :text)).to eq('n=3')
       expect(res.dig(:result, :isError)).to eq(false)
+
+      expect(tool.handler).not_to receive(:call)
+      [nil, false].each do |value|
+        rejected = rpc(server3, 'tools/call', { name: 'count', arguments: { n: 3, server_context: value } })
+        expect(rejected.dig(:result, :isError)).to be true
+        expect(rejected.dig(:result, :content, 0, :text)).to match(/server_context.*reserved.*rename/i)
+      end
     end
 
     it 'normalizes gem protocol errors on tools/call to in-band isError (version drift guard)' do
@@ -526,6 +610,39 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer do
   end
 
   describe '#handle_json' do
+    [
+      [String, 'string', 'hello', 42],
+      [Integer, 'integer', 42, '42'],
+      [Float, 'number', 1.5, '1.5'],
+      [TrueClass, 'boolean', true, 'true'],
+      [FalseClass, 'boolean', false, 'false'],
+      [:string, 'string', 'hello', 42],
+      [:integer, 'integer', 42, '42'],
+      [:float, 'number', 1.5, '1.5'],
+      [:number, 'number', 1.5, '1.5'],
+      [:boolean, 'boolean', false, 'false']
+    ].each do |type, json_type, valid, invalid|
+      it "advertises and validates #{type.inspect} shorthand through tools/call" do
+        received = []
+        tool = ClaudeAgentSDK.create_tool('echo', 'Echo value', { value: type }) do |args|
+          received << args
+          { content: [{ type: 'text', text: JSON.generate(args) }] }
+        end
+        server = described_class.new(name: 'test', tools: [tool])
+        expect(server.list_tools.first.dig(:inputSchema, :properties, :value, :type)).to eq(json_type)
+
+        [valid, invalid].each do |value|
+          request = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: { value: value } } }
+          response = JSON.parse(server.handle_json(JSON.generate(request)), symbolize_names: true)
+          expect(response.dig(:result, :isError)).to eq(value == invalid)
+          next if value == invalid
+
+          expect(JSON.parse(response.dig(:result, :content, 0, :text))).to eq('value' => valid)
+        end
+        expect(received).to eq([{ value: valid }])
+      end
+    end
+
     it 'exposes correct schema via MCP tools/list for string-keyed schemas' do
       tool = ClaudeAgentSDK::SdkMcpTool.new(
         name: 'save_memory',

@@ -11,9 +11,13 @@
 #     s3://{bucket}/{prefix}{project_key}/{session_id}/part-{epochMs13}-{rand6}.jsonl
 #
 # Each #append writes a new part; #load lists, sorts, and concatenates them. The
-# 13-digit zero-padded epoch-ms prefix means lexical key order == chronological
-# order. A per-instance monotonic millisecond counter orders same-instance
-# same-ms appends; the random hex suffix disambiguates concurrent instances.
+# 13-digit prefix is a logical epoch-ms sequence reserved via conditional PUT
+# of a per-transcript .sequence object, so ordering survives instance handoff
+# and clock rollback. Concurrent appends are ordered by reservation, NOT upload
+# completion; a failed upload leaves a harmless gap. Reads during concurrent
+# appends may omit unfinished uploads (they are not transactional snapshots).
+# Old part files remain readable. Upgrade all writers before writing again:
+# old writers do not participate in the sequence protocol.
 #
 # Requires the `aws-sdk-s3` gem (not a dependency of claude-agent-sdk):
 #
@@ -38,6 +42,7 @@
 # implemented but only invoked when you call delete_session_via_store from the
 # SDK.
 require 'json'
+require 'digest'
 require 'securerandom'
 require 'stringio'
 require 'claude_agent_sdk'
@@ -46,11 +51,14 @@ require 'claude_agent_sdk'
 # ListObjectsV2 + sort + GetObject + concat.
 class S3SessionStore < ClaudeAgentSDK::SessionStore
   PART_MTIME_RE = %r{/part-(\d{13})-[0-9a-f]{6}\.jsonl\z}
+  SEQUENCE_FILE = '.sequence'
+  SEQUENCE_ATTEMPTS = 8
 
   # @param bucket [String] S3 bucket name.
   # @param client [Aws::S3::Client] pre-configured client (caller controls
   #   region, credentials, endpoint, etc.). Any object responding to put_object/
-  #   list_objects_v2/get_object/delete_objects works (see RecordingClient).
+  #   list_objects_v2/get_object/delete_objects works if it implements S3's
+  #   strong consistency and conditional PUT/ETag semantics (see RecordingClient).
   # @param prefix [String] optional key prefix; a trailing slash is normalized.
   def initialize(bucket:, client:, prefix: '')
     super()
@@ -60,15 +68,13 @@ class S3SessionStore < ClaudeAgentSDK::SessionStore
     # Non-empty prefix always ends in exactly one '/'; empty stays empty.
     @prefix = prefix.empty? ? '' : "#{prefix.sub(%r{/+\z}, '')}/"
     @client = client
-    @last_ms = 0
-    @mutex = Mutex.new
   end
 
   def append(key, entries)
     return if entries.nil? || entries.empty?
 
-    object_key = key_prefix(key) + next_part_name
     body = "#{entries.map { |e| JSON.generate(e) }.join("\n")}\n"
+    object_key = key_prefix(key) + next_part_name(key)
     @client.put_object(bucket: @bucket, key: object_key, body: body, content_type: 'application/x-ndjson')
     nil
   end
@@ -84,6 +90,8 @@ class S3SessionStore < ClaudeAgentSDK::SessionStore
     each_listed(prefix: prefix, delimiter: '/') do |k|
       # Guard against S3-compatibles that ignore Delimiter: keep only direct
       # children (part files have no '/' after the prefix).
+      next if k == prefix + SEQUENCE_FILE
+
       keys << k unless k[prefix.length..].include?('/')
     end
     return nil if keys.empty?
@@ -115,6 +123,8 @@ class S3SessionStore < ClaudeAgentSDK::SessionStore
     # List Contents (no Delimiter) so mtime can be derived from each part
     # filename's 13-digit epochMs prefix. CommonPrefixes carry no timestamp.
     each_listed(prefix: prefix) do |k, last_modified|
+      next if k.end_with?("/#{SEQUENCE_FILE}")
+
       # {prefix}{session_id}/part-{epochMs13}-{rand}.jsonl
       rest = k[prefix.length..]
       slash = rest.index('/')
@@ -172,6 +182,8 @@ class S3SessionStore < ClaudeAgentSDK::SessionStore
     subkeys = []
     seen = {}
     each_listed(prefix: prefix) do |k|
+      next if k.end_with?("/#{SEQUENCE_FILE}")
+
       # {prefix}{project_key}/{session_id}/{subpath}/part-{epochMs}-{rand}.jsonl
       rel = k[prefix.length..]
       parts = rel.split('/')
@@ -233,14 +245,50 @@ class S3SessionStore < ClaudeAgentSDK::SessionStore
     "#{@prefix}#{project_key}/"
   end
 
-  # Fixed-width epoch ms => lexical sort == chronological. `last_ms + 1` makes
-  # same-instance same-ms appends deterministic; the random suffix disambiguates
-  # instances. Guarded by a mutex since the SDK may append from multiple threads.
-  def next_part_name
-    ms = @mutex.synchronize do
-      @last_ms = [(Time.now.to_f * 1000).to_i, @last_ms + 1].max
+  # S3 conditional PUT is the serialization point, shared by all instances.
+  # A lost response or failed part upload can consume a number; never reuse it.
+  # This costs one GET + one PUT per append, plus a one-time legacy-part scan.
+  # Do not delete/expire .sequence while writers are active.
+  def next_part_name(key)
+    prefix = key_prefix(key)
+    sequence_key = prefix + SEQUENCE_FILE
+    SEQUENCE_ATTEMPTS.times do
+      previous, condition = read_sequence(sequence_key, prefix)
+      ms = [(Time.now.to_f * 1000).to_i, previous + 1].max
+      begin
+        @client.put_object(bucket: @bucket, key: sequence_key, body: ms.to_s,
+                           content_type: 'text/plain', **condition)
+        return format('part-%013d-%s.jsonl', ms, SecureRandom.hex(3))
+      rescue StandardError => e
+        # 412 = another writer won; 409 = conditional-write conflict. Re-read
+        # the current ETag before retrying. Other errors must reach the caller.
+        raise unless [409, 412].include?(http_status(e))
+      end
     end
-    format('part-%013d-%s.jsonl', ms, SecureRandom.hex(3))
+    raise 'S3 append sequence contention exceeded retry limit'
+  end
+
+  def read_sequence(sequence_key, prefix)
+    response = @client.get_object(bucket: @bucket, key: sequence_key)
+    [Integer(response.body.read, 10), { if_match: response.etag }]
+  rescue StandardError => e
+    raise unless http_status(e) == 404
+
+    # First writer after upgrade starts beyond every legacy part, not merely
+    # beyond its own wall clock. Concurrent initializers compete with If-None-Match.
+    last = 0
+    each_listed(prefix: prefix, delimiter: '/') do |k|
+      next if k[prefix.length..].include?('/')
+
+      match = PART_MTIME_RE.match(k)
+      last = [last, match[1].to_i].max if match
+    end
+    [last, { if_none_match: '*' }]
+  end
+
+  # Avoid requiring aws-sdk-s3 just to load this reference implementation.
+  def http_status(error)
+    error.context.http_response.status_code if error.respond_to?(:context)
   end
 
   # Yield every listed object key (and its LastModified) under +prefix+,
@@ -266,49 +314,86 @@ end
 # Minimal in-memory S3 client double for unit tests. Implements only the four
 # methods S3SessionStore calls and returns response objects shaped like
 # aws-sdk-s3's (method-style accessors). Honors Prefix and Delimiter='/' (only
-# direct children appear in #contents). Records every call so tests can assert
-# on operation sequences without a network round-trip.
+# direct children appear in #contents), pagination, and atomic conditional
+# writes. ETags are opaque quoted digests; missing keys / precondition failures
+# expose the same HTTP status path as aws-sdk-s3 errors.
 class S3SessionStore
   class RecordingClient
     Listed = Struct.new(:key, :last_modified)
     ListResult = Struct.new(:contents, :next_continuation_token)
-    GetResult = Struct.new(:body)
+    GetResult = Struct.new(:body, :etag)
     DeleteError = Struct.new(:key, :code)
     DeleteResult = Struct.new(:errors)
+    HttpResponse = Struct.new(:status_code)
+    Context = Struct.new(:http_response)
+
+    class HttpError < StandardError
+      attr_reader :context
+
+      def initialize(status)
+        super("S3 HTTP #{status}")
+        @context = Context.new(HttpResponse.new(status))
+      end
+    end
 
     attr_reader :objects, :calls
 
-    def initialize
+    def initialize(page_size: 1000)
       @objects = {}
       @calls = []
+      @mutex = Mutex.new
+      @page_size = page_size
     end
 
-    def put_object(bucket:, key:, body:, **_rest)
-      @calls << [:put_object, { bucket: bucket, key: key }]
-      @objects[key] = body.is_a?(String) ? body.dup : body
-      {}
-    end
+    def put_object(bucket:, key:, body:, if_match: nil, if_none_match: nil, **_rest)
+      @mutex.synchronize do
+        @calls << [:put_object, { bucket: bucket, key: key, if_match: if_match, if_none_match: if_none_match }]
+        raise HttpError.new(412) if if_none_match == '*' && @objects.key?(key)
+        raise HttpError.new(404) if if_match && !@objects.key?(key)
+        raise HttpError.new(412) if if_match && if_match != etag(@objects[key])
 
-    def list_objects_v2(bucket:, prefix: '', delimiter: nil, **_rest)
-      @calls << [:list_objects_v2, { bucket: bucket, prefix: prefix, delimiter: delimiter }]
-      contents = @objects.keys.filter_map do |k|
-        next unless k.start_with?(prefix)
-        next if delimiter == '/' && k[prefix.length..].include?('/')
-
-        Listed.new(k, nil)
+        @objects[key] = body.dup
+        {}
       end
-      ListResult.new(contents, nil)
+    end
+
+    def list_objects_v2(bucket:, prefix: '', delimiter: nil, continuation_token: nil, **_rest)
+      @mutex.synchronize do
+        @calls << [:list_objects_v2, { bucket: bucket, prefix: prefix, delimiter: delimiter }]
+        contents = @objects.keys.sort.filter_map do |k|
+          next unless k.start_with?(prefix)
+          next if delimiter == '/' && k[prefix.length..].include?('/')
+          next if continuation_token && k <= continuation_token
+
+          Listed.new(k, Time.at(1_800_000_000))
+        end
+        page = contents.first(@page_size)
+        ListResult.new(page, contents.length > page.length ? page.last.key : nil)
+      end
     end
 
     def get_object(bucket:, key:, **_rest)
-      @calls << [:get_object, { bucket: bucket, key: key }]
-      GetResult.new(StringIO.new(@objects.fetch(key)))
+      @mutex.synchronize do
+        @calls << [:get_object, { bucket: bucket, key: key }]
+        raise HttpError.new(404) unless @objects.key?(key)
+
+        body = @objects.fetch(key).dup
+        GetResult.new(StringIO.new(body), etag(body))
+      end
     end
 
     def delete_objects(bucket:, delete:, **_rest)
-      @calls << [:delete_objects, { bucket: bucket }]
-      delete[:objects].each { |obj| @objects.delete(obj[:key]) }
-      DeleteResult.new([])
+      @mutex.synchronize do
+        @calls << [:delete_objects, { bucket: bucket }]
+        delete[:objects].each { |obj| @objects.delete(obj[:key]) }
+        DeleteResult.new([])
+      end
+    end
+
+    private
+
+    def etag(body)
+      %Q("#{Digest::SHA256.hexdigest(body)}")
     end
   end
 end

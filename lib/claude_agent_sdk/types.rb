@@ -9,7 +9,7 @@ module ClaudeAgentSDK
 
   # Effort levels for `ClaudeAgentOptions#effort`. The CLI (Claude Code 2.1.111+)
   # accepts these values; the set of *supported* levels is model-dependent
-  # (e.g. `xhigh` is only supported on Opus 4.7 and falls back to `high` on
+  # (e.g. `xhigh` arrived with Opus 4.7 and falls back to `high` on
   # Opus 4.6 / Sonnet 4.6). An Integer is also accepted and forwarded verbatim.
   EFFORT_LEVELS = %w[low medium high xhigh max].freeze
 
@@ -421,12 +421,51 @@ module ClaudeAgentSDK
   # Task started system message (subagent/background task started)
   class TaskStartedMessage < SystemMessage
     attr_accessor :task_id, :description, :uuid, :session_id, :tool_use_id, :task_type,
-                  :workflow_name, :prompt
+                  :workflow_name, :prompt,
+                  :subagent_type # Subagent type, for Task/Agent tool subagents; nil otherwise
+
+    # Whether the task was registered in the background (`true`) or in the
+    # foreground with the spawning tool call blocking on it (`false`). `nil`
+    # means the CLI did not say (the field is optional, and only set for
+    # `local_agent` and `local_bash` tasks) — so test `== false`, never
+    # falsiness, to detect a foreground/blocking task. A resumed subagent is
+    # always registered in the background. A later move to the background does
+    # not re-emit task_started; it arrives as {TaskUpdatedMessage#is_backgrounded}.
+    #
+    # @return [Boolean, nil]
+    attr_accessor :is_backgrounded
+
+    # Nesting depth of a spawned subagent (`local_agent`) task: 1 for a
+    # top-level spawn, N+1 when spawned from inside a depth-N agent. `nil` on
+    # other task types and on CLIs that do not report it.
+    #
+    # @return [Integer, nil]
+    attr_accessor :spawn_depth
+
+    # Display flags, passed through for the host to act on — the SDK never
+    # filters frames or computes activity from them. Both are optional
+    # Booleans: `nil` when absent, an explicit `false` preserved.
+    #
+    # - `skip_transcript`: an ambient/housekeeping task. Hide it from the
+    #   inline transcript; it may still appear in a tasks panel.
+    # - `ambient`: true for tasks that are not activity — every
+    #   `skip_transcript` task, plus every live-update watcher (requested or
+    #   auto-started). Exclude these from activity indicators.
+    #
+    # @return [Boolean, nil]
+    attr_accessor :skip_transcript, :ambient
   end
 
-  # Task progress system message (periodic update from a running task)
+  # Task progress system message (periodic update from a running task).
+  #
+  # `summary` is an optional one-line status for the task's row — `nil` on any
+  # frame that lacks one. For a `local_agent` task it is the model-generated
+  # progress summary, which the CLI produces only while generation is enabled
+  # (see {ClaudeAgentOptions#agent_progress_summaries}); for a backgrounded
+  # `mcp_task` it is the MCP server's own status message and needs no option.
   class TaskProgressMessage < SystemMessage
-    attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name, :summary
+    attr_accessor :task_id, :description, :usage, :uuid, :session_id, :tool_use_id, :last_tool_name, :summary,
+                  :subagent_type # Subagent type, for Task/Agent tool subagents; nil otherwise
   end
 
   # Task notification system message (task completed/failed/stopped).
@@ -437,6 +476,42 @@ module ClaudeAgentSDK
   # should clear them on a terminal status from *either* message.
   class TaskNotificationMessage < SystemMessage
     attr_accessor :task_id, :status, :output_file, :summary, :uuid, :session_id, :tool_use_id, :usage
+
+    # Machine-readable cause, set only when the task did not end through an
+    # ordinary completion, failure, or stop. The one known value is
+    # `'worker_restart'` (the worker process restarted and the resumed process
+    # found the task orphaned; always with status `'stopped'`). Documentation,
+    # not validation: newer CLIs may add values.
+    #
+    # @return [String, nil]
+    attr_accessor :reason
+
+    # For a backgrounded MCP task (`task_type: 'mcp_task'`) that completed: the
+    # `resource_link` content blocks of its final result — the files it
+    # returned by reference. A backgrounded task's tool_result is placeholder
+    # text, so this is where a host learns which files the call produced; join
+    # to the originating call via `tool_use_id`. `nil` when the result had
+    # none or the task is any other type.
+    #
+    # Passed through from the CLI untouched, so each element is a Hash whose
+    # keys are **Symbols with the wire spelling preserved**: `:uri` and `:name`
+    # (Strings, always present), and optionally `:title`, `:description`,
+    # `:mimeType` (camelCase — a `:mime_type` lookup returns nil), `:size` (a
+    # Number, not necessarily an Integer), `:annotations` (a Hash of arbitrary
+    # values). Elements carry no `type: 'resource_link'` discriminator. The CLI
+    # describes its own output as at most 50 links / 64 KiB serialized; that is
+    # a producer-side note, and the SDK neither enforces nor truncates.
+    #
+    # @return [Array<Hash{Symbol => Object}>, nil]
+    attr_accessor :resource_links
+
+    # Display flags with the same meaning as on {TaskStartedMessage}:
+    # `skip_transcript` (hide from the inline transcript) and `ambient` (not
+    # activity — exclude from activity indicators). Optional Booleans: `nil`
+    # when absent, an explicit `false` preserved. The SDK does not act on them.
+    #
+    # @return [Boolean, nil]
+    attr_accessor :skip_transcript, :ambient
   end
 
   # Task updated system message (background task lifecycle state change).
@@ -455,16 +530,103 @@ module ClaudeAgentSDK
   # or absent patch falls back to {}; and `task_id` defaults to "" (never nil,
   # matching the Python SDK) so consumers can rely on it always being a String.
   # The full patch is preserved on `#patch` for callers that need more than the
-  # status.
+  # derived readers.
+  #
+  # A patch carries only the fields that changed, so every derived reader is
+  # `nil` when its field is absent. That matters most for `is_backgrounded`:
+  # `true` means the task just moved to the background (e.g. after
+  # {Client#background_tasks}), while `nil` means "this patch does not mention
+  # it" — not "foreground". Merge patches into your own task map rather than
+  # reading any single one as the task's full state.
   class TaskUpdatedMessage < SystemMessage
-    attr_accessor :task_id, :patch, :status, :uuid, :session_id
+    attr_accessor :task_id, :patch, :status, :uuid, :session_id,
+                  :description,     # patch[:description] — String, nil when unchanged
+                  :error,           # patch[:error] — String, nil when unchanged
+                  :end_time,        # patch[:end_time] — Integer (epoch ms), nil when unchanged
+                  :total_paused_ms, # patch[:total_paused_ms] — Integer, nil when unchanged
+                  :is_backgrounded  # patch[:is_backgrounded] — true/false, nil when unchanged
 
     def initialize(attributes = {})
       super
       @task_id ||= ''
       @patch = {} unless @patch.is_a?(Hash)
-      @status = @patch[:status]
+      @status = patch_value(:status)
+      @description = patch_value(:description)
+      @error = patch_value(:error)
+      @end_time = patch_value(:end_time)
+      @total_paused_ms = patch_value(:total_paused_ms)
+      @is_backgrounded = patch_value(:is_backgrounded)
     end
+
+    private
+
+    # The parser always hands over a symbol-keyed patch; a hand-built message
+    # may use string keys. `fetch` with a block (not `||`) keeps an explicit
+    # `false` from falling through to the string-key lookup's nil.
+    def patch_value(key)
+      @patch.fetch(key) { @patch[key.to_s] }
+    end
+  end
+
+  # Background tasks changed system message: the full set of live background
+  # tasks, emitted whenever membership changes (start, completion, kill, a
+  # foreground agent being backgrounded) or an entry's `ambient` flag flips.
+  #
+  # A **level** signal with **REPLACE semantics** — `tasks` is every live
+  # background task after the change, so swap your set for each payload rather
+  # than pairing task_started / task_notification edges; a missed edge then
+  # cannot wedge a stale "running" indicator. Per the CLI's contract:
+  #
+  # - Ordering relative to the edge frames for the same transition is
+  #   unspecified, and the payload carries ids only — do not correlate it
+  #   with the edge stream.
+  # - The level is per-process: nothing is emitted at startup, so reset to the
+  #   empty set whenever the session's CLI process (re)starts.
+  # - `tasks: []` is an authoritative empty snapshot for that process, not a
+  #   missing value.
+  # - A repeated `initialize` on an already-running process is answered with a
+  #   snapshot of the current set (even an empty one) right behind its success
+  #   response; older CLIs send nothing there. This SDK initializes once per
+  #   connection, so that only matters to custom transports that reconnect.
+  # - It covers *background* tasks only. A foreground subagent (the spawning
+  #   tool call still blocking) is not listed until it is backgrounded.
+  #
+  # `tasks` is passed through untouched: an Array of symbol-keyed Hashes
+  # `{ task_id:, task_type:, description:, ambient: }`. `:ambient` is optional;
+  # true marks tasks that are not activity (housekeeping, live-update
+  # watchers), which hosts should exclude from activity indicators.
+  #
+  # The SDK itself deliberately does not consume this frame for its own
+  # stdin-close bookkeeping; it is typed purely for consumers.
+  class BackgroundTasksChangedMessage < SystemMessage
+    attr_accessor :tasks, :uuid, :session_id
+  end
+
+  # Permission denied system message: a tool call was auto-denied without an
+  # interactive permission prompt (auto-mode classifier, dontAsk mode,
+  # headless-agent auto-deny, a deny rule, or — with no can_use_tool callback —
+  # an "ask" decision that nobody can answer). The "ask" path with a callback
+  # surfaces through can_use_tool instead.
+  #
+  # **Best-effort advisory, not a complete denial feed**:
+  # {ResultMessage#permission_denials} is the authoritative record. In rare
+  # races a booked denial has no frame, or a frame has no booked denial — so do
+  # not derive counts or permission state from this stream. Not covered at all:
+  # PreToolUse hook denies, deny-rule overrides of a hook's allow/ask decision,
+  # Read/Edit/Write calls refused by a path-scoped deny rule (all resolve before
+  # the permission check), and the MCP `--permission-prompt-tool` surface.
+  #
+  # `agent_id` is a subagent id for host-side routing; it is NOT a permission
+  # `request_id`, and this message is not a pending permission request.
+  # `decision_reason_type` is an open String (the values below are examples,
+  # not an enum). The CLI's `decision_reason_code` is marked internal and is
+  # left to `#data` with no stability promise.
+  class PermissionDeniedMessage < SystemMessage
+    attr_accessor :uuid, :session_id, :tool_name, :tool_use_id,
+                  :agent_id,             # Subagent ID when the denied call originated inside a subagent; nil otherwise
+                  :decision_reason_type, # Open String, e.g. "classifier", "asyncAgent", "mode", "rule"; nil when not reported
+                  :decision_reason,      # Human-readable reason from the deciding component; nil when not reported
+                  :message               # The rejection message returned to the model in the tool_result
   end
 
   # Result message with cost and usage information
@@ -623,12 +785,13 @@ module ClaudeAgentSDK
   # `display` controls how thinking content appears in responses. Valid values
   # are `"summarized"` (plaintext summary) and `"omitted"` (empty thinking
   # field, signature only). Defaults are model-dependent: Opus 4.6/Sonnet 4.6
-  # default to `"summarized"`; Opus 4.7 and Mythos Preview default to
-  # `"omitted"`. Pass `display: "summarized"` explicitly on Opus 4.7 to get
+  # default to `"summarized"`; Opus 4.7 and every later model default to
+  # `"omitted"`. Pass `display: "summarized"` explicitly on those to get
   # visible thinking text. Not supported with `ThinkingConfigDisabled`.
   THINKING_DISPLAY_VALUES = %w[summarized omitted].freeze
 
-  # Adaptive thinking: uses a default budget of 32000 tokens
+  # Adaptive thinking: the model decides when and how much to think
+  # (sent as `--thinking adaptive`, no budget); control depth with `effort`.
   class ThinkingConfigAdaptive < Type
     attr_reader :type, :display
 
@@ -742,8 +905,10 @@ module ClaudeAgentSDK
   # `decision_reason`) so the SDK consumer can render the same prompt UI
   # the CLI would have shown. Older fields (`signal`, `suggestions`,
   # `tool_use_id`, `agent_id`) remain unchanged.
+  # `signal` is a CancellationSignal on dispatched callbacks; `request_id`
+  # identifies this permission request (distinct from the tool invocation).
   class ToolPermissionContext < Type
-    attr_accessor :signal, :suggestions, :tool_use_id, :agent_id,
+    attr_accessor :signal, :request_id, :suggestions, :tool_use_id, :agent_id,
                   :title, :display_name, :description,
                   :blocked_path, :decision_reason
 
@@ -786,9 +951,10 @@ module ClaudeAgentSDK
     end
   end
 
-  # Hook context passed to hook callbacks
+  # Hook context passed to hook callbacks. Dispatched hooks receive the control
+  # request ID and a CancellationSignal (including on HookMatcher timeout).
   class HookContext < Type
-    attr_accessor :signal
+    attr_accessor :signal, :request_id
   end
 
   # Base hook input with common fields
@@ -828,8 +994,11 @@ module ClaudeAgentSDK
   end
 
   # Stop hook input
+  # Snapshot arrays are passed through unchanged. nil means unavailable;
+  # [] means the CLI provided an empty snapshot. They cover the parent
+  # session's background work, NOT all foreground and background agents.
   class StopHookInput < BaseHookInput
-    attr_accessor :stop_hook_active, :last_assistant_message
+    attr_accessor :stop_hook_active, :last_assistant_message, :background_tasks, :session_crons
 
     def initialize(attributes = {})
       super
@@ -841,7 +1010,7 @@ module ClaudeAgentSDK
   # SubagentStop hook input
   class SubagentStopHookInput < BaseHookInput
     attr_accessor :stop_hook_active, :agent_id, :agent_transcript_path, :agent_type,
-                  :last_assistant_message
+                  :last_assistant_message, :background_tasks, :session_crons
 
     def initialize(attributes = {})
       super
@@ -1640,10 +1809,22 @@ module ClaudeAgentSDK
     end
   end
 
-  # System prompt preset configuration
+  # System prompt preset configuration.
+  #
+  # +snapshot+ controls whether the session keeps the system prompt it
+  # recorded on its first request. When true, every later request (including
+  # after resume) sends the recorded prompt, so a changed +append+ has no
+  # effect until the session is compacted or a new session starts. When
+  # false, the prompt is rebuilt on every request — useful while iterating on
+  # +append+ text across calls that resume the same session. When nil
+  # (omitted), the CLI treats it as true, except in bare mode (+--bare+),
+  # where it acts as false. Sent on the control-protocol +initialize+ request
+  # (never as a CLI flag); requires Claude Code CLI 2.1.257 or later, and
+  # before 2.1.265 a session with an +append+ prompt recorded it only when
+  # +snapshot+ was true. Older CLIs silently ignore it.
   class SystemPromptPreset < Type
     attr_reader :type
-    attr_accessor :preset, :append, :exclude_dynamic_sections
+    attr_accessor :preset, :append, :exclude_dynamic_sections, :snapshot
 
     def initialize(attributes = {})
       super
@@ -1654,6 +1835,27 @@ module ClaudeAgentSDK
       result = { type: @type, preset: @preset }
       result[:append] = @append if @append
       result[:exclude_dynamic_sections] = @exclude_dynamic_sections unless @exclude_dynamic_sections.nil?
+      result[:snapshot] = @snapshot unless @snapshot.nil?
+      result
+    end
+  end
+
+  # Custom system prompt configuration — the object form of passing a String
+  # as +system_prompt+. Reaches the CLI the same way a String does
+  # (+--system-prompt <prompt>+); the object form exists so +snapshot+ can be
+  # set alongside it (see SystemPromptPreset#snapshot for its semantics).
+  class SystemPromptCustom < Type
+    attr_reader :type
+    attr_accessor :prompt, :snapshot
+
+    def initialize(attributes = {})
+      super
+      @type = 'custom'
+    end
+
+    def to_h
+      result = { type: @type, prompt: @prompt }
+      result[:snapshot] = @snapshot unless @snapshot.nil?
       result
     end
   end
@@ -1855,6 +2057,34 @@ module ClaudeAgentSDK
       @forward_subagent_text = coerce_boolean(value)
     end
 
+    # Request model-generated progress summaries for subagent (`local_agent`)
+    # tasks. `true` *requests* generation: while the CLI has it enabled, a
+    # subagent's {TaskProgressMessage#summary} **may** carry a one-line status.
+    # `summary` stays optional on the wire even then — not every progress
+    # frame has one — so read it nil-safely. `false` / `nil` do not enable
+    # generation; they do not promise that `summary` is absent (a process that
+    # already enabled summaries keeps them, and a backgrounded `mcp_task`
+    # reports its own status there regardless of this option). Matches the
+    # CLI's `agentProgressSummaries` initialize field.
+    #
+    # Defaults to `nil` (unset): the key is omitted from the `initialize`
+    # control request. `true` and `false` are forwarded verbatim. This is an
+    # enable switch, not a live toggle: CLI 2.1.278 only acts on a truthy
+    # value, so `false` is schema-valid but equivalent to leaving the option
+    # unset — it does not switch summaries off on a process that already
+    # enabled them. Both {ClaudeAgentSDK.query} and {Client} run the control
+    # protocol, so the option applies to either entry point.
+    #
+    # Assigning coerces to a Boolean and keeps `nil` as `nil`.
+    #
+    # @return [Boolean, nil]
+    attr_reader :agent_progress_summaries
+
+    # @see #agent_progress_summaries
+    def agent_progress_summaries=(value)
+      @agent_progress_summaries = coerce_boolean(value)
+    end
+
     CALLBACK_SCHEDULING_MODES = %i[thread inline].freeze
 
     # Where user callbacks (hooks, can_use_tool, SDK MCP handlers, message
@@ -1919,6 +2149,12 @@ module ClaudeAgentSDK
     # Merge caller-provided attributes with configured defaults.
     # Only keys the caller explicitly passed are treated as overrides;
     # method-signature defaults ([], {}, false) are NOT present unless the caller wrote them.
+    #
+    # Both sides are keyed by the option they name, not by their literal
+    # spelling: Type accepts symbol/string and snake_case/camelCase names, so a
+    # caller's `'permissionMode' => nil` must still inherit a configured
+    # `permission_mode:` (and a Hash must still merge into it) rather than
+    # riding along as a second entry that overwrites the default on assignment.
     def merge_with_defaults(attributes)
       return attributes unless defined?(ClaudeAgentSDK) && ClaudeAgentSDK.respond_to?(:default_options)
 
@@ -1929,8 +2165,10 @@ module ClaudeAgentSDK
       # duped so per-instance mutation (options.allowed_tools << 'Bash')
       # can never corrupt the global defaults; non-container leaves
       # (Strings, Procs, SdkMcpServer instances) intentionally keep identity.
-      result = deep_dup_containers(defaults)
+      result = {}
+      defaults.each { |key, value| result[option_key(key)] = deep_dup_containers(value) }
       attributes.each do |key, value|
+        key = option_key(key)
         default_val = result[key]
         result[key] = if value.nil?
                         default_val # nil means "no preference" — keep the configured default
@@ -1941,6 +2179,14 @@ module ClaudeAgentSDK
                       end
       end
       result
+    end
+
+    # The canonical Symbol for a known option, whatever its spelling. An
+    # unknown name is returned untouched so assign_attribute's strict check
+    # reports the typo exactly as the developer wrote it.
+    def option_key(name)
+      normalized = normalize_name(name)
+      respond_to?(:"#{normalized}=") ? normalized.to_sym : name
     end
 
     # Recurse ONLY into Hash/Array; leaves keep object identity (observer

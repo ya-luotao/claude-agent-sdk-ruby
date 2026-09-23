@@ -30,17 +30,25 @@ module OpenTelemetry
     end
 
     def self.current_span
-      nil
+      Context.current[:span]
     end
 
     def self.context_with_span(span)
-      { span: span }
+      Context.current.merge(span: span)
     end
   end
 
   module Context
-    def self.with_current(_context)
+    def self.current
+      Thread.current[:mock_otel_context] || {}
+    end
+
+    def self.with_current(context)
+      previous = Thread.current[:mock_otel_context]
+      Thread.current[:mock_otel_context] = context
       yield
+    ensure
+      Thread.current[:mock_otel_context] = previous
     end
   end
 
@@ -75,12 +83,13 @@ module OpenTelemetry
   end
 
   class MockSpan
-    attr_reader :name, :attributes, :events, :finished
+    attr_reader :name, :attributes, :events, :finished, :parent_context
     attr_accessor :status
 
     def initialize(name, attributes = {})
       @name = name
       @attributes = attributes.dup
+      @parent_context = Context.current
       @events = []
       @finished = false
       @status = nil
@@ -124,6 +133,193 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       span = OpenTelemetry::MockSpan.new(name, kwargs[:attributes] || {})
       created_spans << span
       span
+    end
+  end
+
+  describe 'parent context across execution boundaries' do
+    let(:transport) { instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, write: nil) }
+    let(:query_handler) do
+      instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: nil,
+                                             wait_for_result_and_end_input: nil, close: nil)
+    end
+
+    before do
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+      allow(query_handler).to receive(:spawn_task) { |&block| block.call }
+      allow(query_handler).to receive(:receive_messages)
+        .and_yield(type: 'system', subtype: 'init', session_id: 'context-session', model: 'claude-sonnet-4')
+        .and_yield(type: 'result', subtype: 'success', session_id: 'context-session', duration_ms: 1,
+                   duration_api_ms: 1, num_turns: 1, is_error: false)
+    end
+
+    %i[thread inline].each do |scheduling|
+      %i[query client].each do |entrypoint|
+        it "preserves each caller's parent and baggage for #{entrypoint} in #{scheduling} mode" do
+          # Construct once OUTSIDE the parent scope, then reuse: capturing at
+          # observer creation would incorrectly latch a missing/stale parent.
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer], callback_scheduling: scheduling)
+          parents = [Object.new, Object.new]
+          contexts = parents.map { |parent| { span: parent, baggage: { 'request' => parent.object_id } } }
+
+          Async do
+            contexts.each do |context|
+              OpenTelemetry::Context.with_current(context) do
+                if entrypoint == :query
+                  ClaudeAgentSDK.query(prompt: 'hello', options: options, transport: transport) { |_message| nil }
+                else
+                  client = ClaudeAgentSDK::Client.new(options: options)
+                  begin
+                    client.connect
+                    client.receive_response { |_message| nil }
+                  ensure
+                    client.disconnect
+                  end
+                end
+                expect(OpenTelemetry::Context.current).to equal(context)
+              end
+            end
+          end.wait
+
+          expect(created_spans.map(&:parent_context)).to eq(contexts)
+          expect(created_spans).to all(have_attributes(finished: true))
+        end
+      end
+    end
+
+    it 'preserves the parent when Client.open creates a reactor from synchronous code' do
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer])
+      context = { span: Object.new, baggage: { 'request' => 'synchronous' } }
+      OpenTelemetry::Context.with_current(context) do
+        ClaudeAgentSDK::Client.open(options: options) do |client|
+          client.receive_response { |_message| nil }
+        end
+        expect(OpenTelemetry::Context.current).to equal(context)
+      end
+
+      expect(created_spans.map(&:parent_context)).to eq([context])
+      expect(created_spans).to all(have_attributes(finished: true))
+    end
+
+    it 'restores the destination context when a captured operation raises' do
+      source = { span: Object.new, baggage: { 'request' => 'source' } }
+      destination = { span: Object.new }
+      operation = OpenTelemetry::Context.with_current(source) do
+        ClaudeAgentSDK::FiberBoundary.capture_otel_context do
+          expect(OpenTelemetry::Context.current).to equal(source)
+          raise 'operation failed'
+        end
+      end
+
+      OpenTelemetry::Context.with_current(destination) do
+        expect { operation.call }.to raise_error('operation failed')
+        expect(OpenTelemetry::Context.current).to equal(destination)
+      end
+    end
+
+    it 'does not load OpenTelemetry or wrap operations when it is absent' do
+      hide_const('OpenTelemetry')
+      operation = proc { :unchanged }
+      expect(ClaudeAgentSDK::FiberBoundary.capture_otel_context(&operation)).to equal(operation)
+
+      Async do
+        expect(ClaudeAgentSDK::FiberBoundary.invoke { [Fiber.scheduler, :value] }).to eq([nil, :value])
+      end.wait
+      expect(defined?(OpenTelemetry)).to be_nil
+    end
+  end
+
+  describe 'parent context in real Query child tasks' do
+    %i[thread inline].each do |scheduling|
+      %i[query client].each do |entrypoint|
+        it "preserves context for streamed prompts and routed callbacks via #{entrypoint} in #{scheduling} mode" do
+          incoming = Async::Queue.new
+          responses = []
+          callback_id = nil
+          transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil)
+          allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+          allow(transport).to receive(:end_input) { incoming.enqueue(:end) }
+          allow(transport).to receive(:read_messages) do |&receive|
+            loop do
+              message = incoming.dequeue
+              break if message == :end
+
+              receive.call(message)
+            end
+          end
+          allow(transport).to receive(:write) do |json|
+            message = JSON.parse(json, symbolize_names: true)
+            case message[:type]
+            when 'control_request'
+              callback_id = message.dig(:request, :hooks, :PreToolUse, 0, :hookCallbackIds, 0)
+              incoming.enqueue(type: 'control_response',
+                               response: { subtype: 'success', request_id: message[:request_id], response: {} })
+            when 'user'
+              [
+                { subtype: 'hook_callback', callback_id: callback_id, input: { hook_event_name: 'PreToolUse' } },
+                { subtype: 'can_use_tool', tool_name: 'Read', input: {} },
+                { subtype: 'mcp_message', server_name: 'tools',
+                  message: { id: 1, method: 'tools/call', params: { name: 'probe', arguments: {} } } }
+              ].each_with_index do |request, index|
+                incoming.enqueue(type: 'control_request', request_id: "callback_#{index}", request: request)
+              end
+            when 'control_response'
+              responses << message[:response]
+              if responses.size == 3
+                incoming.enqueue(type: 'result', subtype: 'success', session_id: 'context-session',
+                                 duration_ms: 1, duration_api_ms: 1, num_turns: 1, is_error: false)
+              end
+            end
+          end
+
+          seen = {}
+          wrapper_contexts = []
+          prompt_observer = Object.new.extend(ClaudeAgentSDK::Observer)
+          prompt_observer.define_singleton_method(:on_user_prompt) { |_prompt| seen[:prompt] = OpenTelemetry::Context.current }
+          hook = lambda do |*_args|
+            seen[:hook] = OpenTelemetry::Context.current
+            {}
+          end
+          permission = lambda do |*_args|
+            seen[:permission] = OpenTelemetry::Context.current
+            ClaudeAgentSDK::PermissionResultAllow.new
+          end
+          tool = ClaudeAgentSDK.create_tool('probe', 'Probe context', {}) do |_args|
+            seen[:tool] = OpenTelemetry::Context.current
+            { content: [] }
+          end
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+            observers: [prompt_observer], callback_scheduling: scheduling,
+            callback_wrapper: lambda { |invocation|
+              wrapper_contexts << OpenTelemetry::Context.current
+              invocation.call
+            },
+            hooks: { PreToolUse: [ClaudeAgentSDK::HookMatcher.new(hooks: [hook])] }, can_use_tool: permission,
+            mcp_servers: { tools: ClaudeAgentSDK.create_sdk_mcp_server(name: 'tools', tools: [tool]) }
+          )
+          prompt = [{ type: 'user', message: { role: 'user', content: 'hello' } }].each
+          context = { span: Object.new, baggage: { 'request' => "#{entrypoint}-#{scheduling}" } }
+
+          Async do |task|
+            task.with_timeout(2) do
+              OpenTelemetry::Context.with_current(context) do
+                if entrypoint == :query
+                  ClaudeAgentSDK.query(prompt: prompt, options: options, transport: transport) { |_message| nil }
+                else
+                  ClaudeAgentSDK::Client.open(prompt, options: options) { |client| client.receive_response { |_message| nil } }
+                end
+                expect(OpenTelemetry::Context.current).to equal(context)
+              end
+            end
+          end.wait
+
+          expect(responses.map { |response| response[:subtype] }).to eq(%w[success success success])
+          expect(responses.find { |response| response[:request_id] == 'callback_2' }.dig(:response, :mcp_response, :result, :isError)).to be false
+          expect(seen).to eq(prompt: context, hook: context, permission: context, tool: context)
+          expect(wrapper_contexts.size).to be >= 4
+          expect(wrapper_contexts).to all(eq(context))
+        end
+      end
     end
   end
 
@@ -555,10 +751,10 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       )
     end
 
-    def result_message(result: nil)
+    def result_message(result: nil, total_cost_usd: 0.0, session_id: 'sess-1')
       ClaudeAgentSDK::ResultMessage.new(
         subtype: 'success', duration_ms: 1, duration_api_ms: 1, is_error: false,
-        num_turns: 1, session_id: 'sess-1', total_cost_usd: 0.0,
+        num_turns: 1, session_id: session_id, total_cost_usd: total_cost_usd,
         usage: { input_tokens: 1, output_tokens: 1 }, result: result
       )
     end
@@ -578,6 +774,75 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
 
     def session_spans
       created_spans.select { |s| s.name == 'claude_agent.session' }
+    end
+
+    it 'records only each increment of the cumulative cost across turns, including a zero-cost turn' do
+      [0.0045, 0.0135, 0.0135].each do |total|
+        observer.on_message(init_message)
+        observer.on_message(result_message(total_cost_usd: total))
+      end
+
+      %w[gen_ai.usage.cost llm.cost.total].each do |key|
+        costs = session_spans.map { |span| span.attributes.fetch(key) }
+        expect(costs).to match([be_within(1e-10).of(0.0045), be_within(1e-10).of(0.009), 0.0])
+        expect(costs.sum).to be_within(1e-10).of(0.0135)
+      end
+    end
+
+    it 'omits missing costs without losing the last known cumulative baseline' do
+      [nil, 0.0045, nil, 0.0135].each do |total|
+        observer.on_message(init_message)
+        observer.on_message(result_message(total_cost_usd: total))
+      end
+
+      %w[gen_ai.usage.cost llm.cost.total].each do |key|
+        expect(session_spans[0].attributes).not_to have_key(key)
+        expect(session_spans[2].attributes).not_to have_key(key)
+        expect(session_spans[1].attributes[key]).to eq(0.0045)
+        expect(session_spans[3].attributes[key]).to be_within(1e-10).of(0.009)
+      end
+    end
+
+    it 'starts a fresh cost baseline for a changed session ID, even when its total is higher' do
+      observer.on_message(init_message)
+      observer.on_message(result_message(total_cost_usd: 0.01))
+      reset_init = init_message.dup
+      reset_init.session_id = 'cleared-session'
+      observer.on_message(reset_init)
+      observer.on_message(result_message(total_cost_usd: 0.03, session_id: 'cleared-session'))
+
+      expect(session_spans.last.attributes['llm.cost.total']).to eq(0.03)
+    end
+
+    it 'starts a fresh baseline when a counter resets without a changed session ID' do
+      [0.07, 0.02, 0.03].each do |total|
+        observer.on_message(init_message)
+        observer.on_message(result_message(total_cost_usd: total))
+      end
+
+      expect(session_spans[1].attributes['llm.cost.total']).to eq(0.02)
+      expect(session_spans[2].attributes['llm.cost.total']).to be_within(1e-10).of(0.01)
+    end
+
+    it 'forgets cumulative cost on close when reusing an observer for the same session ID' do
+      observer.on_message(init_message)
+      observer.on_message(result_message(total_cost_usd: 0.01))
+      observer.on_close
+      observer.on_message(init_message)
+      observer.on_message(result_message(total_cost_usd: 0.03))
+
+      expect(session_spans.last.attributes['llm.cost.total']).to eq(0.03)
+    end
+
+    it 'retains the cost baseline when an interrupted trace is superseded without a result' do
+      observer.on_message(init_message)
+      observer.on_message(result_message(total_cost_usd: 0.0045))
+      observer.on_message(init_message)
+      observer.on_message(init_message)
+      observer.on_message(result_message(total_cost_usd: 0.0135))
+
+      expect(session_spans[1].attributes).not_to have_key('llm.cost.total')
+      expect(session_spans.last.attributes['llm.cost.total']).to be_within(1e-10).of(0.009)
     end
 
     it 'labels a later trace with its own prompt after a full lifecycle' do

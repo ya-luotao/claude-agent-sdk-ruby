@@ -61,6 +61,8 @@ module ClaudeAgentSDK
   end
 
   def self.ruby_type_to_json_schema(type)
+    # Class#=== matches instances, not the class object used in { id: Integer }.
+    type = { String => :string, Integer => :integer, Float => :float, TrueClass => :boolean, FalseClass => :boolean }.fetch(type, type)
     case type
     when :string, String then { type: 'string' }
     when :integer, Integer then { type: 'integer' }
@@ -79,6 +81,19 @@ module ClaudeAgentSDK
   # This class wraps the official MCP Ruby SDK and provides a simpler block-based
   # API for defining tools, resources, and prompts.
   class SdkMcpServer
+    # The gem validates arguments before injecting its server_context keyword.
+    # Guard actual keys here, independent of schema composition/$ref support,
+    # and retain this guard even when schema validation falls back to permissive.
+    class ToolInputSchema < MCP::Tool::InputSchema
+      def validate_arguments(arguments)
+        if arguments.is_a?(Hash) && (arguments.key?(:server_context) || arguments.key?('server_context'))
+          raise ValidationError, "Tool argument 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
+        end
+
+        super
+      end
+    end
+
     attr_reader :name, :version, :tools, :resources, :prompts, :mcp_server
 
     # Default for where user handlers run when this server is invoked
@@ -376,6 +391,15 @@ module ClaudeAgentSDK
       # mode at call time — same pattern as prompt classes.
       sdk_server = self
       tools.map do |tool_def|
+        # The gem injects server_context AFTER expanding the tool arguments,
+        # overwriting a user value before our call method can recover it.
+        # Check at registration (including raw SdkMcpTool definitions), not in
+        # input_schema_value's permissive schema-error fallback.
+        schema = ClaudeAgentSDK.normalize_tool_schema(tool_def.input_schema)
+        if schema[:properties]&.key?(:server_context)
+          raise ArgumentError, "Tool '#{tool_def.name}' input property 'server_context' is reserved by the MCP SDK; rename it (e.g. 'request_context')"
+        end
+
         # Create a new class that extends MCP::Tool
         Class.new(MCP::Tool) do
           @tool_def = tool_def
@@ -407,11 +431,11 @@ module ClaudeAgentSDK
                 schema = ClaudeAgentSDK.normalize_tool_schema(@tool_def.input_schema)
                 schema = schema.except(:required) if schema[:required].is_a?(Array) && schema[:required].empty?
                 begin
-                  MCP::Tool::InputSchema.new(schema)
+                  ToolInputSchema.new(schema)
                 rescue ArgumentError => e
                   warn "Claude SDK: tool '#{@tool_def.name}' schema not draft4-compatible " \
                        "(#{e.message.lines.first&.strip}); argument validation disabled for this tool"
-                  MCP::Tool::InputSchema.new({ type: 'object', properties: {} })
+                  ToolInputSchema.new({ type: 'object', properties: {} })
                 end
               end
             end
@@ -453,6 +477,16 @@ module ClaudeAgentSDK
                 error: !!is_error,
                 structured_content: structured_content
               )
+            rescue StandardError => e
+              # Report handler failures in-band HERE rather than letting them
+              # reach the gem: mcp >= 1.2 deliberately drops e.message from
+              # its "Internal error calling tool X" wrapper (CWE-209), which
+              # would hide the text the model needs to self-correct. Bare
+              # e.message like Python's str(e) and #call_tool — no prefix.
+              # Nothing gem-internal can be swallowed here today: handlers get
+              # no server_context, so MCP::CancelledError never originates
+              # inside this method. Revisit if cancellation is ever plumbed in.
+              MCP::Tool::Response.new([{ type: 'text', text: e.message }], error: true)
             end
           end
         end

@@ -72,6 +72,10 @@ module ClaudeAgentSDK
         cmd.push("--system-prompt", @options.system_prompt)
       when SystemPromptFile
         cmd.push("--system-prompt-file", @options.system_prompt.path)
+      when SystemPromptCustom
+        # The object form of a String prompt; snapshot travels on the
+        # initialize request, not as a CLI flag.
+        cmd.push("--system-prompt", custom_prompt_text(@options.system_prompt.prompt))
       when SystemPromptPreset
         # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
         # Only --append-system-prompt is passed if append text is provided
@@ -87,11 +91,25 @@ module ClaudeAgentSDK
       when "file"
         prompt_path = prompt_hash[:path] || prompt_hash["path"]
         cmd.push("--system-prompt-file", prompt_path) if prompt_path
+      when "custom"
+        prompt = prompt_hash.fetch(:prompt) { prompt_hash["prompt"] }
+        cmd.push("--system-prompt", custom_prompt_text(prompt))
       when "preset"
         append = prompt_hash[:append] || prompt_hash["append"]
         # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
         cmd.push("--append-system-prompt", append) if append
       end
+    end
+
+    # A custom prompt is always forwarded, even when empty (an empty String
+    # suppresses the default Claude Code prompt, exactly like a nil
+    # system_prompt). A missing prompt is rejected loudly rather than
+    # falling through and silently activating the default prompt — the
+    # Python SDK raises KeyError on the same input.
+    def custom_prompt_text(prompt)
+      raise ArgumentError, "system_prompt of type 'custom' requires a :prompt String" unless prompt.is_a?(String)
+
+      prompt
     end
 
     def append_allowed_tools(cmd, allowed_tools)
@@ -355,7 +373,7 @@ module ClaudeAgentSDK
     end
 
     # `--thinking-display` toggles between `"summarized"` (visible thinking
-    # text) and `"omitted"` (empty thinking, signature only). Opus 4.7 defaults
+    # text) and `"omitted"` (empty thinking, signature only). Current models default
     # to `"omitted"`, so pass `display: "summarized"` to see reasoning.
     def append_thinking_display(cmd, display)
       return if display.nil?
@@ -488,6 +506,10 @@ module ClaudeAgentSDK
     end
 
     def load_settings_file(path)
+      # Match the CLI's path resolution when --settings is passed through
+      # without a sandbox merge: the subprocess runs in options.cwd.
+      # Do not expand lexically: symlink/.. must resolve through the filesystem.
+      path = File.join(@options.cwd&.to_s || Dir.pwd, path) unless File.absolute_path?(path)
       # Missing file: warn and continue with sandbox-only settings (Python
       # parity: logger.warning("Settings file not found: ...") and an empty
       # settings object). Raising here turned a misconfiguration the CLI

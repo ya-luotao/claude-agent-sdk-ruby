@@ -51,6 +51,34 @@ With `directory:` given, only that project and its git worktrees are searched (n
 
 > Each returned `SessionMessage` carries `parent_tool_use_id` — the id of the Agent `tool_use` block in the parent session that spawned this subagent — and `parent_agent_id`, the spawning subagent's id for nested subagents. Both are read from the `agent-<id>.meta.json` sidecar beside the transcript (or the `agent_metadata` entry in a `SessionStore`), and are `nil` when it is missing or unusable.
 
+### Reading Subagent Metadata
+
+```ruby
+meta = ClaudeAgentSDK.get_subagent_metadata(session_id: session_id, agent_id: agent_id, directory: project)
+meta = ClaudeAgentSDK.get_subagent_metadata_from_store(
+  session_store: store, session_id: session_id, agent_id: agent_id, directory: project
+)
+meta&.dig('toolUseId')    # spawning Agent tool call; not task_id
+meta&.dig('parentAgentId')
+meta&.dig('agentType')
+meta&.dig('spawnDepth')
+```
+
+Returns a **string-keyed Hash with the original CLI field spelling**, preserving
+unknown fields. All fields are optional. `nil` means unavailable; `{}` is a valid
+empty sidecar. The disk reader uses the same project/worktree scope and sorted
+first-match rule as `get_subagent_messages`, but does not parse the transcript.
+It locates the sidecar beside `agent-<id>.jsonl`, so it returns `nil` until that
+transcript file exists, even if the sidecar has already been written.
+Missing, unreadable, non-regular, corrupt, or invalid-UTF-8 sidecars return `nil`.
+
+The store reader resolves nested subpaths with `list_subkeys` when available,
+otherwise tries the direct path. It returns the **last** `agent_metadata` entry
+without the synthetic `type` marker, even before any conversation messages have
+arrived. Adapter errors propagate, like other store reads. These APIs do not
+return live status, and reading metadata does not resume an agent. See
+[subagent capabilities](subagents.md) for correlating metadata with events.
+
 ## Renaming a Session
 
 ```ruby
@@ -97,7 +125,7 @@ ClaudeAgentSDK.fork_session(
 )
 ```
 
-> Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process. `fork_session` uses `O_CREAT | O_EXCL` to prevent race conditions.
+> Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process. `fork_session` writes and closes a private staging file before atomically publishing it with a hard link, so partial forks are not discoverable and existing sessions are never overwritten. The project filesystem must support hard links; publication failures leave the source and any existing destination untouched.
 
 ## Resuming at a Specific Message
 

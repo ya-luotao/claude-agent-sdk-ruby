@@ -9,7 +9,7 @@ Set defaults once, then override only when needed per call.
 ```ruby
 ClaudeAgentSDK.configure do |config|
   config.default_options = {
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-5',
     permission_mode: 'bypassPermissions',
     env: { 'ANTHROPIC_API_KEY' => ENV.fetch('ANTHROPIC_API_KEY') }
   }
@@ -22,7 +22,7 @@ Notes:
 
 ## Core knobs
 
-- `system_prompt`: Set an overall instruction as a string, use `ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: '...', exclude_dynamic_sections: true)` to extend a preset (with optional cross-user caching), or use `ClaudeAgentSDK::SystemPromptFile.new(path: '/path/to/prompt.txt')` to load from a file.
+- `system_prompt`: Set an overall instruction as a string, use `ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', append: '...', exclude_dynamic_sections: true)` to extend a preset (with optional cross-user caching), or use `ClaudeAgentSDK::SystemPromptFile.new(path: '/path/to/prompt.txt')` to load from a file. Pass `snapshot: false` on a preset, or on `ClaudeAgentSDK::SystemPromptCustom.new(prompt: '...', snapshot: false)` (the object form of a string prompt), to make the CLI rebuild the prompt on every request instead of reusing the one recorded on the session's first request — useful while iterating on prompt text across resumed sessions (0.32.0+, CLI 2.1.257+).
 - `model`: Select the model.
 - `fallback_model`: Use when the primary model is unavailable.
 - `advisor_model`: Pair the main model with a stronger advisor model consulted at decision points (server-side advisor tool; alias like `'opus'` or full model ID). Anthropic API only; the CLI validates the main/advisor pairing. Consultations appear as `ServerToolUseBlock` (name `'advisor'`) / `ServerToolResultBlock` content.
@@ -66,7 +66,7 @@ ClaudeAgentSDK::HookMatcher.new(
 )
 ```
 
-Hook callbacks receive typed input objects (for example `ClaudeAgentSDK::PreToolUseHookInput`) and a `ClaudeAgentSDK::HookContext`. Access fields via Ruby accessors like `input.tool_name` and `input.tool_input`.
+Hook callbacks receive typed input objects (for example `ClaudeAgentSDK::PreToolUseHookInput`) and a `ClaudeAgentSDK::HookContext` (`request_id`, plus `signal` — a `CancellationSignal` to poll with `cancelled?` or `wait(timeout:)` while waiting on external work; it fires on CLI cancel, EOF, disconnect, callback failure, and `HookMatcher` timeout). `ToolPermissionContext` carries the same `request_id` / `signal` for `can_use_tool`. Access fields via Ruby accessors like `input.tool_name` and `input.tool_input`.
 
 Hook callbacks should return a hash. Only top-level keys are auto-converted; use CLI-style camelCase for nested keys.
 
@@ -118,6 +118,7 @@ client = ClaudeAgentSDK::Client.new(
 - `betas`: Enable CLI beta features (`--betas`).
 - `include_hook_events`: Emit hook lifecycle events (`HookStartedMessage` / `HookProgressMessage` / `HookResponseMessage`) into the message stream (`--include-hook-events`).
 - `forward_subagent_text` (0.31.0+): Forward a subagent's text and thinking blocks into the message stream, not just its `tool_use` / `tool_result` blocks, so the full nested transcript can be rendered. Negotiated on the control-protocol handshake, so it applies to both `query()` and `Client`. Matches the TypeScript SDK's `forwardSubagentText`.
+- `agent_progress_summaries`: Request model-generated one-line progress summaries for subagent (`local_agent`) tasks; `TaskProgressMessage#summary` may then be present (it stays optional — read it nil-safely). Tri-state: `nil` (default) omits `agentProgressSummaries` from the `initialize` control request; `true` / `false` are forwarded verbatim. An enable switch, not a live toggle — CLI 2.1.278 only acts on a truthy value, so `false` is equivalent to unset. Applies to both `query()` and `Client`. Read from the CLI 2.1.278 schema; not live-verified.
 - `callback_scheduling`: where user callbacks (message blocks, hooks, permission callbacks, SDK MCP handlers, observers) run when the SDK is hosted inside an Async reactor. `:thread` (default) hops each callback to a plain thread so thread-keyed libraries (ActiveRecord, pg) behave as usual; `:inline` runs callbacks in place on the reactor fiber — only for hosts that are fiber-isolated end to end (solid_queue fiber workers with `IsolatedExecutionState.isolation_level = :fiber`). In `:inline` mode hook timeouts cancel cooperatively, and CPU-bound / scheduler-opaque work should be wrapped in `ClaudeAgentSDK.offload { }` (no help for GVL-holding C extensions). See docs/rails.md "Fiber workers".
 - `callback_wrapper`: optional middleware around every user-callback dispatch — a callable receiving a zero-arg invocation that it must call and return, e.g. `->(inv) { Rails.application.executor.wrap { inv.call } }`. Runs on the same execution context as the callback (the worker thread in `:thread` mode, the reactor fiber in `:inline`), so Rails-executor wrapping checks AR connections back in when the callback ends; also a generic hook for APM/logging context. Since 0.28.0 this includes the SDK's timeout-bounded SessionStore calls (mirror appends, resume loads). Exceptions propagate through it unchanged — don't rescue them. Default `nil`. See docs/rails.md "Rails executor around callbacks".
 
@@ -160,6 +161,7 @@ Return types:
 - `get_session_messages` → `Array<SessionMessage>` (fields: `type`, `uuid`, `session_id`, `message`, `parent_tool_use_id`)
 - `fork_session` → `ForkSessionResult` (field: `session_id`)
 - `list_subagents` → `Array<String>`; `get_subagent_messages` → `Array<SessionMessage>` (disk counterparts of the `*_from_store` pair)
+- `get_subagent_metadata` / `get_subagent_metadata_from_store` → string-keyed `Hash` with original CLI field names (`'toolUseId'`, `'parentAgentId'`, `'agentType'`, `'spawnDepth'`, …) or `nil`; `{}` is a valid empty sidecar. The disk reader needs the agent's transcript file to exist; the store reader returns the last `agent_metadata` entry without its `type` marker
 
 ## SessionStore: mirror transcripts to external storage
 

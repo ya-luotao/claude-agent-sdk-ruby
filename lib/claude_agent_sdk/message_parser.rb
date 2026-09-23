@@ -133,7 +133,9 @@ module ClaudeAgentSDK
       # like every other system subtype. `data` is always symbol-keyed here:
       # `parse` rejects any message lacking a `:type` symbol key, so a
       # string-keyed hash never reaches these classes.
-      'task_updated' => TaskUpdatedMessage
+      'task_updated' => TaskUpdatedMessage,
+      'background_tasks_changed' => BackgroundTasksChangedMessage,
+      'permission_denied' => PermissionDeniedMessage
     }.freeze
 
     def self.parse_system_message(data)

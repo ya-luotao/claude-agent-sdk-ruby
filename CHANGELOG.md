@@ -7,18 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.32.0] - 2026-09-13
-
-Sync baseline: Python SDK **0.2.152** (previously 0.2.147). The intervening releases 0.2.148–0.2.152 only bump the CLI binary Python bundles (2.1.250 → 2.1.259); this gem vendors no CLI, so they carry no Ruby-side port surface.
-
 ### Added
-- **`CLIInstaller::PINNED_CLI_VERSION`** (`'2.1.259'`, the CLI Python 0.2.152 bundles) — the CLI version this gem release is developed and tested against; the Ruby equivalent of the Python SDK's bundled-CLI pin (`_cli_version.py`), except nothing is shipped inside the gem. Single source of truth: this constant is the only place the pin lives — docs and the transport's guidance reference it rather than repeating the literal.
+- **`CLIInstaller::PINNED_CLI_VERSION`** (`'2.1.280'`, the CLI Python SDK 0.2.158 bundles) — the CLI version this gem release is developed and tested against; the Ruby equivalent of the Python SDK's bundled-CLI pin (`_cli_version.py`), except nothing is shipped inside the gem. Single source of truth: this constant is the only place the pin lives — docs and the transport's guidance reference it rather than repeating the literal.
 - **`CLIInstaller.install_pinned(dir: nil)`** — installs exactly `PINNED_CLI_VERSION`. The Dockerfile / `bin/setup` form of "pin the tested pair": a deploy that calls it gets the SDK+CLI combination this release was tested with, and a Dependabot bump of the gem carries the CLI forward with it — no version literal in the caller to keep in sync. `install`'s default is unchanged (`'stable'` dist-tag), and explicit `version:` pins behave exactly as before.
 - **`.github/workflows/cli-pin-bump.yml`** — scheduled (and manually dispatchable) workflow that reads the Python SDK's `_cli_version.py` on `main` and opens a PR moving `PINNED_CLI_VERSION` when it changes. It touches only that one line; cutting the follow-up patch release stays a human decision.
 
 ### Changed
-- The transport's "Claude Code not found" guidance, the README and `docs/cli-installer.md` examples, and the skill references now point at `install_pinned` (interpolating the constant) instead of a hardcoded example version that went stale with every CLI release.
-- README streamlined: the feature list and quick start lead, and the full `CLIInstaller` guide (behaviour, supported platforms, CLI discovery order) moved to `docs/cli-installer.md`.
+- The transport's "Claude Code not found" guidance, `docs/cli-installer.md` and the skill references now point at `install_pinned` (interpolating the constant) instead of a hardcoded example version that went stale with every CLI release.
+- Docs, examples and the bundled `claude-agent-ruby` skill now use current model IDs (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`) and recommend adaptive thinking plus `effort:`; `ThinkingConfigEnabled(budget_tokens:)` is described as the older-model path. `examples/extended_thinking_example.rb` no longer teaches the deprecated `max_thinking_tokens`. No API changes.
+
+## [0.33.1] - 2026-09-21
+
+Compatibility with `json` 3.x and `mcp` 1.x. Upgrade if your bundle resolves `json` 3.x — `rename_session` / `tag_session` raise on 0.33.0.
+
+### Changed
+- `mcp` dependency is now `>= 0.20, < 2` (was `>= 0.6, < 1`). The floor moves to 0.20 because `mcp` 0.19 and older validate through the `json-schema` gem, which breaks under `json` 3.x and fails every SDK MCP `tools/call`; with `json` 2.x those versions still pass, so this only forces an `mcp` upgrade on bundles pinned below 0.20. The suite passes against every 1.x release through 1.6.0, and `initialize` / `tools/list` / `tools/call` / `resources/*` / `prompts/*` wire output is byte-identical to 0.2x.
+- SDK MCP tool handler exceptions now reach the model as the bare exception message (matching Python's `str(e)` and `SdkMcpServer#call_tool`) instead of the gem's `Internal error calling tool X: msg`. The exception is rescued inside the SDK's tool class, so the text no longer depends on the `mcp` gem version — `mcp` 1.2+ redacts the message from its own wrapper, which would otherwise have left the model with no error text to self-correct from. Still in-band `isError: true`.
+
+### Fixed
+- `rename_session` / `tag_session` raised `ArgumentError: unknown keyword: space_size` under `json` 3.x, which takes generator options as strict keywords. The option was a no-op on `json` 2.x (output unchanged), so it is simply gone. A fresh end-user bundle resolves `json` 3.x through `async → console → json`; CI missed it only because the dev-only RuboCop pin holds `json` at 2.x.
+
+## [0.33.0] - 2026-09-21
+
+Subagent capabilities for UI builders: metadata reads, background snapshots, cooperative callback cancellation, and the task/background/permission signals the CLI already emits — all raw data and controls, no status model. Ruby-ahead of the Python SDK (0.2.153).
+
+### Added
+- `get_subagent_metadata` / `get_subagent_metadata_from_store`: read optional subagent metadata with original string keys, including type, spawning tool ID, parent agent, depth, and future CLI fields. Disk reads reuse transcript scoping without parsing the transcript; store reads select the latest metadata entry even before messages arrive. These are historical reads, not live-status queries.
+- `background_tasks` and `session_crons` on `StopHookInput` / `SubagentStopHookInput`. Raw snapshots preserve unavailable (`nil`) versus explicitly empty (`[]`) and describe the parent session, not all foreground/background agents.
+- Cooperative permission cancellation through `ToolPermissionContext#signal` (`CancellationSignal#cancelled?` / `#wait`) and the associated `request_id`. CLI cancellation, disconnect, EOF, and failed dispatch invalidate pending requests, including callbacks running on worker threads; normal decisions do not. User threads are not forcibly stopped, and late decisions after observed cancellation cannot become allow responses.
+- `HookContext#signal` / `#request_id` use the same per-invocation cancellation contract, including hook timeouts. Thread callbacks can cooperate with cancellation; late hook output is discarded.
+- A minimal subagent event subscription example and capability reference covering lifecycle events, metadata, background snapshots, and permission cancellation. UI and application status aggregation remain outside the SDK.
+- Opt-in real-CLI subagent contract tests for ID/metadata/text correlation, permission cancellation on interrupt, and background completion/stop after a parent result. They self-skip without CLI credentials.
+- Subagent UI signals the CLI already emits, read from the schema embedded in Claude Code CLI 2.1.278 (the Python SDK has none of these as of Python SDK 0.2.153; only partly verified live — a smoke run against CLI 2.1.278 confirmed the `task_started` fields and the targeted-miss `background_tasks` response; the rest is schema-derived). The SDK exposes raw data and controls only — no status aggregation.
+  - `TaskStartedMessage#subagent_type` / `#is_backgrounded` / `#spawn_depth`, `TaskProgressMessage#subagent_type`, `TaskNotificationMessage#reason` / `#resource_links` (raw Array, symbol keys with the wire spelling), the `#skip_transcript` / `#ambient` display flags on both `TaskStartedMessage` and `TaskNotificationMessage` (hints for the host — the SDK never filters frames or computes activity), and `TaskUpdatedMessage#is_backgrounded` / `#error` / `#end_time` / `#total_paused_ms` / `#description` derived from `patch` like `status`. `is_backgrounded` keeps `nil` (not reported) distinct from an explicit `false` (foreground, spawning tool call blocking). `TaskUpdatedMessage` now also reads a string-keyed `patch` on hand-built messages.
+  - `BackgroundTasksChangedMessage` (`background_tasks_changed`): the full set of live background tasks, a level signal with REPLACE semantics. The SDK's own stdin-close bookkeeping still deliberately ignores this frame.
+  - `PermissionDeniedMessage` (`permission_denied`): a tool call auto-denied without an interactive prompt, with `agent_id` for subagent routing (not a permission `request_id`). A best-effort advisory, not a complete denial feed — `ResultMessage#permission_denials` stays authoritative.
+  - `Client#background_tasks(tool_use_id: nil)` / `Query#background_tasks`: send in-flight foreground tasks to the background (Ctrl+B). Keyed by the spawning `tool_use_id`, not `task_id` / `agent_id`. The targeted form returns `{ backgrounded: true }` or `{ backgrounded: false }` — a definitive miss, after which no event is coming; `nil` is the explicit all-tasks form and returns `{}`. Because the CLI treats `''` as "all tasks", anything other than `nil` or a non-empty String raises `ArgumentError` before a request is written. `TaskUpdatedMessage#is_backgrounded` / `BackgroundTasksChangedMessage` report the lifecycle state that follows.
+  - `ClaudeAgentOptions#agent_progress_summaries`: request model-generated progress summaries for subagents; `TaskProgressMessage#summary` may then be present, and stays optional. Tri-state; `nil` omits `agentProgressSummaries` from the `initialize` request and `true` / `false` are forwarded verbatim. An enable switch, not a live toggle: CLI 2.1.278 only acts on a truthy value, so `false` is equivalent to unset.
+  - **Compatibility:** `background_tasks_changed` and `permission_denied` frames previously parsed as a generic `SystemMessage`. Both new classes subclass it, so `when SystemMessage` and `#data` consumers are unaffected; code matching on `message.class == SystemMessage` will no longer see them.
+
+### Fixed
+- Best-effort control error/cancellation replies no longer leak a secondary connection error when the CLI has already exited. Original transport read errors still propagate to the consumer.
+- Control-request tracking is identity-guarded: if the CLI ever reused an in-flight request ID, the first handler finishing no longer untracks the later request's cancellation signal or task, so EOF, disconnect, and `control_cancel_request` still invalidate it and its late decision cannot be sent as a success.
+- `ClaudeAgentSDK.configure` defaults now merge by option, not by literal key spelling. `ClaudeAgentOptions` accepts symbol/string and snake_case/camelCase names, but the defaults merge compared raw keys, so a differently spelled per-call key rode along as a second entry: `'permissionMode' => nil` wiped a configured `permission_mode:` instead of inheriting it, and a Hash option such as `'env' => {...}` replaced the configured `env:` instead of merging into it. Unknown option names are still reported with the caller's own spelling.
+
+## [0.32.0] - 2026-09-17
+
+Syncs the gem with Python SDK **0.2.153** (previously 0.2.147). The intervening Python releases 0.2.148–0.2.152 only bump the CLI binary Python bundles; this gem does not vendor a CLI, so they carry no Ruby-side change.
+
+### Added
+- **`snapshot` on `SystemPromptPreset`, and a new `SystemPromptCustom` type** (port of Python [#1268](https://github.com/anthropics/claude-agent-sdk-python/pull/1268), v0.2.153). By default the CLI records the system prompt on a session's first request and reuses it on every later request, including after resume, so a changed `append` or custom prompt has no effect until the session is compacted or a new one starts. `snapshot: false` makes the CLI rebuild the prompt on every request instead — useful while iterating on prompt text across calls that resume the same session. `SystemPromptCustom` (`prompt:`, `snapshot:`) is the object form of a String prompt, so `snapshot` can travel with it; the `{ type: 'custom', prompt: '...', snapshot: false }` and `{ type: 'preset', ..., snapshot: false }` Hash forms are accepted too. The value rides on the control-protocol `initialize` request as `systemPromptSnapshot` (never as a CLI flag), so it applies to both `query()` and `Client`; `false` is sent explicitly and only an unset value is omitted. `SystemPromptFile` has no `snapshot`, and one given on a file Hash is ignored, as in Python. Requires Claude Code CLI 2.1.257 or later; before 2.1.265 a session with an `append` or custom prompt recorded it only when `snapshot` was `true`. Older CLIs silently ignore the field.
+  - **Compatibility:** a `{ type: 'custom', ... }` Hash previously fell through the command builder unrecognised — pushing no flag at all — and so silently activated the *default* Claude Code system prompt. It now forwards `--system-prompt <prompt>` exactly like a String, and a custom prompt without a String `prompt` raises `ArgumentError` at command-build time rather than falling through (Python raises `KeyError` on the same input).
 
 ## [0.31.0] - 2026-08-28
 

@@ -235,6 +235,38 @@ RSpec.describe ClaudeAgentSDK::Sessions do
       end
     end
 
+    [
+      [{ customTitle: 'Old custom', aiTitle: 'AI title' }, { customTitle: '' }, 'AI title'],
+      [{ customTitle: 'Old custom', aiTitle: 'Old AI' }, { customTitle: '', aiTitle: '' }, nil],
+      [{ aiTitle: 'Old AI' }, { aiTitle: '' }, nil],
+      [{ customTitle: 'Old custom' }, { aiTitle: 'New AI' }, 'Old custom'],
+      [{ customTitle: 'Old custom', aiTitle: 'Old AI' }, { customTitle: 'New custom' }, 'New custom']
+    ].each do |head_titles, tail_titles, expected_title|
+      it "resolves long-file titles #{head_titles.inspect} then #{tail_titles.inspect}" do
+        Dir.mktmpdir do |dir|
+          sid = '12345678-1234-1234-1234-123456789abc'
+          file_path = File.join(dir, "#{sid}.jsonl")
+          entries = [
+            { type: 'user', uuid: 'u1', message: { content: 'Hello' } },
+            { type: 'custom-title', **head_titles },
+            { type: 'assistant', uuid: 'a1', message: { content: 'x' * 140_000 } },
+            { type: 'custom-title', **tail_titles }
+          ]
+          File.write(file_path, entries.map(&:to_json).join("\n"))
+          store = ClaudeAgentSDK::InMemorySessionStore.new
+          key = { 'project_key' => described_class.project_key_for_directory(dir), 'session_id' => sid }
+          store.append(key, entries.map { |entry| JSON.parse(entry.to_json) })
+
+          disk = described_class.read_session_lite(file_path, dir)
+          stored = described_class.get_session_info_from_store(session_store: store, session_id: sid, directory: dir)
+          [disk, stored].each do |info|
+            expect(info.custom_title).to eq(expected_title)
+            expect(info.summary).to eq(expected_title || 'Hello')
+          end
+        end
+      end
+    end
+
     it 'treats whitespace-only titles as blank too' do
       Dir.mktmpdir do |dir|
         file_path = File.join(dir, '12345678-1234-1234-1234-123456789abc.jsonl')
@@ -286,6 +318,33 @@ RSpec.describe ClaudeAgentSDK::Sessions do
 
         result = described_class.read_session_lite(file_path, '/test')
         expect(result.summary).to eq('Hello')
+      end
+    end
+
+    %w[customTitle aiTitle].each do |field|
+      it "does not let an unverified nested blank #{field} clear a head title" do
+        Dir.mktmpdir do |dir|
+          sid = '12345678-1234-1234-1234-123456789abc'
+          file_path = File.join(dir, "#{sid}.jsonl")
+          entries = [
+            { 'type' => 'user', 'uuid' => 'u1', 'message' => { 'content' => 'Hello' } },
+            { 'type' => 'custom-title', field => 'Real title' },
+            { 'type' => 'assistant', 'uuid' => 'a1', 'message' => {
+              'content' => [{ 'type' => 'tool_use', 'name' => 'SendMessage',
+                              'input' => { 'padding' => 'x' * 140_000, field => '' } }]
+            } }
+          ]
+          File.write(file_path, entries.map(&:to_json).join("\n"))
+          store = ClaudeAgentSDK::InMemorySessionStore.new
+          store.append({ 'project_key' => described_class.project_key_for_directory(dir), 'session_id' => sid }, entries)
+
+          disk = described_class.read_session_lite(file_path, dir)
+          stored = described_class.get_session_info_from_store(session_store: store, session_id: sid, directory: dir)
+          [disk, stored].each do |info|
+            expect(info.custom_title).to eq('Real title')
+            expect(info.summary).to eq('Real title')
+          end
+        end
       end
     end
 
@@ -1081,6 +1140,58 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
 
       File.write(File.join(subagents_dir, "agent-#{agent_id}.meta.json"),
                  meta.is_a?(String) ? meta : JSON.generate(meta))
+    end
+
+    it 'reads metadata without parsing the transcript, preserving unknown fields and nesting' do
+      with_session_on_disk do |subagents_dir, canonical|
+        nested = File.join(subagents_dir, 'workflows', 'run-1')
+        FileUtils.mkdir_p(nested)
+        meta = { 'agentType' => 'reviewer', 'toolUseId' => 'spawn-7', 'parentAgentId' => 'parent-2',
+                 'spawnDepth' => 2, 'futureField' => { 'enabled' => false } }
+        write_agent(nested, 'worker', meta)
+        File.write(File.join(nested, 'agent-worker.jsonl'), '')
+        expect(described_class).not_to receive(:parse_jsonl_entries)
+
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: canonical))
+          .to eq(meta)
+        Dir.mktmpdir do |tmp|
+          # Canonicalize like with_session_on_disk: on macOS the tmpdir is a
+          # symlink, and the reader passes detect_worktrees the realpath.
+          other = File.realpath(tmp).unicode_normalize(:nfc)
+          allow(described_class).to receive(:detect_worktrees).with(other).and_return([other])
+          expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: other))
+            .to be_nil
+        end
+      end
+    end
+
+    it 'selects the same first matching transcript as the message reader' do
+      with_session_on_disk do |subagents_dir, canonical|
+        nested = File.join(subagents_dir, 'workflows', 'run-1')
+        FileUtils.mkdir_p(nested)
+        write_agent(nested, 'worker', 'toolUseId' => 'nested')
+        write_agent(subagents_dir, 'worker', 'toolUseId' => 'top-level')
+
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: canonical))
+          .to eq('toolUseId' => 'top-level')
+      end
+    end
+
+    it 'returns nil for unavailable metadata, but preserves an empty metadata object' do
+      with_session_on_disk do |subagents_dir, canonical|
+        [nil, 'not json', '[]', "{\"bad\":\"\xFF\"}"].each do |meta|
+          FileUtils.rm_f(File.join(subagents_dir, 'agent-worker.meta.json'))
+          write_agent(subagents_dir, 'worker', meta)
+          expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: canonical))
+            .to be_nil
+        end
+        write_agent(subagents_dir, 'worker', {})
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'worker', directory: canonical))
+          .to eq({})
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: 'missing', directory: canonical)).to be_nil
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: 'invalid', agent_id: 'worker')).to be_nil
+        expect(ClaudeAgentSDK.get_subagent_metadata(session_id: uuid, agent_id: '')).to be_nil
+      end
     end
 
     it 'stamps toolUseId/parentAgentId from the sidecar on every message' do

@@ -98,18 +98,19 @@ end
 
 Thinking configuration:
 ```ruby
-# Adaptive (32k default budget)
+# Adaptive — the model decides when and how much to think (use this on
+# current models; control depth with `effort:` below)
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new
 )
 
-# Custom budget
+# Fixed budget — only for older models that still take one
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new(budget_tokens: 10_000)
 )
 
-# Opus 4.7 defaults thinking display to "omitted" (empty thinking field,
-# signature only). Pass display: "summarized" to receive plaintext
+# Current models default thinking display to "omitted" (empty thinking
+# field, signature only). Pass display: "summarized" to receive plaintext
 # thinking text. Valid values: "summarized", "omitted".
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   thinking: ClaudeAgentSDK::ThinkingConfigAdaptive.new(display: 'summarized')
@@ -158,6 +159,7 @@ Async do
 
   # Stop a background task
   client.stop_task('task_abc123')
+  client.background_tasks(tool_use_id: 'toolu_01') # => { backgrounded: true } | { backgrounded: false }; nil => all foreground tasks
 
   # Get typed MCP status
   raw = client.get_mcp_status
@@ -190,6 +192,11 @@ ClaudeAgentSDK.query(prompt: "Do something", options: options) do |msg|
     puts "Task #{msg.task_id} #{msg.status}: #{msg.summary}"
   when ClaudeAgentSDK::TaskUpdatedMessage
     puts "Task #{msg.task_id} updated: #{msg.status}" if msg.status
+    puts "Task #{msg.task_id} moved to the background" if msg.is_backgrounded == true
+  when ClaudeAgentSDK::BackgroundTasksChangedMessage
+    puts "Live background tasks (REPLACE your set): #{msg.tasks.map { |t| t[:task_id] }.join(', ')}"
+  when ClaudeAgentSDK::PermissionDeniedMessage
+    puts "Auto-denied #{msg.tool_name} (#{msg.decision_reason_type}): #{msg.message}"
   when ClaudeAgentSDK::ToolProgressMessage
     puts "Tool #{msg.tool_name} running (#{msg.elapsed_time_seconds}s)"
   when ClaudeAgentSDK::HookStartedMessage

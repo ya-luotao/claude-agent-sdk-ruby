@@ -64,6 +64,26 @@ module ClaudeAgentSDK
     servers
   end
 
+  # Internal: normalize hook lists for the control protocol. An absent or
+  # disabled event must not become an empty registration in initialize.
+  def self.convert_hooks_to_internal_format(hooks)
+    return nil unless hooks
+
+    internal_hooks = {}
+    hooks.each do |event, matchers|
+      next if matchers.nil? || matchers.empty?
+
+      entries = []
+      matchers.each do |matcher|
+        config = { matcher: matcher.matcher, hooks: matcher.hooks }
+        config[:timeout] = matcher.timeout if matcher.timeout
+        entries << config
+      end
+      internal_hooks[event.to_s] = entries unless entries.empty?
+    end
+    internal_hooks.empty? ? nil : internal_hooks
+  end
+
   # Internal: validate can_use_tool and route permission prompts over stdio.
   #
   # Shared by query() and Client#connect so both entry points enforce the
@@ -104,6 +124,26 @@ module ClaudeAgentSDK
       if type == 'preset'
         eds = system_prompt.fetch(:exclude_dynamic_sections) { system_prompt['exclude_dynamic_sections'] }
         return eds if [true, false].include?(eds)
+      end
+    end
+    nil
+  end
+
+  # Internal: pull snapshot out of a preset or custom system prompt for the
+  # initialize request (older CLIs ignore unknown initialize fields). A
+  # String or file prompt has no snapshot, and only a genuine true/false is
+  # forwarded — `snapshot: false` is the primary use case, so the Hash lookup
+  # must not collapse it to nil. Shared by Client#connect and query().
+  def self.extract_system_prompt_snapshot(system_prompt)
+    case system_prompt
+    when SystemPromptPreset, SystemPromptCustom
+      snapshot = system_prompt.snapshot
+      return snapshot if [true, false].include?(snapshot)
+    when Hash
+      type = system_prompt[:type] || system_prompt['type']
+      if %w[preset custom].include?(type)
+        snapshot = system_prompt.fetch(:snapshot) { system_prompt['snapshot'] }
+        return snapshot if [true, false].include?(snapshot)
       end
     end
     nil
@@ -282,6 +322,15 @@ module ClaudeAgentSDK
     Sessions.list_subagents(session_id: session_id, directory: directory)
   end
 
+  # Read a subagent's optional metadata (not live status) from local disk.
+  # @param session_id [String] The parent session UUID
+  # @param agent_id [String] The subagent ID, without the agent- prefix
+  # @param directory [String, nil] Project directory to search in
+  # @return [Hash{String => Object}, nil] CLI metadata, or nil if unavailable
+  def self.get_subagent_metadata(session_id:, agent_id:, directory: nil)
+    Sessions.get_subagent_metadata(session_id: session_id, agent_id: agent_id, directory: directory)
+  end
+
   # Read a subagent's conversation messages from local disk
   # @param session_id [String] The session UUID
   # @param agent_id [String] The subagent ID (without the agent- prefix)
@@ -372,6 +421,13 @@ module ClaudeAgentSDK
   # @return [Array<String>]
   def self.list_subagents_from_store(session_store:, session_id:, directory: nil)
     Sessions.list_subagents_from_store(session_store: session_store, session_id: session_id, directory: directory)
+  end
+
+  # Read the latest subagent metadata from a SessionStore, without its synthetic type marker.
+  # @return [Hash{String => Object}, nil]
+  def self.get_subagent_metadata_from_store(session_store:, session_id:, agent_id:, directory: nil)
+    Sessions.get_subagent_metadata_from_store(session_store: session_store, session_id: session_id,
+                                              agent_id: agent_id, directory: directory)
   end
 
   # Read a subagent's conversation messages from a SessionStore.
@@ -492,7 +548,7 @@ module ClaudeAgentSDK
 
     raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)' if transport && !transport.respond_to?(:connect)
 
-    Async do
+    Async(&FiberBoundary.capture_otel_context do
       materialized = nil
       query_handler = nil
       begin
@@ -520,25 +576,7 @@ module ClaudeAgentSDK
         # Extract SDK MCP servers
         sdk_mcp_servers = extract_sdk_mcp_servers(configured_options.mcp_servers)
 
-        hooks = nil
-        if configured_options.hooks
-          hooks = {}
-          configured_options.hooks.each do |event, matchers|
-            next if matchers.nil? || matchers.empty?
-
-            entries = []
-            matchers.each do |matcher|
-              config = {
-                matcher: matcher.matcher,
-                hooks: matcher.hooks
-              }
-              config[:timeout] = matcher.timeout if matcher.timeout
-              entries << config
-            end
-            hooks[event.to_s] = entries unless entries.empty?
-          end
-          hooks = nil if hooks.empty?
-        end
+        hooks = convert_hooks_to_internal_format(configured_options.hooks)
 
         # Create Query handler for control protocol
         query_handler = Query.new(
@@ -549,8 +587,10 @@ module ClaudeAgentSDK
           agents: configured_options.agents,
           sdk_mcp_servers: sdk_mcp_servers,
           exclude_dynamic_sections: ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt),
+          system_prompt_snapshot: ClaudeAgentSDK.extract_system_prompt_snapshot(configured_options.system_prompt),
           skills: configured_options.skills,
           forward_subagent_text: configured_options.forward_subagent_text?,
+          agent_progress_summaries: configured_options.agent_progress_summaries,
           callback_scheduling: callback_scheduling,
           callback_wrapper: callback_wrapper
         )
@@ -648,7 +688,7 @@ module ClaudeAgentSDK
           end
         end
       end
-    end.wait
+    end).wait
   end
 
   # Client for bidirectional, interactive conversations with Claude Code
@@ -724,7 +764,7 @@ module ClaudeAgentSDK
     def self.open(prompt = nil, options: nil, transport_class: SubprocessCLITransport, transport_args: {})
       raise ArgumentError, 'Client.open requires a block' unless block_given?
 
-      Sync do
+      Sync(&FiberBoundary.capture_otel_context do
         client = new(options: options, transport_class: transport_class, transport_args: transport_args)
         # connect failures self-clean via connect's rescue -> disconnect ->
         # raise, and disconnect is idempotent — no double-teardown.
@@ -734,7 +774,7 @@ module ClaudeAgentSDK
         ensure
           client.disconnect
         end
-      end
+      end)
     end
 
     # Connect to Claude with optional initial prompt.
@@ -754,6 +794,7 @@ module ClaudeAgentSDK
     def connect(prompt = nil)
       return if @connected
 
+      raise ArgumentError, 'prompt must be a String or an Enumerable of message Hashes/JSONL Strings (got Hash)' if prompt.is_a?(Hash)
       raise ArgumentError, "prompt must be a String, an Enumerator, or nil (got #{prompt.class})" unless prompt.nil? || prompt.is_a?(String) || prompt.respond_to?(:each)
 
       # Validate and configure permission settings
@@ -948,6 +989,31 @@ module ClaudeAgentSDK
       @query_handler.stop_task(task_id)
     end
 
+    # Background in-flight foreground tasks (Bash commands and subagents) — the
+    # control-request equivalent of pressing Ctrl+B in the terminal. Each
+    # blocking tool call returns a "running in the background" tool_result and
+    # the turn continues; the task keeps running and emits a
+    # TaskNotificationMessage when it settles.
+    #
+    # The targeted form reports its outcome: `{ backgrounded: true }`, or
+    # `{ backgrounded: false }` — a definitive miss (no matching foreground
+    # task), so do not wait for an event after it. The all-tasks form returns
+    # `{}` and says nothing about whether any task existed. Observe
+    # TaskUpdatedMessage#is_backgrounded / BackgroundTasksChangedMessage for the
+    # lifecycle state that follows.
+    #
+    # @param tool_use_id [String, nil] The id of the tool_use block that spawned
+    #   the task — NOT a task_id or agent_id. nil is the explicit all-tasks form.
+    #   Never substitute nil or '' for a per-task id you do not have yet
+    #   (TaskStartedMessage#tool_use_id is optional on the wire)
+    # @return [Hash] `{ backgrounded: true/false }` when tool_use_id was given,
+    #   `{}` otherwise
+    # @raise [ArgumentError] if tool_use_id is neither nil nor a non-empty String
+    def background_tasks(tool_use_id: nil)
+      raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
+      @query_handler.background_tasks(tool_use_id: tool_use_id)
+    end
+
     # Rewind files to a previous checkpoint (v0.1.15+)
     # Restores file state to what it was at the given user message
     # Requires enable_file_checkpointing to be true in options
@@ -1062,11 +1128,12 @@ module ClaudeAgentSDK
       sdk_mcp_servers = ClaudeAgentSDK.extract_sdk_mcp_servers(configured_options.mcp_servers)
 
       # Convert hooks to internal format
-      hooks = convert_hooks_to_internal_format(configured_options.hooks) if configured_options.hooks
+      hooks = ClaudeAgentSDK.convert_hooks_to_internal_format(configured_options.hooks)
 
-      # Extract exclude_dynamic_sections from preset system prompt for the
-      # initialize request (older CLIs ignore unknown initialize fields)
+      # Extract exclude_dynamic_sections and snapshot from the system prompt
+      # for the initialize request (older CLIs ignore unknown initialize fields)
       exclude_dynamic_sections = ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt)
+      system_prompt_snapshot = ClaudeAgentSDK.extract_system_prompt_snapshot(configured_options.system_prompt)
 
       # Create Query handler
       @query_handler = Query.new(
@@ -1077,8 +1144,10 @@ module ClaudeAgentSDK
         sdk_mcp_servers: sdk_mcp_servers,
         agents: configured_options.agents,
         exclude_dynamic_sections: exclude_dynamic_sections,
+        system_prompt_snapshot: system_prompt_snapshot,
         skills: configured_options.skills,
         forward_subagent_text: configured_options.forward_subagent_text?,
+        agent_progress_summaries: configured_options.agent_progress_summaries,
         callback_scheduling: @callback_scheduling,
         callback_wrapper: @callback_wrapper
       )
@@ -1168,24 +1237,6 @@ module ClaudeAgentSDK
         callback_wrapper: @callback_wrapper
       )
       @query_handler.set_transcript_mirror_batcher(batcher)
-    end
-
-    def convert_hooks_to_internal_format(hooks)
-      return nil unless hooks
-
-      internal_hooks = {}
-      hooks.each do |event, matchers|
-        internal_hooks[event.to_s] = []
-        matchers.each do |matcher|
-          config = {
-            matcher: matcher.matcher,
-            hooks: matcher.hooks
-          }
-          config[:timeout] = matcher.timeout if matcher.timeout
-          internal_hooks[event.to_s] << config
-        end
-      end
-      internal_hooks
     end
 
     def writeln(string)

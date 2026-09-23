@@ -1,6 +1,6 @@
 ---
 name: claude-agent-ruby
-description: Implement or modify Ruby code using the claude-agent-sdk gem. Covers query() one-shot calls, Client-based interactive sessions, streaming input, all 27 hook events, permission callbacks, SDK MCP servers, structured output, bare mode, full sandbox settings (network + filesystem), all 26 message types (including tool_progress, auth_status, prompt_suggestion, hook lifecycle, compact_boundary, session_state_changed, mirror_error, task_updated), session browsing/mutations, SessionStore transcript mirroring to external storage (S3/Redis/Postgres) with store-backed resume, subagents, file checkpointing, Rails integration, and custom transports. Use this skill whenever the user mentions claude-agent-sdk, Claude Agent Ruby, building AI agents in Ruby, or integrating Claude Code into a Ruby/Rails application.
+description: Implement or modify Ruby code using the claude-agent-sdk gem. Covers query() one-shot calls, Client-based interactive sessions, streaming input, all 27 hook events, permission callbacks, SDK MCP servers, structured output, bare mode, full sandbox settings (network + filesystem), all 28 message types (including tool_progress, auth_status, prompt_suggestion, hook lifecycle, compact_boundary, session_state_changed, mirror_error, task_updated), session browsing/mutations, SessionStore transcript mirroring to external storage (S3/Redis/Postgres) with store-backed resume, subagents, file checkpointing, Rails integration, and custom transports. Use this skill whenever the user mentions claude-agent-sdk, Claude Agent Ruby, building AI agents in Ruby, or integrating Claude Code into a Ruby/Rails application.
 ---
 
 # Claude Agent Ruby SDK
@@ -17,12 +17,14 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
 ## Implementation Checklist
 - Confirm prerequisites (Ruby 3.2+, Node.js, Claude Code CLI).
 - Build `ClaudeAgentSDK::ClaudeAgentOptions` and pass it to `query` or `Client.new`.
-- Handle messages by type — the SDK has **26 typed message classes**:
+- Handle messages by type — the SDK has **28 typed message classes**:
   - Core: `AssistantMessage`, `UserMessage`, `ResultMessage`, `StreamEvent`, `RateLimitEvent`
+  - Conversation reset: `ConversationResetMessage` (the conversation was replaced mid-session, e.g. `/clear` — see references/message-handling.md)
   - System init: `InitMessage` (session start / /clear — carries uuid, session_id, tools, model, cwd, agents, betas, claude_code_version, permission_mode, slash_commands, output_style, skills, plugins, fast_mode_state)
   - Compaction: `CompactBoundaryMessage` (uuid, session_id, compact_metadata with pre_tokens, trigger, preserved_segment)
   - Status: `StatusMessage` (compacting status, permission mode changes)
-  - Tasks: `TaskStartedMessage` (+ workflow_name, prompt), `TaskProgressMessage` (+ summary), `TaskNotificationMessage`, `TaskUpdatedMessage` (lifecycle state change; `status` derived from `patch['status']`, `task_id` always a String — clear active-task tracking when `status` is in `TERMINAL_TASK_STATUSES`)
+  - Tasks: `TaskStartedMessage` (+ workflow_name, prompt, subagent_type, is_backgrounded, spawn_depth, skip_transcript, ambient), `TaskProgressMessage` (+ summary, subagent_type), `TaskNotificationMessage` (+ reason, resource_links, skip_transcript, ambient), `TaskUpdatedMessage` (lifecycle state change; `status` — and `is_backgrounded`, `error`, `end_time`, `total_paused_ms`, `description` — derived from `patch`, `task_id` always a String — clear active-task tracking when `status` is in `TERMINAL_TASK_STATUSES`). Optional booleans keep `nil` (absent) distinct from `false`: `is_backgrounded == false` means foreground/blocking
+  - Subagent UI: `BackgroundTasksChangedMessage` (`tasks` — the full live background set, REPLACE semantics; reset on CLI restart), `PermissionDeniedMessage` (auto-denied tool call; best-effort advisory — `ResultMessage#permission_denials` is authoritative). See docs/subagents.md
   - Hooks: `HookStartedMessage`, `HookProgressMessage`, `HookResponseMessage`
   - Sessions: `SessionStateChangedMessage` (idle/running/requires_action)
   - Tools: `ToolProgressMessage` (elapsed_time_seconds per tool), `ToolUseSummaryMessage`
@@ -36,12 +38,12 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
 - `AssistantMessage` carries: `content`, `model`, `parent_tool_use_id`, `error`, `usage`, `message_id` (API message ID), `stop_reason`, `session_id`, `uuid` (transcript UUID)
 - `ResultMessage` carries: `stop_reason`, `model_usage` (per-model breakdown), `permission_denials`, `errors` (on error subtypes), `uuid`, `fast_mode_state`, `terminal_reason` (why the query loop ended; `aborted_streaming`/`aborted_tools` mean interrupted)
 - Use `output_format` for JSON schema structured output
-- Use `thinking:` with `ThinkingConfigAdaptive`, `ThinkingConfigEnabled(budget_tokens:)`, or `ThinkingConfigDisabled`. Use `effort:` for effort level.
+- Use `thinking: ThinkingConfigAdaptive.new` and control depth with `effort:`. `ThinkingConfigEnabled(budget_tokens:)` is only for older models that take a fixed budget; `ThinkingConfigDisabled` turns thinking off.
 
 ## Hooks (27 events)
 All hook events: PreToolUse, PostToolUse, PostToolUseFailure, Notification, UserPromptSubmit, SessionStart, SessionEnd, Stop, StopFailure, SubagentStart, SubagentStop, PreCompact, PostCompact, PermissionRequest, PermissionDenied, Setup, TeammateIdle, TaskCreated, TaskCompleted, Elicitation, ElicitationResult, ConfigChange, WorktreeCreate, WorktreeRemove, InstructionsLoaded, CwdChanged, FileChanged.
 
-Define hooks as Ruby procs/lambdas. Do not combine `can_use_tool` with `permission_prompt_tool_name`. Tool-lifecycle hooks carry `agent_id` and `agent_type` when firing inside subagents. `StopHookInput` and `SubagentStopHookInput` include `last_assistant_message`.
+Define hooks as Ruby procs/lambdas. Do not combine `can_use_tool` with `permission_prompt_tool_name`. Tool-lifecycle hooks carry `agent_id` and `agent_type` when firing inside subagents. `StopHookInput` and `SubagentStopHookInput` include `last_assistant_message` plus optional `background_tasks` / `session_crons` snapshots of the **parent session's** background work (`nil` = not provided, `[]` = explicitly empty; not a registry of all agents). Every dispatched hook and `can_use_tool` callback gets `context.request_id` and `context.signal` (a `ClaudeAgentSDK::CancellationSignal`: `cancelled?` / `wait(timeout:)`) — cancellation is cooperative (CLI cancel, EOF, disconnect, callback failure, hook timeout), default `:thread` callbacks are never force-killed, and a decision returned after cancellation is discarded, never sent as an allow.
 
 Hook-specific outputs with `to_h`: `PreToolUseHookSpecificOutput`, `PostToolUseHookSpecificOutput`, `PostToolUseFailureHookSpecificOutput`, `UserPromptSubmitHookSpecificOutput`, `NotificationHookSpecificOutput`, `SubagentStartHookSpecificOutput`, `SessionStartHookSpecificOutput`, `SetupHookSpecificOutput`, `PermissionRequestHookSpecificOutput`, `PermissionDeniedHookSpecificOutput`, `CwdChangedHookSpecificOutput`, `FileChangedHookSpecificOutput`.
 
@@ -73,12 +75,12 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 - `ClaudeAgentSDK.delete_session(session_id:, directory:)` — hard-deletes a session
 - `ClaudeAgentSDK.fork_session(session_id:, directory:, up_to_message_id:, title:)` → `ForkSessionResult` — filesystem fork with UUID remapping
 - `ClaudeAgentSDK.list_sessions(directory:, limit:, offset:, include_worktrees:)` — supports `offset` for pagination
-- `ClaudeAgentSDK.list_subagents(session_id:, directory:)` / `ClaudeAgentSDK.get_subagent_messages(session_id:, agent_id:, directory:, limit:, offset:)` — local-disk subagent transcript readers (disk counterparts of the `*_from_store` pair)
+- `ClaudeAgentSDK.list_subagents(session_id:, directory:)` / `ClaudeAgentSDK.get_subagent_messages(session_id:, agent_id:, directory:, limit:, offset:)` — local-disk subagent transcript readers (disk counterparts of the `*_from_store` pair); `ClaudeAgentSDK.get_subagent_metadata(session_id:, agent_id:, directory:)` returns the agent's sidecar as a string-keyed Hash with the CLI's own spelling (`'toolUseId'` = spawning Agent tool call, `'parentAgentId'`, `'agentType'`, `'spawnDepth'`, unknown fields preserved) or `nil` — historical metadata, not live status, and often still `nil` at SubagentStart
 - **SessionStore mirroring**: `ClaudeAgentOptions.new(session_store: store)` mirrors transcripts to external storage (subclass `ClaudeAgentSDK::SessionStore` — only `#append`/`#load` required; `InMemorySessionStore` for tests; S3/Redis/Postgres reference adapters in `examples/session_stores/`). `session_store_flush: 'eager'` flushes per frame; `load_timeout_ms` bounds resume store calls.
 - **Resume from store**: pair `session_store` with `resume:`/`continue_conversation` — no local JSONL needed. Note: runs the CLI against a bare temp `CLAUDE_CONFIG_DIR` (user-scope settings.json/agents/skills invisible; project `.claude/*` still applies).
-- **Store-backed helpers**: `list_sessions_from_store`, `get_session_info_from_store`, `get_session_messages_from_store`, `list_subagents_from_store`, `get_subagent_messages_from_store`, `rename_session_via_store`, `tag_session_via_store`, `delete_session_via_store`, `fork_session_via_store`, `import_session_to_store` (migrate disk → store). Store reads default `directory:` to cwd. Validate adapters with `ClaudeAgentSDK::Testing.run_session_store_conformance`.
+- **Store-backed helpers**: `list_sessions_from_store`, `get_session_info_from_store`, `get_session_messages_from_store`, `list_subagents_from_store`, `get_subagent_messages_from_store`, `get_subagent_metadata_from_store`, `rename_session_via_store`, `tag_session_via_store`, `delete_session_via_store`, `fork_session_via_store`, `import_session_to_store` (migrate disk → store). Store reads default `directory:` to cwd. Validate adapters with `ClaudeAgentSDK::Testing.run_session_store_conformance`.
 - `Client#get_context_usage` — context window breakdown (tokens by category, model, MCP tools, etc.)
-- `Client#reconnect_mcp_server(name)`, `Client#toggle_mcp_server(name, enabled)`, `Client#stop_task(task_id)` for live control
+- `Client#reconnect_mcp_server(name)`, `Client#toggle_mcp_server(name, enabled)`, `Client#stop_task(task_id)`, `Client#background_tasks(tool_use_id: nil)` for live control
 - `Client#rewind_files(uuid)` with `enable_file_checkpointing: true`
 - `McpStatusResponse.parse(client.get_mcp_status)` for typed MCP status
 

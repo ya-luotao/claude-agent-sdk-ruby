@@ -6,8 +6,10 @@ require 'async'
 require 'async/queue'
 require 'async/condition'
 require 'securerandom'
+require 'timeout'
 require_relative 'transport'
 require_relative 'errors'
+require_relative 'cancellation_signal'
 
 module ClaudeAgentSDK
   # Handles bidirectional control protocol on top of Transport
@@ -63,7 +65,8 @@ module ClaudeAgentSDK
     end
 
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil,
-                   exclude_dynamic_sections: nil, skills: nil, forward_subagent_text: false,
+                   exclude_dynamic_sections: nil, system_prompt_snapshot: nil, skills: nil,
+                   forward_subagent_text: false, agent_progress_summaries: nil,
                    callback_scheduling: :thread, callback_wrapper: nil)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
@@ -74,8 +77,10 @@ module ClaudeAgentSDK
       @callback_wrapper = callback_wrapper
       @agents = agents
       @exclude_dynamic_sections = exclude_dynamic_sections
+      @system_prompt_snapshot = system_prompt_snapshot
       @skills = skills
       @forward_subagent_text = forward_subagent_text
+      @agent_progress_summaries = agent_progress_summaries
 
       # Control protocol state
       @pending_control_responses = {}
@@ -85,7 +90,9 @@ module ClaudeAgentSDK
       @next_callback_id = 0
       @request_counter = 0
       @request_counter_mutex = Mutex.new
+      @control_stream_error = nil
       @inflight_control_request_tasks = {}
+      @callback_request_signals = {}
 
       # Message stream
       @message_queue = Async::Queue.new
@@ -189,12 +196,19 @@ module ClaudeAgentSDK
         agents: agents_dict
       }
       request[:excludeDynamicSections] = @exclude_dynamic_sections unless @exclude_dynamic_sections.nil?
+      # false is meaningful (rebuild the prompt every request), so send it
+      # explicitly; only nil (unset) is omitted.
+      request[:systemPromptSnapshot] = @system_prompt_snapshot unless @system_prompt_snapshot.nil?
       # 'all' and omitted are equivalent at the wire level (no filter), so
       # only send the field when it's an explicit list (mirrors Python).
       request[:skills] = @skills if @skills.is_a?(Array)
       # Off is the CLI default, so only send the field when enabled — an
       # older CLI then never sees an unknown key on the common path.
       request[:forwardSubagentText] = true if @forward_subagent_text
+      # Unset (nil) omits the key; true/false are forwarded verbatim. Not a live toggle: CLI
+      # 2.1.278 only acts on a truthy value, so false is schema-valid but
+      # equivalent to omitting the key.
+      request[:agentProgressSummaries] = @agent_progress_summaries unless @agent_progress_summaries.nil?
 
       response = send_control_request(request)
       @initialized = true
@@ -227,7 +241,8 @@ module ClaudeAgentSDK
       raise CLIConnectionError, 'Query#start must be called inside an Async{} block (e.g. wrap Client#connect in Async{...})' unless parent
 
       @owning_scheduler = Fiber.scheduler
-      @task = parent.async { read_messages }
+      # Async child fibers do not inherit OTel's fiber-local current context.
+      @task = parent.async(&FiberBoundary.capture_otel_context { read_messages })
       # Reactor-side agent for #close calls arriving from foreign threads
       # (FiberBoundary callbacks, plain user threads): Async::Task#stop needs
       # the owning thread's Fiber.scheduler, so the off-thread caller hands the
@@ -235,7 +250,7 @@ module ClaudeAgentSDK
       # alive, and is stopped automatically when the parent task finishes.
       # One-shot: after serving a close it is done; a reactor-side close wakes
       # it via @close_requests.close (pop -> nil) so it exits without serving.
-      @close_watcher = parent.async(transient: true) do
+      @close_watcher = parent.async(transient: true, &FiberBoundary.capture_otel_context do
         if (reply = @close_requests.pop)
           begin
             close
@@ -243,7 +258,7 @@ module ClaudeAgentSDK
             reply << true
           end
         end
-      end
+      end)
     end
 
     # Spawn a child task that is stopped by #close (mirrors the Python SDK's
@@ -260,7 +275,7 @@ module ClaudeAgentSDK
       parent = Async::Task.current?
       raise CLIConnectionError, 'Query#spawn_task must be called inside an Async{} block' unless parent
 
-      task = parent.async(&block)
+      task = parent.async(&FiberBoundary.capture_otel_context(&block))
       @child_tasks << task
       task
     end
@@ -323,13 +338,17 @@ module ClaudeAgentSDK
           # Spawn as a child of the current task so @task.stop cascades and
           # nothing keeps running after close; bare Async do may root at the
           # reactor and leak past shutdown.
-          handler_task = Async::Task.current.async do
+          handler_task = Async::Task.current.async(&FiberBoundary.capture_otel_context do
             begin
               handle_control_request(message)
             ensure
-              @inflight_control_request_tasks.delete(request_id) if request_id
+              # Identity-guarded: if the CLI ever reused an in-flight request
+              # id, the later handler owns the slot and must stay cancellable.
+              if request_id && @inflight_control_request_tasks[request_id].equal?(Async::Task.current)
+                @inflight_control_request_tasks.delete(request_id)
+              end
             end
-          end
+          end)
           # A handler that never suspends (MCP metadata, unsupported-subtype
           # error path) already ran to completion inside the async{} above —
           # its ensure-delete fired before this insert, so registering it here
@@ -337,6 +356,7 @@ module ClaudeAgentSDK
           @inflight_control_request_tasks[request_id] = handler_task if request_id && !handler_task.finished?
         when 'control_cancel_request'
           request_id = message[:request_id] || message[:requestId]
+          @callback_request_signals[request_id]&.cancel
           task = request_id ? @inflight_control_request_tasks[request_id] : nil
           task&.stop
           next
@@ -396,24 +416,24 @@ module ClaudeAgentSDK
                 e
               end
 
-      # Unblock pending control requests (e.g., initialize) so callers don't
-      # hang until timeout. Computed AFTER the replacement above so they get
-      # the same enriched error the message stream does: a refused resume (a
-      # nonexistent session, a failed --resume-drops-turn guard) is reported
-      # by the CLI as an error result followed by exit 1 *before* it answers
-      # the SDK's `initialize`, so signaling the raw `e` here handed that
-      # in-flight request "Command failed with exit code 1" and discarded the
-      # real reason (Python #1198).
-      # INVARIANT: store the result before signaling — senders check the slot
-      # before waiting (level-trigger).
-      @pending_control_responses.dup.each do |request_id, condition|
-        @pending_control_results[request_id] ||= error
-        condition.signal
-      end
-
       # Put error in queue so iterators can handle it
       @message_queue.enqueue({ type: 'error', error: error })
     ensure
+      # EOF is terminal for control requests even when the message stream
+      # ends successfully. Serialize terminal publication with registration:
+      # every sender is either in this snapshot or rejected before writing.
+      # Preserve enriched ResultError from the rescue path (Python #1198).
+      waiters = @request_counter_mutex.synchronize do
+        @control_stream_error = error || CLIConnectionError.new('Control stream ended')
+        @pending_control_responses.dup
+      end
+      waiters.each do |request_id, condition|
+        @pending_control_results[request_id] ||= @control_stream_error
+        condition.signal
+      end
+      # A callback can no longer be answered after EOF, transport failure,
+      # or reactor cancellation. Wake cooperative worker-thread callbacks too.
+      @callback_request_signals.dup.each_value(&:cancel)
       # Catch entries from a turn that ended without a `result` (early EOF /
       # transport error) so they aren't dropped. The flush can suspend (lock
       # acquire / thread join), so Async::Stop delivered mid-flush would skip
@@ -535,9 +555,9 @@ module ClaudeAgentSDK
 
       case subtype
       when 'can_use_tool'
-        response_data = handle_permission_request(request_data)
+        response_data = handle_permission_request(request_data, request_id: request_id)
       when 'hook_callback'
-        response_data = handle_hook_callback(request_data)
+        response_data = handle_hook_callback(request_data, request_id: request_id)
       when 'mcp_message'
         response_data = handle_mcp_message(request_data)
       else
@@ -557,33 +577,34 @@ module ClaudeAgentSDK
       writeln(JSON.generate(success_response))
     rescue Async::Stop
       # Cancellation requested; respond with an error so the CLI can unblock.
-      cancelled_response = {
-        type: 'control_response',
-        response: {
-          subtype: 'error',
-          request_id: request_id,
-          requestId: request_id,
-          error: 'Cancelled'
-        }
-      }
-      writeln(JSON.generate(cancelled_response))
+      send_control_error(request_id, 'Cancelled')
     rescue StandardError => e
-      # Send error response
+      send_control_error(request_id, e.message)
+    end
+
+    def send_control_error(request_id, message)
       error_response = {
         type: 'control_response',
         response: {
           subtype: 'error',
           request_id: request_id,
           requestId: request_id,
-          error: e.message
+          error: message
         }
       }
       writeln(JSON.generate(error_response))
+    rescue CLIConnectionError
+      # EOF/close can invalidate a callback after the peer has gone away.
+      # Only this best-effort reply is discarded; read errors still reach
+      # the message queue through read_messages.
+      nil
     end
 
-    def handle_permission_request(request_data)
+    def handle_permission_request(request_data, request_id: nil)
       raise 'canUseTool callback is not provided' unless @can_use_tool
 
+      signal = CancellationSignal.new
+      @callback_request_signals[request_id] = signal if request_id
       original_input = request_data[:input]
 
       # Field order mirrors Python _internal/query.py's can_use_tool branch.
@@ -591,7 +612,8 @@ module ClaudeAgentSDK
       # malformed entry raises here, on the reactor, and becomes an error
       # control_response — same observable behavior as Python.
       context = ToolPermissionContext.new(
-        signal: nil,
+        signal: signal,
+        request_id: request_id,
         suggestions: (request_data[:permission_suggestions] || []).map { |s| PermissionUpdate.new(s) },
         tool_use_id: request_data[:tool_use_id],
         agent_id: request_data[:agent_id],
@@ -610,6 +632,9 @@ module ClaudeAgentSDK
       response = FiberBoundary.invoke(scheduling: @callback_scheduling, wrapper: @callback_wrapper) do
         @can_use_tool.call(request_data[:tool_name], request_data[:input], context)
       end
+      # A worker may return a decision after the read loop invalidated the
+      # request. Never turn that late decision into an allow response.
+      raise Async::Stop if signal.cancelled?
 
       # Convert PermissionResult to expected format
       case response
@@ -629,19 +654,27 @@ module ClaudeAgentSDK
       else
         raise "Tool permission callback must return PermissionResult, got #{response.class}"
       end
+      completed = true
+      result
+    ensure
+      signal&.cancel unless completed
+      untrack_callback_signal(request_id, signal)
     end
 
-    def handle_hook_callback(request_data)
+    def handle_hook_callback(request_data, request_id: nil)
       callback_id = request_data[:callback_id]
       callback = @hook_callbacks[callback_id]
       raise "No hook callback found for ID: #{callback_id}" unless callback
+
+      signal = CancellationSignal.new
+      @callback_request_signals[request_id] = signal if request_id
 
       # Parse input data into typed HookInput object
       input_data = request_data[:input] || {}
       hook_input = parse_hook_input(input_data)
 
       # Create typed HookContext
-      context = HookContext.new(signal: nil)
+      context = HookContext.new(signal: signal, request_id: request_id)
 
       # Hop off the Fiber scheduler before invoking user hook code (default
       # :thread mode). With a timeout, the Async-side with_timeout wraps the
@@ -689,8 +722,25 @@ module ClaudeAgentSDK
           end
       end
 
+      # A thread callback may finish after EOF/close invalidated its request.
+      raise Async::Stop if signal.cancelled?
+
       # Convert Ruby-safe field names to CLI-expected names
-      convert_hook_output_for_cli(hook_output)
+      result = convert_hook_output_for_cli(hook_output)
+      completed = true
+      result
+    ensure
+      signal&.cancel unless completed
+      untrack_callback_signal(request_id, signal)
+    end
+
+    # Identity-guarded for the same reason as the in-flight task map: a handler
+    # only untracks its own signal, never a later request that reused its id —
+    # otherwise EOF/close could no longer invalidate that later request.
+    def untrack_callback_signal(request_id, signal)
+      return unless request_id && @callback_request_signals[request_id].equal?(signal)
+
+      @callback_request_signals.delete(request_id)
     end
 
     def parse_hook_input(input_data)
@@ -749,6 +799,8 @@ module ClaudeAgentSDK
         StopHookInput.new(
           stop_hook_active: fetch.call(:stop_hook_active),
           last_assistant_message: fetch.call(:last_assistant_message),
+          background_tasks: fetch.call(:background_tasks),
+          session_crons: fetch.call(:session_crons),
           **base_args
         )
       when 'SubagentStop'
@@ -758,6 +810,8 @@ module ClaudeAgentSDK
           agent_transcript_path: fetch.call(:agent_transcript_path),
           agent_type: fetch.call(:agent_type),
           last_assistant_message: fetch.call(:last_assistant_message),
+          background_tasks: fetch.call(:background_tasks),
+          session_crons: fetch.call(:session_crons),
           **base_args
         )
       when 'Notification'
@@ -968,17 +1022,18 @@ module ClaudeAgentSDK
       # RuntimeError; the eventual response dropped by the key? guard).
       task = Async::Task.current?
 
-      # Generate unique request ID (callbacks may issue requests from
-      # worker threads concurrently with the reactor)
-      request_id = @request_counter_mutex.synchronize do
-        @request_counter += 1
-        "req_#{@request_counter}_#{SecureRandom.hex(4)}"
-      end
-
       # Reactor callers wait on an Async::Condition; worker-thread callers
-      # on a ThreadWaiter. Registration must precede the write.
+      # on a ThreadWaiter. Register atomically with the terminal-state check
+      # so EOF cannot strand a sender that missed the final broadcast.
       waiter = task ? Async::Condition.new : ThreadWaiter.new
-      @pending_control_responses[request_id] = waiter
+      request_id = @request_counter_mutex.synchronize do
+        raise @control_stream_error if @control_stream_error
+
+        @request_counter += 1
+        id = "req_#{@request_counter}_#{SecureRandom.hex(4)}"
+        @pending_control_responses[id] = waiter
+        id
+      end
 
       control_request = {
         type: 'control_request',
@@ -987,20 +1042,18 @@ module ClaudeAgentSDK
         request: request
       }
 
-      writeln(JSON.generate(control_request))
-
-      begin
-        await_control_response(request_id, waiter, task, timeout_seconds, request[:subtype])
-        result = @pending_control_results[request_id]
-        raise result if result.is_a?(Exception)
-
-        result&.[](:response) || {}
-      ensure
-        # Always evict the entries so a late control_response (after timeout)
-        # or an Async::Stop propagating through wait does not leak state.
-        @pending_control_responses.delete(request_id)
-        @pending_control_results.delete(request_id)
+      await_control_response(request_id, waiter, task, timeout_seconds, request[:subtype]) do
+        writeln(JSON.generate(control_request))
       end
+      result = @pending_control_results[request_id]
+      raise result if result.is_a?(Exception)
+
+      result&.[](:response) || {}
+    ensure
+      # Registration, serialization, write and wait share one cleanup scope.
+      # In particular, failed or cancelled writes never retain a waiter.
+      @pending_control_responses.delete(request_id)
+      @pending_control_results.delete(request_id)
     end
 
     # Level-triggered wait: every signal site stores the result BEFORE
@@ -1014,22 +1067,29 @@ module ClaudeAgentSDK
     # Do NOT reimplement the reactor wait as a nested `Async do ... end.wait`
     # — that spawned a separate task and leaked the pending entries when an
     # Async::Stop propagated through `.wait` before cleanup ran.
+    # The yielded send runs inside the same deadline as the response wait.
     def await_control_response(request_id, waiter, task, timeout_seconds, subtype)
+      expired = -> { ControlRequestTimeoutError.new("Control request timeout: #{subtype}") }
       if task
-        begin
-          task.with_timeout(timeout_seconds) do
-            waiter.wait until @pending_control_results.key?(request_id)
-          end
-        rescue Async::TimeoutError
-          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}"
+        # A non-StandardError deadline escapes the transport's write rescue;
+        # only this deadline is translated, not an outer task's cancellation.
+        FiberBoundary.with_cooperative_timeout(task, timeout_seconds, on_timeout: expired) do
+          yield
+          waiter.wait until @pending_control_results.key?(request_id)
         end
       else
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
-        until @pending_control_results.key?(request_id)
-          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-          raise ControlRequestTimeoutError, "Control request timeout: #{subtype}" if remaining <= 0
-
-          waiter.wait(remaining)
+        # Only schedulerless callers use stdlib Timeout. A fresh, private
+        # non-StandardError deadline bypasses transport write rescues without
+        # relabeling a transport's own Timeout::Error or an outer deadline.
+        # Interrupt the caller rather than abandoning a still-writing worker.
+        cancellation = Class.new(Exception) # rubocop:disable Lint/InheritException -- cancellation must bypass transport rescues
+        begin
+          Timeout.timeout(timeout_seconds, cancellation) do
+            yield
+            waiter.wait(nil) until @pending_control_results.key?(request_id)
+          end
+        rescue cancellation
+          raise expired.call
         end
       end
     end
@@ -1141,9 +1201,12 @@ module ClaudeAgentSDK
       # server validates arguments against the tool's inputSchema BEFORE the
       # handler runs and reports validation failures, unknown tools, and
       # handler exceptions as in-band isError results). tools/list,
-      # initialize, resources/* and prompts/* stay on the SDK paths — the
-      # gem drops annotations/_meta from tools/list and negotiates newer
-      # protocol versions.
+      # initialize, resources/* and prompts/* stay on the SDK paths: the
+      # gem's tools/list injects "$schema" and drops `required: []` (and
+      # would advertise the empty fallback schema where the SDK advertises
+      # the user's own), and its initialize negotiates newer protocol
+      # versions and advertises prompts/resources/logging even for a
+      # tools-only server. Annotations/_meta do survive the gem path.
       server.handle_message(message)
     end
 
@@ -1261,6 +1324,21 @@ module ClaudeAgentSDK
                              subtype: 'stop_task',
                              task_id: task_id
                            })
+    end
+
+    # Background in-flight foreground tasks (Bash commands and subagents) — the
+    # control-request equivalent of pressing Ctrl+B in the terminal.
+    # @param tool_use_id [String, nil] The spawning tool_use block's id (not a
+    #   task_id or agent_id). nil is the explicit all-tasks form: it backgrounds
+    #   every foreground task
+    # @return [Hash] Targeted: `{ backgrounded: true }`, or `{ backgrounded:
+    #   false }` — a definitive miss (no matching foreground task). All-tasks:
+    #   `{}`, which says nothing about whether any task existed
+    # @raise [ArgumentError] if tool_use_id is neither nil nor a non-empty String
+    def background_tasks(tool_use_id: nil)
+      request = { subtype: 'background_tasks' }
+      request[:tool_use_id] = background_selector(tool_use_id) unless tool_use_id.nil?
+      send_control_request(request)
     end
 
     # Rewind files to a previous checkpoint (v0.1.15+)
@@ -1388,6 +1466,25 @@ module ClaudeAgentSDK
 
     private
 
+    # The selector actually sent for a targeted background_tasks request.
+    #
+    # The CLI normalizes "" to "background ALL foreground tasks", so a selector
+    # built from a missing id (`id.to_s`) would release every blocking call.
+    # Validate the value that goes on the wire, not the caller's object: a
+    # private plain-String copy cannot be emptied by another thread between this
+    # check and serialization (send_control_request can park on a mutex first),
+    # and a String subclass cannot answer `empty?` or `to_json` for it. Never
+    # normalize a bad selector to nil, and never strip — a whitespace-only id is
+    # still a targeted selector CLI-side, so stripping would widen the request.
+    def background_selector(tool_use_id)
+      selector = String.new(tool_use_id) if String === tool_use_id # rubocop:disable Style/CaseEquality
+      return selector unless selector.nil? || selector.empty?
+
+      raise ArgumentError,
+            "tool_use_id must be a non-empty String (got #{tool_use_id.inspect}); " \
+            'pass nil explicitly to background all foreground tasks'
+    end
+
     def close_now
       # First caller wins: a reactor-side close racing a watcher-served
       # foreign close (or a repeated disconnect) must not re-run teardown
@@ -1406,6 +1503,8 @@ module ClaudeAgentSDK
       return unless first_caller
 
       @closed = true
+      # Snapshot for the off-reactor fallback, like the response waiters below.
+      @callback_request_signals.dup.each_value(&:cancel)
       # Wake pending control-request waiters (same shape as the read-loop
       # rescue broadcast): close stops the read task with Async::Stop, which
       # bypasses that broadcast — a worker-thread caller parked in

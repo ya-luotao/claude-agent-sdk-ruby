@@ -546,6 +546,235 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.compact_metadata).to be_nil
       end
 
+      it 'parses the subagent UI fields on task_started' do
+        data = {
+          type: 'system', subtype: 'task_started', task_id: 'task_abc', tool_use_id: 'toolu_1',
+          description: 'Review the diff', task_type: 'local_agent', subagent_type: 'reviewer',
+          is_backgrounded: false, spawn_depth: 1, uuid: 'uuid_1', session_id: 'sess_1'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::TaskStartedMessage)
+        expect(msg.subagent_type).to eq('reviewer')
+        expect(msg.is_backgrounded).to be(false) # foreground/blocking — must not read as nil
+        expect(msg.spawn_depth).to eq(1)
+        expect(msg.data).to eq(data)
+      end
+
+      it 'leaves the subagent UI fields nil on a task_started frame that omits them' do
+        msg = described_class.parse({ type: 'system', subtype: 'task_started', task_id: 'task_abc',
+                                      description: 'npm test', task_type: 'local_bash' })
+
+        expect(msg.subagent_type).to be_nil
+        expect(msg.is_backgrounded).to be_nil
+        expect(msg.spawn_depth).to be_nil
+      end
+
+      it 'parses the skip_transcript / ambient display flags without filtering the frame' do
+        started = described_class.parse({ type: 'system', subtype: 'task_started', task_id: 'watch-1',
+                                          description: 'live-update watcher', skip_transcript: true, ambient: true })
+        settled = described_class.parse({ type: 'system', subtype: 'task_notification', task_id: 'watch-1',
+                                          status: 'completed', output_file: '/tmp/o', summary: 'done',
+                                          skip_transcript: false, ambient: true })
+
+        expect(started).to be_a(ClaudeAgentSDK::TaskStartedMessage) # surfaced, never dropped
+        expect(started.skip_transcript).to be(true)
+        expect(started.ambient).to be(true)
+        expect(settled).to be_a(ClaudeAgentSDK::TaskNotificationMessage)
+        expect(settled.skip_transcript).to be(false) # explicit false is not nil
+        expect(settled.ambient).to be(true)
+      end
+
+      it 'leaves the display flags nil when a task frame omits them' do
+        started = described_class.parse({ type: 'system', subtype: 'task_started', task_id: 't', description: 'd' })
+        settled = described_class.parse({ type: 'system', subtype: 'task_notification', task_id: 't',
+                                          status: 'completed', output_file: '/tmp/o', summary: 'done' })
+
+        [started, settled].each do |msg|
+          expect(msg.skip_transcript).to be_nil
+          expect(msg.ambient).to be_nil
+        end
+      end
+
+      it 'parses subagent_type on task_progress' do
+        msg = described_class.parse({
+                                      type: 'system', subtype: 'task_progress', task_id: 'task_abc',
+                                      description: 'Still working', subagent_type: 'reviewer',
+                                      usage: { total_tokens: 1, tool_uses: 0, duration_ms: 5 },
+                                      summary: 'Reading the diff'
+                                    })
+
+        expect(msg).to be_a(ClaudeAgentSDK::TaskProgressMessage)
+        expect(msg.subagent_type).to eq('reviewer')
+        expect(msg.summary).to eq('Reading the diff')
+      end
+
+      it 'parses reason and raw resource_links on task_notification' do
+        links = [{ uri: 'file:///tmp/report.pdf', name: 'report.pdf', mimeType: 'application/pdf', size: 1024 }]
+        msg = described_class.parse({
+                                      type: 'system', subtype: 'task_notification', task_id: 'task_abc',
+                                      tool_use_id: 'toolu_1', status: 'stopped', reason: 'worker_restart',
+                                      output_file: '/tmp/o.jsonl', summary: 'orphaned', resource_links: links
+                                    })
+
+        expect(msg).to be_a(ClaudeAgentSDK::TaskNotificationMessage)
+        expect(msg.reason).to eq('worker_restart')
+        expect(msg.resource_links).to eq(links)
+        expect(msg.resource_links.first[:mimeType]).to eq('application/pdf') # wire spelling preserved
+      end
+
+      it 'passes resource_links through raw: nothing dropped, reshaped, or capped' do
+        # 51 links, well past the CLI's own "at most 50 links / 64 KiB" producer
+        # note — the SDK must not enforce either figure.
+        links = Array.new(51) do |i|
+          {
+            uri: "file:///tmp/report-#{i}.bin", name: "report-#{i}.bin", title: "Report #{i}",
+            description: 'x' * 1500, mimeType: 'application/octet-stream', size: 1024.5 + i,
+            annotations: { audience: ['user'], priority: 0.25, nested: { lastModified: '2026-01-01T00:00:00Z' } },
+            futureField: { kept: true }
+          }
+        end
+        expect(JSON.generate(links).bytesize).to be > 64 * 1024
+        snapshot = Marshal.load(Marshal.dump(links)) # taken BEFORE parsing, to catch in-place edits
+
+        msg = described_class.parse({
+                                      type: 'system', subtype: 'task_notification', task_id: 'task_abc',
+                                      tool_use_id: 'toolu_1', status: 'completed', output_file: '/tmp/o.jsonl',
+                                      summary: 'done', resource_links: links
+                                    })
+
+        expect(msg.resource_links).to equal(links) # the very same Array, not a reconstruction
+        expect(msg.resource_links.size).to eq(51)
+        expect(msg.resource_links).to eq(snapshot) # and nobody edited it in place
+        last = msg.resource_links.last
+        expect(last[:size]).to eq(1074.5) # fractional size survives (a Number, not an Integer)
+        expect(last[:annotations]).to eq(audience: ['user'], priority: 0.25,
+                                         nested: { lastModified: '2026-01-01T00:00:00Z' })
+        expect(last[:futureField]).to eq(kept: true) # unknown fields survive
+        expect(last).not_to have_key(:type) # no discriminator is invented
+      end
+
+      it 'leaves reason and resource_links nil on an ordinary task_notification' do
+        msg = described_class.parse({ type: 'system', subtype: 'task_notification', task_id: 'task_abc',
+                                      status: 'completed', output_file: '/tmp/o.jsonl', summary: 'done' })
+
+        expect(msg.reason).to be_nil
+        expect(msg.resource_links).to be_nil
+      end
+
+      it 'surfaces a move to the background through task_updated patch.is_backgrounded' do
+        msg = described_class.parse({ type: 'system', subtype: 'task_updated', task_id: 'task_abc',
+                                      patch: { is_backgrounded: true } })
+
+        expect(msg).to be_a(ClaudeAgentSDK::TaskUpdatedMessage)
+        expect(msg.is_backgrounded).to be(true)
+        expect(msg.status).to be_nil
+      end
+
+      it 'keeps a zero end_time / total_paused_ms from the wire (0 is not nil)' do
+        msg = described_class.parse({ type: 'system', subtype: 'task_updated', task_id: 'task_abc',
+                                      patch: { end_time: 0, total_paused_ms: 0 } })
+
+        expect(msg.end_time).to eq(0)
+        expect(msg.total_paused_ms).to eq(0)
+      end
+
+      it 'keeps patch.is_backgrounded false distinct from an absent key' do
+        explicit = described_class.parse({ type: 'system', subtype: 'task_updated', task_id: 'task_abc',
+                                           patch: { is_backgrounded: false } })
+        absent = described_class.parse({ type: 'system', subtype: 'task_updated', task_id: 'task_abc',
+                                         patch: { status: 'running' } })
+
+        expect(explicit.is_backgrounded).to be(false)
+        expect(absent.is_backgrounded).to be_nil
+      end
+
+      it 'derives error, end_time, total_paused_ms and description from the task_updated patch' do
+        msg = described_class.parse({
+                                      type: 'system', subtype: 'task_updated', task_id: 'task_abc',
+                                      patch: { status: 'failed', error: 'boom', end_time: 1_780_405_729_183,
+                                               total_paused_ms: 0, description: 'renamed' }
+                                    })
+
+        expect(msg.error).to eq('boom')
+        expect(msg.end_time).to eq(1_780_405_729_183)
+        expect(msg.total_paused_ms).to eq(0)
+        expect(msg.description).to eq('renamed')
+      end
+
+      it 'parses background_tasks_changed as BackgroundTasksChangedMessage with the raw task list' do
+        data = {
+          type: 'system', subtype: 'background_tasks_changed',
+          tasks: [
+            { task_id: 'bg-1', task_type: 'local_agent', description: 'Review the diff' },
+            { task_id: 'bg-2', task_type: 'local_bash', description: 'tail -f log', ambient: true }
+          ],
+          uuid: 'uuid_1', session_id: 'sess_1'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::BackgroundTasksChangedMessage)
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.subtype).to eq('background_tasks_changed')
+        expect(msg.tasks).to eq(data[:tasks])
+        expect(msg.tasks.last[:ambient]).to be(true)
+        expect(msg.uuid).to eq('uuid_1')
+        expect(msg.session_id).to eq('sess_1')
+        expect(msg.data).to eq(data)
+      end
+
+      it 'parses an empty background_tasks_changed set as [] (not nil)' do
+        msg = described_class.parse({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+
+        expect(msg).to be_a(ClaudeAgentSDK::BackgroundTasksChangedMessage)
+        expect(msg.tasks).to eq([])
+      end
+
+      it 'parses permission_denied as PermissionDeniedMessage' do
+        data = {
+          type: 'system', subtype: 'permission_denied', tool_name: 'Bash', tool_use_id: 'toolu_9',
+          agent_id: 'agent_7', decision_reason_type: 'classifier', decision_reason_code: 'memory_paused',
+          decision_reason: 'Blocked by the auto-mode classifier', message: 'Permission to use Bash was denied.',
+          uuid: 'uuid_1', session_id: 'sess_1'
+        }
+
+        msg = described_class.parse(data)
+        expect(msg).to be_a(ClaudeAgentSDK::PermissionDeniedMessage)
+        expect(msg).to be_a(ClaudeAgentSDK::SystemMessage)
+        expect(msg.subtype).to eq('permission_denied')
+        expect(msg.tool_name).to eq('Bash')
+        expect(msg.tool_use_id).to eq('toolu_9')
+        expect(msg.agent_id).to eq('agent_7')
+        expect(msg.decision_reason_type).to eq('classifier')
+        expect(msg.decision_reason).to eq('Blocked by the auto-mode classifier')
+        expect(msg.message).to eq('Permission to use Bash was denied.')
+        expect(msg.uuid).to eq('uuid_1')
+        expect(msg.session_id).to eq('sess_1')
+        # @internal in the CLI schema: reachable through data, never a typed reader.
+        expect(msg).not_to respond_to(:decision_reason_code)
+        expect(msg.data[:decision_reason_code]).to eq('memory_paused')
+      end
+
+      it 'parses a main-session permission_denied with only the required fields' do
+        msg = described_class.parse({ type: 'system', subtype: 'permission_denied', tool_name: 'Write',
+                                      tool_use_id: 'toolu_9', message: 'denied' })
+
+        expect(msg).to be_a(ClaudeAgentSDK::PermissionDeniedMessage)
+        expect(msg.agent_id).to be_nil
+        expect(msg.decision_reason_type).to be_nil
+        expect(msg.decision_reason).to be_nil
+      end
+
+      %w[agents_killed task_summary].each do |subtype|
+        it "leaves the CLI-internal #{subtype} frame as a generic SystemMessage" do
+          data = { type: 'system', subtype: subtype, task_id: 'task_abc' }
+
+          msg = described_class.parse(data)
+          expect(msg.class).to eq(ClaudeAgentSDK::SystemMessage)
+          expect(msg.data).to eq(data)
+        end
+      end
+
       it 'falls back to SystemMessage for unknown subtypes' do
         data = {
           type: 'system',
