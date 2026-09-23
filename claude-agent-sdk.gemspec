@@ -5,8 +5,8 @@ require_relative 'lib/claude_agent_sdk/version'
 Gem::Specification.new do |spec|
   spec.name = 'claude-agent-sdk'
   spec.version = ClaudeAgentSDK::VERSION
-  spec.authors = ['Community Contributors']
-  spec.email = []
+  spec.authors = ['ya-luotao']
+  spec.email = ['luotao@hey.com']
 
   spec.summary = 'Unofficial Ruby SDK for Claude Agent'
   spec.description = 'Unofficial Ruby SDK for interacting with Claude Code, supporting bidirectional conversations, custom tools, and hooks. Not officially maintained by Anthropic.'
@@ -36,11 +36,12 @@ Gem::Specification.new do |spec|
   rescue SystemCallError
     []
   end
-  spec.files = if tracked.empty?
-                 Dir.glob(['lib/**/*.rb', 'docs/**/*.md', 'README.md', 'LICENSE', 'CHANGELOG.md'], base: __dir__)
-               else
-                 tracked
-               end
+  # docs/history/ (past audit reports) is repository archive, not user docs.
+  spec.files = (if tracked.empty?
+                  Dir.glob(['lib/**/*.rb', 'docs/**/*.md', 'README.md', 'LICENSE', 'CHANGELOG.md'], base: __dir__)
+                else
+                  tracked
+                end).reject { |path| path.start_with?('docs/history/') }
   spec.require_paths = ['lib']
 
   # Runtime dependencies

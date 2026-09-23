@@ -182,6 +182,17 @@ module ClaudeAgentSDK
       inspect
     end
 
+    # Declares attributes that carry credentials (env vars, auth headers).
+    # Objects get logged, so #inspect shows them filtered; #to_h and
+    # everything sent to the CLI are unaffected. Inherited by subclasses.
+    def self.inspect_filtered(*names)
+      @inspect_filtered_attributes = (inspect_filtered_attributes + names.map(&:to_s)).uniq.freeze
+    end
+
+    def self.inspect_filtered_attributes
+      @inspect_filtered_attributes || (superclass <= Type ? superclass.inspect_filtered_attributes : [].freeze)
+    end
+
     INSPECT_MAX_STRING = 80
     INSPECT_MAX_ITEMS = 5
     INSPECT_MAX_DEPTH = 2
@@ -211,10 +222,21 @@ module ClaudeAgentSDK
     # [name, value] pairs rendered by #inspect. Subclasses override to hide
     # redundant state or redact secrets — never by mutating the object.
     def inspect_attributes
+      filtered = self.class.inspect_filtered_attributes
       instance_variables.filter_map do |ivar|
         value = instance_variable_get(ivar)
-        [ivar.to_s.delete_prefix('@'), value] unless value.nil?
+        next if value.nil?
+
+        name = ivar.to_s.delete_prefix('@')
+        [name, filtered.include?(name) ? inspect_filter(value) : value]
       end
+    end
+
+    # A credential-bearing Hash keeps its keys (useful when debugging which
+    # variables are set) with every value replaced; anything else is replaced
+    # outright. Builds a new Hash; the object itself is never touched.
+    def inspect_filter(value)
+      value.respond_to?(:each_key) ? value.each_key.to_h { |key| [key, '[FILTERED]'] } : '[FILTERED]'
     end
 
     def inspect_class_name
@@ -1884,6 +1906,8 @@ module ClaudeAgentSDK
     attr_accessor :command, :args, :env
     attr_reader :type
 
+    inspect_filtered :env
+
     def initialize(attributes = {})
       super
       @type = 'stdio'
@@ -1903,6 +1927,8 @@ module ClaudeAgentSDK
     attr_accessor :url, :headers
     attr_reader :type
 
+    inspect_filtered :headers
+
     def initialize(attributes = {})
       super
       @type = 'sse'
@@ -1920,6 +1946,8 @@ module ClaudeAgentSDK
 
     attr_accessor :url, :headers
     attr_reader :type
+
+    inspect_filtered :headers
 
     def initialize(attributes = {})
       super
@@ -2141,6 +2169,9 @@ module ClaudeAgentSDK
 
   # Claude Agent Options for configuring queries
   class ClaudeAgentOptions < Type
+    # `env` routinely carries credentials (ANTHROPIC_API_KEY, ...).
+    inspect_filtered :env
+
     attr_accessor :allowed_tools, :system_prompt, :mcp_servers, :permission_mode,
                   :resume, :resume_session_at, :session_id, :max_turns, :disallowed_tools,
                   :model, :permission_prompt_tool_name, :cwd, :cli_path, :settings,
@@ -2401,17 +2432,6 @@ module ClaudeAgentSDK
     end
 
     private
-
-    # `env` routinely carries credentials (ANTHROPIC_API_KEY, ...) and options
-    # end up in logs, so #inspect shows only its keys. Builds a new Hash; the
-    # options object itself is never touched.
-    def inspect_attributes
-      super.map do |name, value|
-        next [name, value] unless name == 'env'
-
-        [name, value.respond_to?(:each_key) ? value.each_key.to_h { |key| [key, '[FILTERED]'] } : '[FILTERED]']
-      end
-    end
 
     # Strict key validation: unlike other Type subclasses (which silently drop
     # unknown keys for forward-compat with newer CLI output), ClaudeAgentOptions

@@ -2987,5 +2987,31 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.inspect).to include('env="[FILTERED]"')
       end
     end
+
+    describe 'MCP server config credentials' do
+      it 'filters McpStdioServerConfig#env' do
+        config = ClaudeAgentSDK::McpStdioServerConfig.new(command: 'gh-mcp', env: { 'GITHUB_TOKEN' => 'ghp_secret' })
+
+        expect(config.inspect).to include('env={"GITHUB_TOKEN" => "[FILTERED]"}')
+        expect(config.inspect).not_to include('ghp_secret')
+        expect(config.to_h[:env]).to eq({ 'GITHUB_TOKEN' => 'ghp_secret' })
+      end
+
+      [ClaudeAgentSDK::McpHttpServerConfig, ClaudeAgentSDK::McpSSEServerConfig].each do |klass|
+        it "filters #{klass.name.split('::').last}#headers" do
+          config = klass.new(url: 'https://mcp.example', headers: { 'Authorization' => 'Bearer secret' })
+
+          expect(config.inspect).to include('headers={"Authorization" => "[FILTERED]"}')
+          expect(config.inspect).not_to include('Bearer secret')
+          expect(config.to_h[:headers]).to eq({ 'Authorization' => 'Bearer secret' })
+        end
+      end
+
+      it 'keeps filtered attributes per class (subclasses inherit, siblings do not)' do
+        expect(ClaudeAgentSDK::ClaudeAgentOptions.inspect_filtered_attributes).to eq(['env'])
+        expect(ClaudeAgentSDK::McpHttpServerConfig.inspect_filtered_attributes).to eq(['headers'])
+        expect(ClaudeAgentSDK::ResultMessage.inspect_filtered_attributes).to eq([])
+      end
+    end
   end
 end
