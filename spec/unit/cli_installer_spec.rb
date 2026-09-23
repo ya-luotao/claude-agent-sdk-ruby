@@ -148,7 +148,8 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
       end
     end
 
-    it 'rejects an empty path and non-path values, keeping the previous root' do
+    it 'rejects an empty path and non-path values, keeping the previous root',
+       rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       described_class.root = app_root
 
       expect { described_class.root = '' }.to raise_error(ArgumentError, /non-empty path or nil/)
@@ -181,7 +182,7 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
       expect(described_class.install_pinned(dir: tmp_dir)).to eq(binary_path)
     end
 
-    it 'defaults the directory the same way install does' do
+    it 'defaults the directory the same way install does', rbs_incompatible: 'stubs .install to return nil' do
       expect(described_class).to receive(:install)
         .with(version: described_class::PINNED_CLI_VERSION, dir: nil)
 

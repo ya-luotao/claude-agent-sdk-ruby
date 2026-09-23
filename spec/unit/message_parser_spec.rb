@@ -855,7 +855,8 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg.structured_output).to eq({ name: 'John', age: 30, active: true })
       end
 
-      it 'parses model_usage, permission_denials, and errors' do
+      it 'parses model_usage, permission_denials, and errors',
+         rbs_incompatible: 'parses a hand-built frame with a String model_usage key' do
         data = {
           type: 'result',
           subtype: 'error_max_turns',

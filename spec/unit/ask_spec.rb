@@ -125,7 +125,8 @@ RSpec.describe ClaudeAgentSDK, '.ask' do
       .to raise_error(RuntimeError, 'observer failed')
   end
 
-  it 'rejects the prompts .query rejects, before starting anything' do
+  it 'rejects the prompts .query rejects, before starting anything',
+     rbs_incompatible: 'passes out-of-signature input to test its rejection' do
     expect(ClaudeAgentSDK::SubprocessCLITransport).not_to receive(:new)
 
     expect { described_class.ask({ role: 'user' }) }.to raise_error(ArgumentError, /got Hash/)

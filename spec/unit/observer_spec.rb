@@ -32,7 +32,8 @@ RSpec.describe ClaudeAgentSDK::Observer do
   end
 
   describe 'module interface' do
-    it 'provides no-op defaults for all methods' do
+    it 'provides no-op defaults for all methods',
+       rbs_incompatible: 'calls the no-op defaults with placeholder arguments' do
       obj = Class.new { include ClaudeAgentSDK::Observer }.new
       expect { obj.on_user_prompt('test prompt') }.not_to raise_error
       expect { obj.on_message('test') }.not_to raise_error

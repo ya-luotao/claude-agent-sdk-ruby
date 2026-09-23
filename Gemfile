@@ -6,6 +6,10 @@ source 'https://rubygems.org'
 gemspec
 
 gem 'rake', '~> 13.0'
+# RBS signatures in sig/: `rake rbs:validate` and the runtime-checked suite
+# (`rake rbs:test`). 4.0 is the last line supporting Ruby 3.2; Bundler picks
+# the newest 4.x each Ruby allows (CI validates on 3.4).
+gem 'rbs', '~> 4.0', require: false
 gem 'rspec', '~> 3.0'
 gem 'rubocop', '~> 1.87.0' # pin minor so local matches CI (Gemfile.lock is gitignored)
 gem 'simplecov', '~> 0.22', require: false # only loaded when COVERAGE=1 (see spec/spec_helper.rb)

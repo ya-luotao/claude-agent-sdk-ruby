@@ -8,7 +8,8 @@ require 'stringio'
 # public method (msg[:to_h], msg['freeze'], msg.toH) still works but warns
 # once per class and name; from 1.0 (Type::ENFORCE_ATTRIBUTES) it is treated
 # as undefined.
-RSpec.describe 'Type attribute access' do
+RSpec.describe 'Type attribute access',
+               rbs_incompatible: 'plants Object.new sentinels in every attribute; asserts warning locations' do
   before { ClaudeAgentSDK::Deprecation.reset! }
   after { ClaudeAgentSDK::Deprecation.reset! }
 

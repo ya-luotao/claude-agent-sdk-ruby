@@ -225,7 +225,7 @@ RSpec.describe 'Callback wrapper' do
       expect(options.dup_with(model: 'opus').callback_wrapper).to be(wrapper)
     end
 
-    it 'rejects non-callable values loudly' do
+    it 'rejects non-callable values loudly', rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       expect { ClaudeAgentSDK::ClaudeAgentOptions.new(callback_wrapper: 42) }
         .to raise_error(ArgumentError, /callback_wrapper must be a callable/)
       expect { ClaudeAgentSDK::ClaudeAgentOptions.new(callback_wrapper: 'wrap') }
@@ -809,7 +809,8 @@ RSpec.describe 'Callback wrapper' do
       expect(server.callback_scheduling).to eq(:thread)
     end
 
-    it 'rejects unknown scheduling modes loudly instead of degrading to :thread' do
+    it 'rejects unknown scheduling modes loudly instead of degrading to :thread',
+       rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       expect { server.callback_scheduling = :reactor }
         .to raise_error(ArgumentError, /callback_scheduling must be one of :thread, :inline/)
       expect { server.callback_scheduling = nil }
@@ -817,7 +818,8 @@ RSpec.describe 'Callback wrapper' do
       expect(server.callback_scheduling).to eq(:thread) # default untouched
     end
 
-    it 'rejects a non-callable callback_wrapper at set time' do
+    it 'rejects a non-callable callback_wrapper at set time',
+       rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       expect { server.callback_wrapper = 42 }
         .to raise_error(ArgumentError, /callback_wrapper must be a callable/)
       server.callback_wrapper = nil # explicit nil stays allowed

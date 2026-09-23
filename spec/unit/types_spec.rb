@@ -1151,7 +1151,8 @@ RSpec.describe ClaudeAgentSDK do
         expect(variant.allowed_tools.first).to be(base.allowed_tools.first)
       end
 
-      it 'keeps identity of instances, callables, observers and adapters inside typed values across dup_with' do
+      it 'keeps identity of instances, callables, observers and adapters inside typed values across dup_with',
+         rbs_incompatible: 'uses Object.new as server, observer and store' do
         server = Object.new
         hook = ->(_input, _id, _ctx) { {} }
         observer = Object.new
@@ -1210,7 +1211,7 @@ RSpec.describe ClaudeAgentSDK do
     end
 
     describe ClaudeAgentSDK::HookContext do
-      it 'stores signal' do
+      it 'stores signal', rbs_incompatible: 'stores a Symbol placeholder as the signal' do
         context = described_class.new(signal: :test_signal)
         expect(context.signal).to eq(:test_signal)
       end
@@ -2816,7 +2817,7 @@ RSpec.describe ClaudeAgentSDK do
         expect(block.to_s).not_to match(/0x\h+/)
       end
 
-      it 'renders non-symbol hash keys with =>' do
+      it 'renders non-symbol hash keys with =>', rbs_incompatible: 'renders attribute values outside their types' do
         block = ClaudeAgentSDK::ToolUseBlock.new(input: { 'path' => '/tmp', :'odd-key' => 1 })
 
         expect(block.inspect).to include('input={"path" => "/tmp", :"odd-key" => 1}')
@@ -2836,7 +2837,7 @@ RSpec.describe ClaudeAgentSDK do
         expect(many_keys.inspect).to include('input={k1: 1, k2: 2, k3: 3, k4: 4, k5: 5, …(+3 more)}')
       end
 
-      it 'collapses nesting past a small depth' do
+      it 'collapses nesting past a small depth', rbs_incompatible: 'renders attribute values outside their types' do
         deep = { a: { b: { c: { d: 1 } } } }
         msg = ClaudeAgentSDK::AssistantMessage.new(
           content: [ClaudeAgentSDK::ToolUseBlock.new(id: 't1', input: deep)],
@@ -2850,7 +2851,7 @@ RSpec.describe ClaudeAgentSDK do
         expect(wrapper.inspect).to eq('#<ClaudeAgentSDK::ToolResultBlock content=[[#<ClaudeAgentSDK::AssistantMessage …>]]>')
       end
 
-      it 'terminates on cyclic structures' do
+      it 'terminates on cyclic structures', rbs_incompatible: 'renders attribute values outside their types' do
         block = ClaudeAgentSDK::ToolUseBlock.new(id: 'x', input: {})
         block.input[:self] = block
         list = [1]
@@ -2868,7 +2869,8 @@ RSpec.describe ClaudeAgentSDK do
         expect(block.inspect).to include('input={a: {k: 1}, b: {k: 1}}')
       end
 
-      it 'shows objects that only have Kernel#inspect by class, and procs by their own inspect' do
+      it 'shows objects that only have Kernel#inspect by class, and procs by their own inspect',
+         rbs_incompatible: 'renders attribute values outside their types' do
         adapter_class = Class.new { def initialize = (@secret = 'hunter2') }
         stub_const('MyStoreAdapter', adapter_class)
         callback = ->(_input) {}
@@ -2997,7 +2999,7 @@ RSpec.describe ClaudeAgentSDK do
         expect(options.env).to eq({ 'ANTHROPIC_API_KEY' => 'sk-ant-secret', 'OTHER' => 'value' })
       end
 
-      it 'filters a non-Hash env wholesale' do
+      it 'filters a non-Hash env wholesale', rbs_incompatible: 'renders attribute values outside their types' do
         options = described_class.new
         options.env = 'ANTHROPIC_API_KEY=sk-ant-secret'
 

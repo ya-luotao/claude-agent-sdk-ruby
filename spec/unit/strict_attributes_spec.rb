@@ -82,7 +82,7 @@ RSpec.describe 'strict attributes on user-constructed types' do
     'McpStdioServerConfig' => { command: 'npx', args: %w[server], env: { 'TOKEN' => 'x' } },
     'McpSSEServerConfig' => { url: 'https://example.com/sse', headers: { 'Authorization' => 'Bearer x' } },
     'McpHttpServerConfig' => { url: 'https://example.com/mcp', headers: { 'Authorization' => 'Bearer x' } },
-    'McpSdkServerConfig' => { name: 'calc', instance: Object.new },
+    'McpSdkServerConfig' => { name: 'calc', instance: ClaudeAgentSDK::SdkMcpServer.new(name: 'calc') },
     'HookMatcher' => { matcher: 'Bash', hooks: [hook], timeout: 30 },
     'SetupHookSpecificOutput' => { additional_context: 'ctx' },
     'PreToolUseHookSpecificOutput' => {
@@ -138,7 +138,8 @@ RSpec.describe 'strict attributes on user-constructed types' do
       let(:klass) { ClaudeAgentSDK.const_get(name) }
       let(:instance) { klass.new(fixtures.fetch(name)) }
 
-      it 'warns once per key on an unknown attribute, naming the caller and the known attributes' do
+      it 'warns once per key on an unknown attribute, naming the caller and the known attributes',
+         rbs_incompatible: 'asserts the warning location' do
         first = capture_stderr { klass.new(bogus_key: 1) }
         again = capture_stderr { klass.new(bogus_key: 2) }
 
@@ -186,7 +187,7 @@ RSpec.describe 'strict attributes on user-constructed types' do
     expect(output).to include('(known: hooks, matcher, timeout)')
   end
 
-  it 'warns on an unknown key assigned with #[]=' do
+  it 'warns on an unknown key assigned with #[]=', rbs_incompatible: 'asserts the warning location' do
     matcher = ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash')
     output = capture_stderr { matcher[:matchr] = 'Read' }
 
@@ -195,7 +196,8 @@ RSpec.describe 'strict attributes on user-constructed types' do
     expect(matcher.matcher).to eq('Bash')
   end
 
-  it 'attributes a nested unknown key to the caller that built the outer value' do
+  it 'attributes a nested unknown key to the caller that built the outer value',
+     rbs_incompatible: 'asserts the warning location' do
     output = capture_stderr do
       ClaudeAgentSDK::PermissionUpdate.new(type: 'addRules', rules: [{ tool_name: 'Bash', rule_contnt: 'x' }])
     end

@@ -582,7 +582,8 @@ RSpec.describe 'SessionStore-backed reads' do
     end
 
     [nil, 123, :sym, ['x']].each do |bad|
-      it "treats session_id #{bad.inspect} like a malformed id on every store reader" do
+      it "treats session_id #{bad.inspect} like a malformed id on every store reader",
+         rbs_incompatible: 'passes out-of-signature input to test its rejection' do
         args = { session_store: recorder, session_id: bad, directory: dir }
         expect(ClaudeAgentSDK.get_session_info(**args)).to be_nil
         expect(ClaudeAgentSDK.get_session_messages(**args)).to eq([])
@@ -592,12 +593,14 @@ RSpec.describe 'SessionStore-backed reads' do
         expect(recorder.keys).to be_empty
       end
 
-      it "raises ArgumentError (not NoMethodError) for session_id #{bad.inspect} on import_session_to_store" do
+      it "raises ArgumentError (not NoMethodError) for session_id #{bad.inspect} on import_session_to_store",
+         rbs_incompatible: 'passes out-of-signature input to test its rejection' do
         expect { ClaudeAgentSDK.import_session_to_store(session_id: bad, session_store: recorder, directory: dir) }
           .to raise_error(ArgumentError, /Invalid session_id/)
       end
 
-      it "treats agent_id #{bad.inspect} like a malformed id on the store subagent readers" do
+      it "treats agent_id #{bad.inspect} like a malformed id on the store subagent readers",
+         rbs_incompatible: 'passes out-of-signature input to test its rejection' do
         args = { session_store: recorder, session_id: sid1, agent_id: bad, directory: dir }
         expect(ClaudeAgentSDK.get_subagent_metadata(**args)).to be_nil
         expect(ClaudeAgentSDK.get_subagent_messages(**args)).to eq([])

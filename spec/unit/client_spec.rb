@@ -441,7 +441,8 @@ RSpec.describe ClaudeAgentSDK::Client do
       expect(client.mcp_status).to eq(mcpServers: [])
     end
 
-    it 'route through the parity methods, so an override of those applies to both spellings' do
+    it 'route through the parity methods, so an override of those applies to both spellings',
+       rbs_incompatible: 'stubs a parity method to return a sentinel' do
       client = connected_client
       allow(client).to receive(:set_model)
       allow(client).to receive(:get_mcp_status).and_return(:overridden)
@@ -799,7 +800,7 @@ RSpec.describe ClaudeAgentSDK::Client do
       expect(query_handler).to have_received(:close)
     end
 
-    it 'requires a block' do
+    it 'requires a block', rbs_incompatible: 'calls Client.open without its required block' do
       expect { described_class.open }.to raise_error(ArgumentError, /requires a block/)
     end
   end
