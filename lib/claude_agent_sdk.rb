@@ -835,6 +835,51 @@ module ClaudeAgentSDK
     end).wait
   end
 
+  # Run a query to completion and return its final ResultMessage.
+  #
+  # The one-call form of {.query} for when you want the answer rather than
+  # the stream: +ask(prompt).result+ is the final text, and the returned
+  # ResultMessage also carries cost, usage, duration, session_id and
+  # structured_output. It is {.query} underneath — same prompt types, same
+  # options, same errors — and it consumes the whole stream before
+  # returning. With an Enumerable prompt that produces several turns, the
+  # last ResultMessage is returned.
+  #
+  # An error result is returned like any other (check #is_error / #subtype);
+  # when the CLI then exits non-zero, {.query} raises ResultError, which
+  # propagates from here unchanged.
+  #
+  # @param prompt [String, Enumerable] The prompt, as for {.query}
+  # @param options [ClaudeAgentOptions, nil] Optional configuration
+  # @param transport [Transport, nil] Optional transport, as for {.query}
+  # @yield [Message] Optionally, every message as it arrives (including the
+  #   final ResultMessage), so you can stream progress and still get the
+  #   result back. Runs where {.query}'s block runs. The block observes the
+  #   stream; it cannot end it early — use {.query} for that.
+  # @return [ResultMessage]
+  # @raise [CLIConnectionError] if the stream ends without a ResultMessage
+  #
+  # @example
+  #   puts ClaudeAgentSDK.ask('What is 2 + 2?').result
+  #
+  # @example Stream progress, keep the result
+  #   result = ClaudeAgentSDK.ask('Refactor lib/foo.rb', options: options) do |message|
+  #     puts message.text if message.is_a?(ClaudeAgentSDK::AssistantMessage)
+  #   end
+  #   puts result   # => [result: success, 3 turns, 12.4s, $0.0421]
+  def self.ask(prompt, options: nil, transport: nil, &block)
+    result = nil
+    query(prompt: prompt, options: options, transport: transport) do |message|
+      result = message if message.is_a?(ResultMessage)
+      block&.call(message)
+    end
+    # The same class Query raises to a caller still waiting on the stream
+    # when it ends ("Control stream ended").
+    raise CLIConnectionError, 'Claude Code ended the conversation without a result message' unless result
+
+    result
+  end
+
   # Client for bidirectional, interactive conversations with Claude Code
   #
   # This client provides full control over the conversation flow with support
@@ -1104,11 +1149,22 @@ module ClaudeAgentSDK
       @query_handler.set_permission_mode(mode)
     end
 
+    # Ruby-style spelling of #set_permission_mode: `client.permission_mode = 'plan'`.
+    # Delegates (rather than aliasing) so an override of #set_permission_mode applies to both.
+    def permission_mode=(mode)
+      set_permission_mode(mode)
+    end
+
     # Change the AI model during conversation
     # @param model [String, nil] Model name or nil for default
     def set_model(model)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
       @query_handler.set_model(model)
+    end
+
+    # Ruby-style spelling of #set_model: `client.model = 'claude-opus-5'`.
+    def model=(model)
+      set_model(model)
     end
 
     # Reconnect a failed MCP server
@@ -1182,11 +1238,23 @@ module ClaudeAgentSDK
       @query_handler.get_context_usage
     end
 
+    # Ruby-style spelling of #get_context_usage.
+    # @return [Hash] Context usage response
+    def context_usage
+      get_context_usage
+    end
+
     # Get current MCP server connection status (only works with streaming mode)
     # @return [Hash] MCP status information, including mcpServers list
     def get_mcp_status
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
       @query_handler.get_mcp_status
+    end
+
+    # Ruby-style spelling of #get_mcp_status.
+    # @return [Hash] MCP status information, including mcpServers list
+    def mcp_status
+      get_mcp_status
     end
 
     # Get server initialization info including available commands and output styles

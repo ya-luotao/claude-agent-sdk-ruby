@@ -28,6 +28,13 @@ For everything else, open the matching `docs/` subpage:
 
 ## Minimal skeletons
 
+Final answer only (returns the ResultMessage; `#result` is the text):
+```ruby
+require 'claude_agent_sdk'
+
+puts ClaudeAgentSDK.ask("What is 2 + 2?").result
+```
+
 One-shot query:
 ```ruby
 require 'claude_agent_sdk'
@@ -69,7 +76,9 @@ tool = ClaudeAgentSDK.create_tool(
   'greet', 'Greet a user', { name: :string },
   annotations: { title: 'Greeter', readOnlyHint: true }
 ) do |args|
-  { content: [{ type: 'text', text: "Hello, #{args[:name]}!" }] }
+  # A String is sent as one text block. Return { content: [...], is_error: true }
+  # for errors, structured_content, or several blocks.
+  "Hello, #{args[:name]}!"
 end
 
 server = ClaudeAgentSDK.create_sdk_mcp_server(name: 'tools', tools: [tool])
@@ -92,7 +101,7 @@ tool = ClaudeAgentSDK.create_tool('save', 'Save a fact', {
 SDK MCP tool (no parameters):
 ```ruby
 tool = ClaudeAgentSDK.create_tool('ping', 'Ping the server', {}) do |_args|
-  { content: [{ type: 'text', text: 'pong' }] }
+  'pong'
 end
 ```
 

@@ -88,9 +88,16 @@ module ClaudeAgentSDK
   # :thread mode. A callback_wrapper therefore observes the RuntimeError.
   # Deliberately not `rescue Exception`: cancellation (Async::Stop, and
   # InlineCancellation at an :inline suspension point) must propagate.
+  #
+  # Also the one place both dispatch paths share, so it expands the String
+  # shorthand: a String return becomes a single text block. Every other
+  # value passes through untouched — Hash results behave exactly as before,
+  # and any other non-Hash value still gets the "must return a hash"
+  # diagnostic from the caller.
   # @api private
   def self.call_tool_handler(handler, arguments)
-    handler.call(arguments)
+    result = handler.call(arguments)
+    result.is_a?(String) ? { content: [{ type: 'text', text: result }] } : result
   rescue SystemExit, SignalException => e
     raise e.message
   end
@@ -600,18 +607,26 @@ module ClaudeAgentSDK
   # @param name [String] Unique identifier for the tool
   # @param description [String] Human-readable description
   # @param input_schema [Hash] Schema defining input parameters
-  # @param handler [Proc] Block that implements the tool logic
+  # @param handler [Proc] Block that implements the tool logic. It returns a
+  #   String, sent to Claude as a single text block, or a Hash with a
+  #   +:content+ Array of MCP content blocks plus optional +:is_error+ /
+  #   +:structured_content+. Use the Hash form for error results, structured
+  #   output, images, or several blocks.
   # @return [SdkMcpTool] Tool definition
   #
-  # @example Simple tool
+  # @example Simple tool (a String return becomes one text block)
+  #   tool = create_tool('greet', 'Greet a user', { name: :string }) do |args|
+  #     "Hello, #{args[:name]}!"
+  #   end
+  #
+  # @example The same tool in the Hash form
   #   tool = create_tool('greet', 'Greet a user', { name: :string }) do |args|
   #     { content: [{ type: 'text', text: "Hello, #{args[:name]}!" }] }
   #   end
   #
   # @example Tool with multiple parameters
   #   tool = create_tool('add', 'Add two numbers', { a: :number, b: :number }) do |args|
-  #     result = args[:a] + args[:b]
-  #     { content: [{ type: 'text', text: "Result: #{result}" }] }
+  #     "Result: #{args[:a] + args[:b]}"
   #   end
   #
   # @example Tool with error handling

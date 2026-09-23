@@ -142,7 +142,7 @@ end
 | Error | Description |
 |-------|-------------|
 | `ClaudeSDKError` | Base error for all SDK errors |
-| `CLIConnectionError` | Connection issues — including every write after a stdin write was cancelled mid-frame (the connection is unusable from then on — reconnect) |
+| `CLIConnectionError` | Connection issues — including every write after a stdin write was cancelled mid-frame (the connection is unusable from then on — reconnect), and `ClaudeAgentSDK.ask` when the stream ends without a `ResultMessage` |
 | `ControlRequestTimeoutError` | Control protocol timeout (configurable via env var) |
 | `CLINotFoundError` | Claude Code not installed |
 | `ConfigDirError` | A local-disk session API (`list_sessions`, `get_session_*`, `rename_session`, ...) could not locate the Claude config directory: `CLAUDE_CONFIG_DIR` is unset and there is no usable home directory (`HOME` unset with no passwd entry, as under `docker --user` in a minimal image, or an empty/relative `HOME`). Set `CLAUDE_CONFIG_DIR` |

@@ -27,9 +27,78 @@ RSpec.describe ClaudeAgentSDK::Railtie do
     expect(status.exitstatus).to eq(0), "a non-Rails require must load neither Rails nor the Railtie: #{err}"
   end
 
+  describe 'CLI discovery root' do
+    let(:initializer) { described_class.instance.initializers.find { |i| i.name == 'claude_agent_sdk.cli_installer_root' } }
+
+    after { ClaudeAgentSDK::CLIInstaller.root = nil }
+
+    it 'runs before config/initializers, so an app initializer can override it' do
+      expect(initializer.before).to eq(:load_config_initializers)
+    end
+
+    it 'is set on boot, before config/initializers, which can still override it' do
+      Dir.mktmpdir('claude_agent_sdk_boot') do |app_root|
+        FileUtils.mkdir_p(File.join(app_root, 'config/initializers'))
+        File.write(File.join(app_root, 'config/initializers/claude_agent_sdk.rb'), <<~RUBY)
+          $root_seen_by_initializer = ClaudeAgentSDK::CLIInstaller.root
+          ClaudeAgentSDK::CLIInstaller.root = '/opt/agents'
+        RUBY
+        code = <<~RUBY
+          require 'rails'
+          require 'claude_agent_sdk'
+          class BootApp < Rails::Application
+            config.root = #{app_root.dump}
+            config.eager_load = false
+            config.logger = Logger.new(nil)
+          end
+          Rails.application.initialize!
+          puts $root_seen_by_initializer, ClaudeAgentSDK::CLIInstaller.root
+        RUBY
+
+        out, err, status = run_ruby(code)
+
+        expect(status.success?).to be(true), err
+        expect(out.lines(chomp: true)).to eq([app_root, '/opt/agents'])
+      end
+    end
+
+    it 'points CLIInstaller at Rails.root, whatever the process cwd' do
+      initializer.run(Rails.application)
+
+      expect(ClaudeAgentSDK::CLIInstaller.root).to eq(Rails.root.to_s)
+      Dir.chdir(Dir.tmpdir) do
+        expect(ClaudeAgentSDK::CLIInstaller.default_dir).to eq(Rails.root.join('vendor', 'claude').to_s)
+      end
+    end
+
+    it 'leaves a root the app already set alone' do
+      ClaudeAgentSDK::CLIInstaller.root = '/opt/agents'
+
+      initializer.run(Rails.application)
+
+      expect(ClaudeAgentSDK::CLIInstaller.root).to eq('/opt/agents')
+    end
+
+    it 'lets the vendored binary under Rails.root win discovery from another cwd' do
+      binary = Rails.root.join('vendor', 'claude', 'claude').to_s
+      FileUtils.mkdir_p(File.dirname(binary))
+      File.write(binary, "#!/bin/sh\n")
+      File.chmod(0o755, binary)
+      initializer.run(Rails.application)
+
+      Dir.chdir(Dir.tmpdir) do
+        expect(ClaudeAgentSDK::CLIInstaller.installed_path).to eq(binary)
+      end
+    ensure
+      FileUtils.rm_rf(Rails.root.join('vendor').to_s)
+    end
+  end
+
   describe 'rake tasks' do
     let(:task) { Rake::Task['claude_agent_sdk:install_cli'] }
     let(:vendor_dir) { Rails.root.join('vendor', 'claude').to_s }
+
+    after { ClaudeAgentSDK::CLIInstaller.root = nil }
 
     around do |example|
       previous = Rake.application
@@ -59,6 +128,15 @@ RSpec.describe ClaudeAgentSDK::Railtie do
       run_task
 
       expect(ClaudeAgentSDK::CLIInstaller).to have_received(:install_pinned).with(dir: vendor_dir)
+    end
+
+    it 'installs under an explicitly set CLIInstaller.root, where discovery looks' do
+      allow(ClaudeAgentSDK::CLIInstaller).to receive(:install_pinned).and_return('/fake/claude')
+      ClaudeAgentSDK::CLIInstaller.root = '/opt/agents'
+
+      run_task
+
+      expect(ClaudeAgentSDK::CLIInstaller).to have_received(:install_pinned).with(dir: nil)
     end
 
     it 'installs CLAUDE_CLI_VERSION= instead of the pin when given' do

@@ -9,6 +9,7 @@ description: Implement or modify Ruby code using the claude-agent-sdk gem. Cover
 Use this skill to build or refactor Ruby integrations with Claude Code via `claude-agent-sdk`, favoring the gem's README, the `docs/` topic subpages, and `lib/` types for exact APIs.
 
 ## Decision Guide
+- Choose `ClaudeAgentSDK.ask(prompt, options:)` when only the final answer matters: it runs `query` to completion and returns the `ResultMessage` (`#result` is the text); an optional block still sees every message.
 - Choose `ClaudeAgentSDK.query` for one-shot queries or streaming input. Internally uses the control protocol (streaming mode).
 - Choose `ClaudeAgentSDK::Client` for multi-turn sessions, hooks, permission callbacks, MCP server control, or dynamic model switching. Prefer `ClaudeAgentSDK::Client.open(options: ...) { |client| ... }` — it creates its own reactor and always disconnects (return a value instead of `break` outside a reactor); use `Client.new` + `connect` / `ensure disconnect` only inside an existing `Async` block.
 - Choose SDK MCP servers (`create_tool`, `create_sdk_mcp_server`) for in-process tools; choose external MCP configs for subprocess/HTTP servers.

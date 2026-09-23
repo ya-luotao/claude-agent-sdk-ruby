@@ -3,6 +3,7 @@
 require 'spec_helper'
 require 'digest'
 require 'json'
+require 'pathname'
 require 'tmpdir'
 
 RSpec.describe ClaudeAgentSDK::CLIInstaller do
@@ -86,6 +87,82 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
       Dir.chdir(tmp_dir) do
         expect(described_class.default_dir).to eq(File.join(File.realpath(tmp_dir), 'vendor', 'claude'))
       end
+    end
+  end
+
+  describe '.root' do
+    # Process-global: never let a value leak into later examples (find_cli,
+    # the default-dir specs above).
+    after { described_class.root = nil }
+
+    let(:app_root) { File.join(tmp_dir, 'app') }
+
+    it 'is nil by default' do
+      expect(described_class.root).to be_nil
+    end
+
+    it 'anchors default_dir to the root instead of the working directory' do
+      described_class.root = app_root
+
+      Dir.chdir(tmp_dir) do
+        expect(described_class.default_dir).to eq(File.join(app_root, 'vendor', 'claude'))
+      end
+    end
+
+    it 'anchors installed_path, so a process whose cwd is elsewhere finds the vendored binary' do
+      stub_http
+      described_class.install(dir: File.join(app_root, 'vendor', 'claude'))
+      described_class.root = app_root
+
+      Dir.chdir(Dir.tmpdir) do
+        expect(described_class.installed_path).to eq(File.join(app_root, 'vendor', 'claude', 'claude'))
+      end
+    end
+
+    it 'anchors the default install directory' do
+      stub_http
+      described_class.root = app_root
+
+      expect(described_class.install).to eq(File.join(app_root, 'vendor', 'claude', 'claude'))
+    end
+
+    it 'absolutizes a relative root once, when it is set' do
+      Dir.chdir(tmp_dir) { described_class.root = 'app' }
+
+      expect(described_class.root).to eq(File.join(File.realpath(tmp_dir), 'app'))
+      expect(described_class.root).to be_frozen
+    end
+
+    it 'accepts a Pathname (e.g. Rails.root)' do
+      described_class.root = Pathname.new(app_root)
+
+      expect(described_class.root).to eq(app_root)
+    end
+
+    it 'goes back to the working directory when reset to nil' do
+      described_class.root = app_root
+      described_class.root = nil
+
+      Dir.chdir(tmp_dir) do
+        expect(described_class.default_dir).to eq(File.join(File.realpath(tmp_dir), 'vendor', 'claude'))
+      end
+    end
+
+    it 'rejects an empty path and non-path values, keeping the previous root' do
+      described_class.root = app_root
+
+      expect { described_class.root = '' }.to raise_error(ArgumentError, /non-empty path or nil/)
+      expect { described_class.root = Pathname.new('') }.to raise_error(ArgumentError)
+      expect { described_class.root = 42 }.to raise_error(TypeError)
+      expect(described_class.root).to eq(app_root)
+    end
+
+    it 'leaves an explicit dir: untouched' do
+      described_class.root = app_root
+
+      expect(described_class.installed_path(dir: tmp_dir)).to be_nil
+      stub_http
+      expect(described_class.install(dir: tmp_dir)).to eq(binary_path)
     end
   end
 
