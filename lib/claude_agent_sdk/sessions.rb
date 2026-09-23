@@ -329,13 +329,16 @@ module ClaudeAgentSDK
 
     # Boundary checks for caller-supplied ids. A non-String id gets exactly
     # the malformed-id answer (nil / [] / ArgumentError, per API) instead of
-    # a NoMethodError from deep inside (`123.match?`, `123.empty?`).
+    # a NoMethodError from deep inside (`123.match?`, `123.empty?`) — and so
+    # does an invalidly encoded String, on which the regexp match itself
+    # raises ArgumentError ("invalid byte sequence").
     def valid_session_id?(session_id)
-      session_id.is_a?(String) && session_id.match?(UUID_RE)
+      session_id.is_a?(String) && session_id.valid_encoding? && session_id.match?(UUID_RE)
     end
 
     def valid_agent_id?(agent_id)
-      agent_id.is_a?(String) && agent_id.match?(AGENT_ID_RE) && !%w[. ..].include?(agent_id)
+      agent_id.is_a?(String) && agent_id.valid_encoding? && agent_id.match?(AGENT_ID_RE) &&
+        !%w[. ..].include?(agent_id)
     end
 
     # Adapters contractually report mtime as an epoch-ms Numeric (the

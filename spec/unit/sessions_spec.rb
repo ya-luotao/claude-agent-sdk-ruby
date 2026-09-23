@@ -1432,8 +1432,9 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
     end
 
     # Issue #74: a non-String id raised a deep NoMethodError (`123.match?`,
-    # `123.empty?`) instead of getting the malformed-id answer.
-    [nil, 123, :sym, ['x']].each do |bad|
+    # `123.empty?`) instead of getting the malformed-id answer. An invalidly
+    # encoded String raised ArgumentError from the regexp match itself.
+    [nil, 123, :sym, ['x'], "\xFFbad"].each do |bad|
       it "treats session_id #{bad.inspect} like a malformed id on every disk reader" do
         with_session_on_disk do |_subagents_dir, canonical|
           args = { session_id: bad, directory: canonical }
