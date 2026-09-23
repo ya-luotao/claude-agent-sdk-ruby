@@ -7,11 +7,25 @@ on:
     branches: [main]
 
 jobs:
+  # Main suite + lint on every supported Ruby (Linux). The Ruby 3.4 Linux leg
+  # also collects coverage (simplecov, COVERAGE=1): the total goes to the job
+  # summary and the HTML report is uploaded as an artifact. No threshold gate.
+  # One macOS leg runs the suite on the newest Ruby: the transport depends on
+  # signals, pipes and TERM/KILL escalation, whose behavior differs per OS.
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, Ruby ${{ matrix.ruby-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         ruby-version: ['3.2', '3.3', '3.4']
+        include:
+          - os: ubuntu-latest
+            ruby-version: '3.4'
+            coverage: true
+          - os: macos-latest
+            ruby-version: '3.4'
 
     steps:
       - uses: actions/checkout@v4
@@ -24,8 +38,32 @@ jobs:
 
       - name: Run tests
         run: bundle exec rspec
+        env:
+          COVERAGE: ${{ matrix.coverage && '1' || '' }}
+
+      - name: Coverage summary
+        if: matrix.coverage
+        run: |
+          {
+            echo "### Coverage (main suite, Ruby ${{ matrix.ruby-version }})"
+            echo
+            echo "| Line | Branch |"
+            echo "| --- | --- |"
+            echo "| $(jq -r .result.line coverage/.last_run.json)% | $(jq -r .result.branch coverage/.last_run.json)% |"
+            echo
+            echo "HTML report: the \`coverage-html\` artifact of this run."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: matrix.coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage/
+          retention-days: 14
 
       - name: Run linter
+        if: runner.os == 'Linux'
         run: bundle exec rubocop
 
   # Dependency resolutions the main Gemfile can't reach: its RuboCop pin holds

@@ -69,8 +69,10 @@ module ClaudeAgentSDK
         data['created_at'] = ms if ms
 
         unless data.key?('cwd')
+          # First non-blank cwd (Sessions.presence: whitespace-only and
+          # invalidly encoded count as blank, as on the disk path).
           cwd = entry['cwd']
-          data['cwd'] = cwd if cwd.is_a?(String) && !cwd.empty?
+          data['cwd'] = cwd if cwd.is_a?(String) && presence(cwd)
         end
 
         fold_first_prompt(data, entry)
@@ -113,7 +115,10 @@ module ClaudeAgentSDK
       SDKSessionInfo.new(
         session_id: entry['session_id'],
         summary: summary,
-        last_modified: entry['mtime'],
+        # Integer epoch ms as documented, whatever shape the adapter stamped
+        # (ISO String, numeric String, Float, Time) — the value the listing
+        # orders by. Python passes entry["mtime"] through raw.
+        last_modified: Sessions.epoch_ms_mtime(entry['mtime']),
         # file_size is a JSONL byte count — meaningful only for the local-disk
         # path. Stores have no equivalent.
         file_size: nil,

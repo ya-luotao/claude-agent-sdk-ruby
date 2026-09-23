@@ -163,9 +163,10 @@ ClaudeAgentSDK.rename_session(session_id: "uuid-here", title: "My session", sess
 ```
 
 Return types:
-- `list_sessions` → `Array<SDKSessionInfo>` (fields: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`, `tag`, `created_at`)
+- `list_sessions` → `Array<SDKSessionInfo>` (fields: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`, `tag`, `created_at`). `last_modified` is Integer epoch ms on the disk and store paths alike (adapter ISO/numeric-String/`Time` mtimes are coerced); `first_prompt` is `nil` when the session has no prompt
 - `get_session_messages` → `Array<SessionMessage>` (fields: `type`, `uuid`, `session_id`, `message`, `parent_tool_use_id`)
-- `fork_session` → `ForkSessionResult` (field: `session_id`)
+- `fork_session` → `ForkSessionResult` (field: `session_id`). The mutations (with or without `session_store:`) raise `ArgumentError` for a `session_id` / `up_to_message_id` that is not a UUID String
+- The local-disk path raises `ClaudeAgentSDK::ConfigDirError` when `CLAUDE_CONFIG_DIR` is unset and there is no usable home directory (HOME-less containers): set `CLAUDE_CONFIG_DIR`
 - `list_subagents` → `Array<String>`; `get_subagent_messages` → `Array<SessionMessage>`
 - `get_subagent_metadata` → string-keyed `Hash` with original CLI field names (`'toolUseId'`, `'parentAgentId'`, `'agentType'`, `'spawnDepth'`, …) or `nil`; `{}` is a valid empty sidecar. The disk reader needs the agent's transcript file to exist; the store reader returns the last `agent_metadata` entry without its `type` marker
 

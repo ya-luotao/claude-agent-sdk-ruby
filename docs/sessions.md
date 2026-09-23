@@ -1,8 +1,8 @@
 # Session Browsing & Mutations
 
-Browse, read, mutate, fork, and resume Claude Code sessions directly from Ruby — no CLI subprocess required. By default these APIs read and write `~/.claude/projects/` JSONL files directly, respecting the `CLAUDE_CONFIG_DIR` environment variable (an empty value is treated as unset, falling back to `~/.claude`) and auto-detecting git worktrees. Every one of them also takes an optional `session_store:` to operate on a [`SessionStore`](#mirroring-to-a-sessionstore) instead (see [Store-backed sessions](#store-backed-sessions)).
+Browse, read, mutate, fork, and resume Claude Code sessions directly from Ruby — no CLI subprocess required. By default these APIs read and write `~/.claude/projects/` JSONL files directly, respecting the `CLAUDE_CONFIG_DIR` environment variable (an empty value is treated as unset, falling back to `~/.claude`) and auto-detecting git worktrees. On a host with no usable home directory (`HOME` unset with no passwd entry — e.g. `docker --user` in a minimal image — or an empty/relative `HOME`) and no `CLAUDE_CONFIG_DIR`, the local-disk path raises `ClaudeAgentSDK::ConfigDirError`; set `CLAUDE_CONFIG_DIR` there. Every one of them also takes an optional `session_store:` to operate on a [`SessionStore`](#mirroring-to-a-sessionstore) instead (see [Store-backed sessions](#store-backed-sessions)).
 
-Not-found semantics: the read APIs return `[]`/`nil` for unknown sessions and for directories that do not exist or have no recorded sessions. An explicit `directory:` strictly scopes the search to that project and its git worktrees — there is no cross-project fallback (pass `directory: nil` to search all projects). 0-byte transcript stubs are skipped during session-file resolution. Ids are validated at the boundary: a `session_id` that is not a UUID String, or an `agent_id` that is not a String of `[A-Za-z0-9._-]` characters (or is `.`/`..`), gets the same `[]`/`nil` as an unknown session (`import_session_to_store` raises `ArgumentError`), on the disk and store readers alike.
+Not-found semantics: the read APIs return `[]`/`nil` for unknown sessions and for directories that do not exist or have no recorded sessions. An explicit `directory:` strictly scopes the search to that project and its git worktrees — there is no cross-project fallback (pass `directory: nil` to search all projects). 0-byte transcript stubs are skipped during session-file resolution. Ids are validated at the boundary: a `session_id` that is not a UUID String, or an `agent_id` that is not a String of `[A-Za-z0-9._-]` characters (or is `.`/`..`), gets the same `[]`/`nil` as an unknown session (`import_session_to_store` raises `ArgumentError`), on the disk and store readers alike. The mutations (`rename_session`, `tag_session`, `delete_session`, `fork_session`, with or without `session_store:`) apply the same check to `session_id` and `up_to_message_id` and raise `ArgumentError` (`Invalid session_id: ...`) for anything that is not a UUID String.
 
 ## Listing Sessions
 
@@ -25,7 +25,9 @@ ClaudeAgentSDK.list_sessions(directory: '.', include_worktrees: true)
 
 Each `SDKSessionInfo` includes: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`, `tag`, `created_at`.
 
-Listings are newest first; sessions with the same `last_modified` are ordered by `session_id`, so `offset:`/`limit:` pages are stable across calls and the disk and store listings order identically. Blank (empty or whitespace-only) custom/AI titles, last-prompt and summary entries, `git_branch`, `cwd`, and `tag` values read as absent on both paths (a blank `cwd` falls back to the project path).
+Listings are newest first; sessions with the same `last_modified` are ordered by `session_id`, so `offset:`/`limit:` pages are stable across calls and the disk and store listings order identically. Blank (empty or whitespace-only) custom/AI titles, last-prompt and summary entries, `git_branch`, `cwd`, and `tag` values read as absent on both paths. `cwd` is the first non-blank top-level `cwd` in the transcript (a key nested in a tool input doesn't count), falling back to the project path; `first_prompt` is `nil` when the session has no usable prompt. `last_modified` is always Integer epoch milliseconds — the file mtime on disk, the adapter's `mtime` coerced as described under [Implementing an adapter](#implementing-an-adapter) on the store paths.
+
+When `list_sessions` finds the same session in several project directories (copied config dirs, worktrees), it keeps one copy: the newest `last_modified`; on equal mtimes the larger file (the more complete copy); then the copy in the project directory whose name sorts first (worktree listings: the worktree `git worktree list` reports first, i.e. the main worktree).
 
 ## Reading Session Messages
 
@@ -211,6 +213,14 @@ ClaudeAgentSDK.query(
 ) { |message| }
 ```
 
+The mirror maps each transcript file the CLI reports to a store key relative to
+the subprocess's projects dir: `CLAUDE_CONFIG_DIR` from `options.env` (else
+`ENV`), else `~/.claude` under the `HOME` the subprocess sees (`options.env`'s
+`HOME` when it sets one). When neither exists — no `CLAUDE_CONFIG_DIR` and no
+usable home — the session still runs, but nothing is mirrored: each unmappable
+batch is reported as a `MirrorErrorMessage` (with a `nil` key) telling you to
+set `CLAUDE_CONFIG_DIR`.
+
 Relevant options: `session_store`, `session_store_flush` (`"batched"` default, or
 `"eager"` to flush each frame as soon as the store is free — frames arriving
 while an append is in flight are coalesced into the next append, so a slow
@@ -228,7 +238,8 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 > **Store-backed resume runs against a temp `CLAUDE_CONFIG_DIR`.** The SDK
 > materializes the session transcript (plus subagent transcripts, when the
 > store implements `#list_subkeys`) into it and seeds it from your real config
-> dir (`CLAUDE_CONFIG_DIR` from `options.env`/`ENV`, else `~/.claude`):
+> dir (`CLAUDE_CONFIG_DIR` from `options.env`/`ENV`, else `~/.claude` under the
+> `HOME` the subprocess will see — `options.env`'s `HOME` when it sets one):
 >
 > - `.credentials.json`, with the OAuth `refreshToken` removed so the resumed
 >   subprocess can't consume it. On macOS with the default config dir and no
@@ -264,8 +275,11 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 Subclass `ClaudeAgentSDK::SessionStore` (or duck-type it). Only `#append` and
 `#load` are required; `#list_sessions`, `#delete`, `#list_subkeys`, and
 `#list_session_summaries` are optional and probed via `SessionStore.implements?`.
-Report `mtime` as epoch milliseconds; the SDK also orders numeric-string and
-ISO-8601-string mtimes correctly, but anything else sorts as oldest. Subagent
+Report `mtime` as epoch milliseconds; the SDK also accepts numeric-string,
+ISO-8601-string and `Time` mtimes (ordering them correctly and reporting them
+as Integer epoch ms in `last_modified`), but anything else sorts as oldest and
+reads as `0`. `continue_conversation` picks the newest candidate by the same
+rule as the listings (equal mtimes: lowest `session_id`). Subagent
 transcripts arrive under a `subpath` key such as `subagents/agent-<agent_id>`
 (or nested `subagents/workflows/<runId>/agent-<agent_id>`); on a store without
 `#list_subkeys` the subagent readers build `subagents/agent-<agent_id>` from the

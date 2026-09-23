@@ -34,7 +34,7 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if session_id is invalid or title is empty
     # @raise [Errno::ENOENT] if the session file cannot be found
     def rename_session(session_id:, title:, directory: nil)
-      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
       stripped = title.strip
       raise ArgumentError, 'title must be non-empty' if stripped.empty?
@@ -55,7 +55,7 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
     # @raise [Errno::ENOENT] if the session file cannot be found
     def tag_session(session_id:, tag:, directory: nil)
-      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
       if tag
         sanitized = sanitize_unicode(tag).strip
@@ -79,7 +79,7 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if session_id is invalid
     # @raise [Errno::ENOENT] if the session file cannot be found
     def delete_session(session_id:, directory: nil)
-      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
       result = find_session_file_with_dir(session_id, directory)
       raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}" unless result
@@ -115,9 +115,9 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if session_id or up_to_message_id is invalid
     # @raise [Errno::ENOENT] if the session file cannot be found
     def fork_session(session_id:, directory: nil, up_to_message_id: nil, title: nil)
-      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
-      raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}" if up_to_message_id && !up_to_message_id.match?(Sessions::UUID_RE)
+      raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}" if up_to_message_id && !Sessions.valid_session_id?(up_to_message_id)
 
       result = find_session_file_with_dir(session_id, directory)
       raise Errno::ENOENT, "Session #{session_id} not found#{" in project directory for #{directory}" if directory}" unless result
@@ -159,7 +159,7 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if session_id is invalid or title is empty
     # @raise [Errno::ENOENT] if the session is not found in the store
     def rename_session_via_store(session_store:, session_id:, title:, directory: nil)
-      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
       stripped = title.strip
       raise ArgumentError, 'title must be non-empty' if stripped.empty?
@@ -183,7 +183,7 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
     # @raise [Errno::ENOENT] if the session is not found in the store
     def tag_session_via_store(session_store:, session_id:, tag:, directory: nil)
-      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
       if tag
         sanitized = sanitize_unicode(tag).strip
@@ -213,7 +213,7 @@ module ClaudeAgentSDK
     #
     # @raise [ArgumentError] if session_id is invalid
     def delete_session_via_store(session_store:, session_id:, directory: nil)
-      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
       return unless SessionStore.implements?(session_store, :delete)
 
       key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
@@ -231,8 +231,8 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if session_id/up_to_message_id is invalid or the session has no messages
     # @raise [Errno::ENOENT] if the source session is not found in the store
     def fork_session_via_store(session_store:, session_id:, directory: nil, up_to_message_id: nil, title: nil)
-      raise ArgumentError, "Invalid session_id: #{session_id}" unless session_id.match?(Sessions::UUID_RE)
-      raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}" if up_to_message_id && !up_to_message_id.match?(Sessions::UUID_RE)
+      raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
+      raise ArgumentError, "Invalid up_to_message_id: #{up_to_message_id}" if up_to_message_id && !Sessions.valid_session_id?(up_to_message_id)
 
       project_key = Sessions.project_key_for_directory(directory)
       raw = session_store.load('project_key' => project_key, 'session_id' => session_id)

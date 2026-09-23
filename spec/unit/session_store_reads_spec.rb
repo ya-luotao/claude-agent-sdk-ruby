@@ -290,6 +290,58 @@ RSpec.describe 'SessionStore-backed reads' do
         end
       end
     end
+
+    # Issue #121 (1): #66 coerced adapter mtimes only for ordering, so an
+    # adapter reporting ISO strings (SQL timestamps through JSON) or Time
+    # objects (ActiveRecord updated_at) surfaced them verbatim where
+    # SDKSessionInfo#last_modified promises epoch milliseconds.
+    describe 'last_modified is epoch-ms Integer whatever the adapter mtime shape (issue #121)' do
+      let(:shape_sids) { Array.new(4) { SecureRandom.uuid } }
+      let(:ms) { Time.iso8601('2024-06-01T12:00:00Z').to_i * 1000 }
+
+      [false, true].each do |with_summaries|
+        path = with_summaries ? 'summary fast path' : 'list_sessions slow path'
+
+        it "coerces ISO, numeric-String, Float and Time mtimes on the #{path}" do
+          cstore = controlled_mtime_store(with_summaries: with_summaries)
+          iso, numeric, float, time = shape_sids
+          mtimes = { iso => '2024-06-01T12:00:00.000Z', numeric => ms.to_s, float => ms.to_f + 0.5,
+                     time => Time.at(ms / 1000) }
+          mtimes.each do |sid, mtime|
+            cstore.append({ 'project_key' => project_key, 'session_id' => sid }, [user_entry(sid, 'p', '2024-01-01T00:00:00Z')])
+            cstore.listing_mtimes[sid] = mtime
+            cstore.summary_mtimes[sid] = mtime if with_summaries
+          end
+
+          infos = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir)
+          expect(infos.map(&:last_modified)).to all(be_an(Integer))
+          expect(infos.to_h { |i| [i.session_id, i.last_modified] }).to eq(shape_sids.to_h { |sid| [sid, ms] })
+        end
+      end
+
+      it 'coerces the mtime of a row degraded by a failing gap-fill load' do
+        failing = Class.new(ClaudeAgentSDK::SessionStore) do
+          def append(_key, _entries); end
+          def load(_key) = raise('backend down')
+        end.new
+        sid = shape_sids.first
+        failing.define_singleton_method(:list_sessions) { |_pk| [{ 'session_id' => sid, 'mtime' => '2024-06-01T12:00:00Z' }] }
+
+        infos = nil
+        expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: failing, directory: dir) }
+          .to output(/gap-fill load failed/).to_stderr
+        expect(infos.map(&:last_modified)).to eq([ms])
+      end
+
+      it 'reads an unusable mtime as 0, the value it sorts by' do
+        cstore = controlled_mtime_store(with_summaries: false)
+        sid = shape_sids.first
+        cstore.append({ 'project_key' => project_key, 'session_id' => sid }, [user_entry(sid, 'p', '2024-01-01T00:00:00Z')])
+        cstore.listing_mtimes[sid] = 'not a time'
+        expect(ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir).map(&:last_modified))
+          .to eq([0])
+      end
+    end
   end
 
   describe '.get_session_info with session_store:' do

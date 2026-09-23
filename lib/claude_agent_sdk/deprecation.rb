@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require 'set'
-
 module ClaudeAgentSDK
   # One-time deprecation warnings for public API slated for removal in the
   # next major release (see the deprecation policy in issue #126).

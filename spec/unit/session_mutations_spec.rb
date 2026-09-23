@@ -676,6 +676,50 @@ RSpec.describe ClaudeAgentSDK::SessionMutations do
     end
   end
 
+  # Issue #121 (5): the mutations called session_id.match? directly, so a
+  # non-String id raised NoMethodError (and an invalidly encoded String an
+  # "invalid byte sequence" ArgumentError from the regexp) instead of the
+  # boundary validation #74 gave the readers. Now every mutation, disk and
+  # store, answers exactly as for a malformed id.
+  describe 'session_id / up_to_message_id boundary validation (issue #121)' do
+    let(:store) { ClaudeAgentSDK::InMemorySessionStore.new }
+    let(:bad_ids) { [nil, 123, :'550e8400-e29b-41d4-a716-446655440000', ['x'], "\xFF\xFE".dup.force_encoding('UTF-8')] }
+    let(:mutations) do
+      {
+        rename_session: ->(id) { described_class.rename_session(session_id: id, title: 't') },
+        tag_session: ->(id) { described_class.tag_session(session_id: id, tag: 't') },
+        delete_session: ->(id) { described_class.delete_session(session_id: id) },
+        fork_session: ->(id) { described_class.fork_session(session_id: id) },
+        rename_session_via_store: ->(id) { described_class.rename_session_via_store(session_store: store, session_id: id, title: 't') },
+        tag_session_via_store: ->(id) { described_class.tag_session_via_store(session_store: store, session_id: id, tag: 't') },
+        delete_session_via_store: ->(id) { described_class.delete_session_via_store(session_store: store, session_id: id) },
+        fork_session_via_store: ->(id) { described_class.fork_session_via_store(session_store: store, session_id: id) }
+      }
+    end
+
+    it 'raises the malformed-id ArgumentError for a non-String or invalidly encoded session_id' do
+      mutations.each do |name, call|
+        bad_ids.each do |id|
+          # scrub: the message echoes the id, so an invalidly encoded one would
+          # make a plain regexp match raise.
+          expect { call.call(id) }.to raise_error(ArgumentError) { |e|
+            expect(e.message.scrub).to start_with('Invalid session_id'), "#{name}(#{id.inspect}): #{e.message.scrub}"
+          }
+        end
+      end
+    end
+
+    it 'raises the malformed-id ArgumentError for a non-String up_to_message_id' do
+      [123, :x, ['x']].each do |bad|
+        expect { described_class.fork_session(session_id: session_id, up_to_message_id: bad) }
+          .to raise_error(ArgumentError, /Invalid up_to_message_id/)
+        expect do
+          described_class.fork_session_via_store(session_store: store, session_id: session_id, up_to_message_id: bad)
+        end.to raise_error(ArgumentError, /Invalid up_to_message_id/)
+      end
+    end
+  end
+
   describe 'top-level delegates' do
     it 'ClaudeAgentSDK.rename_session delegates to SessionMutations' do
       expect(described_class).to receive(:rename_session)

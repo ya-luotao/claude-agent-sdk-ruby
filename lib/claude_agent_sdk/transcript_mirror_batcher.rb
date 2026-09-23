@@ -56,7 +56,9 @@ module ClaudeAgentSDK
     MIRROR_APPEND_BACKOFF_S = [0.2, 0.8].freeze
 
     # @param store [SessionStore] the adapter to mirror into
-    # @param projects_dir [String] base dir for file_path -> SessionKey mapping
+    # @param projects_dir [String, nil] base dir for file_path -> SessionKey
+    #   mapping; nil when it could not be resolved (every frame is then
+    #   dropped and reported via +on_error+)
     # @param on_error [#call] called as on_error.call(key, message) after a batch
     #   exhausts retries; must not raise
     # @param callback_wrapper [#call, nil] the session's
@@ -254,6 +256,20 @@ module ClaudeAgentSDK
 
       by_path.each do |file_path, entries|
         next if entries.empty? # avoid phantom keys in adapters that touch storage on append([])
+
+        if @projects_dir.nil?
+          # No CLAUDE_CONFIG_DIR and no usable home (SessionStores.projects_dir,
+          # #120): the frame cannot be mapped to a SessionKey. Unlike a path
+          # outside a KNOWN projects dir, this is a host misconfiguration that
+          # loses the whole mirror, so it is surfaced as a MirrorErrorMessage.
+          @dropped_batches += 1
+          message = "cannot mirror #{file_path}: the Claude config directory is unknown (CLAUDE_CONFIG_DIR is " \
+                    'unset and the home directory could not be resolved); set CLAUDE_CONFIG_DIR in the ' \
+                    'environment or options.env'
+          errors << [nil, message]
+          warn "Claude SDK: [SessionStore] #{message}"
+          next
+        end
 
         key = SessionStores.file_path_to_session_key(file_path, @projects_dir)
         if key.nil?
