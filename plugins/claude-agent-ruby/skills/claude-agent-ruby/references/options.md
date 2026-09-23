@@ -223,7 +223,7 @@ ClaudeAgentSDK.query(
   on the store instead of local disk, e.g.
   `ClaudeAgentSDK.list_sessions(session_store: store)`. With a store,
   `directory: nil` means the current working directory (not every project),
-  and `include_worktrees:` raises `ArgumentError`. Rename/tag/fork raise
+  and `include_worktrees: false`/`nil` raises `ArgumentError`. Rename/tag/fork raise
   `Errno::ENOENT` for a session the store has never seen (no phantom
   sessions). `import_session_to_store` migrates a local session into a
   store. The old `*_from_store` / `*_via_store` functions are deprecated

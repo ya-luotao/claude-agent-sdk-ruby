@@ -359,9 +359,9 @@ Where the store path differs from the disk path:
   search every project directory when `directory:` is nil; a store keys every
   read and write by `project_key` and has no way to enumerate project keys
   (parity with the Python SDK).
-- **`include_worktrees:` is disk-only.** Passing it to `list_sessions`
-  together with `session_store:` raises `ArgumentError` rather than being
-  silently ignored.
+- **`include_worktrees:` is disk-only.** A store has no worktrees, so with
+  `session_store:` only the default `true` is accepted; `false` or `nil`
+  raises `ArgumentError` rather than being silently ignored.
 - `list_sessions` uses the store's `#list_session_summaries` when implemented,
   else `#list_sessions` plus one `#load` per listed session; a store with
   neither raises `ArgumentError`. `list_subagents` requires `#list_subkeys`.

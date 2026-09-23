@@ -317,15 +317,8 @@ module ClaudeAgentSDK
   # - +directory: nil+ searches every project directory on disk, but means the
   #   current working directory with a store (a SessionStore is keyed by
   #   project_key and cannot enumerate projects — parity with the Python SDK).
-  # - +include_worktrees:+ exists only on disk (list_sessions); passing it
-  #   together with +session_store:+ raises ArgumentError.
-
-  # Sentinel default for list_sessions' include_worktrees: tells "not passed"
-  # (disk default true; accepted with a store) apart from an explicit value,
-  # which is rejected with a store instead of being silently ignored. An
-  # explicit nil keeps its existing disk meaning (falsy: no worktrees).
-  INCLUDE_WORKTREES_DEFAULT = Object.new.freeze
-  private_constant :INCLUDE_WORKTREES_DEFAULT
+  # - +include_worktrees:+ filters only on disk (list_sessions); with a
+  #   +session_store:+, anything but the default +true+ raises ArgumentError.
 
   # List sessions for a directory (or all sessions), newest first.
   # @param directory [String, nil] Working directory to list sessions for. On
@@ -333,27 +326,27 @@ module ClaudeAgentSDK
   #   current working directory.
   # @param limit [Integer, nil] Maximum number of sessions to return
   # @param offset [Integer] Number of sessions to skip (for pagination)
-  # @param include_worktrees [Boolean] Disk only (default true): also list the
-  #   project's git worktree sessions. Raises ArgumentError with a session_store.
+  # @param include_worktrees [Boolean] Disk only: also list the project's git
+  #   worktree sessions. A store has no worktrees, so with a session_store only
+  #   the default true is accepted; false or nil raises ArgumentError (the
+  #   store path cannot apply the filter the caller asked for).
   # @param session_store [SessionStore, nil] List from this store instead of
   #   local disk. Uses the store's list_session_summaries when implemented,
   #   else list_sessions + one load per listed session.
   # @return [Array<SDKSessionInfo>] Sessions sorted by last_modified descending
-  # @raise [ArgumentError] if include_worktrees is given with a session_store,
+  # @raise [ArgumentError] if include_worktrees is not true with a session_store,
   #   or the store implements neither list_session_summaries nor list_sessions
-  def self.list_sessions(directory: nil, limit: nil, offset: 0, include_worktrees: INCLUDE_WORKTREES_DEFAULT,
-                         session_store: nil)
+  def self.list_sessions(directory: nil, limit: nil, offset: 0, include_worktrees: true, session_store: nil)
     unless session_store.nil?
-      unless include_worktrees.equal?(INCLUDE_WORKTREES_DEFAULT)
-        raise ArgumentError, 'include_worktrees: applies only to local-disk listing; ' \
-                             'a session_store is keyed by project and has no worktrees'
+      unless include_worktrees == true
+        raise ArgumentError, "include_worktrees: #{include_worktrees.inspect} applies only to local-disk " \
+                             'listing; a session_store is keyed by project and has no worktrees to exclude'
       end
 
       return Sessions.list_sessions_from_store(session_store: session_store, directory: directory,
                                                limit: limit, offset: offset)
     end
 
-    include_worktrees = true if include_worktrees.equal?(INCLUDE_WORKTREES_DEFAULT)
     Sessions.list_sessions(directory: directory, limit: limit, offset: offset, include_worktrees: include_worktrees)
   end
 

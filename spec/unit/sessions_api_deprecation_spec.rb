@@ -160,11 +160,21 @@ RSpec.describe 'Sessions API consolidation' do
       end
     end
 
-    it 'raises instead of silently ignoring an explicit include_worktrees with a session_store' do
+    it 'accepts the default true with a session_store, explicit or not' do
+      expect(ClaudeAgentSDK::Sessions).to receive(:list_sessions_from_store)
+        .with(session_store: store, directory: nil, limit: nil, offset: 0).twice.and_return([])
+      expect(ClaudeAgentSDK::Sessions).not_to receive(:list_sessions)
+
+      expect(ClaudeAgentSDK.list_sessions(session_store: store)).to eq([])
+      expect(ClaudeAgentSDK.list_sessions(session_store: store, include_worktrees: true)).to eq([])
+    end
+
+    it 'raises instead of silently ignoring include_worktrees: false/nil with a session_store' do
       expect(ClaudeAgentSDK::Sessions).not_to receive(:list_sessions_from_store)
-      [true, false, nil].each do |value|
+      { false => /include_worktrees: false applies only to local-disk listing/,
+        nil => /include_worktrees: nil applies only to local-disk listing/ }.each do |value, message|
         expect { ClaudeAgentSDK.list_sessions(session_store: store, include_worktrees: value) }
-          .to raise_error(ArgumentError, /include_worktrees: applies only to local-disk listing/)
+          .to raise_error(ArgumentError, message)
       end
     end
   end
