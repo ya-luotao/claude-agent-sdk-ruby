@@ -230,7 +230,8 @@ module ClaudeAgentSDK
     # which reads only top-level keys — disagreed. A line that doesn't parse
     # (truncated at the head/tail window edge) keeps the raw-scan value: its
     # top-level shape can't be checked, and dropping it would regress the
-    # common case of a true entry cut by the 64KB window.
+    # common case of a true entry cut by the 64KB window. Unverified blanks
+    # cannot clear a previously verified value: they may be nested tool inputs.
     def extract_top_level_string_field(text, key, last: false)
       positions = field_match_positions(text, key)
       positions.reverse! if last
@@ -247,7 +248,8 @@ module ClaudeAgentSDK
           next # parseable line without a top-level string value: nested/false match
         end
         value = extract_json_string_value(text, value_start)
-        return unescape_json_string(value) if value
+        value = presence(unescape_json_string(value)) if value
+        return value if value
       end
       nil
     end
@@ -417,17 +419,17 @@ module ClaudeAgentSDK
 
     def build_session_info(file_path, head, tail, stat, project_path)
       # User-set title (customTitle) wins over AI-generated title (aiTitle).
-      # Head fallback covers short sessions where the title entry may not be in tail.
-      # Each candidate passes through presence so a blank value (e.g. a
-      # trailing title-clearing entry) falls through instead of short-circuiting.
+      # Consult the head only when the tail has no occurrence of that field.
+      # Normalize blanks AFTER choosing the latest occurrence: an explicit
+      # clearing entry must not resurrect an older title from the head.
       # Summary-chain fields use the top-level-verified scan: a raw byte scan
       # also matches these keys nested inside tool_use inputs, reporting tool
       # arguments as the session title/summary (and diverging from the store
       # fold, which reads top-level keys only).
-      custom_title = presence(extract_top_level_string_field(tail, 'customTitle', last: true)) ||
-                     presence(extract_top_level_string_field(head, 'customTitle', last: true)) ||
-                     presence(extract_top_level_string_field(tail, 'aiTitle', last: true)) ||
-                     presence(extract_top_level_string_field(head, 'aiTitle', last: true))
+      custom_title = presence(extract_top_level_string_field(tail, 'customTitle', last: true) ||
+                              extract_top_level_string_field(head, 'customTitle', last: true)) ||
+                     presence(extract_top_level_string_field(tail, 'aiTitle', last: true) ||
+                              extract_top_level_string_field(head, 'aiTitle', last: true))
       first_prompt = extract_first_prompt_from_head(head)
       # lastPrompt tail entry shows what the user was most recently doing.
       summary = custom_title ||
