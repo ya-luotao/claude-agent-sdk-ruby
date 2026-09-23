@@ -834,4 +834,152 @@ RSpec.describe ClaudeAgentSDK, '.extract_sdk_mcp_servers' do
     expect(described_class.extract_sdk_mcp_servers('path/to/config.json')).to eq({})
     expect(described_class.extract_sdk_mcp_servers(nil)).to eq({})
   end
+
+  # Issue #68: a hand-written String-keyed config (the natural literal for
+  # anyone not reusing create_sdk_mcp_server's return value) was skipped, so
+  # its in-process tools were never dispatched.
+  it 'extracts instances from String-keyed and mixed-key sdk configs' do
+    server = Object.new
+    servers = described_class.extract_sdk_mcp_servers(
+      'strings' => { 'type' => 'sdk', 'name' => 'strings', 'instance' => server },
+      'mixed' => { type: 'sdk', 'instance' => server },
+      'symbol_type' => { type: :sdk, instance: server },
+      'stdio' => { 'type' => 'stdio', 'command' => 'node' }
+    )
+    expect(servers).to eq('strings' => server, 'mixed' => server, 'symbol_type' => server)
+  end
+end
+
+# Issue #77: a tool handler raising SystemExit / Interrupt / SignalException
+# escaped the StandardError-only dispatch boundaries, so the pending
+# tools/call control response was never written (and in :thread mode Ruby
+# re-raised the worker's SystemExit on the main thread, tearing down the
+# reactor). Such exceptions become in-band isError results like any other
+# handler failure; cancellation must still propagate untouched.
+RSpec.describe ClaudeAgentSDK::SdkMcpServer, 'process-exit exceptions raised by tool handlers' do
+  def server_raising(exception)
+    tool = ClaudeAgentSDK.create_tool('boom', 'Boom', {}) { |_args| raise exception }
+    described_class.new(name: 'srv', tools: [tool])
+  end
+
+  def tools_call(id = 1)
+    { jsonrpc: '2.0', id: id, method: 'tools/call', params: { name: 'boom', arguments: {} } }
+  end
+
+  exceptions = {
+    'SystemExit' => -> { SystemExit.new(3, 'handler called exit') },
+    'Interrupt' => -> { Interrupt.new('handler interrupted') },
+    'SignalException' => -> { SignalException.new('TERM') }
+  }
+
+  %i[thread inline].each do |scheduling|
+    context "with #{scheduling} callback scheduling" do
+      exceptions.each do |label, build|
+        it "reports #{label} from #call_tool as an in-band isError result" do
+          exception = build.call
+          server = server_raising(exception)
+          server.callback_scheduling = scheduling
+
+          result = Sync { server.call_tool('boom', {}) }
+
+          expect(result).to eq(content: [{ type: 'text', text: exception.message }], isError: true)
+        end
+
+        it "reports #{label} from a routed tools/call as an in-band isError result" do
+          exception = build.call
+          server = server_raising(exception)
+          server.callback_scheduling = scheduling
+
+          response = Sync { server.handle_message(tools_call(7)) }
+
+          expect(response[:error]).to be_nil
+          expect(response[:id]).to eq(7)
+          expect(response.dig(:result, :isError)).to be(true)
+          expect(response.dig(:result, :content, 0, :text)).to eq(exception.message)
+        end
+      end
+
+      # End to end through Query: the control response is written and the
+      # reactor survives — before the fix, :thread mode lost the reactor to
+      # a SystemExit Ruby re-raised on the main thread.
+      it 'writes the tools/call control response when a handler calls exit' do
+        server = server_raising(SystemExit.new(3, 'handler called exit'))
+        writes = []
+        transport = instance_double(ClaudeAgentSDK::Transport)
+        allow(transport).to receive(:write) { |json| writes << JSON.parse(json) }
+        query = ClaudeAgentSDK::Query.new(
+          transport: transport, is_streaming_mode: true,
+          sdk_mcp_servers: { 'srv' => server }, callback_scheduling: scheduling
+        )
+        request = {
+          type: 'control_request', request_id: 'req_exit',
+          request: { subtype: 'mcp_message', server_name: 'srv', message: tools_call }
+        }
+
+        reactor_alive = Sync do
+          query.send(:handle_control_request, request)
+          :alive
+        end
+
+        expect(reactor_alive).to eq(:alive)
+        expect(writes.length).to eq(1)
+        response = writes.first.fetch('response')
+        expect(response).to include('subtype' => 'success', 'request_id' => 'req_exit')
+        expect(response.dig('response', 'mcp_response', 'result', 'isError')).to be(true)
+        expect(response.dig('response', 'mcp_response', 'result', 'content', 0, 'text')).to eq('handler called exit')
+      end
+    end
+  end
+
+  context 'with cancellation raised inside an inline handler' do
+    [Async::Stop, ClaudeAgentSDK::FiberBoundary::InlineCancellation].each do |cancellation|
+      it "lets #{cancellation} propagate from #call_tool and a routed tools/call" do
+        server = server_raising(cancellation.new)
+        server.callback_scheduling = :inline
+
+        # Rescued inside the task: an Async::Stop escaping Sync's own task
+        # would just stop it silently, proving nothing.
+        outcomes = Sync do
+          [-> { server.call_tool('boom', {}) }, -> { server.handle_message(tools_call) }].map do |dispatch|
+            dispatch.call
+          rescue cancellation => e
+            e
+          end
+        end
+
+        expect(outcomes).to all(be_a(cancellation))
+      end
+    end
+
+    it 'answers a stopped inline tools/call with the Cancelled error, not an isError result' do
+      entered = Thread::Queue.new
+      tool = ClaudeAgentSDK.create_tool('boom', 'Boom', {}) do |_args|
+        entered << true
+        sleep # parks the reactor fiber until task.stop cancels it
+        { content: [{ type: 'text', text: 'unreachable' }] }
+      end
+      server = described_class.new(name: 'srv', tools: [tool])
+      writes = []
+      transport = instance_double(ClaudeAgentSDK::Transport)
+      allow(transport).to receive(:write) { |json| writes << JSON.parse(json) }
+      query = ClaudeAgentSDK::Query.new(
+        transport: transport, is_streaming_mode: true,
+        sdk_mcp_servers: { 'srv' => server }, callback_scheduling: :inline
+      )
+      request = {
+        type: 'control_request', request_id: 'req_stop',
+        request: { subtype: 'mcp_message', server_name: 'srv', message: tools_call }
+      }
+
+      Sync do |task|
+        handler_task = task.async { query.send(:handle_control_request, request) }
+        entered.pop
+        handler_task.stop
+        handler_task.wait
+      end
+
+      expect(writes.length).to eq(1)
+      expect(writes.first.fetch('response')).to include('subtype' => 'error', 'error' => 'Cancelled')
+    end
+  end
 end

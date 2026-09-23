@@ -444,8 +444,12 @@ module ClaudeAgentSDK
           # Typed Mcp*ServerConfig objects serialize via their wire hash —
           # without this they'd JSON-stringify as "#<...>" via to_s.
           config = config.to_h if config.is_a?(Type)
-          servers_for_cli[name] = if config.is_a?(Hash) && config[:type] == "sdk"
-                                    config.except(:instance)
+          # Same recognition rule as ClaudeAgentSDK.extract_sdk_mcp_servers:
+          # either key style (and a Symbol :sdk type). The live instance is
+          # never serialized — JSON.generate would raise on it or leak its
+          # #to_s onto the command line.
+          servers_for_cli[name] = if config.is_a?(Hash) && (config[:type] || config["type"]).to_s == "sdk"
+                                    config.except(:instance, "instance")
                                   else
                                     config
                                   end
