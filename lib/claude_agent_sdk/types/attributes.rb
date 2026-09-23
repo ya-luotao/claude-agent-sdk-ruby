@@ -62,6 +62,42 @@ module ClaudeAgentSDK
       own_attribute_names.include?(name) || (superclass <= Type && superclass.attribute?(name))
     end
 
+    # Whether +method_name+ (a normalized reader, writer or predicate:
+    # `session_id`, `session_id=`, `fork_session?`) accesses a declared
+    # attribute.
+    #
+    # @api private
+    def self.attribute_method?(method_name)
+      attribute?(method_name.delete_suffix('=').delete_suffix('?'))
+    end
+
+    # Per-class caches of the names, exactly as callers spell them (:sessionId,
+    # 'session_id', ...), that reached a declared attribute: name => method.
+    # Hits skip name normalization and the checks below. Only positives are
+    # cached: the registry only grows, so they never go stale (an answer that
+    # depends on user-defined methods is never cached). Bounded by attributes
+    # x spellings. Replaced, never mutated, so readers need no lock.
+    #
+    # @api private
+    def self.cached_attribute_reader(name)
+      @attribute_readers&.[](name)
+    end
+
+    # @api private
+    def self.cached_attribute_writer(name)
+      @attribute_writers&.[](name)
+    end
+
+    # @api private
+    def self.cache_attribute_reader(name, method_name)
+      @attribute_readers = (@attribute_readers || {}).merge(name => method_name).freeze
+    end
+
+    # @api private
+    def self.cache_attribute_writer(name, method_name)
+      @attribute_writers = (@attribute_writers || {}).merge(name => method_name).freeze
+    end
+
     # Every declared attribute name (snake_case), sorted.
     #
     # @api private
@@ -106,13 +142,18 @@ module ClaudeAgentSDK
 
     # Allow camelCase attribute access
     def method_missing(method_name, ...)
-      normalized = normalize_name(method_name)
+      target = self.class.cached_attribute_reader(method_name)
+      return public_send(target, ...) if target
 
-      if normalized != method_name.to_s && respond_to?(normalized) && reachable?(normalized, method_name, :camel_case)
-        public_send(normalized, ...)
-      else
-        super
+      normalized = normalize_name(method_name)
+      if normalized != method_name.to_s && respond_to?(normalized)
+        if self.class.attribute_method?(normalized)
+          self.class.cache_attribute_reader(method_name, normalized.to_sym)
+          return public_send(normalized, ...)
+        end
+        return public_send(normalized, ...) if reachable?(normalized, method_name, :camel_case)
       end
+      super
     end
 
     def respond_to_missing?(method_name, include_private = false)
@@ -130,24 +171,64 @@ module ClaudeAgentSDK
     end
 
     def assign_attribute(name, value)
+      writer = self.class.cached_attribute_writer(name)
+      return public_send(writer, value) if writer
+
       normalized = normalize_name(name)
       setter = :"#{normalized}="
-      if respond_to?(setter) && reachable?(setter.to_s, name, :write)
-        public_send(setter, value)
-      elsif self.class.strict_attributes? && !Thread.current[LENIENT_KEY] && !self.class.attribute?(normalized)
-        unknown_attribute(name, normalized)
+      if respond_to?(setter)
+        if self.class.attribute?(normalized)
+          self.class.cache_attribute_writer(name, setter)
+          return public_send(setter, value)
+        end
+        return public_send(setter, value) if reachable?(setter.to_s, name, :write)
       end
+      return unless self.class.strict_attributes? && !Thread.current[LENIENT_KEY] && !self.class.attribute?(normalized)
+      return if respond_to?(normalized) && user_defined_method?(normalized)
+
+      unknown_attribute(name, normalized)
     end
 
     def read_attribute(name)
+      reader = self.class.cached_attribute_reader(name)
+      return public_send(reader) if reader
+
       getter = normalize_name(name)
-      public_send(getter) if respond_to?(getter) && reachable?(getter, name, :read)
+      return unless respond_to?(getter)
+
+      if self.class.attribute_method?(getter)
+        self.class.cache_attribute_reader(name, getter.to_sym)
+        public_send(getter)
+      elsif reachable?(getter, name, :read)
+        public_send(getter)
+      end
     end
 
     # Whether a normalized reader, writer or predicate name belongs to an
-    # attribute: `session_id`, `session_id=`, `fork_session?`.
+    # attribute: a declared one (`session_id`, `session_id=`,
+    # `fork_session?`), or a method user code defined on its own subclass, a
+    # module it includes, or the object itself. Only methods the SDK, Ruby or
+    # another gem defines at Type or above (to_h, freeze, to_json, ...) are
+    # not attributes.
     def attribute_method?(method_name)
-      self.class.attribute?(method_name.delete_suffix('=').delete_suffix('?'))
+      self.class.attribute_method?(method_name) || user_defined_method?(method_name)
+    end
+
+    # Not memoized: user code can define methods at any time.
+    def user_defined_method?(method_name)
+      owner = method(method_name).owner
+      return false if sdk_module?(owner)
+
+      ancestors = self.class.ancestors
+      index = ancestors.index(owner)
+      index.nil? || index < ancestors.index(Type)
+    rescue NameError
+      false
+    end
+
+    def sdk_module?(mod)
+      name = mod.name
+      !name.nil? && (name == 'ClaudeAgentSDK' || name.start_with?('ClaudeAgentSDK::'))
     end
 
     # #[], #[]= (and so .new) or a camelCase call resolved to +method_name+, a
