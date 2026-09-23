@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **RBS signatures for the public API** ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)). The gem now ships `sig/`, so Steep and other RBS tools type-check code that uses it (through `rbs collection`; `sig/manifest.yaml` declares the one stdlib dependency, `pathname`). The signatures cover the whole public surface (the objects documented in `docs/` and YARD without `@api private`): `ClaudeAgentSDK.query` / `.ask` / `.configure` / `.offload`, the SDK MCP helpers, every session function (including `session_store:` and the deprecated twins), `Client` with its Ruby-style aliases, `ClaudeAgentOptions` (every option as a typed keyword), the message, content-block, hook, permission and MCP types, the error hierarchy, `CLIInstaller`, `Streaming`, `Railtie.callback_wrapper` and the observers. Duck types are interfaces, so any object with the right methods fits: `_Transport`, `_SessionStore` (only `#append` and `#load` are required), and one interface per user callback (`_CanUseTool`, `_HookCallback`, `_ToolHandler`, `_CallbackWrapper`, ...). Hashes follow the documented key rule: `wire_hash` (`Hash[Symbol, untyped]`) for data from the CLI stream, `transcript_hash` (`Hash[String, untyped]`) for transcripts and store data. Internals tagged `@api private` have no signatures. CI validates the signatures (`rake rbs:validate`) and runs the suite under RBS's runtime type checker (`rake rbs:test`), so a signature that disagrees with the code fails the build. `CONTRIBUTING.md` explains how to keep `sig/` in step with API changes.
+
 ## [0.37.0] - 2026-09-23
 
 The last 0.x release before 1.0 ([roadmap](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)). No runtime behaviour changes — only new warnings for things 1.0 will reject. **Run your suite on 0.37 with warnings visible before moving to 1.0:**
