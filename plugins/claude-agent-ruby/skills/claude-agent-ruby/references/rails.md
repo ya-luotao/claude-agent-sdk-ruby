@@ -10,7 +10,7 @@ bin/rails claude_agent_sdk:install_cli        # PINNED_CLI_VERSION into Rails.ro
 bin/rails claude_agent_sdk:install_cli CLAUDE_CLI_VERSION=x.y.z   # or a version of your own ('stable' / 'latest')
 ```
 
-The rake task does not boot the app, so it works as a Docker build step. Outside Rails, `require 'claude_agent_sdk/tasks'` in a Rakefile gives the same task. The `Railtie` loads only when `Rails::Railtie` is defined and installs nothing implicitly.
+The rake task does not boot the app, so it works as a Docker build step. The Railtie sets `ClaudeAgentSDK::CLIInstaller.root` to `Rails.root` (unless already set), so the vendored binary is found even when a worker's cwd is not the app root; set `CLIInstaller.root` in `config/application.rb` to override it for both discovery and the task. Outside Rails, `require 'claude_agent_sdk/tasks'` in a Rakefile gives the same task. The `Railtie` loads only when `Rails::Railtie` is defined and installs nothing implicitly.
 
 ## Configure defaults once (initializer)
 

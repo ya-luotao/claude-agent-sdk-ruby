@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-23
+
+The first step on the [road to 1.0](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126): one `session_store:` argument for every session function (the store-specific twins are deprecated), `ClaudeAgentSDK.ask`, String tool results, and the last audit follow-ups (#119–#121). **Read before upgrading:**
+- An `exit`, `Interrupt` or signal raised inside a hook, `can_use_tool` or SDK MCP handler now **ends the process after the CLI gets its error response**. Since 0.34.0 a tool handler's `exit` was turned into an `isError` result and the process kept running, which also swallowed a real Ctrl-C or SIGTERM in `:inline` mode.
+- The `*_from_store` / `*_via_store` session functions print a one-time deprecation warning; switch to `list_sessions(session_store: store)` etc. (table under **Deprecated**).
+- Local-disk session APIs raise `ConfigDirError` (not `ArgumentError`) on hosts without a home directory; a session with no prompt has `first_prompt` `nil` on the disk path too (was `''`).
+
 ### Added
 - **SDK MCP tool handlers may return a String.** `create_tool('greet', ...) { |args| "Hello, #{args[:name]}!" }` now sends Claude a single text block, the same as returning `{ content: [{ type: 'text', text: "Hello, ..." }] }`. Both dispatch paths (`tools/call` through the MCP server and the direct `SdkMcpServer#call_tool`) accept it. Hash returns behave exactly as before and remain the form for `is_error`, `structured_content`, images and several blocks; any other non-Hash return still produces the in-band "must return a hash with :content key" error. The `create_tool` YARD examples, README and `docs/mcp-servers.md` (new "Handler Return Values" section) lead with the String form.
 - **`ClaudeAgentSDK.ask(prompt, options: nil)`** — runs `query` to completion and returns the final `ResultMessage`, so `ClaudeAgentSDK.ask("What is 2 + 2?").result` is the answer text, with cost, usage and `session_id` on the same object. It is `query` underneath: same prompt types (String or Enumerable), same `options:` and `transport:`, same errors (a terminal error exit still raises `ResultError`; an `is_error` result that is not followed by an error exit is returned like any other). An optional block receives every message as it arrives, so callers can stream progress and still get the result. It consumes the whole stream and returns the last `ResultMessage`; if the stream ends without one it raises `CLIConnectionError`. The README Quick Start now leads with it.
