@@ -119,18 +119,15 @@ RSpec.describe 'Type attribute access' do
                                 'camelCase methods will only reach attributes in 1.0')
     end
 
-    it 'still writes through a public non-attribute setter, with a warning' do
-      klass = Class.new(ClaudeAgentSDK::Type) do
-        attr_reader :hidden
-
+    it 'still writes through a public non-attribute setter the SDK defines, with a warning' do
+      # A hand-written setter with no attr_* declaration, on a class in the
+      # SDK namespace (an SDK type forgetting to declare an attribute).
+      stub_const('ClaudeAgentSDK::SpecUndeclaredSetter', Class.new(ClaudeAgentSDK::Type) do
         def hidden=(value) # rubocop:disable Style/TrivialAccessors
           @hidden = value
         end
-      end
-      # attr_reader declared `hidden` itself; drop it to model a writer that
-      # is not an attribute.
-      klass.send(:own_attribute_names).clear
-      instance = klass.new
+      end)
+      instance = ClaudeAgentSDK::SpecUndeclaredSetter.new
       output = capture_stderr { instance[:hidden] = 1 }
 
       expect(instance.instance_variable_get(:@hidden)).to eq(1)
@@ -156,6 +153,66 @@ RSpec.describe 'Type attribute access' do
       end
 
       expect(output).to eq('')
+    end
+  end
+
+  # User code extending an SDK type: its own methods are attributes, however
+  # they were defined, in 0.x and in 1.0 alike.
+  shared_examples 'user-defined methods are attributes' do
+    let(:mixin) { Module.new { attr_accessor :mixed_value } }
+    let(:custom_matcher) do
+      mod = mixin
+      Class.new(ClaudeAgentSDK::HookMatcher) do
+        include mod
+
+        def custom=(value) # rubocop:disable Style/TrivialAccessors
+          @custom = value
+        end
+      end
+    end
+    let(:scored_result) do
+      Class.new(ClaudeAgentSDK::ResultMessage) do
+        def score = 1
+      end
+    end
+
+    it 'accepts a hand-written setter and a mixin accessor on a strict subclass' do
+      matcher = nil
+      output = capture_stderr { matcher = custom_matcher.new(matcher: 'Bash', custom: 2, mixedValue: 3) }
+
+      expect(output).to eq('')
+      expect(matcher.instance_variable_get(:@custom)).to eq(2)
+      expect([matcher.mixed_value, matcher[:mixed_value], matcher.mixedValue]).to eq([3, 3, 3])
+    end
+
+    it 'reads a hand-written reader and a singleton method through #[]' do
+      result = scored_result.new(session_id: 's')
+      result.define_singleton_method(:extra) { 5 }
+      output = capture_stderr do
+        expect(result[:score]).to eq(1)
+        expect(result['extra']).to eq(5)
+        expect(result[:session_id]).to eq('s')
+      end
+
+      expect(output).to eq('')
+    end
+  end
+
+  describe 'user extensions (0.x)' do
+    include_examples 'user-defined methods are attributes'
+  end
+
+  describe 'user extensions with the 1.0 switch flipped' do
+    before { stub_const('ClaudeAgentSDK::Type::ENFORCE_ATTRIBUTES', true) }
+
+    include_examples 'user-defined methods are attributes'
+
+    it 'still gates methods defined by the SDK and Ruby on a user subclass' do
+      result = scored_result.new
+      expect(result[:to_h]).to be_nil
+      expect(result[:freeze]).to be_nil
+      expect(result).not_to be_frozen
+      expect(ClaudeAgentSDK::AssistantMessage.new(content: [])[:text]).to be_nil
     end
   end
 
