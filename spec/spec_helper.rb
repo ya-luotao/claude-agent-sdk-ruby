@@ -17,6 +17,14 @@ end
 
 require 'claude_agent_sdk'
 
+# async logs failed tasks through the console gem, which binds its output
+# stream to whatever $stderr is on first use — and forces XTerm formatting
+# under GITHUB_ACTIONS=true. If that first use lands inside an example that
+# has swapped $stderr for a StringIO, every later task failure dies with
+# NoMethodError (StringIO#winsize) instead of the task's own error. Bind it to
+# the real stderr now, before any example can swap it.
+Console.logger
+
 # Load test helpers
 Dir[File.expand_path('support/**/*.rb', __dir__)].each { |f| require f }
 
