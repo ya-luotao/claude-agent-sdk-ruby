@@ -1,20 +1,12 @@
 # frozen_string_literal: true
 
-require_relative '../deprecation'
-
 module ClaudeAgentSDK
   # Attribute declarations and the rules #[], #[]=, .new and the camelCase
   # readers follow (issue #126). Loaded by base.rb right after Type itself,
   # before any subclass declares an attribute.
   class Type
-    # The 1.0 switch for attribute access, false through 0.x. When true:
-    # an unknown key on a strict type (see .strict_attributes) raises
-    # ArgumentError, and #[], #[]= and the camelCase readers reach declared
-    # attributes only. While false, both cases warn once per class and name.
-    ENFORCE_ATTRIBUTES = false
-
     LENIENT_KEY = :__claude_agent_sdk_lenient_attributes
-    private_constant :ENFORCE_ATTRIBUTES, :LENIENT_KEY
+    private_constant :LENIENT_KEY
 
     class << self
       # attr_accessor / attr_reader / attr_writer also declare the names as
@@ -108,9 +100,9 @@ module ClaudeAgentSDK
 
     # Declares a type the user constructs and passes IN (option values, hook
     # matchers and outputs, permission results and updates). Constructing
-    # one directly (.new or #[]=) with a key that is not an attribute warns
-    # once per class and key — a typo would otherwise be dropped silently —
-    # and raises ArgumentError from 1.0. A read-only attribute (the +type+,
+    # one directly (.new or #[]=) with a key that is not an attribute raises
+    # ArgumentError — a typo would otherwise be dropped silently (0.37 warned
+    # here; 1.0 raises). A read-only attribute (the +type+,
     # +hook_event_name+ or +behavior+ discriminator a type sets itself, which
     # its own #to_h emits) is accepted and ignored. Types the SDK parses from
     # CLI output stay lenient so a newer CLI's extra fields never break an
@@ -151,15 +143,14 @@ module ClaudeAgentSDK
           self.class.cache_attribute_reader(method_name, normalized.to_sym)
           return public_send(normalized, ...)
         end
-        return public_send(normalized, ...) if reachable?(normalized, method_name, :camel_case)
+        return public_send(normalized, ...) if user_defined_method?(normalized)
       end
       super
     end
 
     def respond_to_missing?(method_name, include_private = false)
       normalized = normalize_name(method_name)
-      (normalized != method_name.to_s && respond_to?(normalized) &&
-        (!ENFORCE_ATTRIBUTES || attribute_method?(normalized))) || super
+      (normalized != method_name.to_s && respond_to?(normalized) && attribute_method?(normalized)) || super
     end
 
     def assign_attributes(attributes)
@@ -184,12 +175,12 @@ module ClaudeAgentSDK
           self.class.cache_attribute_writer(name, setter)
           return public_send(setter, value)
         end
-        return public_send(setter, value) if reachable?(setter.to_s, name, :write)
+        return public_send(setter, value) if user_defined_method?(setter.to_s)
       end
       return unless self.class.strict_attributes? && !Thread.current[LENIENT_KEY] && !self.class.attribute?(normalized)
       return if respond_to?(normalized) && user_defined_method?(normalized)
 
-      unknown_attribute(name, normalized)
+      unknown_attribute(name)
     end
 
     def read_attribute(name)
@@ -202,7 +193,7 @@ module ClaudeAgentSDK
       if self.class.attribute_method?(getter)
         self.class.cache_attribute_reader(name, getter.to_sym)
         public_send(getter)
-      elsif reachable?(getter, name, :read)
+      elsif user_defined_method?(getter)
         public_send(getter)
       end
     end
@@ -234,38 +225,12 @@ module ClaudeAgentSDK
       !name.nil? && (name == 'ClaudeAgentSDK' || name.start_with?('ClaudeAgentSDK::'))
     end
 
-    # #[], #[]= (and so .new) or a camelCase call resolved to +method_name+, a
-    # public method. An attribute passes. Any other method (to_h, freeze, ...)
-    # passes with a warning once per class and name through 0.x, and is
-    # treated as undefined from 1.0.
-    def reachable?(method_name, name, access)
-      return true if attribute_method?(method_name)
-      return false if ENFORCE_ATTRIBUTES
-
-      class_name = self.class.name || self.class.inspect
-      message = case access
-                when :read then "#{class_name}#[]: #{name.inspect} is not an attribute; " \
-                                'Type#[] will only read attributes in 1.0'
-                when :write then "#{class_name}#[]=: #{name.inspect} is not an attribute; " \
-                                 'Type#[]= and .new will only write attributes in 1.0'
-                else "#{class_name}##{name}: #{method_name} is not an attribute; " \
-                     'camelCase methods will only reach attributes in 1.0'
-                end
-      Deprecation.warn_once_at_caller([:non_attribute, self.class, method_name], message)
-      true
-    end
-
-    def unknown_attribute(name, normalized)
+    # A key that is not an attribute, on a strict type: a typo the user
+    # would otherwise never see.
+    def unknown_attribute(name)
       klass = self.class
-      class_name = klass.name || klass.inspect
-      known = klass.attribute_names.join(', ')
-      raise ArgumentError, "#{class_name}: unknown attribute #{name.inspect} (known: #{known})" if ENFORCE_ATTRIBUTES
-
-      Deprecation.warn_once_at_caller(
-        [:unknown_attribute, klass, normalized],
-        "#{class_name}: unknown attribute #{name.inspect} ignored; " \
-        "this will raise ArgumentError in 1.0 (known: #{known})"
-      )
+      raise ArgumentError, "#{klass.name || klass.inspect}: unknown attribute #{name.inspect} " \
+                           "(known: #{klass.attribute_names.join(', ')})"
     end
   end
 end

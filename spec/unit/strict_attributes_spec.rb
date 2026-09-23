@@ -3,13 +3,11 @@
 require 'spec_helper'
 require 'stringio'
 
-# Issue #126: value types the user constructs and passes IN warn once on an
-# unknown key (0.37) and raise from 1.0; types parsed from CLI output — and
-# every construction through .from_hash / .wrap — stay lenient.
+# Issue #126: value types the user constructs and passes IN raise
+# ArgumentError on an unknown key (1.0; 0.37 warned once); types parsed from
+# CLI output — and every construction through .from_hash / .wrap — stay
+# lenient.
 RSpec.describe 'strict attributes on user-constructed types' do
-  before { ClaudeAgentSDK::Deprecation.reset! }
-  after { ClaudeAgentSDK::Deprecation.reset! }
-
   def capture_stderr
     captured = +''
     original = $stderr
@@ -138,16 +136,12 @@ RSpec.describe 'strict attributes on user-constructed types' do
       let(:klass) { ClaudeAgentSDK.const_get(name) }
       let(:instance) { klass.new(fixtures.fetch(name)) }
 
-      it 'warns once per key on an unknown attribute, naming the caller and the known attributes',
-         rbs_incompatible: 'asserts the warning location' do
-        first = capture_stderr { klass.new(bogus_key: 1) }
-        again = capture_stderr { klass.new(bogus_key: 2) }
-
-        expect(first).to start_with("#{__FILE__}:#{__LINE__ - 3}: warning: ")
-        expect(first).to include("ClaudeAgentSDK::#{name}: unknown attribute :bogus_key ignored; " \
-                                 'this will raise ArgumentError in 1.0 (known: ')
-        expect(first).to include(klass.attribute_names.join(', '))
-        expect(again).to be_empty
+      it 'raises ArgumentError on an unknown attribute, naming the class, the key and the known attributes' do
+        expect { klass.new(bogus_key: 1) }
+          .to raise_error(ArgumentError, "ClaudeAgentSDK::#{name}: unknown attribute :bogus_key " \
+                                         "(known: #{klass.attribute_names.join(', ')})")
+        expect { klass.new('bogusKey' => 1) }
+          .to raise_error(ArgumentError, /\AClaudeAgentSDK::#{name}: unknown attribute "bogusKey" \(known: /)
       end
 
       it 'constructs silently from its own attributes in any accepted spelling' do
@@ -175,35 +169,33 @@ RSpec.describe 'strict attributes on user-constructed types' do
     end
   end
 
-  it 'reports a different unknown key on the same class separately' do
-    output = capture_stderr do
-      ClaudeAgentSDK::HookMatcher.new(matchr: 'Bash')
-      ClaudeAgentSDK::HookMatcher.new('matchr' => 'Bash', timout: 5)
-    end
-
-    expect(output.scan('unknown attribute').size).to eq(2)
-    expect(output).to include('ClaudeAgentSDK::HookMatcher: unknown attribute :matchr ignored')
-    expect(output).to include('unknown attribute :timout ignored')
-    expect(output).to include('(known: hooks, matcher, timeout)')
+  it 'names the first unknown key it meets' do
+    expect { ClaudeAgentSDK::HookMatcher.new(matchr: 'Bash') }
+      .to raise_error(ArgumentError, 'ClaudeAgentSDK::HookMatcher: unknown attribute :matchr ' \
+                                     '(known: hooks, matcher, timeout)')
+    expect { ClaudeAgentSDK::HookMatcher.new('matcher' => 'Bash', timout: 5) }
+      .to raise_error(ArgumentError, /unknown attribute :timout \(known: hooks, matcher, timeout\)/)
   end
 
-  it 'warns on an unknown key assigned with #[]=', rbs_incompatible: 'asserts the warning location' do
+  it 'raises on an unknown key assigned with #[]= and leaves the object unchanged' do
     matcher = ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash')
-    output = capture_stderr { matcher[:matchr] = 'Read' }
 
-    expect(output).to start_with("#{__FILE__}:#{__LINE__ - 2}: warning: ")
-    expect(output).to include('unknown attribute :matchr ignored')
+    expect { matcher[:matchr] = 'Read' }
+      .to raise_error(ArgumentError, /ClaudeAgentSDK::HookMatcher: unknown attribute :matchr/)
     expect(matcher.matcher).to eq('Bash')
   end
 
-  it 'attributes a nested unknown key to the caller that built the outer value',
-     rbs_incompatible: 'asserts the warning location' do
-    output = capture_stderr do
+  it 'names the nested type for an unknown key inside a nested value' do
+    expect do
       ClaudeAgentSDK::PermissionUpdate.new(type: 'addRules', rules: [{ tool_name: 'Bash', rule_contnt: 'x' }])
-    end
+    end.to raise_error(ArgumentError, /\AClaudeAgentSDK::PermissionRuleValue: unknown attribute :rule_contnt /)
+  end
 
-    expect(output).to start_with("#{__FILE__}:#{__LINE__ - 3}: warning: ")
-    expect(output).to include('ClaudeAgentSDK::PermissionRuleValue: unknown attribute :rule_contnt ignored')
+  it 'accepts every known spelling and the read-only discriminator' do
+    expect { ClaudeAgentSDK::McpStdioServerConfig.new(type: 'stdio', command: 'npx', 'args' => []) }.not_to raise_error
+    expect { ClaudeAgentSDK::PreToolUseHookSpecificOutput.new(hookEventName: 'PreToolUse', permissionDecision: 'deny') }
+      .not_to raise_error
+    expect { ClaudeAgentSDK::PermissionResultAllow.new(behavior: 'allow', updatedInput: {}) }.not_to raise_error
   end
 
   it 'keeps nested CLI data lenient under from_hash' do
@@ -216,48 +208,18 @@ RSpec.describe 'strict attributes on user-constructed types' do
   end
 
   it 'restores the strict check after a lenient construction raises' do
-    capture_stderr do
-      expect { ClaudeAgentSDK::ThinkingConfigAdaptive.from_hash(display: 'loud') }.to raise_error(ArgumentError)
-    end
-    output = capture_stderr { ClaudeAgentSDK::ThinkingConfigAdaptive.new(bogus_key: 1) }
-
-    expect(output).to include('unknown attribute :bogus_key ignored')
+    expect { ClaudeAgentSDK::ThinkingConfigAdaptive.from_hash(display: 'loud') }.to raise_error(ArgumentError)
+    expect { ClaudeAgentSDK::ThinkingConfigAdaptive.new(bogus_key: 1) }
+      .to raise_error(ArgumentError, /unknown attribute :bogus_key/)
   end
 
   it 'leaves CLI-parsed types lenient' do
     output = capture_stderr do
       (all_types - all_types.select(&:strict_attributes?) - [ClaudeAgentSDK::ClaudeAgentOptions]).each do |klass|
-        klass.new(future_cli_field: 1)
+        expect { klass.new(future_cli_field: 1) }.not_to raise_error
       end
     end
 
     expect(output).to eq('')
-  end
-
-  it 'honours a silenced $VERBOSE like every Kernel#warn' do
-    verbose = $VERBOSE
-    $VERBOSE = nil
-    output = capture_stderr { ClaudeAgentSDK::TaskBudget.new(totl: 1) }
-
-    expect(output).to eq('')
-  ensure
-    $VERBOSE = verbose
-  end
-
-  context 'when the 1.0 switch is flipped to :raise' do
-    before { stub_const('ClaudeAgentSDK::Type::ENFORCE_ATTRIBUTES', true) }
-
-    it 'raises ArgumentError naming the known attributes' do
-      expect { ClaudeAgentSDK::HookMatcher.new(matchr: 'Bash') }
-        .to raise_error(ArgumentError, 'ClaudeAgentSDK::HookMatcher: unknown attribute :matchr ' \
-                                       '(known: hooks, matcher, timeout)')
-    end
-
-    it 'still accepts every known spelling and stays lenient through from_hash' do
-      expect { ClaudeAgentSDK::McpStdioServerConfig.new(type: 'stdio', command: 'npx', 'args' => []) }.not_to raise_error
-      expect { ClaudeAgentSDK::PreToolUseHookSpecificOutput.new(hookEventName: 'PreToolUse', permissionDecision: 'deny') }
-        .not_to raise_error
-      expect(ClaudeAgentSDK::HookMatcher.from_hash(matchr: 'Bash')).to be_a(ClaudeAgentSDK::HookMatcher)
-    end
   end
 end

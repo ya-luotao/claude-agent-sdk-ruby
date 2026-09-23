@@ -12,6 +12,8 @@ A Ruby SDK for the [Claude Code](https://docs.claude.com/en/docs/claude-code-ove
 
 > **Unofficial and community-maintained.** This project is not affiliated with or supported by Anthropic. It tracks the official SDKs release by release; see the [CHANGELOG](CHANGELOG.md) for the currently synced version.
 
+> **Upgrading from 0.x?** 1.0 raises on unknown keys, limits `#[]` to attributes and adds `SessionStoreError`. [UPGRADING-1.0.md](UPGRADING-1.0.md) has the checklist.
+
 ## Highlights
 
 - **Rails integration.** `bin/rails generate claude_agent_sdk:install` writes the initializer and `bin/rails claude_agent_sdk:install_cli` vendors the CLI; [docs/rails.md](docs/rails.md) covers jobs, ActionCable streaming, session resumption, and solid_queue fiber workers (`callback_scheduling: :inline`).

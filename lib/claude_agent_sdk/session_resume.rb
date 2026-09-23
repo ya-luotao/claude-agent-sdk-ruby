@@ -119,7 +119,8 @@ module ClaudeAgentSDK
     # Returns a MaterializedResume, or nil when no materialization is needed
     # (no store, no resume/continue, store has no entries, or the resolved
     # session id is not a valid UUID) — the caller then falls through to the
-    # normal spawn path. Raises RuntimeError if a store call fails or times out.
+    # normal spawn path. Raises SessionStoreError (#cause: the adapter's own
+    # exception or the timeout) if a store call fails or times out.
     def materialize_resume_session(options) # rubocop:disable Metrics/AbcSize -- materialization sequence kept in order
       store = options.session_store
       return nil if store.nil?
@@ -290,7 +291,12 @@ module ClaudeAgentSDK
     end
 
     # Run a store call (user code) on a plain thread bounded by timeout_s,
-    # re-raising failures/timeouts as RuntimeError with context. The thread hop
+    # re-raising failures/timeouts as SessionStoreError with context, the
+    # original as #cause (Ruby sets it: the raise is inside the rescue). Every
+    # StandardError is wrapped, the adapter's own RuntimeError included, so
+    # `rescue ClaudeSDKError` catches every materialization failure (0.x let
+    # a RuntimeError through unwrapped and raised the rest as bare
+    # RuntimeErrors, mirroring Python). The thread hop
     # (the default for FiberBoundary with a timeout) both keeps the async
     # scheduler out of the user's store code AND enforces load_timeout_ms
     # unconditionally — including when materialization runs outside an Async
@@ -305,11 +311,11 @@ module ClaudeAgentSDK
     def with_timeout(timeout_s, what, scheduling = :thread, wrapper = nil, &)
       FiberBoundary.invoke(timeout: timeout_s, scheduling: scheduling, wrapper: wrapper, &)
     rescue FiberBoundary::JoinTimeout
-      raise "#{what} timed out after #{(timeout_s * 1000).to_i}ms during resume materialization"
-    rescue RuntimeError
+      raise SessionStoreError, "#{what} timed out after #{(timeout_s * 1000).to_i}ms during resume materialization"
+    rescue SessionStoreError
       raise
     rescue StandardError => e
-      raise "#{what} failed during resume materialization: #{e}"
+      raise SessionStoreError, "#{what} failed during resume materialization: #{e.class}: #{e.message}"
     end
 
     # Write pre-encoded JSON lines (see encode_jsonl_lines), one per line,
