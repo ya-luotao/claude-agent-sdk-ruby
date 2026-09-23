@@ -1670,6 +1670,28 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       reap(stdout, stderr, waiter)
     end
 
+    # A child stuck in uninterruptible kernel I/O survives even KILL: the last
+    # wait is bounded too, and the unreaped child stays in the at-exit
+    # registry instead of read_messages blocking forever on #value.
+    it 'raises instead of blocking when the child cannot be reaped even after KILL' do
+      waiter = instance_double(Process::Waiter, pid: 4242, alive?: true)
+      expect(waiter).not_to receive(:value)
+      allow(Process).to receive(:kill)
+      transport.instance_variable_set(:@stdout, StringIO.new(''))
+      transport.instance_variable_set(:@process, waiter)
+      described_class.register_active_process(waiter)
+
+      error = read_to_end(transport)
+
+      expect(error).to be_a(ClaudeAgentSDK::ProcessError)
+      expect(error.message).to include('could not be reaped even after SIGKILL')
+      expect(Process).to have_received(:kill).with('TERM', 4242)
+      expect(Process).to have_received(:kill).with('KILL', 4242)
+      expect(described_class.active_processes).to include(waiter)
+    ensure
+      described_class.deregister_active_process(waiter)
+    end
+
     it 'does not signal a child that exits on its own within the grace period' do
       # A generous grace here: interpreter exit + reap must fit inside it even
       # on a slow CI runner, or the example would signal a healthy child.

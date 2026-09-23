@@ -750,6 +750,7 @@ module ClaudeAgentSDK
       returncode = nil
       termsig = nil
       forced_exit = false
+      unreaped = false
       begin
         # Bounded wait. The unbounded #value parked the read loop forever
         # behind a CLI that closed stdout and then hung — no 'end' ever
@@ -761,12 +762,17 @@ module ClaudeAgentSDK
           forced_exit = true
           begin
             Process.kill('TERM', process.pid)
-            Process.kill('KILL', process.pid) unless process_exited_within?(process, EOF_TERM_GRACE_SECONDS)
+            unless process_exited_within?(process, EOF_TERM_GRACE_SECONDS)
+              Process.kill('KILL', process.pid)
+              # Even KILL can't reap a child stuck in uninterruptible kernel
+              # I/O; bound this last wait too rather than block on #value.
+              unreaped = !process_exited_within?(process, EOF_TERM_GRACE_SECONDS)
+            end
           rescue Errno::ESRCH
             # Exited between the check and the signal; value below is final.
           end
         end
-        status = process&.value
+        status = process&.value unless unreaped
         # exitstatus is nil when the child died from a signal (OOM-kill
         # SIGKILL, SIGSEGV, ...) — that end-of-stream is a TRUNCATED response,
         # not a clean success. Python surfaces it as a negative returncode.
@@ -782,7 +788,9 @@ module ClaudeAgentSDK
       # reach (e.g. a Client abandoned without #disconnect, or direct transport
       # use). Idempotent — #close's own deregister becomes a harmless no-op, and
       # #close still sees @process (left set here) for its termination logic.
-      self.class.deregister_active_process(@process)
+      # A child that could not be reaped even after KILL stays registered:
+      # the at-exit safety net still owns it.
+      self.class.deregister_active_process(@process) unless unreaped
 
       if forced_exit || termsig || (returncode && returncode != 0)
         # Wait briefly for stderr thread to finish draining
@@ -792,7 +800,10 @@ module ClaudeAgentSDK
         stderr_text = 'No stderr output captured' if stderr_text.empty?
 
         message =
-          if forced_exit
+          if unreaped
+            "Command did not exit within #{EOF_EXIT_GRACE_SECONDS}s of closing stdout, and could not be " \
+              'reaped even after SIGKILL'
+          elsif forced_exit
             "Command did not exit within #{EOF_EXIT_GRACE_SECONDS}s of closing stdout; terminated by the SDK" +
               (termsig ? " with signal #{termsig}" : '')
           elsif termsig
