@@ -227,6 +227,25 @@ while an append is in flight are coalesced into the next append, so a slow
 store never accumulates one background task per frame), and `load_timeout_ms`
 (per store call during resume materialization, default `60_000`).
 
+If a store call raises or exceeds `load_timeout_ms` during resume
+materialization, `ClaudeAgentSDK.query`, `.ask` and `Client#connect` raise
+`ClaudeAgentSDK::SessionStoreError` (a `ClaudeSDKError`) before the CLI
+starts. The message names the call (`SessionStore#load for session <id> failed
+during resume materialization: IOError: ...`) and `#cause` holds the adapter's
+own exception, or the internal timeout:
+
+```ruby
+begin
+  ClaudeAgentSDK.ask('Continue', options: options.dup_with(resume: session_id))
+rescue ClaudeAgentSDK::SessionStoreError => e
+  logger.warn("resume from store failed: #{e.message} (#{e.cause&.class})")
+  raise
+end
+```
+
+Before 1.0 this surfaced as a bare `RuntimeError` (and a `RuntimeError` your
+adapter raised escaped unwrapped), which `rescue ClaudeSDKError` missed.
+
 Resume materialization re-serializes each loaded entry to JSONL. An entry that
 cannot be serialized (NaN/Infinity, invalid UTF-8, circular nesting), an
 unserializable subagent metadata sidecar, or a subkey that is not a safe

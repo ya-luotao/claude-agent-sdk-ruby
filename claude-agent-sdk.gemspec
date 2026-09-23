@@ -35,7 +35,7 @@ Gem::Specification.new do |spec|
   # failure: Bundler evaluates this file for path/git-sourced consumers, and
   # raising here would break their bundle, not just a release build.
   tracked = begin
-    IO.popen(%w[git ls-files -z lib docs README.md LICENSE CHANGELOG.md],
+    IO.popen(%w[git ls-files -z lib docs README.md LICENSE CHANGELOG.md UPGRADING-1.0.md],
              chdir: __dir__, err: File::NULL, &:read).split("\x0")
   rescue SystemCallError
     []
@@ -43,7 +43,8 @@ Gem::Specification.new do |spec|
   # docs/history/ (past audit reports) is repository archive, not user docs.
   spec.files = (if tracked.empty?
                   # .rake: the Railtie's tasks; .tt: the Rails generator's templates.
-                  Dir.glob(['lib/**/*.{rb,rake,tt}', 'docs/**/*.md', 'README.md', 'LICENSE', 'CHANGELOG.md'],
+                  Dir.glob(['lib/**/*.{rb,rake,tt}', 'docs/**/*.md', 'README.md', 'LICENSE', 'CHANGELOG.md',
+                            'UPGRADING-1.0.md'],
                            base: __dir__)
                 else
                   tracked

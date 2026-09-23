@@ -374,7 +374,9 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
         described_class.materialize_resume_session(
           ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: exploding, resume: sid, cwd: cwd)
         )
-      end.to raise_error(StandardError)
+      end.to raise_error(ClaudeAgentSDK::SessionStoreError, /list_subkeys.*boom in list_subkeys/) { |e|
+        expect(e.cause).to be_a(RuntimeError).and have_attributes(message: 'boom in list_subkeys')
+      }
       leaked = Dir.glob(File.join(Dir.tmpdir, 'claude-resume-*')) - before
       expect(leaked).to eq([]) # temp dir (and its .credentials.json copy) was cleaned up
     end
@@ -536,7 +538,56 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
         described_class.materialize_resume_session(
           ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: slow, resume: sid, cwd: cwd, load_timeout_ms: 50)
         )
-      end.to raise_error(RuntimeError, /timed out after 50ms/)
+      end.to raise_error(ClaudeAgentSDK::SessionStoreError, /\ASessionStore#load for session #{sid} timed out after 50ms/) { |e|
+        expect(e.cause).to be_a(ClaudeAgentSDK::FiberBoundary::JoinTimeout)
+      }
+    end
+
+    context 'when a store call raises' do
+      let(:failing_store) do
+        Class.new(ClaudeAgentSDK::SessionStore) do
+          def initialize(error)
+            super()
+            @error = error
+          end
+
+          def append(_key, _entries); end
+          def load(_key) = raise(@error)
+          def list_sessions(_project_key) = raise(@error)
+        end
+      end
+
+      def materialize(store, **options)
+        described_class.materialize_resume_session(
+          ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, cwd: cwd, **options)
+        )
+      end
+
+      it 'raises SessionStoreError naming the call, with the adapter error as cause' do
+        error = IOError.new('connection reset')
+
+        expect { materialize(failing_store.new(error), resume: sid) }
+          .to raise_error(ClaudeAgentSDK::SessionStoreError,
+                          "SessionStore#load for session #{sid} failed during resume materialization: " \
+                          'IOError: connection reset') { |e| expect(e.cause).to be(error) }
+      end
+
+      it "wraps the adapter's own RuntimeError too, so rescue ClaudeSDKError catches every failure" do
+        error = RuntimeError.new('store backend down')
+
+        expect { materialize(failing_store.new(error), continue_conversation: true) }
+          .to raise_error(ClaudeAgentSDK::ClaudeSDKError, /\ASessionStore#list_sessions failed .*RuntimeError: store backend down/) { |e|
+            expect(e).to be_a(ClaudeAgentSDK::SessionStoreError)
+            expect(e.cause).to be(error)
+          }
+      end
+
+      it 'passes an adapter-raised SessionStoreError through unwrapped' do
+        error = ClaudeAgentSDK::SessionStoreError.new('already wrapped')
+
+        expect { materialize(failing_store.new(error), resume: sid) }
+          .to(raise_error { |e| expect(e).to be(error) })
+      end
     end
 
     # Poisoned entries are served by a duck-typed store: they cannot be seeded
