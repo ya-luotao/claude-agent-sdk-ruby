@@ -25,6 +25,12 @@ module ClaudeAgentSDK
   class ConfigDirError < ClaudeSDKError
   end
 
+  # Raised by Client#connect, ClaudeAgentSDK.query and .ask when resuming
+  # from ClaudeAgentOptions#session_store fails (a store call raised or
+  # exceeded load_timeout_ms). #cause holds the adapter's own exception.
+  class SessionStoreError < ClaudeSDKError
+  end
+
   # Raised when the CLI process fails.
   class ProcessError < ClaudeSDKError
     attr_reader exit_code: Integer?

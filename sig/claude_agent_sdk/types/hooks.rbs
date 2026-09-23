@@ -343,7 +343,7 @@ module ClaudeAgentSDK
   end
 
   # Hook outputs are built by the caller: keyword constructors (the Hash
-  # form is accepted too), unknown keys warn once (raise from 1.0), and
+  # form is accepted too), an unknown key raises ArgumentError, and
   # hook_event_name is fixed by the class. #to_h is the camelCase wire form.
 
   class SetupHookSpecificOutput < Type

@@ -110,8 +110,8 @@ module ClaudeAgentSDK
   # ---- Server configs (ClaudeAgentOptions#mcp_servers values) ----
   #
   # Built by the caller: keyword constructors (the Hash form is accepted
-  # too), unknown keys warn once (raise from 1.0), and `type` is fixed by
-  # the class.
+  # too), an unknown key raises ArgumentError, and `type` is fixed by the
+  # class.
 
   class McpStdioServerConfig < Type
     def initialize: (?command: String?, ?args: Array[String]?, ?env: Hash[String | Symbol, String]?) -> void

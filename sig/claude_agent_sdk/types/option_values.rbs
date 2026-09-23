@@ -5,8 +5,8 @@ module ClaudeAgentSDK
   # The value types below are built by the caller and passed IN (inside
   # ClaudeAgentOptions). Each constructor takes the attributes as keywords;
   # the Hash form (String or camelCase keys, e.g. `klass.new(value.to_h)`)
-  # is accepted too. An unknown key warns once (raises ArgumentError from
-  # 1.0). Discriminators (`type`) are fixed by the class and read-only.
+  # is accepted too. An unknown key raises ArgumentError. Discriminators
+  # (`type`) are fixed by the class and read-only.
 
   # Adaptive thinking: the model decides when and how much to think.
   class ThinkingConfigAdaptive < Type
