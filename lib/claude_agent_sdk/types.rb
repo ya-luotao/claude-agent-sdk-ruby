@@ -90,6 +90,56 @@ module ClaudeAgentSDK
       {}
     end
 
+    # The copy hook used wherever ClaudeAgentOptions are copied (dup_with and
+    # the configured-defaults merge). Identity by default: most Type instances
+    # are messages or callback payloads that never live inside options, and a
+    # user-supplied object that does (an observer, a store adapter) must stay
+    # the same object. Option VALUE types include OptionValue to opt in to
+    # copying, so a per-session change to e.g. sandbox rules can never reach
+    # another session or the configured defaults.
+    def dup_for_options
+      self
+    end
+
+    # Mixed into the mutable value types that ClaudeAgentOptions holds
+    # (SandboxSettings, SystemPromptPreset, AgentDefinition, ...). The copy
+    # recurses into the value's own state with Type.deep_dup_for_options, so
+    # nested containers and nested value types (SandboxSettings#network) are
+    # copied too while identity leaves (McpSdkServerConfig#instance, the
+    # callables in HookMatcher#hooks) stay shared. #dup never copies frozen
+    # state, so a copy of a frozen value (the configured-defaults snapshot) is
+    # mutable.
+    module OptionValue
+      def dup_for_options
+        copy = dup
+        copy.instance_variables.each do |ivar|
+          copy.instance_variable_set(ivar, Type.deep_dup_for_options(copy.instance_variable_get(ivar)))
+        end
+        copy
+      end
+    end
+
+    # Recurse into Hash/Array containers and option value types; every other
+    # leaf keeps object identity (observer factories, callbacks, SDK MCP
+    # server instances must not be duped). Rebuild containers via dup.clear
+    # (never Hash#to_h / Array#map) to preserve container SUBCLASSES: to_h
+    # flattens e.g. Rails' HashWithIndifferentAccess into a plain Hash,
+    # silently breaking symbol lookups on the copy (config[:type] == 'sdk' → nil).
+    def self.deep_dup_for_options(value)
+      case value
+      when Hash
+        copy = value.dup.clear
+        value.each { |k, v| copy[k] = deep_dup_for_options(v) }
+        copy
+      when Array
+        copy = value.dup.clear
+        value.each { |v| copy << deep_dup_for_options(v) }
+        copy
+      when Type then value.dup_for_options
+      else value
+      end
+    end
+
     private
 
     # Allow camelCase attribute access
@@ -793,6 +843,8 @@ module ClaudeAgentSDK
   # Adaptive thinking: the model decides when and how much to think
   # (sent as `--thinking adaptive`, no budget); control depth with `effort`.
   class ThinkingConfigAdaptive < Type
+    include Type::OptionValue
+
     attr_reader :type, :display
 
     def initialize(attributes = {})
@@ -817,6 +869,8 @@ module ClaudeAgentSDK
 
   # Enabled thinking: uses a user-specified budget
   class ThinkingConfigEnabled < Type
+    include Type::OptionValue
+
     attr_accessor :budget_tokens
     attr_reader :type, :display
 
@@ -842,6 +896,8 @@ module ClaudeAgentSDK
 
   # Disabled thinking: sets thinking tokens to 0
   class ThinkingConfigDisabled < Type
+    include Type::OptionValue
+
     attr_reader :type
 
     def initialize(attributes = {})
@@ -852,6 +908,8 @@ module ClaudeAgentSDK
 
   # Agent definition configuration
   class AgentDefinition < Type
+    include Type::OptionValue
+
     attr_accessor :description, :prompt, :tools, :disallowed_tools, :model, :skills, :memory, :mcp_servers,
                   :initial_prompt, :max_turns, :background, :effort, :permission_mode
   end
@@ -943,6 +1001,8 @@ module ClaudeAgentSDK
 
   # Hook matcher configuration
   class HookMatcher < Type
+    include Type::OptionValue
+
     attr_accessor :matcher, :hooks, :timeout
 
     def initialize(attributes = {})
@@ -1641,6 +1701,8 @@ module ClaudeAgentSDK
 
   # MCP Server configurations
   class McpStdioServerConfig < Type
+    include Type::OptionValue
+
     attr_accessor :command, :args, :env
     attr_reader :type
 
@@ -1658,6 +1720,8 @@ module ClaudeAgentSDK
   end
 
   class McpSSEServerConfig < Type
+    include Type::OptionValue
+
     attr_accessor :url, :headers
     attr_reader :type
 
@@ -1674,6 +1738,8 @@ module ClaudeAgentSDK
   end
 
   class McpHttpServerConfig < Type
+    include Type::OptionValue
+
     attr_accessor :url, :headers
     attr_reader :type
 
@@ -1690,6 +1756,8 @@ module ClaudeAgentSDK
   end
 
   class McpSdkServerConfig < Type
+    include Type::OptionValue
+
     attr_accessor :name, :instance
     attr_reader :type
 
@@ -1705,6 +1773,8 @@ module ClaudeAgentSDK
 
   # SDK Plugin configuration
   class SdkPluginConfig < Type
+    include Type::OptionValue
+
     attr_accessor :path
     attr_reader :type
 
@@ -1720,6 +1790,8 @@ module ClaudeAgentSDK
 
   # Sandbox network configuration
   class SandboxNetworkConfig < Type
+    include Type::OptionValue
+
     attr_accessor :allowed_domains, :denied_domains, :allow_managed_domains_only,
                   :allow_unix_sockets, :allow_all_unix_sockets, :allow_local_binding,
                   :allow_mach_lookup, :http_proxy_port, :socks_proxy_port
@@ -1741,6 +1813,8 @@ module ClaudeAgentSDK
 
   # Sandbox filesystem configuration
   class SandboxFilesystemConfig < Type
+    include Type::OptionValue
+
     attr_accessor :allow_write, :deny_write, :deny_read, :allow_read, :allow_managed_read_paths_only
 
     def to_h
@@ -1756,6 +1830,8 @@ module ClaudeAgentSDK
 
   # Sandbox settings for isolated command execution
   class SandboxSettings < Type
+    include Type::OptionValue
+
     attr_accessor :enabled, :fail_if_unavailable, :auto_allow_bash_if_sandboxed,
                   :excluded_commands, :allow_unsandboxed_commands, :network, :filesystem,
                   :ignore_violations, :enable_weaker_nested_sandbox,
@@ -1787,6 +1863,8 @@ module ClaudeAgentSDK
   # When set, the model is made aware of its remaining token budget so it can
   # pace tool use and wrap up before the limit.
   class TaskBudget < Type
+    include Type::OptionValue
+
     attr_accessor :total
 
     def to_h
@@ -1796,6 +1874,8 @@ module ClaudeAgentSDK
 
   # System prompt file configuration — loads system prompt from a file path
   class SystemPromptFile < Type
+    include Type::OptionValue
+
     attr_accessor :path
     attr_reader :type
 
@@ -1823,6 +1903,8 @@ module ClaudeAgentSDK
   # before 2.1.265 a session with an +append+ prompt recorded it only when
   # +snapshot+ was true. Older CLIs silently ignore it.
   class SystemPromptPreset < Type
+    include Type::OptionValue
+
     attr_reader :type
     attr_accessor :preset, :append, :exclude_dynamic_sections, :snapshot
 
@@ -1845,6 +1927,8 @@ module ClaudeAgentSDK
   # (+--system-prompt <prompt>+); the object form exists so +snapshot+ can be
   # set alongside it (see SystemPromptPreset#snapshot for its semantics).
   class SystemPromptCustom < Type
+    include Type::OptionValue
+
     attr_reader :type
     attr_accessor :prompt, :snapshot
 
@@ -1862,6 +1946,8 @@ module ClaudeAgentSDK
 
   # Tools preset configuration
   class ToolsPreset < Type
+    include Type::OptionValue
+
     attr_reader :type
     attr_accessor :preset
 
@@ -1956,14 +2042,16 @@ module ClaudeAgentSDK
 
     def dup_with(**changes)
       new_options = self.dup
-      # A shallow #dup shares nested containers, so mutating a derived copy
-      # (e.g. `variant.allowed_tools << 'Bash'`) would bleed into the base and
-      # every sibling — including the security-relevant allow/deny lists.
-      # Deep-dup Hash/Array containers only; non-container values (procs,
-      # SDK MCP server instances, store adapters) must keep their identity.
+      # A shallow #dup shares nested containers and typed option values, so
+      # mutating a derived copy (e.g. `variant.allowed_tools << 'Bash'` or
+      # `variant.sandbox.enabled = false`) would bleed into the base and every
+      # sibling — including the security-relevant allow/deny lists and sandbox
+      # rules. Deep-dup Hash/Array containers and option value types (Type#
+      # dup_for_options, including those nested inside containers such as
+      # agents[:x]); every other leaf (procs, SDK MCP server instances, store
+      # adapters) keeps its identity.
       new_options.instance_variables.each do |ivar|
-        value = new_options.instance_variable_get(ivar)
-        new_options.instance_variable_set(ivar, deep_dup_containers(value)) if value.is_a?(Hash) || value.is_a?(Array)
+        new_options.instance_variable_set(ivar, Type.deep_dup_for_options(new_options.instance_variable_get(ivar)))
       end
       changes.each { |key, value| new_options[key] = value }
       new_options
@@ -2161,12 +2249,17 @@ module ClaudeAgentSDK
       defaults = ClaudeAgentSDK.default_options
       return attributes unless defaults.any?
 
-      # Start from configured defaults. Container values are recursively
-      # duped so per-instance mutation (options.allowed_tools << 'Bash')
-      # can never corrupt the global defaults; non-container leaves
-      # (Strings, Procs, SdkMcpServer instances) intentionally keep identity.
+      # Start from configured defaults. Container values and typed option
+      # values (SandboxSettings, SystemPromptPreset, AgentDefinition, ...)
+      # are recursively copied (Type.deep_dup_for_options) so per-instance
+      # mutation (options.allowed_tools << 'Bash', options.sandbox.enabled =
+      # false) can never corrupt the global defaults or reach another
+      # session; other leaves (Strings, Procs, SdkMcpServer instances, store
+      # adapters) intentionally keep identity. The stored defaults are a
+      # frozen snapshot (Configuration#default_options=), and the copy is
+      # what makes each session's values mutable again.
       result = {}
-      defaults.each { |key, value| result[option_key(key)] = deep_dup_containers(value) }
+      defaults.each { |key, value| result[option_key(key)] = Type.deep_dup_for_options(value) }
       attributes.each do |key, value|
         key = option_key(key)
         default_val = result[key]
@@ -2187,26 +2280,6 @@ module ClaudeAgentSDK
     def option_key(name)
       normalized = normalize_name(name)
       respond_to?(:"#{normalized}=") ? normalized.to_sym : name
-    end
-
-    # Recurse ONLY into Hash/Array; leaves keep object identity (observer
-    # factories, callbacks, SDK MCP server instances must not be duped).
-    # Rebuild via dup.clear (never Hash#to_h / Array#map) to preserve
-    # container SUBCLASSES: to_h flattens e.g. Rails'
-    # HashWithIndifferentAccess into a plain Hash, silently breaking symbol
-    # lookups on the copy (config[:type] == 'sdk' → nil).
-    def deep_dup_containers(value)
-      case value
-      when Hash
-        copy = value.dup.clear
-        value.each { |k, v| copy[k] = deep_dup_containers(v) }
-        copy
-      when Array
-        copy = value.dup.clear
-        value.each { |v| copy << deep_dup_containers(v) }
-        copy
-      else value
-      end
     end
   end
 
