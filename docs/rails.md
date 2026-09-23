@@ -1,6 +1,49 @@
 # Rails Integration
 
-The SDK integrates well with Rails applications. Below are the common patterns.
+The gem ships a Railtie, an install generator and a rake task for vendoring the CLI; the rest of this page covers how SDK callbacks interact with Rails' threading, executor and fiber workers, and the common job / ActionCable patterns.
+
+## Getting started
+
+1. Add the gem:
+
+   ```bash
+   bundle add claude-agent-sdk
+   ```
+
+2. Generate the initializer:
+
+   ```bash
+   bin/rails generate claude_agent_sdk:install
+   ```
+
+   This writes `config/initializers/claude_agent_sdk.rb` — a `ClaudeAgentSDK.configure` block with commented defaults (model, permission mode, CLI path, OpenTelemetry) and the Rails callback wrapper [described below](#rails-executor-around-callbacks-callback_wrapper) switched on — and adds `/vendor/claude/` to `.gitignore`.
+
+3. Vendor the Claude Code CLI:
+
+   ```bash
+   bin/rails claude_agent_sdk:install_cli                  # the version this gem release is tested with
+   bin/rails claude_agent_sdk:install_cli VERSION=x.y.z    # or a version of your own ('stable' / 'latest' float)
+   ```
+
+   The binary lands in `Rails.root/vendor/claude`, where the SDK finds it ahead of any `claude` on `PATH`. The task does not boot the app (no database or credentials needed), so the same line works as a cached Docker build step: `RUN bin/rails claude_agent_sdk:install_cli`. Installs are checksum-verified and idempotent — see [docs/cli-installer.md](cli-installer.md). The CLI authenticates from the environment, e.g. `ANTHROPIC_API_KEY`.
+
+4. Run an agent from a job:
+
+   ```ruby
+   # app/jobs/summarize_ticket_job.rb
+   class SummarizeTicketJob < ApplicationJob
+     def perform(ticket)
+       options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: [], max_turns: 1)  # text only, no built-in tools
+       prompt = "Summarize this support ticket in two sentences:\n\n#{ticket.body}"
+
+       ClaudeAgentSDK.query(prompt: prompt, options: options) do |message|
+         ticket.update!(summary: message.result) if message.is_a?(ClaudeAgentSDK::ResultMessage)
+       end
+     end
+   end
+   ```
+
+   The block runs on a plain thread (see the next section), so ActiveRecord calls inside it just work. For multi-turn sessions, hooks, custom tools and interrupts use `ClaudeAgentSDK::Client.open` — see [ActionCable streaming](#actioncable-streaming) below.
 
 ## Thread-keyed libraries are safe inside SDK callbacks
 
@@ -23,17 +66,25 @@ The trade-off: because callbacks run on a plain thread rather than inside an `As
 
 ### Rails executor around callbacks: `callback_wrapper`
 
-One consequence of the thread hop: an ActiveRecord connection implicitly checked out inside a callback belongs to that throwaway thread and stays stranded until the pool reaper reclaims it. Rails' own answer to "code running on a thread Rails didn't create" is the executor — and `callback_wrapper` lets you install it around every user-callback dispatch:
+One consequence of the thread hop: an ActiveRecord connection implicitly checked out inside a callback belongs to that throwaway thread and stays stranded until the pool reaper reclaims it. Rails' own answer to "code running on a thread Rails didn't create" is the executor — and `callback_wrapper` lets you install it around every user-callback dispatch. Use the SDK's Rails-aware wrapper (the generated initializer already does):
 
 ```ruby
 ClaudeAgentSDK.configure do |config|
   config.default_options = {
-    callback_wrapper: ->(invocation) { Rails.application.executor.wrap { invocation.call } }
+    callback_wrapper: ClaudeAgentSDK::Railtie.callback_wrapper
   }
 end
 ```
 
-The wrapper is a callable receiving a zero-arg `invocation`; it must call it and return its value. It runs on the **same execution context as the callback** — inside the worker thread in `:thread` mode, which is the whole point: `executor.wrap` runs on the thread that touches ActiveRecord, so connections check back in when the callback ends. Exceptions from the callback propagate through the wrapper unchanged (don't rescue them); `ensure`-based wrappers like `executor.wrap` are safe, including around a `break` from a message block. Beyond the executor, this is a generic hook for APM span propagation, `CurrentAttributes`/logging context, etc.
+It runs each callback inside `Rails.application.executor.wrap` — except where that would deadlock, which is why it replaces the bare `->(invocation) { Rails.application.executor.wrap { invocation.call } }` this guide used to recommend:
+
+- **Development (code reloading enabled).** Every executor then holds a share of the code-reload interlock. The request or job calling the SDK is already inside the executor, and in `:thread` mode it waits for the callback's thread. If a reload is requested meanwhile (say, another request arrives after the agent edited an app file), the reloader queues for the exclusive unload lock, and a callback thread entering `executor.wrap` queues behind it for a fresh share — which the reloader can never let through while the waiting caller holds its own. Everything hangs. The helper instead runs the callback without entering the executor (the caller's share still keeps code from being unloaded under it) and returns the thread's ActiveRecord connections to the pool when the callback finishes.
+- **`config.allow_concurrency = false`.** The executor holds a process-wide monitor that the calling thread already owns, so a callback thread's `executor.wrap` would block every time; same treatment.
+- **Already inside the executor** (`:inline` scheduling on a job's own fiber): the callback runs straight through, leaving cleanup to the enclosing executor.
+
+Everywhere else — production, with no reloading — it is exactly `executor.wrap`. The configuration is read per call, so one initializer is correct in every environment.
+
+Writing your own wrapper: it is a callable receiving a zero-arg `invocation`; it must call it and return its value. It runs on the **same execution context as the callback** — inside the worker thread in `:thread` mode, which is the whole point: `executor.wrap` runs on the thread that touches ActiveRecord, so connections check back in when the callback ends. Exceptions from the callback propagate through the wrapper unchanged (don't rescue them); `ensure`-based wrappers like `executor.wrap` are safe, including around a `break` from a message block. Beyond the executor, this is a generic hook for APM span propagation, `CurrentAttributes`/logging context, etc. — to combine one with the Rails wrapper, call it from yours: `rails = ClaudeAgentSDK::Railtie.callback_wrapper` then `->(inv) { MyApm.trace { rails.call(inv) } }`.
 
 The wrapper also composes around every timeout-bounded `SessionStore` adapter call (mirror-batcher appends, resume-materialization loads and listings), inside the timeout bound — so an ActiveRecord-backed store adapter gets the same connection hygiene as your callbacks.
 
@@ -96,37 +147,32 @@ class ChatAgentJob < ApplicationJob
   queue_as :claude_agents
 
   def perform(chat_id, message_content)
-    Async do
-      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-        system_prompt: { type: 'preset', preset: 'claude_code' },
-        permission_mode: 'bypassPermissions'
-      )
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+      system_prompt: { type: 'preset', preset: 'claude_code' },
+      permission_mode: 'bypassPermissions'
+    )
 
-      client = ClaudeAgentSDK::Client.new(options: options)
+    ClaudeAgentSDK::Client.open(options: options) do |client|
+      client.query(message_content)
 
-      begin
-        client.connect
-        client.query(message_content)
-
-        client.receive_response do |message|
-          case message
-          when ClaudeAgentSDK::AssistantMessage
-            ChatChannel.broadcast_to(chat_id, { type: 'chunk', content: message.text })
-          when ClaudeAgentSDK::ResultMessage
-            ChatChannel.broadcast_to(chat_id, {
-              type: 'complete',
-              content: message.result,
-              cost: message.total_cost_usd
-            })
-          end
+      client.receive_response do |message|
+        case message
+        when ClaudeAgentSDK::AssistantMessage
+          ChatChannel.broadcast_to(chat_id, { type: 'chunk', content: message.text })
+        when ClaudeAgentSDK::ResultMessage
+          ChatChannel.broadcast_to(chat_id, {
+            type: 'complete',
+            content: message.result,
+            cost: message.total_cost_usd
+          })
         end
-      ensure
-        client.disconnect
       end
-    end.wait
+    end
   end
 end
 ```
+
+`Client.open` connects, yields the client, and always disconnects — also when the block raises, so the job's error handling sees the original exception. It runs inside an existing reactor or starts its own, so a job needs no `Async { }.wait` wrapper. Its return value is the block's; to leave the block early use `next`, not `break` (outside an `Async` block, `break` raises `LocalJumpError`, though the session is still torn down). `break` inside `receive_response` itself is fine.
 
 ## Session Resumption
 
@@ -138,19 +184,13 @@ class ChatSession < ApplicationRecord
   # Columns: id, claude_session_id, user_id, created_at, updated_at
 
   def send_message(content)
-    options = build_options
-    client = ClaudeAgentSDK::Client.new(options: options)
-
-    Async do
-      client.connect
-      client.query(content, session_id: claude_session_id ? nil : generate_session_id)
+    ClaudeAgentSDK::Client.open(options: build_options) do |client|
+      client.query(content)
 
       client.receive_response do |message|
         update!(claude_session_id: message.session_id) if message.is_a?(ClaudeAgentSDK::ResultMessage)
       end
-    ensure
-      client.disconnect
-    end.wait
+    end
   end
 
   private
@@ -160,12 +200,10 @@ class ChatSession < ApplicationRecord
     opts[:resume] = claude_session_id if claude_session_id.present?
     ClaudeAgentSDK::ClaudeAgentOptions.new(**opts)
   end
-
-  def generate_session_id
-    "chat_#{id}_#{Time.current.to_i}"
-  end
 end
 ```
+
+The first message starts a new session; every later one resumes it by the ID the previous `ResultMessage` reported.
 
 ## Background Jobs with Error Handling
 
@@ -176,16 +214,16 @@ class ClaudeAgentJob < ApplicationJob
 
   def perform(task_id)
     task = Task.find(task_id)
-    Async { execute_agent(task) }.wait
+
+    ClaudeAgentSDK::Client.open(options: ClaudeAgentSDK::ClaudeAgentOptions.new(max_turns: 10)) do |client|
+      client.query(task.prompt)
+      client.receive_response do |message|
+        task.update!(status: 'done', result: message.result) if message.is_a?(ClaudeAgentSDK::ResultMessage)
+      end
+    end
   rescue ClaudeAgentSDK::CLINotFoundError
-    task.update!(status: 'failed', error: 'Claude CLI not installed')
+    task.update!(status: 'failed', error: 'Claude CLI not installed (bin/rails claude_agent_sdk:install_cli)')
     raise
-  end
-
-  private
-
-  def execute_agent(task)
-    # ... agent execution
   end
 end
 ```
@@ -250,7 +288,8 @@ ClaudeAgentSDK.configure do |config|
       # Use a lambda so each query gets a fresh observer instance (thread-safe).
       # A single shared instance would have its span state clobbered by concurrent requests.
       -> { ClaudeAgentSDK::Instrumentation::OTelObserver.new }
-    ] : []
+    ] : [],
+    callback_wrapper: ClaudeAgentSDK::Railtie.callback_wrapper
   }
 end
 ```
