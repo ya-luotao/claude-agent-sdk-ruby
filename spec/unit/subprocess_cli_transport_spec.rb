@@ -549,12 +549,74 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
 
     it 'mentions the installer and CLAUDE_CLI_PATH when nothing is found' do
-      allow(File).to receive(:exist?).and_call_original
-      allow(File).to receive(:exist?).with(a_string_matching(/claude/)).and_return(false)
+      allow(File).to receive(:file?).and_call_original
+      allow(File).to receive(:file?).with(a_string_matching(/claude/)).and_return(false)
 
       expect { transport.find_cli }.to raise_error(
         ClaudeAgentSDK::CLINotFoundError, /CLIInstaller\.install.*CLAUDE_CLI_PATH/m
       )
+    end
+
+    context 'with the well-known install locations' do
+      around do |example|
+        previous_home = ENV.fetch('HOME', nil) # rubocop:disable Style/EnvHome -- raw value; nil when unset
+        example.run
+      ensure
+        previous_home.nil? ? ENV.delete('HOME') : (ENV['HOME'] = previous_home)
+      end
+
+      # The one non-home location is host-global; keep the host's real
+      # install (if any) from deciding these examples.
+      before do
+        allow(File).to receive(:file?).and_call_original
+        allow(File).to receive(:file?).with('/usr/local/bin/claude').and_return(false)
+      end
+
+      def home_install(mode)
+        path = File.join(tmp_dir, '.claude', 'local', 'claude')
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "#!/bin/sh\n")
+        File.chmod(mode, path)
+        path
+      end
+
+      it 'finds an executable at a home-relative location' do
+        ENV['HOME'] = tmp_dir
+        path = home_install(0o755)
+
+        expect(transport.find_cli).to eq(path)
+      end
+
+      it 'skips a non-executable file so discovery ends in CLINotFoundError (#72)' do
+        # Accepting it deferred the failure to spawn as a raw Errno::EACCES,
+        # without the install/vendor instructions CLINotFoundError carries.
+        ENV['HOME'] = tmp_dir
+        home_install(0o644)
+
+        expect { transport.find_cli }.to raise_error(ClaudeAgentSDK::CLINotFoundError)
+      end
+
+      it 'skips home-relative locations when the home directory cannot be resolved (#82)' do
+        # HOME unset with no passwd entry for the uid (docker --user in a
+        # minimal image): Dir.home raises ArgumentError. Stubbed because the
+        # host's passwd fallback would otherwise resolve a home.
+        ENV.delete('HOME')
+        allow(Dir).to receive(:home).and_raise(ArgumentError, "couldn't find home for uid `4242'")
+
+        expect { transport.find_cli }.to raise_error(ClaudeAgentSDK::CLINotFoundError)
+      end
+
+      it 'skips home-relative locations when HOME is relative (#82)' do
+        # Dir.home returns a relative HOME verbatim; probing under it would
+        # validate a path relative to the process cwd and hand back a path the
+        # spawn (chdir: options.cwd) resolves somewhere else.
+        home_install(0o755)
+        ENV['HOME'] = '.'
+
+        Dir.chdir(tmp_dir) do
+          expect { transport.find_cli }.to raise_error(ClaudeAgentSDK::CLINotFoundError)
+        end
+      end
     end
   end
 
@@ -1490,6 +1552,53 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         expect(e.stderr).to include('héllo 好')
         expect(e.stderr.valid_encoding?).to be(true)
         expect(e.stderr.encoding).to eq(Encoding::UTF_8)
+      end
+    ensure
+      [stdout_w, stderr_w, stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
+    end
+
+    # #90: stdout frames and the version probe are scrubbed; stderr must be
+    # too, or invalid bytes reach user callbacks and ProcessError#stderr and
+    # blow up later encoding work (JSON generation in loggers/exporters).
+    it 'scrubs invalid UTF-8 on the drained stderr before it reaches ProcessError' do
+      stdout_r, stdout_w, stderr_r, stderr_w = c_locale_pipes
+      status = instance_double(Process::Status, exitstatus: 1, signaled?: false)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      transport = connect_with_pipes(stdout_r, stderr_r, waiter)
+
+      stderr_w.write("bad \xFF\xFE bytes\n".b)
+      stdout_w.close
+      stderr_w.close
+
+      expect { transport.read_messages { |m| m } }.to raise_error(ClaudeAgentSDK::ProcessError) do |e|
+        expect(e.stderr).to include('bad ', ' bytes')
+        expect(e.stderr.valid_encoding?).to be(true)
+        expect(e.message.valid_encoding?).to be(true)
+      end
+    ensure
+      [stdout_w, stderr_w, stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }
+    end
+
+    it 'scrubs invalid UTF-8 before the stderr callback and ProcessError see it' do
+      stdout_r, stdout_w, stderr_r, stderr_w = c_locale_pipes
+      status = instance_double(Process::Status, exitstatus: 1, signaled?: false)
+      waiter = instance_double(Process::Waiter, alive?: false, value: status)
+      lines = Queue.new
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude', stderr: ->(line) { lines << line })
+      transport = described_class.new('hi', options)
+      allow(transport).to receive(:check_claude_version)
+      allow(Open3).to receive(:popen3).and_return([StringIO.new, stdout_r, stderr_r, waiter])
+      transport.connect
+
+      stderr_w.write("bad \xFF\xFE bytes\n".b)
+      stderr_w.close
+      line = lines.pop(timeout: 5) # the callback ran: the stderr thread consumed the line
+      stdout_w.close
+
+      expect(line).to include('bad ', ' bytes')
+      expect(line.valid_encoding?).to be(true)
+      expect { transport.read_messages { |m| m } }.to raise_error(ClaudeAgentSDK::ProcessError) do |e|
+        expect(e.stderr.valid_encoding?).to be(true)
       end
     ensure
       [stdout_w, stderr_w, stdout_r, stderr_r].each { |io| io&.close unless io&.closed? }

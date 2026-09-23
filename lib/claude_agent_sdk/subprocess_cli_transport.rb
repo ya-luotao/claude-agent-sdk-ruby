@@ -152,18 +152,25 @@ module ClaudeAgentSDK
       end
       return cli if cli && !cli.empty? && File.executable?(cli)
 
-      # Try common locations
+      # Try common locations. The home-relative ones are skipped when no
+      # usable home exists (see #home_dir), so a HOME-less container still
+      # reaches the actionable CLINotFoundError below.
+      home = home_dir
+      under_home = ->(rel) { File.join(home, rel) if home }
       locations = [
-        File.join(Dir.home, '.claude/local/claude'),  # Claude Code default install location
-        File.join(Dir.home, '.npm-global/bin/claude'),
+        under_home.call('.claude/local/claude'), # Claude Code default install location
+        under_home.call('.npm-global/bin/claude'),
         '/usr/local/bin/claude',
-        File.join(Dir.home, '.local/bin/claude'),
-        File.join(Dir.home, 'node_modules/.bin/claude'),
-        File.join(Dir.home, '.yarn/bin/claude')
-      ]
+        under_home.call('.local/bin/claude'),
+        under_home.call('node_modules/.bin/claude'),
+        under_home.call('.yarn/bin/claude')
+      ].compact
 
       locations.each do |path|
-        return path if File.exist?(path) && File.file?(path)
+        # Same test as the CLAUDE_CLI_PATH branch: a non-executable file here
+        # would otherwise be accepted and fail at spawn with a raw EACCES
+        # instead of CLINotFoundError's install instructions.
+        return path if File.file?(path) && File.executable?(path)
       end
 
       raise CLINotFoundError.new(
@@ -314,6 +321,11 @@ module ClaudeAgentSDK
       return unless @stderr
 
       @stderr.each_line("\n", @max_buffer_size + 1) do |line|
+        # Scrubbed at read time like stdout frames and the version probe: the
+        # CLI (or a tool it runs) can emit invalid UTF-8 on stderr, and an
+        # invalid string handed to the callback or kept for ProcessError#stderr
+        # raises later in the user's encoding work (JSON logging/exporters).
+        line = line.scrub unless line.valid_encoding?
         line_str = line.chomp
         next if line_str.empty?
 
@@ -352,6 +364,7 @@ module ClaudeAgentSDK
       return unless @stderr
 
       @stderr.each_line("\n", @max_buffer_size + 1) do |line|
+        line = line.scrub unless line.valid_encoding? # see #handle_stderr
         line_str = line.chomp
         next if line_str.empty?
 
@@ -811,6 +824,20 @@ module ClaudeAgentSDK
         @recent_stderr << line
         @recent_stderr.shift if @recent_stderr.size > RECENT_STDERR_LINES_LIMIT
       end
+    end
+
+    # The home directory for the well-known install probes, or nil when none
+    # is usable. Dir.home raises ArgumentError when HOME is unset and the uid
+    # has no passwd entry (docker --user in a minimal image), and returns an
+    # empty or relative HOME verbatim — probing under "" or a relative path
+    # would check files that are not where the user's install lives (and a
+    # relative hit would be spawned from options.cwd, i.e. a different file).
+    # SessionResume.home_dir applies the same rule.
+    def home_dir
+      home = Dir.home
+      home if File.absolute_path?(home)
+    rescue ArgumentError
+      nil
     end
   end
 end

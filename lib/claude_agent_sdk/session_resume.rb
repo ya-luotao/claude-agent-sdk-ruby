@@ -291,14 +291,20 @@ module ClaudeAgentSDK
     # cowork_settings.json live under the config dir (default ~/.claude/), while
     # .claude.json lives at $CLAUDE_CONFIG_DIR/.claude.json when set, else
     # ~/.claude.json (NOT ~/.claude/.claude.json).
+    #
+    # Without a usable home (see .home_dir) the home-relative sources are
+    # skipped like missing files: they cannot exist, and raising here aborted
+    # every store-backed resume on a HOME-less host — even API-key auth,
+    # which needs none of them.
     def copy_auth_files(tmp_base, opt_env)
       caller_config_dir = env_value(opt_env, 'CLAUDE_CONFIG_DIR')
-      source_config_dir = caller_config_dir || File.join(Dir.home, '.claude')
+      home = caller_config_dir ? nil : home_dir
+      source_config_dir = caller_config_dir || (home && File.join(home, '.claude'))
 
       # read_if_present returns raw bytes; the credentials path parses and
       # re-serializes JSON, so hand it a UTF-8-tagged string (invalid bytes
       # simply fail to parse and get written through, as before).
-      creds_bytes = read_if_present(File.join(source_config_dir, '.credentials.json'))
+      creds_bytes = source_config_dir && read_if_present(File.join(source_config_dir, '.credentials.json'))
       creds_json = creds_bytes&.dup&.force_encoding(Encoding::UTF_8)
 
       # macOS default keeps OAuth tokens in the Keychain, not a file. Redirecting
@@ -313,8 +319,8 @@ module ClaudeAgentSDK
 
       write_redacted_credentials(creds_json, File.join(tmp_base, '.credentials.json'))
 
-      claude_json_src = caller_config_dir ? File.join(caller_config_dir, '.claude.json') : File.join(Dir.home, '.claude.json')
-      copy_if_present(claude_json_src, File.join(tmp_base, '.claude.json'))
+      claude_json_dir = caller_config_dir || home
+      copy_if_present(File.join(claude_json_dir, '.claude.json'), File.join(tmp_base, '.claude.json')) if claude_json_dir
 
       # User settings carry apiKeyHelper (a fourth auth mechanism alongside
       # .credentials.json / Keychain / env vars) plus the user's env, hooks and
@@ -323,6 +329,8 @@ module ClaudeAgentSDK
       # cowork_settings.json is the alternate filename the CLI reads in
       # cowork-plugins mode. Both pass through strip_settings_for_resume so
       # plugin declarations don't reconcile against the empty tmp_base cache.
+      return unless source_config_dir
+
       transform = ->(content) { strip_settings_for_resume(content) }
       SEEDED_SETTINGS_FILES.each do |name|
         copy_if_present(File.join(source_config_dir, name), File.join(tmp_base, name), transform)
@@ -698,11 +706,23 @@ module ClaudeAgentSDK
       value && (!value.respond_to?(:empty?) || !value.empty?) ? value : nil
     end
 
+    # The parent's home directory, or nil when none is usable. Dir.home raises
+    # ArgumentError when HOME is unset and the uid has no passwd entry (docker
+    # --user in a minimal image), and returns an empty or relative HOME
+    # verbatim — reading under "" or a cwd-relative path would seed files the
+    # CLI never looks at. SubprocessCLITransport#home_dir applies the same rule.
+    def home_dir
+      home = Dir.home
+      home if File.absolute_path?(home)
+    rescue ArgumentError
+      nil
+    end
+
     private_class_method :load_candidate, :resolve_continue_candidate, :sortable_mtime, :with_timeout, :write_jsonl,
                          :copy_auth_files, :write_redacted_credentials, :read_keychain_credentials,
                          :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
                          :resolve_dir, :read_if_present, :chmod_owner_only, :copy_if_present, :env_value,
                          :strip_settings_for_resume, :parse_settings_bytes, :mask_surrogate_escapes,
-                         :redacted_credentials
+                         :redacted_credentials, :home_dir
   end
 end
