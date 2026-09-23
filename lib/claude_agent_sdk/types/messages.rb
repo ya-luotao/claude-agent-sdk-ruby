@@ -577,6 +577,7 @@ module ClaudeAgentSDK
     end
 
     # Backward-compatible accessor returning the full raw event payload
+    declare_attributes :data
     def data
       @raw_data || {}
     end

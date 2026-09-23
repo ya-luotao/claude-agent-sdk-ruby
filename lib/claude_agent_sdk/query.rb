@@ -644,13 +644,17 @@ module ClaudeAgentSDK
       original_input = request_data[:input]
 
       # Field order mirrors Python _internal/query.py's can_use_tool branch.
-      # Suggestions are hydrated into PermissionUpdate (Python #920); a
-      # malformed entry raises here, on the reactor, and becomes an error
-      # control_response — same observable behavior as Python.
+      # Suggestions are hydrated into PermissionUpdate (Python #920) through
+      # the lenient .wrap, so fields a newer CLI adds never trip the
+      # strict-attribute warning meant for user-built updates. A nil (or
+      # false) entry becomes an empty PermissionUpdate, as PermissionUpdate.new
+      # made it before; any other non-Hash entry raises here, on the reactor,
+      # and becomes an error control_response — same observable behavior as
+      # Python.
       context = ToolPermissionContext.new(
         signal: signal,
         request_id: request_id,
-        suggestions: (request_data[:permission_suggestions] || []).map { |s| PermissionUpdate.new(s) },
+        suggestions: (request_data[:permission_suggestions] || []).map { |s| PermissionUpdate.wrap(s || {}) },
         tool_use_id: request_data[:tool_use_id],
         agent_id: request_data[:agent_id],
         blocked_path: request_data[:blocked_path],

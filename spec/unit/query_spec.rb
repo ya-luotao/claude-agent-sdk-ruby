@@ -1776,6 +1776,47 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(response.dig(:response, :response, :updatedPermissions)).to eq([wire_suggestion])
     end
 
+    it 'hydrates suggestions carrying fields from a newer CLI without an unknown-attribute warning' do
+      ClaudeAgentSDK::Deprecation.reset!
+      wire_suggestion = {
+        type: 'addRules', destination: 'session', behavior: 'allow', futureField: true,
+        rules: [{ toolName: 'Bash', ruleContent: 'ls', futureRuleField: 'x' }]
+      }
+      seen = nil
+      callback = lambda do |_tool_name, _input, context|
+        seen = context.suggestions
+        ClaudeAgentSDK::PermissionResultAllow.new
+      end
+
+      expect do
+        handle_permission_request(callback, {
+                                    subtype: 'can_use_tool', tool_name: 'Bash', input: {},
+                                    permission_suggestions: [wire_suggestion], tool_use_id: 'toolu_4'
+                                  })
+      end.not_to output.to_stderr
+      expect(seen.first.rules.first.rule_content).to eq('ls')
+    ensure
+      ClaudeAgentSDK::Deprecation.reset!
+    end
+
+    it 'hydrates a nil suggestion into an empty PermissionUpdate, as before' do
+      seen = nil
+      callback = lambda do |_tool_name, _input, context|
+        seen = context.suggestions
+        ClaudeAgentSDK::PermissionResultAllow.new(updated_permissions: context.suggestions)
+      end
+
+      response = handle_permission_request(callback, {
+                                             subtype: 'can_use_tool', tool_name: 'Bash', input: {},
+                                             permission_suggestions: [nil], tool_use_id: 'toolu_5'
+                                           })
+
+      expect(seen.size).to eq(1)
+      expect(seen.first).to be_a(ClaudeAgentSDK::PermissionUpdate)
+      expect(seen.first.type).to be_nil
+      expect(response.dig(:response, :response, :updatedPermissions)).to eq([{ type: nil }])
+    end
+
     it 'defaults display fields to nil and suggestions to [] when the CLI omits them' do
       received = nil
       callback = lambda do |_tool_name, _input, context|

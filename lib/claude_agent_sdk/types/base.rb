@@ -3,17 +3,19 @@
 module ClaudeAgentSDK
   # Base class for all types.
   class Type
+    # Lenient, like every parse path: never warns or raises on an unknown key.
     def self.wrap(object)
       return object if object.is_a?(self)
       return nil if object.nil?
 
-      new(object)
+      lenient { new(object) }
     end
 
+    # Lenient, like every parse path: never warns or raises on an unknown key.
     def self.from_hash(hash)
       return unless hash.is_a?(Hash)
 
-      new(hash)
+      lenient { new(hash) }
     end
 
     def initialize(attributes = {})
@@ -41,6 +43,8 @@ module ClaudeAgentSDK
     # the same object. Option VALUE types include OptionValue to opt in to
     # copying, so a per-session change to e.g. sandbox rules can never reach
     # another session or the configured defaults.
+    #
+    # @api private
     def dup_for_options
       self
     end
@@ -53,6 +57,8 @@ module ClaudeAgentSDK
     # callables in HookMatcher#hooks) stay shared. #dup never copies frozen
     # state, so a copy of a frozen value (the configured-defaults snapshot) is
     # mutable.
+    #
+    # @api private
     module OptionValue
       def dup_for_options
         copy = dup
@@ -78,6 +84,8 @@ module ClaudeAgentSDK
     # not of a String SUBCLASS key, so those are copied (and frozen, as keys
     # should be) here. A compare_by_identity Hash is left keyed by the
     # caller's objects: copying a key would break the caller's own lookups.
+    #
+    # @api private
     def self.deep_dup_for_options(value)
       case value
       when Hash
@@ -129,10 +137,13 @@ module ClaudeAgentSDK
     # Declares attributes that carry credentials (env vars, auth headers).
     # Objects get logged, so #inspect shows them filtered; #to_h and
     # everything sent to the CLI are unaffected. Inherited by subclasses.
+    #
+    # @api private
     def self.inspect_filtered(*names)
       @inspect_filtered_attributes = (inspect_filtered_attributes + names.map(&:to_s)).uniq.freeze
     end
 
+    # @api private
     def self.inspect_filtered_attributes
       @inspect_filtered_attributes || (superclass <= Type ? superclass.inspect_filtered_attributes : [].freeze)
     end
@@ -273,40 +284,6 @@ module ClaudeAgentSDK
       false
     end
 
-    # Allow camelCase attribute access
-    def method_missing(method_name, ...)
-      normalized = normalize_name(method_name)
-
-      if normalized != method_name.to_s && respond_to?(normalized)
-        public_send(normalized, ...)
-      else
-        super
-      end
-    end
-
-    def respond_to_missing?(method_name, include_private = false)
-      normalized = normalize_name(method_name)
-      (normalized != method_name.to_s && respond_to?(normalized)) || super
-    end
-
-    def assign_attributes(attributes)
-      raise ArgumentError, "When assigning attributes, you must pass a hash as an argument, #{attributes.inspect} passed." unless attributes.respond_to?(:each_pair)
-
-      return if attributes.empty?
-
-      attributes.each_pair { |name, value| assign_attribute(name, value) }
-    end
-
-    def assign_attribute(name, value)
-      setter = :"#{normalize_name(name)}="
-      public_send(setter, value) if respond_to?(setter)
-    end
-
-    def read_attribute(name)
-      getter = normalize_name(name)
-      public_send(getter) if respond_to?(getter)
-    end
-
     def normalize_name(name)
       name = name.to_s.dup
       name.gsub!(/(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z\d])(?=[A-Z])/, "_")
@@ -339,3 +316,5 @@ module ClaudeAgentSDK
     end
   end
 end
+
+require_relative 'attributes'
