@@ -950,8 +950,18 @@ RSpec.describe ClaudeAgentSDK::Query do
       expect(response.dig(:result, :content).first[:text]).to eq('kaboom from user handler')
     end
 
+    it 'wraps a String handler result as a single text block end-to-end' do
+      server = server_with('plain') { |_args| 'just text' }
+
+      response = dispatch(server, { id: 3, method: 'tools/call', params: { name: 'plain', arguments: {} } })
+
+      expect(response[:error]).to be_nil
+      expect(response.dig(:result, :content)).to eq([{ type: 'text', text: 'just text' }])
+      expect(response.dig(:result, :isError)).to eq(false)
+    end
+
     it 'reports a malformed handler result in-band with the SDK diagnostic intact' do
-      server = server_with('not_hash') { |_args| 'oops' }
+      server = server_with('not_hash') { |_args| [:not, 'a hash'] }
 
       response = dispatch(server, { id: 3, method: 'tools/call', params: { name: 'not_hash', arguments: {} } })
 

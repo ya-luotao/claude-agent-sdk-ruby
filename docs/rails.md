@@ -53,8 +53,7 @@ You do **not** need to think about this. By default (`callback_scheduling: :thre
 
 ```ruby
 tool = ClaudeAgentSDK.create_tool('lookup_user', 'Look up a user', { id: Integer }) do |args|
-  user = User.find(args[:id])                # just works
-  { content: [{ type: 'text', text: user.name }] }
+  User.find(args[:id]).name                  # just works
 end
 
 ClaudeAgentSDK.query(prompt: '...') do |message|
@@ -127,7 +126,7 @@ The one real risk: **scheduler-opaque blocking stalls the whole reactor.** CPU-b
 ```ruby
 tool = ClaudeAgentSDK.create_tool('lookup', 'Query legacy DB', { id: String }) do |args|
   row = ClaudeAgentSDK.offload { legacy_client.fetch(args[:id]) }  # plain thread
-  { content: [{ type: 'text', text: row.to_json }] }
+  row.to_json
 end
 ```
 

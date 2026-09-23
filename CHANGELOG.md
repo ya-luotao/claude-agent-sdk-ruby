@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **SDK MCP tool handlers may return a String.** `create_tool('greet', ...) { |args| "Hello, #{args[:name]}!" }` now sends Claude a single text block, the same as returning `{ content: [{ type: 'text', text: "Hello, ..." }] }`. Both dispatch paths (`tools/call` through the MCP server and the direct `SdkMcpServer#call_tool`) accept it. Hash returns behave exactly as before and remain the form for `is_error`, `structured_content`, images and several blocks; any other non-Hash return still produces the in-band "must return a hash with :content key" error. The `create_tool` YARD examples, README and `docs/mcp-servers.md` (new "Handler Return Values" section) lead with the String form.
+
 ## [0.35.0] - 2026-09-23
 
 First-class Rails integration and a first-impressions pass. **Rails users:** if your initializer uses the previously documented `->(inv) { Rails.application.executor.wrap { inv.call } }` callback wrapper, switch to `ClaudeAgentSDK::Railtie.callback_wrapper` — the bare form can deadlock in development (see **Fixed**).

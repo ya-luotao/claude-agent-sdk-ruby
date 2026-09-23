@@ -145,7 +145,7 @@ Tools are Ruby blocks that run in-process, with no subprocess or IPC between Cla
 
 ```ruby
 greet = ClaudeAgentSDK.create_tool('greet', 'Greet a user', { name: :string }) do |args|
-  { content: [{ type: 'text', text: "Hello, #{args[:name]}!" }] }
+  "Hello, #{args[:name]}!"
 end
 
 server = ClaudeAgentSDK.create_sdk_mcp_server(name: 'my-tools', tools: [greet])
@@ -156,7 +156,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
-Arguments are validated against the tool's JSON Schema before your handler runs, and handler exceptions are reported back to the model in-band so it can self-correct. See [docs/mcp-servers.md](docs/mcp-servers.md) for resources, prompts, mixed SDK + external servers, and schema details.
+A String return is sent to Claude as a single text block. Return a Hash instead (`{ content: [...], is_error: true }`) to flag an error, attach `structured_content:`, or send several content blocks or images. Arguments are validated against the tool's JSON Schema before your handler runs, and handler exceptions are reported back to the model in-band so it can self-correct. See [docs/mcp-servers.md](docs/mcp-servers.md) for resources, prompts, mixed SDK + external servers, and schema details.
 
 ### Hooks and permission callbacks
 
