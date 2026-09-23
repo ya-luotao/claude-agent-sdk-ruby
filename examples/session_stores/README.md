@@ -81,8 +81,9 @@ through the relevant items below.
   so a later append for the same key can overlap it. **Dedupe by
   `entry["uuid"]`** when present — some entry types (e.g.
   `file-history-snapshot`, `permission-mode`) carry no uuid; mirrored entries
-  are opaque CLI pass-through, and only the SDK's `*_via_store` mutation
-  helpers stamp fresh uuids. Don't make a uuid column `NOT NULL`/`UNIQUE`.
+  are opaque CLI pass-through, and only the SDK's store-backed mutations
+  (`rename_session`/`tag_session`/`fork_session` with `session_store:`) stamp
+  fresh uuids. Don't make a uuid column `NOT NULL`/`UNIQUE`.
 - `#append` failures are logged and surface a `MirrorErrorMessage` on the
   message stream; they never block the conversation. Monitor for these so
   silent mirror gaps don't go unnoticed.
@@ -178,7 +179,7 @@ ClaudeAgentSDK.query(
 ```
 
 `#delete` removes all parts for a session but is only invoked when you call
-`ClaudeAgentSDK.delete_session_via_store`.
+`ClaudeAgentSDK.delete_session(session_id:, session_store: store)`.
 
 ---
 
@@ -215,7 +216,7 @@ Key scheme (`:` separator):
 
 Each `#append` is an `RPUSH` plus an index update in a single `MULTI`; `#load`
 is `LRANGE 0 -1`. `#delete` cascades to subpath lists and index entries; it is
-only invoked via `ClaudeAgentSDK.delete_session_via_store`.
+only invoked via `ClaudeAgentSDK.delete_session(session_id:, session_store: store)`.
 
 ---
 
@@ -271,4 +272,4 @@ reordering is transparent. Use a `json` or `text` column if you need byte-stable
 storage.
 
 `#delete` cascades to subpath rows; it is only invoked via
-`ClaudeAgentSDK.delete_session_via_store`.
+`ClaudeAgentSDK.delete_session(session_id:, session_store: store)`.

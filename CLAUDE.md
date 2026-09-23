@@ -99,6 +99,8 @@ Optional adapter for mirroring session transcripts to external storage (the subp
 
 `sessions.rb` / `session_resume.rb` / `session_mutations.rb` implement session listing (`SDKSessionInfo`), resume (can materialize the transcript from a SessionStore when the local file is absent), forking, and mutations.
 
+The public functions in `lib/claude_agent_sdk.rb` (`list_sessions`, `rename_session`, …) route on an optional `session_store:` — nil to the disk implementation (`Sessions.list_sessions`), a store to the store one (`Sessions.list_sessions_from_store`). The root-level `*_from_store` / `*_via_store` twins are deprecated shims (issue #126, removed in 1.0) that warn once via `Deprecation.warn_once` and call the store implementation directly.
+
 ### FiberBoundary (fiber safety)
 
 `async` installs a Fiber scheduler, but most Ruby libraries (pg, mysql2, ActiveRecord pools) key state on `Thread.current` and are thread-safe, not fiber-safe. `FiberBoundary.invoke` (`lib/claude_agent_sdk/fiber_boundary.rb`) hops every user-supplied callback (tool handlers, hooks, permission callbacks, message blocks, observers) to a plain thread before invoking it. Consequence: the thread hop severs `break`/`return`/`next` from the surrounding method — SDK loops yielding user callbacks must keep loop control outside the invoked block (see `Client#receive_response`; user `break` is bridged via `.invoke_iteration`).

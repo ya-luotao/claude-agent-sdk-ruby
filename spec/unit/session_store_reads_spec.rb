@@ -4,8 +4,10 @@ require 'spec_helper'
 require 'securerandom'
 require 'tmpdir'
 
-# Store-backed read helpers: ClaudeAgentSDK.{list_sessions,get_session_info,
-# get_session_messages,list_subagents,get_subagent_messages}_from_store.
+# Store-backed reads: ClaudeAgentSDK.{list_sessions,get_session_info,
+# get_session_messages,list_subagents,get_subagent_metadata,
+# get_subagent_messages} with session_store:. The deprecated *_from_store
+# twins are covered in sessions_api_deprecation_spec.rb.
 RSpec.describe 'SessionStore-backed reads' do
   let(:store) { ClaudeAgentSDK::InMemorySessionStore.new }
   let(:dir) { Dir.mktmpdir }
@@ -33,10 +35,10 @@ RSpec.describe 'SessionStore-backed reads' do
                  [user_entry(sid2, 'Second prompt', '2024-01-02T00:00:00.000Z')])
   end
 
-  describe '.list_sessions_from_store' do
+  describe '.list_sessions with session_store:' do
     it 'returns SDKSessionInfo sorted by last_modified descending (summary fast-path)' do
       seed_two_sessions
-      infos = ClaudeAgentSDK.list_sessions_from_store(session_store: store, directory: dir)
+      infos = ClaudeAgentSDK.list_sessions(session_store: store, directory: dir)
       expect(infos.map(&:session_id)).to eq([sid2, sid1])
       expect(infos.map(&:summary)).to eq(['Second prompt', 'First prompt'])
       expect(infos).to all(be_a(ClaudeAgentSDK::SDKSessionInfo))
@@ -44,21 +46,21 @@ RSpec.describe 'SessionStore-backed reads' do
 
     it 'honors limit and offset' do
       seed_two_sessions
-      expect(ClaudeAgentSDK.list_sessions_from_store(session_store: store, directory: dir, limit: 1).map(&:session_id))
+      expect(ClaudeAgentSDK.list_sessions(session_store: store, directory: dir, limit: 1).map(&:session_id))
         .to eq([sid2])
-      expect(ClaudeAgentSDK.list_sessions_from_store(session_store: store, directory: dir, offset: 1).map(&:session_id))
+      expect(ClaudeAgentSDK.list_sessions(session_store: store, directory: dir, offset: 1).map(&:session_id))
         .to eq([sid1])
     end
 
     it 'treats limit: 0 as an empty page (parity with the disk and message readers)' do
       seed_two_sessions
       # Fast path (InMemory implements summaries).
-      expect(ClaudeAgentSDK.list_sessions_from_store(session_store: store, directory: dir, limit: 0)).to eq([])
+      expect(ClaudeAgentSDK.list_sessions(session_store: store, directory: dir, limit: 0)).to eq([])
       # Slow path (list_sessions + load, no summaries).
       list_only = list_only_store
       list_only.append({ 'project_key' => project_key, 'session_id' => sid1 },
                        [user_entry(sid1, 'Only prompt', '2024-01-01T00:00:00.000Z')])
-      expect(ClaudeAgentSDK.list_sessions_from_store(session_store: list_only, directory: dir, limit: 0)).to eq([])
+      expect(ClaudeAgentSDK.list_sessions(session_store: list_only, directory: dir, limit: 0)).to eq([])
     end
 
     it 'excludes sidechain sessions' do
@@ -67,7 +69,7 @@ RSpec.describe 'SessionStore-backed reads' do
       store.append({ 'project_key' => project_key, 'session_id' => sid2 },
                    [{ 'type' => 'user', 'uuid' => SecureRandom.uuid, 'isSidechain' => true,
                       'timestamp' => '2024-01-02T00:00:00.000Z', 'message' => { 'content' => 'hidden' } }])
-      infos = ClaudeAgentSDK.list_sessions_from_store(session_store: store, directory: dir)
+      infos = ClaudeAgentSDK.list_sessions(session_store: store, directory: dir)
       expect(infos.map(&:session_id)).to eq([sid1])
     end
 
@@ -75,7 +77,7 @@ RSpec.describe 'SessionStore-backed reads' do
       list_only = list_only_store
       list_only.append({ 'project_key' => project_key, 'session_id' => sid1 },
                        [user_entry(sid1, 'Only prompt', '2024-01-01T00:00:00.000Z')])
-      infos = ClaudeAgentSDK.list_sessions_from_store(session_store: list_only, directory: dir)
+      infos = ClaudeAgentSDK.list_sessions(session_store: list_only, directory: dir)
       expect(infos.map(&:summary)).to eq(['Only prompt'])
     end
 
@@ -84,7 +86,7 @@ RSpec.describe 'SessionStore-backed reads' do
         def append(_key, _entries); end
         def load(_key); end
       end.new
-      expect { ClaudeAgentSDK.list_sessions_from_store(session_store: minimal, directory: dir) }
+      expect { ClaudeAgentSDK.list_sessions(session_store: minimal, directory: dir) }
         .to raise_error(ArgumentError, /neither/)
     end
 
@@ -93,7 +95,7 @@ RSpec.describe 'SessionStore-backed reads' do
       nm.append({ 'project_key' => project_key, 'session_id' => sid1 },
                 [user_entry(sid1, 'Prompt', '2024-01-01T00:00:00.000Z')])
       infos = nil
-      expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: nm, directory: dir) }
+      expect { infos = ClaudeAgentSDK.list_sessions(session_store: nm, directory: dir) }
         .not_to raise_error
       expect(infos.map(&:session_id)).to eq([sid1])
     end
@@ -103,7 +105,7 @@ RSpec.describe 'SessionStore-backed reads' do
       ns.append({ 'project_key' => project_key, 'session_id' => sid1 },
                 [user_entry(sid1, 'Prompt', '2024-01-01T00:00:00.000Z')])
       infos = nil
-      expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: ns, directory: dir) }
+      expect { infos = ClaudeAgentSDK.list_sessions(session_store: ns, directory: dir) }
         .not_to raise_error
       expect(infos.map(&:session_id)).to eq([sid1]) # degrades to gap-fill via list_sessions
     end
@@ -124,12 +126,12 @@ RSpec.describe 'SessionStore-backed reads' do
                      'timestamp' => "2024-01-01T00:00:0#{3 + i}.000Z", 'message' => { 'content' => "s#{i}" } }])
       end
 
-      infos = ClaudeAgentSDK.list_sessions_from_store(session_store: gf, directory: dir, limit: 2)
+      infos = ClaudeAgentSDK.list_sessions(session_store: gf, directory: dir, limit: 2)
       expect(infos.map(&:session_id)).to eq([sid_valid_new, sid_valid_old]) # full page, sidechain skipped
     end
 
     it 'degrades one failing row to an empty summary instead of aborting the whole listing' do
-      # A single session whose load raises must NOT fail list_sessions_from_store
+      # A single session whose load raises must NOT fail list_sessions
       # (parity with the disk path's per-file rescue and Python's
       # gather(return_exceptions=True) P2-5 fix).
       bad = sid1
@@ -165,7 +167,7 @@ RSpec.describe 'SessionStore-backed reads' do
                      [user_entry(bad, 'will fail', '2024-01-02T00:00:00.000Z')])
 
       infos = nil
-      expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: raising, directory: dir) }
+      expect { infos = ClaudeAgentSDK.list_sessions(session_store: raising, directory: dir) }
         .not_to raise_error
       by_id = infos.to_h { |i| [i.session_id, i] }
       expect(by_id.keys).to contain_exactly(good, bad)
@@ -199,10 +201,10 @@ RSpec.describe 'SessionStore-backed reads' do
                      newest => '2024-12-01T00:00:00.000Z' }
           seed_controlled(cstore, mtimes, summary_mtimes: with_summaries ? mtimes : {})
 
-          infos = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir)
+          infos = ClaudeAgentSDK.list_sessions(session_store: cstore, directory: dir)
           expect(infos.map(&:session_id)).to eq([newest, middle, oldest])
           # limit must cut the OLDEST, not the newest.
-          expect(ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir, limit: 1)
+          expect(ClaudeAgentSDK.list_sessions(session_store: cstore, directory: dir, limit: 1)
                    .map(&:session_id)).to eq([newest])
         end
 
@@ -215,7 +217,7 @@ RSpec.describe 'SessionStore-backed reads' do
           seed_controlled(cstore, mtimes, summary_mtimes: with_summaries ? mtimes : {})
 
           infos = nil
-          expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir) }
+          expect { infos = ClaudeAgentSDK.list_sessions(session_store: cstore, directory: dir) }
             .not_to raise_error
           expect(infos.map(&:session_id)).to eq([newest, middle, oldest])
         end
@@ -235,7 +237,7 @@ RSpec.describe 'SessionStore-backed reads' do
                       [{ 'type' => 'custom-title', 'customTitle' => 'Renamed later' }])
 
         infos = nil
-        expect { infos = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir) }
+        expect { infos = ClaudeAgentSDK.list_sessions(session_store: cstore, directory: dir) }
           .not_to raise_error
         expect(infos.map(&:session_id)).to eq([stale, fresh])
         expect(infos.first.summary).to eq('Renamed later') # re-folded, not the stale sidecar
@@ -260,13 +262,13 @@ RSpec.describe 'SessionStore-backed reads' do
             cstore.summary_mtimes[sid] = 1_700_000_000_000 if with_summaries
           end
 
-          full1 = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir).map(&:session_id)
-          full2 = ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir).map(&:session_id)
+          full1 = ClaudeAgentSDK.list_sessions(session_store: cstore, directory: dir).map(&:session_id)
+          full2 = ClaudeAgentSDK.list_sessions(session_store: cstore, directory: dir).map(&:session_id)
           expect(full1).to eq(tied_sids.sort)
           expect(full2).to eq(full1) # stable across calls despite the adapter reordering its rows
 
           pages = [0, 2, 4].flat_map do |off|
-            ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir, limit: 2, offset: off)
+            ClaudeAgentSDK.list_sessions(session_store: cstore, directory: dir, limit: 2, offset: off)
                           .map(&:session_id)
           end
           expect(pages).to eq(tied_sids.sort)
@@ -283,7 +285,7 @@ RSpec.describe 'SessionStore-backed reads' do
         cstore.listing_mtimes[a] = '2024-01-01T00:00:00.000Z'
 
         2.times do
-          expect(ClaudeAgentSDK.list_sessions_from_store(session_store: cstore, directory: dir).map(&:session_id))
+          expect(ClaudeAgentSDK.list_sessions(session_store: cstore, directory: dir).map(&:session_id))
             .to eq([a, b])
         end
       end
@@ -342,18 +344,18 @@ RSpec.describe 'SessionStore-backed reads' do
     end
   end
 
-  describe '.get_session_info_from_store' do
+  describe '.get_session_info with session_store:' do
     it 'returns info derived from store entries' do
       seed_two_sessions
-      info = ClaudeAgentSDK.get_session_info_from_store(session_store: store, session_id: sid1, directory: dir)
+      info = ClaudeAgentSDK.get_session_info(session_store: store, session_id: sid1, directory: dir)
       expect(info.summary).to eq('First prompt')
       expect(info.created_at).to eq(Time.iso8601('2024-01-01T00:00:00.000Z').to_f.*(1000).to_i)
     end
 
     it 'returns nil for an invalid UUID or unknown session' do
-      expect(ClaudeAgentSDK.get_session_info_from_store(session_store: store, session_id: 'nope', directory: dir))
+      expect(ClaudeAgentSDK.get_session_info(session_store: store, session_id: 'nope', directory: dir))
         .to be_nil
-      expect(ClaudeAgentSDK.get_session_info_from_store(session_store: store, session_id: sid1, directory: dir))
+      expect(ClaudeAgentSDK.get_session_info(session_store: store, session_id: sid1, directory: dir))
         .to be_nil
     end
 
@@ -363,30 +365,30 @@ RSpec.describe 'SessionStore-backed reads' do
                       'sessionId' => sid1, 'message' => { 'content' => 'Hi' } }])
       info = nil
       expect do
-        info = ClaudeAgentSDK.get_session_info_from_store(session_store: store, session_id: sid1, directory: dir)
+        info = ClaudeAgentSDK.get_session_info(session_store: store, session_id: sid1, directory: dir)
       end.not_to raise_error
       expect(info.summary).to eq('Hi')
     end
   end
 
-  describe '.get_session_messages_from_store' do
+  describe '.get_session_messages with session_store:' do
     it 'returns the conversation messages' do
       seed_two_sessions
-      msgs = ClaudeAgentSDK.get_session_messages_from_store(session_store: store, session_id: sid2, directory: dir)
+      msgs = ClaudeAgentSDK.get_session_messages(session_store: store, session_id: sid2, directory: dir)
       expect(msgs.length).to eq(1)
       expect(msgs.first).to be_a(ClaudeAgentSDK::SessionMessage)
       expect(msgs.first.text).to eq('Second prompt')
     end
 
     it 'returns [] for an invalid UUID or unknown session' do
-      expect(ClaudeAgentSDK.get_session_messages_from_store(session_store: store, session_id: 'nope', directory: dir))
+      expect(ClaudeAgentSDK.get_session_messages(session_store: store, session_id: 'nope', directory: dir))
         .to eq([])
-      expect(ClaudeAgentSDK.get_session_messages_from_store(session_store: store, session_id: sid1, directory: dir))
+      expect(ClaudeAgentSDK.get_session_messages(session_store: store, session_id: sid1, directory: dir))
         .to eq([])
     end
   end
 
-  describe '.list_subagents_from_store / .get_subagent_messages_from_store' do
+  describe '.list_subagents / .get_subagent_messages with session_store:' do
     # CLI-written subagent entries ALL carry isSidechain: true — fixtures must
     # too, or these specs pass against a pipeline that drops sidechain entries
     # (and therefore returns [] for every real subagent transcript).
@@ -403,7 +405,7 @@ RSpec.describe 'SessionStore-backed reads' do
     end
 
     it 'lists subagent IDs' do
-      expect(ClaudeAgentSDK.list_subagents_from_store(session_store: store, session_id: sid2, directory: dir))
+      expect(ClaudeAgentSDK.list_subagents(session_store: store, session_id: sid2, directory: dir))
         .to eq(['abc'])
     end
 
@@ -413,7 +415,7 @@ RSpec.describe 'SessionStore-backed reads' do
                  'parentAgentId' => 'parent-2', 'spawnDepth' => 2, 'futureField' => false }
       store.append(key, [{ 'type' => 'agent_metadata', 'toolUseId' => 'spawn-old' }, latest])
 
-      expect(ClaudeAgentSDK.get_subagent_metadata_from_store(
+      expect(ClaudeAgentSDK.get_subagent_metadata(
                session_store: store, session_id: sid2, agent_id: 'meta', directory: dir
              )).to eq('agentType' => 'reviewer', 'toolUseId' => 'spawn-new', 'parentAgentId' => 'parent-2',
                       'spawnDepth' => 2, 'futureField' => false)
@@ -427,8 +429,8 @@ RSpec.describe 'SessionStore-backed reads' do
       store.append(key.merge('subpath' => 'subagents/agent-meta'),
                    [{ 'type' => 'agent_metadata', 'toolUseId' => 'canonical' }])
       args = { session_store: store, session_id: sid2, agent_id: 'meta', directory: dir }
-      expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args)).to eq('toolUseId' => 'canonical')
-      expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args, session_id: sid1)).to be_nil
+      expect(ClaudeAgentSDK.get_subagent_metadata(**args)).to eq('toolUseId' => 'canonical')
+      expect(ClaudeAgentSDK.get_subagent_metadata(**args, session_id: sid1)).to be_nil
     end
 
     it 'falls back to the direct subpath without list_subkeys and propagates adapter errors' do
@@ -436,15 +438,15 @@ RSpec.describe 'SessionStore-backed reads' do
       key = { 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/agent-meta' }
       allow(adapter).to receive(:load).with(key).and_return([{ 'type' => 'agent_metadata' }])
       args = { session_store: adapter, session_id: sid2, agent_id: 'meta', directory: dir }
-      expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args)).to eq({})
+      expect(ClaudeAgentSDK.get_subagent_metadata(**args)).to eq({})
       allow(adapter).to receive(:load).with(key).and_return(nil)
-      expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args)).to be_nil
+      expect(ClaudeAgentSDK.get_subagent_metadata(**args)).to be_nil
       allow(adapter).to receive(:load).with(key).and_raise(IOError, 'offline')
-      expect { ClaudeAgentSDK.get_subagent_metadata_from_store(**args) }.to raise_error(IOError, 'offline')
+      expect { ClaudeAgentSDK.get_subagent_metadata(**args) }.to raise_error(IOError, 'offline')
     end
 
     it 'reads subagent messages, dropping synthetic agent_metadata entries' do
-      msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
+      msgs = ClaudeAgentSDK.get_subagent_messages(
         session_store: store, session_id: sid2, agent_id: 'abc', directory: dir
       )
       expect(msgs.length).to eq(1)
@@ -469,7 +471,7 @@ RSpec.describe 'SessionStore-backed reads' do
                        'parentAgentId' => 'a-parent' }
                    ])
 
-      msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
+      msgs = ClaudeAgentSDK.get_subagent_messages(
         session_store: store, session_id: sid2, agent_id: 'multi', directory: dir
       )
       expect(msgs.length).to eq(2)
@@ -484,7 +486,7 @@ RSpec.describe 'SessionStore-backed reads' do
                      subagent_entry(sid2, 'hi', '2024-01-02T00:00:01.000Z')
                    ])
 
-      msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
+      msgs = ClaudeAgentSDK.get_subagent_messages(
         session_store: store, session_id: sid2, agent_id: 'bad', directory: dir
       )
       expect(msgs.length).to eq(1)
@@ -493,7 +495,7 @@ RSpec.describe 'SessionStore-backed reads' do
     end
 
     it 'never sets parent ids on top-level store-backed session messages' do
-      msgs = ClaudeAgentSDK.get_session_messages_from_store(
+      msgs = ClaudeAgentSDK.get_session_messages(
         session_store: store, session_id: sid2, directory: dir
       )
       expect(msgs).not_to be_empty
@@ -511,7 +513,7 @@ RSpec.describe 'SessionStore-backed reads' do
                 'message' => { 'content' => 'chain reply' } }
       store.append({ 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/agent-chain' },
                    [root, reply])
-      msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
+      msgs = ClaudeAgentSDK.get_subagent_messages(
         session_store: store, session_id: sid2, agent_id: 'chain', directory: dir
       )
       expect(msgs.map(&:type)).to eq(%w[user assistant])
@@ -526,7 +528,7 @@ RSpec.describe 'SessionStore-backed reads' do
       )
       store.append({ 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/agent-dup' },
                    [subagent_entry(sid2, 'Top-level dup', '2024-01-02T00:00:04.000Z')])
-      msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
+      msgs = ClaudeAgentSDK.get_subagent_messages(
         session_store: store, session_id: sid2, agent_id: 'dup', directory: dir
       )
       expect(msgs.first.text).to eq('Top-level dup')
@@ -537,22 +539,22 @@ RSpec.describe 'SessionStore-backed reads' do
         { 'project_key' => project_key, 'session_id' => sid2, 'subpath' => 'subagents/workflows/run1/agent-nested' },
         [subagent_entry(sid2, 'Nested agent', '2024-01-02T00:00:02.000Z')]
       )
-      msgs = ClaudeAgentSDK.get_subagent_messages_from_store(
+      msgs = ClaudeAgentSDK.get_subagent_messages(
         session_store: store, session_id: sid2, agent_id: 'nested', directory: dir
       )
       expect(msgs.first.text).to eq('Nested agent')
     end
 
-    it 'raises from list_subagents_from_store when the store lacks list_subkeys' do
+    it 'raises from list_subagents when the store lacks list_subkeys' do
       list_only = list_only_store
-      expect { ClaudeAgentSDK.list_subagents_from_store(session_store: list_only, session_id: sid2, directory: dir) }
+      expect { ClaudeAgentSDK.list_subagents(session_store: list_only, session_id: sid2, directory: dir) }
         .to raise_error(ArgumentError, /list_subkeys/)
     end
 
     it 'does not crash when list_subkeys returns nil (non-conformant adapter)' do
       ns = nil_subkeys_store
-      expect(ClaudeAgentSDK.list_subagents_from_store(session_store: ns, session_id: sid2, directory: dir)).to eq([])
-      expect(ClaudeAgentSDK.get_subagent_messages_from_store(
+      expect(ClaudeAgentSDK.list_subagents(session_store: ns, session_id: sid2, directory: dir)).to eq([])
+      expect(ClaudeAgentSDK.get_subagent_messages(
                session_store: ns, session_id: sid2, agent_id: 'abc', directory: dir
              )).to eq([])
     end
@@ -582,11 +584,11 @@ RSpec.describe 'SessionStore-backed reads' do
     [nil, 123, :sym, ['x']].each do |bad|
       it "treats session_id #{bad.inspect} like a malformed id on every store reader" do
         args = { session_store: recorder, session_id: bad, directory: dir }
-        expect(ClaudeAgentSDK.get_session_info_from_store(**args)).to be_nil
-        expect(ClaudeAgentSDK.get_session_messages_from_store(**args)).to eq([])
-        expect(ClaudeAgentSDK.list_subagents_from_store(**args)).to eq([])
-        expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args, agent_id: 'abc')).to be_nil
-        expect(ClaudeAgentSDK.get_subagent_messages_from_store(**args, agent_id: 'abc')).to eq([])
+        expect(ClaudeAgentSDK.get_session_info(**args)).to be_nil
+        expect(ClaudeAgentSDK.get_session_messages(**args)).to eq([])
+        expect(ClaudeAgentSDK.list_subagents(**args)).to eq([])
+        expect(ClaudeAgentSDK.get_subagent_metadata(**args, agent_id: 'abc')).to be_nil
+        expect(ClaudeAgentSDK.get_subagent_messages(**args, agent_id: 'abc')).to eq([])
         expect(recorder.keys).to be_empty
       end
 
@@ -597,8 +599,8 @@ RSpec.describe 'SessionStore-backed reads' do
 
       it "treats agent_id #{bad.inspect} like a malformed id on the store subagent readers" do
         args = { session_store: recorder, session_id: sid1, agent_id: bad, directory: dir }
-        expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args)).to be_nil
-        expect(ClaudeAgentSDK.get_subagent_messages_from_store(**args)).to eq([])
+        expect(ClaudeAgentSDK.get_subagent_metadata(**args)).to be_nil
+        expect(ClaudeAgentSDK.get_subagent_messages(**args)).to eq([])
         expect(recorder.keys).to be_empty
       end
     end
@@ -606,8 +608,8 @@ RSpec.describe 'SessionStore-backed reads' do
     ['', '.', '..', '../x', 'a/b', 'a\\b', 'x%2Fy', "a\u0000b", 'a b', "abc\n"].each do |bad|
       it "never synthesizes a store subpath from the malformed agent_id #{bad.inspect}" do
         args = { session_store: recorder, session_id: sid1, agent_id: bad, directory: dir }
-        expect(ClaudeAgentSDK.get_subagent_metadata_from_store(**args)).to be_nil
-        expect(ClaudeAgentSDK.get_subagent_messages_from_store(**args)).to eq([])
+        expect(ClaudeAgentSDK.get_subagent_metadata(**args)).to be_nil
+        expect(ClaudeAgentSDK.get_subagent_messages(**args)).to eq([])
         expect(recorder.keys).to be_empty
       end
     end
@@ -616,8 +618,8 @@ RSpec.describe 'SessionStore-backed reads' do
     # compaction ids) must keep resolving.
     %w[a1b2c3d a0123456789abcdef aprompt_suggestion-1a2b3c acompact-4d5e6f agent_1 v1.2].each do |ok|
       it "still reads the well-formed agent_id #{ok.inspect}" do
-        ClaudeAgentSDK.get_subagent_messages_from_store(session_store: recorder, session_id: sid1,
-                                                        agent_id: ok, directory: dir)
+        ClaudeAgentSDK.get_subagent_messages(session_store: recorder, session_id: sid1,
+                                             agent_id: ok, directory: dir)
         expect(recorder.keys).to eq([{ 'project_key' => project_key, 'session_id' => sid1,
                                        'subpath' => "subagents/agent-#{ok}" }])
       end

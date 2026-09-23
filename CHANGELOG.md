@@ -7,14 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Groundwork for 1.0 ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)): the sessions API collapses to one function per operation, and the store-specific twins are deprecated. Nothing is removed; every existing call keeps working.
+
 ### Added
+- **`session_store:` on every session function.** `list_sessions`, `get_session_info`, `get_session_messages`, `list_subagents`, `get_subagent_metadata`, `get_subagent_messages`, `rename_session`, `tag_session`, `delete_session` and `fork_session` take an optional `session_store:`. Omitted or `nil`, they work on local disk exactly as before; given a store, they run the same code the `*_from_store` / `*_via_store` function did, with the same arguments. Two differences between the paths are documented in `docs/sessions.md`: `directory: nil` means every project on disk but the current working directory with a store (a store cannot enumerate projects), and `include_worktrees:` is disk-only: with `session_store:`, `list_sessions` accepts only the default `true` and raises `ArgumentError` for `false` or `nil` instead of silently ignoring the filter.
 - **`ClaudeAgentSDK::ConfigDirError`** (a `ClaudeSDKError`), raised by the local-disk session APIs when the Claude config directory cannot be located: `CLAUDE_CONFIG_DIR` is unset and there is no usable home directory for the default `~/.claude`. Its message says to set `CLAUDE_CONFIG_DIR` (#120).
 - CI: a macOS leg (Ruby 3.4) for the main suite; simplecov coverage (`COVERAGE=1 bundle exec rspec`) on the Linux Ruby 3.4 leg, with line/branch totals in the job summary and the HTML report as an artifact; and a weekly real-CLI integration run (`.github/workflows/integration.yml`) against `CLIInstaller::PINNED_CLI_VERSION`, also triggered by PRs that touch the installer. Dependabot keeps the workflows' actions current.
 - `CONTRIBUTING.md`, `SECURITY.md`, and issue and pull request templates.
 
 ### Changed
+- **Root-module plumbing is tagged `@api private`** and no longer appears in the generated YARD docs (`.yardopts` gains `--hide-api private`; `--no-private` alone never hid `@api private` objects): `resolve_observers`, `extract_sdk_mcp_servers`, `convert_hooks_to_internal_format`, `configure_can_use_tool`, `extract_exclude_dynamic_sections`, `extract_system_prompt_snapshot`, `notify_observers`, `check_inline_isolation`, `extract_user_prompt_text`, `prompt_text_from_content`, `observing_prompt_stream`, `flexible_fetch`, `call_tool_handler`, and the tool-schema helpers `deep_symbolize_keys`, `deep_normalize_schema`, `prebuilt_json_schema?`, `normalize_tool_schema`, `ruby_type_to_json_schema`. They still work, but they are not part of the public API and move under `ClaudeAgentSDK::Internal` in 1.0. `fold_session_summary` stays public, since SessionStore adapters call it from `#append`. The existing `@api private` tags (`FiberBoundary` internals, `CancellationSignal#cancel`) are hidden too; `#cancel`'s tag is moved to its own line, where YARD recognizes it.
 - `examples/rails_actioncable_example.rb` and `examples/rails_background_job_example.rb` use `ClaudeAgentSDK::Client.open` instead of hand-rolled `Async { connect … ensure disconnect }.wait`, matching `docs/rails.md`.
 - RuboCop targets Ruby 3.2, the gemspec floor (was 3.0). The resulting autocorrections (anonymous block forwarding, dropping `require 'set'`) change no behavior.
+
+### Deprecated
+- **The ten store-specific session functions**, removed in 1.0. Each still returns exactly what it did before (a `nil` `session_store:` still fails rather than falling back to disk), and prints a one-time warning per method per process naming its replacement and the calling line, e.g. `app/jobs/sync.rb:12: warning: ClaudeAgentSDK.list_sessions_from_store is deprecated and will be removed in 1.0; use ClaudeAgentSDK.list_sessions(session_store: store)`. The warning uses plain `Kernel#warn`, not `category: :deprecated`, because Ruby hides that category unless `Warning[:deprecated]` is enabled; `-W0` / `$VERBOSE = nil` silences it.
+
+  | Deprecated | Replacement |
+  |---|---|
+  | `list_sessions_from_store(session_store: s, ...)` | `list_sessions(session_store: s, ...)` |
+  | `get_session_info_from_store(session_store: s, ...)` | `get_session_info(session_store: s, ...)` |
+  | `get_session_messages_from_store(session_store: s, ...)` | `get_session_messages(session_store: s, ...)` |
+  | `list_subagents_from_store(session_store: s, ...)` | `list_subagents(session_store: s, ...)` |
+  | `get_subagent_metadata_from_store(session_store: s, ...)` | `get_subagent_metadata(session_store: s, ...)` |
+  | `get_subagent_messages_from_store(session_store: s, ...)` | `get_subagent_messages(session_store: s, ...)` |
+  | `rename_session_via_store(session_store: s, ...)` | `rename_session(session_store: s, ...)` |
+  | `tag_session_via_store(session_store: s, ...)` | `tag_session(session_store: s, ...)` |
+  | `delete_session_via_store(session_store: s, ...)` | `delete_session(session_store: s, ...)` |
+  | `fork_session_via_store(session_store: s, ...)` | `fork_session(session_store: s, ...)` |
+
+  All other arguments carry over unchanged. `import_session_to_store` is not affected.
 
 ### Fixed
 - **Session APIs on hosts without a home directory (#120).** With `CLAUDE_CONFIG_DIR` unset and `HOME` unset with no passwd entry (`docker --user` in a minimal image) or an empty/relative `HOME`:
