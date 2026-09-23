@@ -153,7 +153,10 @@ module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-co
         query.send(:read_messages)
         task.children&.each(&:wait)
       end
-      sleep 1 if path == :hook_timeout_abandoned # let the abandoned worker finish
+      # Wait for the abandoned worker: its exit ends the process (interrupting
+      # this sleep) well before 10s, so the margin costs nothing when it works
+      # and absorbs a loaded CI box when it is slow.
+      sleep 10 if path == :hook_timeout_abandoned
     end
     $stdout.puts SURVIVED
     $stdout.flush
