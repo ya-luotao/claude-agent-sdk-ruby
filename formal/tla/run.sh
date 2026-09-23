@@ -63,7 +63,8 @@ EXPECTED=(
   cli_installer/bug_sweep.cfg                  LiveDownloadsIntact
   cli_installer/reach_upgrade.cfg              NoUpgradeEverHappens
   cli_installer/reach_crash.cfg                NoCrashLeftovers
-  cli_installer/reach_mismatch.cfg             NoRecordedButNotRenamed
+  cli_installer/reach_mismatch_crash.cfg       NoMismatchLeftByCrash
+  cli_installer/reach_mismatch_fail.cfg        NoMismatchLeftByFailedRename
   control_protocol/good.cfg                    pass
   control_protocol/bug_detect_after_write.cfg  NoHalfExecutedRequest
   control_protocol/bug_nonatomic.cfg           EverySenderFinishes

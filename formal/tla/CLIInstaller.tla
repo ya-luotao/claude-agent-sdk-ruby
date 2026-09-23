@@ -42,9 +42,11 @@ VARIABLES
   vfile,          \* version + checksum recorded in VERSION (NONE = absent)
   tmps,           \* claude.download.<hex> files on disk
   published,      \* history: every version renamed into place, in order
-  everInstalled   \* history: some install() has run to completion (binary AND VERSION in place)
+  everInstalled,  \* history: some install() has run to completion (binary AND VERSION in place)
+  lastHolderExit  \* history: how the last lock holder left install(): "ok" | "fail" | "crash"
 
-vars == <<pc, runs, resolved, lock, tag, binary, vfile, tmps, published, everInstalled>>
+vars == <<pc, runs, resolved, lock, tag, binary, vfile, tmps, published, everInstalled,
+          lastHolderExit>>
 
 TmpFile == [owner : Installers, run : Nat, content : Contents]
 
@@ -59,17 +61,20 @@ Init ==
   /\ tmps     = {}
   /\ published = <<>>
   /\ everInstalled = FALSE
+  /\ lastHolderExit = "none"
 
 \* The temp file belonging to installer i's current run (0 or 1 elements).
 MyTmp(i) == {f \in tmps : f.owner = i /\ f.run = runs[i]}
 
-\* install() is over for i -- returned, raised, or the process died. The
-\* flock is released either by `ensure` or by the kernel.
-Leave(i) ==
+\* install() is over for i -- returned ("ok"), raised ("fail"), or the
+\* process died ("crash"). The flock is released either by `ensure` or by
+\* the kernel.
+Leave(i, how) ==
   /\ pc'       = [pc EXCEPT ![i] = "idle"]
   /\ runs'     = [runs EXCEPT ![i] = @ + 1]
   /\ resolved' = [resolved EXCEPT ![i] = NONE]
   /\ lock'     = IF lock = i THEN 0 ELSE lock
+  /\ lastHolderExit' = IF lock = i THEN how ELSE lastHolderExit
 
 Goto(i, where) == pc' = [pc EXCEPT ![i] = where]
 
@@ -84,7 +89,8 @@ Begin(i) ==
   /\ Goto(i, "waitlock")
   /\ resolved' = IF RESOLVE_IN_LOCK THEN resolved ELSE [resolved EXCEPT ![i] = tag]
   /\ tmps'     = IF SWEEP_IN_LOCK THEN tmps ELSE {}
-  /\ UNCHANGED <<runs, lock, tag, binary, vfile, published, everInstalled>>
+  /\ UNCHANGED <<runs, lock, tag, binary, vfile, published, everInstalled,
+                 lastHolderExit>>
 
 \* with_install_lock + sweep_stale_temp_files
 Acquire(i) ==
@@ -92,22 +98,24 @@ Acquire(i) ==
   /\ lock' = i
   /\ tmps' = IF SWEEP_IN_LOCK THEN {} ELSE tmps
   /\ Goto(i, IF RESOLVE_IN_LOCK THEN "resolve" ELSE "check")
-  /\ UNCHANGED <<runs, resolved, tag, binary, vfile, published, everInstalled>>
+  /\ UNCHANGED <<runs, resolved, tag, binary, vfile, published, everInstalled,
+                 lastHolderExit>>
 
 \* Release.resolve_version (a GET to the dist-tag endpoint)
 Resolve(i) ==
   /\ pc[i] = "resolve"
   /\ resolved' = [resolved EXCEPT ![i] = tag]
   /\ Goto(i, "check")
-  /\ UNCHANGED <<runs, lock, tag, binary, vfile, tmps, published, everInstalled>>
+  /\ UNCHANGED <<runs, lock, tag, binary, vfile, tmps, published, everInstalled,
+                 lastHolderExit>>
 
 \* `next binary if installed?(...)` -- the offline idempotency shortcut
 Check(i) ==
   /\ pc[i] = "check"
   /\ IF Installed(resolved[i])
-       THEN Leave(i)
+       THEN Leave(i, "ok")
        ELSE /\ Goto(i, "download")
-            /\ UNCHANGED <<runs, resolved, lock>>
+            /\ UNCHANGED <<runs, resolved, lock, lastHolderExit>>
   /\ UNCHANGED <<tag, binary, vfile, tmps, published, everInstalled>>
 
 (* publish(): fetch_verified -> Metadata.write -> File.rename               *)
@@ -117,7 +125,8 @@ StartDownload(i) ==
   /\ pc[i] = "download"
   /\ tmps' = tmps \cup {[owner |-> i, run |-> runs[i], content |-> PARTIAL]}
   /\ Goto(i, "downloading")
-  /\ UNCHANGED <<runs, resolved, lock, tag, binary, vfile, published, everInstalled>>
+  /\ UNCHANGED <<runs, resolved, lock, tag, binary, vfile, published, everInstalled,
+                 lastHolderExit>>
 
 \* The stream completes: the right bytes, or bytes that will fail the checksum.
 \* (If the file was unlinked under us, the writes land in an orphaned inode.)
@@ -126,14 +135,16 @@ FinishDownload(i) ==
   /\ \E c \in {resolved[i], CORRUPT} :
        tmps' = {IF f.owner = i /\ f.run = runs[i] THEN [f EXCEPT !.content = c] ELSE f : f \in tmps}
   /\ Goto(i, "verify")
-  /\ UNCHANGED <<runs, resolved, lock, tag, binary, vfile, published, everInstalled>>
+  /\ UNCHANGED <<runs, resolved, lock, tag, binary, vfile, published, everInstalled,
+                 lastHolderExit>>
 
 \* Digest::SHA256.file(tmp) == entry[:checksum], then chmod 0755
 Verify(i) ==
   /\ pc[i] = "verify"
   /\ \E f \in MyTmp(i) : f.content = resolved[i]
   /\ Goto(i, IF RECORD_BEFORE_RENAME THEN "record" ELSE "rename")
-  /\ UNCHANGED <<runs, resolved, lock, tag, binary, vfile, tmps, published, everInstalled>>
+  /\ UNCHANGED <<runs, resolved, lock, tag, binary, vfile, tmps, published, everInstalled,
+                 lastHolderExit>>
 
 \* Metadata.write: its own temp file + rename, so VERSION changes atomically
 Record(i) ==
@@ -141,8 +152,8 @@ Record(i) ==
   /\ vfile' = resolved[i]
   /\ IF pc[i] = "record"
        THEN /\ Goto(i, "rename")
-            /\ UNCHANGED <<runs, resolved, lock>>
-       ELSE Leave(i)                              \* old order: this was the last step
+            /\ UNCHANGED <<runs, resolved, lock, lastHolderExit>>
+       ELSE Leave(i, "ok")                              \* old order: this was the last step
   /\ everInstalled' = (everInstalled \/ pc[i] = "record_after")
   /\ UNCHANGED <<tag, binary, tmps, published>>
 
@@ -155,9 +166,9 @@ Rename(i) ==
   /\ tmps' = tmps \ MyTmp(i)
   /\ everInstalled' = (everInstalled \/ RECORD_BEFORE_RENAME)
   /\ IF RECORD_BEFORE_RENAME
-       THEN Leave(i)
+       THEN Leave(i, "ok")
        ELSE /\ Goto(i, "record_after")
-            /\ UNCHANGED <<runs, resolved, lock>>
+            /\ UNCHANGED <<runs, resolved, lock, lastHolderExit>>
   /\ UNCHANGED <<tag, vfile>>
 
 \* Any fallible step raises (network error, checksum mismatch, ENOENT,
@@ -169,20 +180,21 @@ Fail(i) ==
                 "verify", "record", "rename", "record_after"}
   /\ tmps'   = tmps \ MyTmp(i)
   /\ binary' = IF pc[i] = "record_after" THEN NONE ELSE binary
-  /\ Leave(i)
+  /\ Leave(i, "fail")
   /\ UNCHANGED <<tag, vfile, published, everInstalled>>
 
 \* SIGKILL / OOM / power loss: no `ensure`, the temp file stays behind.
 Crash(i) ==
   /\ pc[i] # "idle"
-  /\ Leave(i)
+  /\ Leave(i, "crash")
   /\ UNCHANGED <<tag, binary, vfile, tmps, published, everInstalled>>
 
 \* A new release is promoted to `stable`.
 AdvanceTag ==
   /\ tag < MaxVersion
   /\ tag' = tag + 1
-  /\ UNCHANGED <<pc, runs, resolved, lock, binary, vfile, tmps, published, everInstalled>>
+  /\ UNCHANGED <<pc, runs, resolved, lock, binary, vfile, tmps, published, everInstalled,
+                 lastHolderExit>>
 
 Next ==
   \/ AdvanceTag
@@ -202,6 +214,7 @@ TypeOK ==
   /\ binary \in Contents \cup {NONE}
   /\ vfile \in Versions \cup {NONE}
   /\ tmps \subseteq TmpFile
+  /\ lastHolderExit \in {"none", "ok", "fail", "crash"}
 
 \* A lock-free reader (installed_path / find_cli / the spawned CLI) only ever
 \* sees a complete, checksum-verified binary.
@@ -229,9 +242,16 @@ StaleTempsSwept ==
 
 -----------------------------------------------------------------------------
 (* Reachability checks (EXPECTED to be violated -- proves the model is not  *)
-(* vacuous: upgrades, crashes and the VERSION/binary mismatch all happen)   *)
+(* vacuous: upgrades, crash leftovers and a VERSION/binary mismatch that    *)
+(* outlives the install that caused it all happen)                         *)
 
 NoUpgradeEverHappens == Len(published) < 2
 NoCrashLeftovers     == \A f \in tmps : f.run = runs[f.owner]
-NoRecordedButNotRenamed == ~(binary \in Versions /\ vfile \in Versions /\ vfile > binary)
+\* VERSION names a different version than the binary while no install() is
+\* in its critical section -- i.e. the mismatch is left behind, not the
+\* transient one every upgrade passes through between Record and Rename.
+StaleMismatch ==
+  lock = 0 /\ binary \in Versions /\ vfile \in Versions /\ vfile # binary
+NoMismatchLeftByCrash        == ~(StaleMismatch /\ lastHolderExit = "crash")
+NoMismatchLeftByFailedRename == ~(StaleMismatch /\ lastHolderExit = "fail")
 =============================================================================
