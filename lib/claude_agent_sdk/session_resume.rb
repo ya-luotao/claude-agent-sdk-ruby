@@ -755,6 +755,6 @@ module ClaudeAgentSDK
                          :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
                          :resolve_dir, :read_if_present, :chmod_owner_only, :copy_if_present, :env_value,
                          :strip_settings_for_resume, :parse_settings_bytes, :mask_surrogate_escapes,
-                         :redacted_credentials
+                         :redacted_credentials, :encode_candidate, :encode_jsonl_lines, :encode_agent_metadata
   end
 end

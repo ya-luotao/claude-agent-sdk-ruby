@@ -668,6 +668,7 @@ module ClaudeAgentSDK
                          :parse_fork_transcript, :derive_fork_title, :build_forked_entry, :resolve_parent_uuid,
                          :append_to_session, :append_to_session_in_directory,
                          :append_to_session_global, :try_append, :sanitize_unicode, :unicode_category,
-                         :iso_now, :build_fork_lines, :partition_fork_entries, :derive_title_from_entries
+                         :iso_now, :build_fork_lines, :partition_fork_entries, :derive_title_from_entries,
+                         :ensure_store_session_exists
   end
 end
