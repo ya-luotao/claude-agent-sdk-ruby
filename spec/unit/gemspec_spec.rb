@@ -8,7 +8,7 @@ RSpec.describe 'claude-agent-sdk.gemspec' do
   let(:gemspec_path) { File.join(root, 'claude-agent-sdk.gemspec') }
 
   def git_tracked_files
-    IO.popen(%w[git ls-files -z lib docs README.md LICENSE CHANGELOG.md],
+    IO.popen(%w[git ls-files -z lib docs README.md LICENSE CHANGELOG.md UPGRADING-1.0.md],
              chdir: root, err: File::NULL, &:read).split("\x0")
       .reject { |path| path.start_with?('docs/history/') }
   rescue SystemCallError

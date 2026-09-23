@@ -35,30 +35,8 @@ module ClaudeAgentSDK
         return unless first
 
         begin
-          warn("ClaudeAgentSDK.#{name} is deprecated and will be removed in 1.0; " \
+          warn("ClaudeAgentSDK.#{name} is deprecated and will be removed in 2.0; " \
                "use ClaudeAgentSDK.#{replacement}", uplevel: 2)
-        rescue StandardError
-          nil
-        end
-      end
-
-      # Warn +message+ once per process per +key+, attributed to the first
-      # caller frame outside the SDK's lib/ directory: the user's call site,
-      # however deep inside the SDK the deprecated behaviour is detected
-      # (e.g. an unknown attribute found by Type#assign_attribute during
-      # HookMatcher.new). Best-effort like #warn_once.
-      #
-      # @param key [Object] once-guard key; any value usable in a Set
-      # @param message [String]
-      # @return [void]
-      def warn_once_at_caller(key, message)
-        first = @mutex.synchronize { @warned.add?(key) }
-        return unless first
-
-        begin
-          locations = caller_locations(1)
-          index = locations.index { |location| !sdk_frame?(location) }
-          index ? warn(message, uplevel: index + 1) : warn(message)
         rescue StandardError
           nil
         end
@@ -68,23 +46,6 @@ module ClaudeAgentSDK
       def reset!
         @mutex.synchronize { @warned.clear }
       end
-
-      private
-
-      # A frame inside the gem's lib/ (both the loaded and the real path, in
-      # case lib/ is reached through a symlink), or a Ruby-internal one
-      # (<internal:...>, e.g. Array#each on 3.4). A C frame such as Class#new
-      # reports its caller's path, so it counts as the caller's.
-      def sdk_frame?(location)
-        path = location.absolute_path || location.path
-        return true if path.nil? || path.start_with?('<internal:')
-
-        SDK_LIB_DIRS.any? { |dir| path.start_with?(dir) }
-      end
     end
-
-    SDK_LIB_DIRS = [File.expand_path('..', File.dirname(__FILE__)), File.expand_path('..', __dir__)]
-                   .uniq.map { |dir| "#{dir}/" }.freeze
-    private_constant :SDK_LIB_DIRS
   end
 end

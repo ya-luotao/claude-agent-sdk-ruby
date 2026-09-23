@@ -31,6 +31,14 @@ module ClaudeAgentSDK
   # relative HOME). Set CLAUDE_CONFIG_DIR to fix it.
   class ConfigDirError < ClaudeSDKError; end
 
+  # Raised when resuming a session from ClaudeAgentOptions#session_store
+  # fails: a store call (#load, #list_sessions, #list_subkeys, ...) raised or
+  # exceeded load_timeout_ms while the SDK was materializing the transcript
+  # for the CLI. Raised by Client#connect, ClaudeAgentSDK.query and .ask,
+  # before the CLI starts. The message names the store call; #cause holds the
+  # adapter's own exception (or the internal timeout).
+  class SessionStoreError < ClaudeSDKError; end
+
   # Raised when the CLI process fails
   class ProcessError < ClaudeSDKError
     attr_reader :exit_code, :stderr

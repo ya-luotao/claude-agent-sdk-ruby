@@ -227,6 +227,25 @@ while an append is in flight are coalesced into the next append, so a slow
 store never accumulates one background task per frame), and `load_timeout_ms`
 (per store call during resume materialization, default `60_000`).
 
+If a store call raises or exceeds `load_timeout_ms` during resume
+materialization, `ClaudeAgentSDK.query`, `.ask` and `Client#connect` raise
+`ClaudeAgentSDK::SessionStoreError` (a `ClaudeSDKError`) before the CLI
+starts. The message names the call (`SessionStore#load for session <id> failed
+during resume materialization: IOError: ...`) and `#cause` holds the adapter's
+own exception, or the internal timeout:
+
+```ruby
+begin
+  ClaudeAgentSDK.ask('Continue', options: options.dup_with(resume: session_id))
+rescue ClaudeAgentSDK::SessionStoreError => e
+  logger.warn("resume from store failed: #{e.message} (#{e.cause&.class})")
+  raise
+end
+```
+
+Before 1.0 this surfaced as a bare `RuntimeError` (and a `RuntimeError` your
+adapter raised escaped unwrapped), which `rescue ClaudeSDKError` missed.
+
 Resume materialization re-serializes each loaded entry to JSONL. An entry that
 cannot be serialized (NaN/Infinity, invalid UTF-8, circular nesting), an
 unserializable subagent metadata sidecar, or a subkey that is not a safe
@@ -478,7 +497,7 @@ skipped with a warning.
 > `get_subagent_messages_from_store`, `rename_session_via_store`,
 > `tag_session_via_store`, `delete_session_via_store`,
 > `fork_session_via_store`) still work unchanged but print a one-time
-> deprecation warning and will be removed in 1.0. Replace
+> deprecation warning; they stay through 1.x and will be removed in 2.0. Replace
 > `ClaudeAgentSDK.x_from_store(session_store: store, ...)` or
 > `x_via_store(session_store: store, ...)` with
 > `ClaudeAgentSDK.x(..., session_store: store)`.

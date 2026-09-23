@@ -541,27 +541,27 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     SessionSummary.fold_session_summary(prev, key, entries)
   end
 
-  # ---- Deprecated store twins (removed in 1.0) ----
+  # ---- Deprecated store twins (removed in 2.0) ----
   #
   # Each forwards to the same implementation as before — not to the merged
   # function, so a nil session_store keeps failing as it always did instead
   # of silently reading local disk — after one warning per method per process.
 
-  # @deprecated Use {.list_sessions} with +session_store:+. Removed in 1.0.
+  # @deprecated Use {.list_sessions} with +session_store:+. Removed in 2.0.
   # @return [Array<SDKSessionInfo>] sorted by last_modified descending
   def self.list_sessions_from_store(session_store:, directory: nil, limit: nil, offset: 0)
     Deprecation.warn_once(:list_sessions_from_store, 'list_sessions(session_store: store)')
     Sessions.list_sessions_from_store(session_store: session_store, directory: directory, limit: limit, offset: offset)
   end
 
-  # @deprecated Use {.get_session_info} with +session_store:+. Removed in 1.0.
+  # @deprecated Use {.get_session_info} with +session_store:+. Removed in 2.0.
   # @return [SDKSessionInfo, nil]
   def self.get_session_info_from_store(session_store:, session_id:, directory: nil)
     Deprecation.warn_once(:get_session_info_from_store, 'get_session_info(session_store: store, ...)')
     Sessions.get_session_info_from_store(session_store: session_store, session_id: session_id, directory: directory)
   end
 
-  # @deprecated Use {.get_session_messages} with +session_store:+. Removed in 1.0.
+  # @deprecated Use {.get_session_messages} with +session_store:+. Removed in 2.0.
   # @return [Array<SessionMessage>]
   def self.get_session_messages_from_store(session_store:, session_id:, directory: nil, limit: nil, offset: 0)
     Deprecation.warn_once(:get_session_messages_from_store, 'get_session_messages(session_store: store, ...)')
@@ -569,14 +569,14 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
                                              directory: directory, limit: limit, offset: offset)
   end
 
-  # @deprecated Use {.list_subagents} with +session_store:+. Removed in 1.0.
+  # @deprecated Use {.list_subagents} with +session_store:+. Removed in 2.0.
   # @return [Array<String>]
   def self.list_subagents_from_store(session_store:, session_id:, directory: nil)
     Deprecation.warn_once(:list_subagents_from_store, 'list_subagents(session_store: store, ...)')
     Sessions.list_subagents_from_store(session_store: session_store, session_id: session_id, directory: directory)
   end
 
-  # @deprecated Use {.get_subagent_metadata} with +session_store:+. Removed in 1.0.
+  # @deprecated Use {.get_subagent_metadata} with +session_store:+. Removed in 2.0.
   # @return [Hash{String => Object}, nil]
   def self.get_subagent_metadata_from_store(session_store:, session_id:, agent_id:, directory: nil)
     Deprecation.warn_once(:get_subagent_metadata_from_store, 'get_subagent_metadata(session_store: store, ...)')
@@ -584,7 +584,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
                                               agent_id: agent_id, directory: directory)
   end
 
-  # @deprecated Use {.get_subagent_messages} with +session_store:+. Removed in 1.0.
+  # @deprecated Use {.get_subagent_messages} with +session_store:+. Removed in 2.0.
   # @return [Array<SessionMessage>]
   def self.get_subagent_messages_from_store(session_store:, session_id:, agent_id:, directory: nil, limit: nil,
                                             offset: 0)
@@ -593,28 +593,28 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
                                               agent_id: agent_id, directory: directory, limit: limit, offset: offset)
   end
 
-  # @deprecated Use {.rename_session} with +session_store:+. Removed in 1.0.
+  # @deprecated Use {.rename_session} with +session_store:+. Removed in 2.0.
   def self.rename_session_via_store(session_store:, session_id:, title:, directory: nil)
     Deprecation.warn_once(:rename_session_via_store, 'rename_session(session_store: store, ...)')
     SessionMutations.rename_session_via_store(session_store: session_store, session_id: session_id,
                                               title: title, directory: directory)
   end
 
-  # @deprecated Use {.tag_session} with +session_store:+. Removed in 1.0.
+  # @deprecated Use {.tag_session} with +session_store:+. Removed in 2.0.
   def self.tag_session_via_store(session_store:, session_id:, tag:, directory: nil)
     Deprecation.warn_once(:tag_session_via_store, 'tag_session(session_store: store, ...)')
     SessionMutations.tag_session_via_store(session_store: session_store, session_id: session_id,
                                            tag: tag, directory: directory)
   end
 
-  # @deprecated Use {.delete_session} with +session_store:+. Removed in 1.0.
+  # @deprecated Use {.delete_session} with +session_store:+. Removed in 2.0.
   def self.delete_session_via_store(session_store:, session_id:, directory: nil)
     Deprecation.warn_once(:delete_session_via_store, 'delete_session(session_store: store, ...)')
     SessionMutations.delete_session_via_store(session_store: session_store, session_id: session_id,
                                               directory: directory)
   end
 
-  # @deprecated Use {.fork_session} with +session_store:+. Removed in 1.0.
+  # @deprecated Use {.fork_session} with +session_store:+. Removed in 2.0.
   # @return [ForkSessionResult]
   def self.fork_session_via_store(session_store:, session_id:, directory: nil, up_to_message_id: nil, title: nil)
     Deprecation.warn_once(:fork_session_via_store, 'fork_session(session_store: store, ...)')

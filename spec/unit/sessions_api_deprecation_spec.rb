@@ -6,7 +6,7 @@ require 'stringio'
 
 # Issue #126: one sessions function per operation, with an optional
 # session_store:. The *_from_store / *_via_store twins remain as deprecated
-# shims until 1.0. Path behaviour itself is covered by sessions_spec.rb /
+# shims through 1.x (removed in 2.0). Path behaviour itself is covered by sessions_spec.rb /
 # session_mutations_spec.rb (disk) and session_store_reads_spec.rb /
 # session_mutations_store_spec.rb (store); this spec pins the routing, the
 # kwarg reconciliation, and the shims' warn-once contract.
@@ -95,7 +95,7 @@ RSpec.describe 'Sessions API consolidation' do
         second = capture_stderr { expect(ClaudeAgentSDK.public_send(twin, session_store: store, **kwargs)).to be(result) }
 
         expect(first.lines.size).to eq(1)
-        expect(first).to include("ClaudeAgentSDK.#{twin} is deprecated and will be removed in 1.0; " \
+        expect(first).to include("ClaudeAgentSDK.#{twin} is deprecated and will be removed in 2.0; " \
                                  "use ClaudeAgentSDK.#{name}(session_store: store")
         expect(first).to start_with("#{__FILE__}:#{line}: warning: ")
         expect(second).to be_empty

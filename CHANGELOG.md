@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+1.0 ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)): three breaking changes, the first two of which 0.37 warns about at the call site. **Read [UPGRADING-1.0.md](UPGRADING-1.0.md) before upgrading** and run your suite on 0.37 with warnings visible first: an app that runs on 0.37 without SDK warnings is unaffected by those two, except that `respond_to?` on a camelCase non-attribute (`msg.respond_to?(:toH)`) silently answered `true` on 0.37 and answers `false` now.
+
+### Added
+- **`ClaudeAgentSDK::SessionStoreError`** (a `ClaudeSDKError`), raised by `query`, `ask` and `Client#connect` when resuming from `session_store:` fails: a store call (`#load`, `#list_sessions`, `#list_subkeys`) raised or exceeded `load_timeout_ms` while the SDK materialized the transcript. The message names the store call, and `#cause` holds the adapter's exception (or the timeout). Documented in `docs/errors.md` and `docs/sessions.md`.
+
+### Changed
+- **Breaking: unknown keys on user-constructed types raise `ArgumentError`.** `.new` and `#[]=` on the value types you build and pass in (option values such as `AgentDefinition`, `SandboxSettings`, the thinking and MCP server configs; `HookMatcher`; hook outputs; `PermissionResultAllow` / `PermissionResultDeny`; `PermissionUpdate`; `PermissionRuleValue`) raise instead of warning, with a message naming the class, the key and the known keys: `ClaudeAgentSDK::HookMatcher: unknown attribute :matchr (known: hooks, matcher, timeout)`. camelCase and String keys and a type's own discriminator are still accepted; `.from_hash`, `.wrap` and every type parsed from CLI output stay lenient.
+- **Breaking: `Type#[]`, `#[]=` and camelCase methods reach attributes only.** A name that is not an attribute behaves like an undefined one: `msg[:to_h]` is `nil`, `#[]=` ignores it (raises on the strict types above), `msg.toH` raises `NoMethodError` and `respond_to?(:toH)` is `false`. Methods your own code adds to a subclass, mixin or instance still count as attributes.
+- **Breaking: store-backed resume failures raise `SessionStoreError` instead of `RuntimeError`.** The two SDK-raised `RuntimeError`s (store call failed, store call timed out) become `SessionStoreError`, and a `RuntimeError` raised by the adapter itself, which 0.37 let through unwrapped, is now wrapped too, so `rescue ClaudeSDKError` catches every resume-materialization failure. Code that rescued `RuntimeError` there must rescue `SessionStoreError`. The failure message now includes the adapter exception's class (`... failed during resume materialization: IOError: connection reset`).
+- `UPGRADING-1.0.md` ships in the gem and the YARD docs, linked from the README.
+- The deprecation warning printed by the ten `*_from_store` / `*_via_store` session functions, and their YARD and docs, now say they will be removed in **2.0**. 0.36 and 0.37 said 1.0, but they stay, deprecated, for all of 1.x ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)). Nothing else about them changes: each still works and still warns once per process.
+
 ## [0.37.0] - 2026-09-23
 
 The last 0.x release before 1.0 ([roadmap](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)). No runtime behaviour changes — only new warnings for things 1.0 will reject. **Run your suite on 0.37 with warnings visible before moving to 1.0:**

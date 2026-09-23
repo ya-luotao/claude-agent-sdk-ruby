@@ -47,8 +47,8 @@ msg.sessionId           # camelCase reader (also answers respond_to?)
 
 `#[]` returns `nil` for a name the type does not define, while a misspelled
 method call such as `msg.nope` raises `NoMethodError`. These accessors reach a type's
-**attributes** only; any other method reached this way warns in 0.37 and stops
-working in 1.0 — see [Attributes Only](#attributes-only).
+**attributes** only; any other method (`to_h`, `freeze`, ...) counts as undefined —
+see [Attributes Only](#attributes-only).
 
 `#[]=` assigns through the attribute's setter, with the same name
 normalization, and returns the assigned value:
@@ -63,8 +63,8 @@ msg[:result] = 'edited' # same as msg.result = 'edited'
   Copy first if you need the original.
 - A name the type does not define is ignored on the types the SDK parses from
   CLI output. `ClaudeAgentOptions` raises `ArgumentError` for an unknown key (as
-  its constructor and `dup_with` do), and the value types you build and pass in
-  warn once and will raise in 1.0 — see [Unknown Keys](#unknown-keys).
+  its constructor and `dup_with` do), and so do the value types you build and
+  pass in — see [Unknown Keys](#unknown-keys).
 - Discriminator fields (`type` on the MCP server and system-prompt configs,
   `behavior` on `PermissionResultAllow` / `PermissionResultDeny`,
   `hook_event_name` on hook inputs and outputs) are read-only, so
@@ -380,29 +380,32 @@ end
 
 ### Unknown Keys
 
-`ClaudeAgentOptions` raises `ArgumentError` on an unknown key. The value types you build and pass *in* used to drop a misspelled key silently; they now print a warning, once per class and key, pointing at your call:
+`ClaudeAgentOptions` and the value types you build and pass *in* raise `ArgumentError` on a key they do not define, naming the class, the key and the keys it accepts:
 
-```
-app/agents/reviewer.rb:12: warning: ClaudeAgentSDK::HookMatcher: unknown attribute :matchr ignored; this will raise ArgumentError in 1.0 (known: hooks, matcher, timeout)
+```ruby
+ClaudeAgentSDK::HookMatcher.new(matchr: 'Bash', hooks: [check])
+# ArgumentError: ClaudeAgentSDK::HookMatcher: unknown attribute :matchr (known: hooks, matcher, timeout)
 ```
 
-**In 1.0 the same call raises `ArgumentError`.** This covers `.new` and `#[]=` on:
+This covers `.new` and `#[]=` on:
 
 - option values: `AgentDefinition`, `SandboxSettings`, `SandboxNetworkConfig`, `SandboxFilesystemConfig`, `ThinkingConfigAdaptive` / `Enabled` / `Disabled`, `TaskBudget`, `SystemPromptPreset` / `Custom` / `File`, `ToolsPreset`, `SdkPluginConfig`, `McpStdioServerConfig`, `McpSSEServerConfig`, `McpHttpServerConfig`, `McpSdkServerConfig`
 - `HookMatcher` and hook outputs: `SyncHookJSONOutput`, `AsyncHookJSONOutput`, every `*HookSpecificOutput`
 - `PermissionResultAllow`, `PermissionResultDeny`, `PermissionUpdate`, `PermissionRuleValue`
 
-Accepted without a warning: Symbol or String keys, snake_case or camelCase spellings, and the fixed discriminator a type sets itself (`type`, `hook_event_name`, `behavior`), so `klass.new(value.to_h)` round-trips. Types the SDK parses from CLI output (messages, content blocks, hook inputs, `ToolPermissionContext`, the MCP status types) stay lenient, so a field added by a newer CLI never warns, and so does every construction through `.from_hash` or `.wrap`. The warning goes through `Kernel#warn`, so `-W0` or `$VERBOSE = nil` silences it.
+A nested value is checked as its own type: `PermissionUpdate.new(rules: [{ rule_contnt: 'x' }])` raises naming `PermissionRuleValue`.
+
+Accepted: Symbol or String keys, snake_case or camelCase spellings, and the fixed discriminator a type sets itself (`type`, `hook_event_name`, `behavior`), so on a type that defines its own `#to_h` (the MCP server configs, `SandboxSettings`, the system prompt types, the hook outputs, ...) `klass.new(value.to_h)` round-trips. Types the SDK parses from CLI output (messages, content blocks, hook inputs, `ToolPermissionContext`, the MCP status types) stay lenient, so a field added by a newer CLI is ignored rather than raising, and so does every construction through `.from_hash` or `.wrap`. Use those two for data you did not write yourself, such as a Hash deserialized from the CLI or from storage.
+
+(0.37 printed a one-time warning here and ignored the key; 1.0 raises. See [UPGRADING-1.0.md](../UPGRADING-1.0.md).)
 
 ### Attributes Only
 
-`#[]`, `#[]=` and the camelCase readers (`msg[:session_id]`, `msg['sessionId']`, `msg.sessionId`) are public API for a type's **attributes**: the fields it declares, plus predicates such as `options.forkSession?`. Methods your own code adds to a subclass (an `attr_accessor`, a hand-written reader or setter, a mixin's accessors, a singleton method) count as attributes too. Until now they reached any public method, so `msg[:to_h]` returned a Hash, `msg['freeze']` froze the message and `msg.toH` worked. Such a call still works in 0.37 but warns once per class and name:
+`#[]`, `#[]=` and the camelCase readers (`msg[:session_id]`, `msg['sessionId']`, `msg.sessionId`) are public API for a type's **attributes**: the fields it declares, plus predicates such as `options.forkSession?`. Methods your own code adds to a subclass (an `attr_accessor`, a hand-written reader or setter, a mixin's accessors, a singleton method) count as attributes too.
 
-```
-app/jobs/sync.rb:8: warning: ClaudeAgentSDK::ResultMessage#[]: :to_h is not an attribute; Type#[] will only read attributes in 1.0
-```
+A name that is not an attribute behaves like an undefined one: `#[]` returns `nil`, `#[]=` ignores it (on the strict types above it raises `ArgumentError`), a camelCase call raises `NoMethodError`, and `respond_to?` answers `false`. So `msg[:to_h]` is `nil`, `msg['freeze']` does not freeze the message, and `msg.toH` raises; call the method directly instead (`msg.to_h`). `UserMessage#text` and `AssistantMessage#text` are convenience methods, not attributes.
 
-**In 1.0 a name that is not an attribute behaves like an undefined one:** `#[]` returns `nil`, `#[]=` ignores it (on the strict types above it raises `ArgumentError`), and a camelCase call raises `NoMethodError`. Call the method directly instead (`msg.to_h`). Undefined names already behave that way today and do not warn. `UserMessage#text` and `AssistantMessage#text` are convenience methods, not attributes.
+(Through 0.37 these accessors reached any public method, with a one-time warning in 0.37.)
 
 ## Constants
 

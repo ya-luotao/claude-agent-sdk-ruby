@@ -41,6 +41,13 @@ RSpec.describe ClaudeAgentSDK do
       end
     end
 
+    describe ClaudeAgentSDK::SessionStoreError do
+      it 'inherits from ClaudeSDKError, not RuntimeError' do
+        expect(described_class).to be < ClaudeAgentSDK::ClaudeSDKError
+        expect(described_class).not_to be < RuntimeError
+      end
+    end
+
     describe ClaudeAgentSDK::ProcessError do
       it 'inherits from ClaudeSDKError' do
         expect(described_class).to be < ClaudeAgentSDK::ClaudeSDKError

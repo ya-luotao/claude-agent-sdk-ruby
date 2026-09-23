@@ -228,6 +228,6 @@ ClaudeAgentSDK.query(
   `Errno::ENOENT` for a session the store has never seen (no phantom
   sessions). `import_session_to_store` migrates a local session into a
   store. The old `*_from_store` / `*_via_store` functions are deprecated
-  (one-time warning, removed in 1.0).
+  (one-time warning; kept through 1.x, removed in 2.0).
 - Cannot combine `session_store` with `enable_file_checkpointing`;
   `continue_conversation` requires the store to implement `#list_sessions`.
