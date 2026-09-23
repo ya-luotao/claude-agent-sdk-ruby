@@ -89,6 +89,7 @@ module ClaudeAgentSDK
       @next_callback_id = 0
       @request_counter = 0
       @request_counter_mutex = Mutex.new
+      @control_stream_error = nil
       @inflight_control_request_tasks = {}
       @callback_request_signals = {}
 
@@ -413,24 +414,21 @@ module ClaudeAgentSDK
                 e
               end
 
-      # Unblock pending control requests (e.g., initialize) so callers don't
-      # hang until timeout. Computed AFTER the replacement above so they get
-      # the same enriched error the message stream does: a refused resume (a
-      # nonexistent session, a failed --resume-drops-turn guard) is reported
-      # by the CLI as an error result followed by exit 1 *before* it answers
-      # the SDK's `initialize`, so signaling the raw `e` here handed that
-      # in-flight request "Command failed with exit code 1" and discarded the
-      # real reason (Python #1198).
-      # INVARIANT: store the result before signaling — senders check the slot
-      # before waiting (level-trigger).
-      @pending_control_responses.dup.each do |request_id, condition|
-        @pending_control_results[request_id] ||= error
-        condition.signal
-      end
-
       # Put error in queue so iterators can handle it
       @message_queue.enqueue({ type: 'error', error: error })
     ensure
+      # EOF is terminal for control requests even when the message stream
+      # ends successfully. Serialize terminal publication with registration:
+      # every sender is either in this snapshot or rejected before writing.
+      # Preserve enriched ResultError from the rescue path (Python #1198).
+      waiters = @request_counter_mutex.synchronize do
+        @control_stream_error = error || CLIConnectionError.new('Control stream ended')
+        @pending_control_responses.dup
+      end
+      waiters.each do |request_id, condition|
+        @pending_control_results[request_id] ||= @control_stream_error
+        condition.signal
+      end
       # A callback can no longer be answered after EOF, transport failure,
       # or reactor cancellation. Wake cooperative worker-thread callbacks too.
       @callback_request_signals.dup.each_value(&:cancel)
@@ -1022,17 +1020,18 @@ module ClaudeAgentSDK
       # RuntimeError; the eventual response dropped by the key? guard).
       task = Async::Task.current?
 
-      # Generate unique request ID (callbacks may issue requests from
-      # worker threads concurrently with the reactor)
-      request_id = @request_counter_mutex.synchronize do
-        @request_counter += 1
-        "req_#{@request_counter}_#{SecureRandom.hex(4)}"
-      end
-
       # Reactor callers wait on an Async::Condition; worker-thread callers
-      # on a ThreadWaiter. Registration must precede the write.
+      # on a ThreadWaiter. Register atomically with the terminal-state check
+      # so EOF cannot strand a sender that missed the final broadcast.
       waiter = task ? Async::Condition.new : ThreadWaiter.new
-      @pending_control_responses[request_id] = waiter
+      request_id = @request_counter_mutex.synchronize do
+        raise @control_stream_error if @control_stream_error
+
+        @request_counter += 1
+        id = "req_#{@request_counter}_#{SecureRandom.hex(4)}"
+        @pending_control_responses[id] = waiter
+        id
+      end
 
       control_request = {
         type: 'control_request',
