@@ -388,8 +388,8 @@ module ClaudeAgentSDK
         # interpreter exit (the at_exit reaper fires only then, TERM only).
         # Nothing here may suspend: a synchronous TERM plus a plain
         # background thread for the KILL escalation. On this path the
-        # process deliberately STAYS in the at_exit registry as a second
-        # safety net; the normal path deregisters in teardown_process.
+        # process stays in the at_exit registry until the fallback confirms
+        # it was reaped; the normal path deregisters in teardown_process.
         force_terminate_in_background(process) unless process_teardown_complete
 
         # Snapshot-then-nil BEFORE the best-effort pipe close below: once the
@@ -537,21 +537,36 @@ module ClaudeAgentSDK
     # pid-reuse-safe: while the waiter thread reports alive (not yet reaped),
     # the pid cannot have been recycled.
     def force_terminate_in_background(process, grace_seconds: 2)
-      return unless process&.alive?
+      return unless process
+
+      unless process.alive?
+        self.class.deregister_active_process(process)
+        return
+      end
 
       pid = process.pid
       begin
         Process.kill('TERM', pid)
+      rescue Errno::ESRCH
+        # The child exited before TERM; its waiter may still be reaping.
       rescue StandardError
-        return # ESRCH: already gone; EPERM: not ours to signal
+        return # EPERM etc.: retain the live child in the at_exit registry.
       end
 
       Thread.new do
-        sleep grace_seconds
         begin
-          Process.kill('KILL', pid) if process.alive?
+          unless process.join(grace_seconds)
+            begin
+              Process.kill('KILL', pid) if process.alive?
+            rescue Errno::ESRCH
+              # Still wait for the waiter when exit raced the signal.
+            end
+            process.join(grace_seconds)
+          end
         rescue StandardError
-          nil # died inside the grace window
+          nil # best-effort; retain ownership if termination/reaping failed
+        ensure
+          self.class.deregister_active_process(process) unless process.alive?
         end
       end
     end
