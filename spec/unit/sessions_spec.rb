@@ -1684,8 +1684,8 @@ RSpec.describe 'ClaudeAgentSDK top-level session functions' do
       end
 
       it 'NFC-normalizes a set CLAUDE_CONFIG_DIR' do
-        ENV['CLAUDE_CONFIG_DIR'] = "/tmp/café" # decomposed é
-        expect(described_class.config_dir).to eq("/tmp/café")
+        ENV['CLAUDE_CONFIG_DIR'] = '/tmp/café' # decomposed é
+        expect(described_class.config_dir).to eq('/tmp/café')
       end
 
       # Issue #120: with CLAUDE_CONFIG_DIR unset and no usable home, the

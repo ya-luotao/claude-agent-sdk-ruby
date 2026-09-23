@@ -654,7 +654,7 @@ module ClaudeAgentSDK
     end
 
     def write(data)
-      raise CLIConnectionError, "Cannot write to terminated process" if @process && !@process.alive?
+      raise CLIConnectionError, 'Cannot write to terminated process' if @process && !@process.alive?
       raise CLIConnectionError, "Cannot write to process that exited with error: #{@exit_error}" if @exit_error
 
       # Snapshot @stdin under the lock so close() nilling it concurrently is
@@ -780,7 +780,7 @@ module ClaudeAgentSDK
             buffer_length = json_buffer.bytesize
             json_buffer = ''
             raise CLIJSONDecodeError.new(
-              "JSON message exceeded maximum buffer size",
+              'JSON message exceeded maximum buffer size',
               StandardError.new("Buffer size #{buffer_length} exceeds limit #{@max_buffer_size}")
             )
           end
@@ -921,7 +921,7 @@ module ClaudeAgentSDK
           if (version_parts <=> min_parts).negative?
             warning = "Warning: Claude Code version #{version} at #{@cli_path} is unsupported in the Agent SDK. " \
                       "Minimum required version is #{MINIMUM_CLAUDE_CODE_VERSION}. " \
-                      "Some features may not work correctly."
+                      'Some features may not work correctly.'
             warn warning
           end
         end

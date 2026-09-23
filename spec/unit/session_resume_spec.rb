@@ -177,7 +177,7 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       FileUtils.remove_entry(target) if target && File.directory?(target)
     end
 
-    it "treats a relative or explicitly unset HOME in options.env as no home for the child" do
+    it 'treats a relative or explicitly unset HOME in options.env as no home for the child' do
       ENV.delete('CLAUDE_CONFIG_DIR')
       target = Dir.mktmpdir
       allow(described_class).to receive(:read_keychain_credentials).and_return(nil)

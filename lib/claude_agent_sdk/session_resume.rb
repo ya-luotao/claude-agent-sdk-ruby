@@ -42,7 +42,7 @@ module ClaudeAgentSDK
       ['.credentials.json', '.claude.json', 'settings.json', 'cowork_settings.json'].each do |name|
         FileUtils.rm_f(File.join(@config_dir, name))
       end
-      warn "Claude SDK: transcript mirror dropped batches; the session store copy is incomplete. " \
+      warn 'Claude SDK: transcript mirror dropped batches; the session store copy is incomplete. ' \
            "Preserving the session transcript under #{File.join(@config_dir, 'projects')} instead of " \
            'deleting it — import it into your session store, then remove the directory.'
     rescue StandardError => e
@@ -643,7 +643,7 @@ module ClaudeAgentSDK
     def encode_agent_metadata(meta_content, subpath)
       JSON.generate(meta_content)
     rescue JSON::JSONError => e
-      warn "Claude SDK: [SessionStore] resume: skipping unserializable agent metadata " \
+      warn 'Claude SDK: [SessionStore] resume: skipping unserializable agent metadata ' \
            "for subpath #{subpath} (#{e.class}: #{e.message})"
       nil
     end

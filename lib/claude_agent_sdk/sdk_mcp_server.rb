@@ -302,7 +302,7 @@ module ClaudeAgentSDK
       end
 
       # Guard before flexible_fetch: it raises on non-Hash inputs.
-      content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "content", "content") : nil
+      content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, 'content', 'content') : nil
       return error_tool_result("Tool '#{name}' must return a hash with :content key") unless content
 
       result
@@ -341,7 +341,7 @@ module ClaudeAgentSDK
 
       # Ensure content has the expected format (symbol or string keys; guard
       # before flexible_fetch — it raises on non-Hash inputs)
-      contents = content.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(content, "contents", "contents") : nil
+      contents = content.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(content, 'contents', 'contents') : nil
       raise "Resource '#{uri}' must return a hash with :contents key" if contents.nil?
 
       content
@@ -375,7 +375,7 @@ module ClaudeAgentSDK
       end
 
       # Ensure result has the expected format (symbol or string keys)
-      messages = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, "messages", "messages") : nil
+      messages = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, 'messages', 'messages') : nil
       raise "Prompt '#{name}' must return a hash with :messages key" if messages.nil?
 
       result
@@ -387,7 +387,7 @@ module ClaudeAgentSDK
     # in content with isError: true, returned as a *successful* JSON-RPC
     # result.
     def error_tool_result(text)
-      { content: [{ type: "text", text: text }], isError: true }
+      { content: [{ type: 'text', text: text }], isError: true }
     end
 
     # The mcp gem's tools/call error behavior swung across 0.x releases:

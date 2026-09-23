@@ -142,13 +142,6 @@ Style/StringConcatenation:
     - 'lib/claude_agent_sdk.rb'
     - 'lib/claude_agent_sdk/streaming.rb'
 
-# Offense count: 207
-# This cop supports safe autocorrection (--autocorrect).
-# Configuration parameters: EnforcedStyle, ConsistentQuotesInMultiline.
-# SupportedStyles: single_quotes, double_quotes
-Style/StringLiterals:
-  Enabled: false
-
 # Offense count: 1
 # This cop supports unsafe autocorrection (--autocorrect-all).
 # Configuration parameters: AllowMethodsWithArguments, AllowedMethods, AllowedPatterns, AllowComments.

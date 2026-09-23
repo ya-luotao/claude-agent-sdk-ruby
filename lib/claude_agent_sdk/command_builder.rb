@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require "json"
-require_relative "errors"
-require_relative "types"
+require 'json'
+require_relative 'errors'
+require_relative 'types'
 
 module ClaudeAgentSDK
   # Builds the CLI argv array from a ClaudeAgentOptions instance.
@@ -30,7 +30,7 @@ module ClaudeAgentSDK
     end
 
     def build
-      cmd = [@cli_path, "--output-format", "stream-json", "--verbose"]
+      cmd = [@cli_path, '--output-format', 'stream-json', '--verbose']
 
       # skills auto-wires the Skill tool into --allowedTools and defaults
       # --setting-sources; compute both once so the two flags cannot diverge
@@ -61,7 +61,7 @@ module ClaudeAgentSDK
       # Always use streaming mode for bidirectional control protocol.
       # Prompts and agents are sent via stdin (initialize + user messages),
       # which avoids OS ARG_MAX limits for large prompts and agent configurations.
-      cmd.push("--input-format", "stream-json")
+      cmd.push('--input-format', 'stream-json')
 
       cmd
     end
@@ -72,37 +72,37 @@ module ClaudeAgentSDK
       case @options.system_prompt
       when nil
         # When nil, pass empty string to ensure predictable behavior without default Claude Code system prompt
-        cmd.push("--system-prompt", "")
+        cmd.push('--system-prompt', '')
       when String
-        cmd.push("--system-prompt", @options.system_prompt)
+        cmd.push('--system-prompt', @options.system_prompt)
       when SystemPromptFile
-        cmd.push("--system-prompt-file", @options.system_prompt.path)
+        cmd.push('--system-prompt-file', @options.system_prompt.path)
       when SystemPromptCustom
         # The object form of a String prompt; snapshot travels on the
         # initialize request, not as a CLI flag.
-        cmd.push("--system-prompt", custom_prompt_text(@options.system_prompt.prompt))
+        cmd.push('--system-prompt', custom_prompt_text(@options.system_prompt.prompt))
       when SystemPromptPreset
         # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
         # Only --append-system-prompt is passed if append text is provided
-        cmd.push("--append-system-prompt", @options.system_prompt.append) if @options.system_prompt.append
+        cmd.push('--append-system-prompt', @options.system_prompt.append) if @options.system_prompt.append
       when Hash
         append_hash_system_prompt(cmd, @options.system_prompt)
       end
     end
 
     def append_hash_system_prompt(cmd, prompt_hash)
-      prompt_type = prompt_hash[:type] || prompt_hash["type"]
+      prompt_type = prompt_hash[:type] || prompt_hash['type']
       case prompt_type
-      when "file"
-        prompt_path = prompt_hash[:path] || prompt_hash["path"]
-        cmd.push("--system-prompt-file", prompt_path) if prompt_path
-      when "custom"
-        prompt = prompt_hash.fetch(:prompt) { prompt_hash["prompt"] }
-        cmd.push("--system-prompt", custom_prompt_text(prompt))
-      when "preset"
-        append = prompt_hash[:append] || prompt_hash["append"]
+      when 'file'
+        prompt_path = prompt_hash[:path] || prompt_hash['path']
+        cmd.push('--system-prompt-file', prompt_path) if prompt_path
+      when 'custom'
+        prompt = prompt_hash.fetch(:prompt) { prompt_hash['prompt'] }
+        cmd.push('--system-prompt', custom_prompt_text(prompt))
+      when 'preset'
+        append = prompt_hash[:append] || prompt_hash['append']
         # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
-        cmd.push("--append-system-prompt", append) if append
+        cmd.push('--append-system-prompt', append) if append
       end
     end
 
@@ -118,7 +118,7 @@ module ClaudeAgentSDK
     end
 
     def append_allowed_tools(cmd, allowed_tools)
-      cmd.push("--allowedTools", allowed_tools.join(",")) unless allowed_tools.empty?
+      cmd.push('--allowedTools', allowed_tools.join(',')) unless allowed_tools.empty?
     end
 
     # Mirror of Python's _apply_skills_defaults: when skills are requested,
@@ -135,10 +135,10 @@ module ClaudeAgentSDK
       skills = @options.skills
       return [allowed_tools, setting_sources] if skills.nil?
 
-      valid = skills == "all" || skills.is_a?(Array)
+      valid = skills == 'all' || skills.is_a?(Array)
       raise ArgumentError, "skills must be 'all' or an Array of skill names (got #{skills.inspect})" unless valid
 
-      entries = skills == "all" ? ["Skill"] : skills.map { |name| "Skill(#{validate_skill_name(name)})" }
+      entries = skills == 'all' ? ['Skill'] : skills.map { |name| "Skill(#{validate_skill_name(name)})" }
       entries.each { |entry| allowed_tools << entry unless allowed_tools.include?(entry) }
       setting_sources = %w[user project] if setting_sources.nil?
       [allowed_tools, setting_sources]
@@ -169,66 +169,66 @@ module ClaudeAgentSDK
       end
       if utf8.nil? || !utf8.valid_encoding?
         raise ArgumentError, "Invalid skill name #{name.inspect}: contains bytes that cannot form " \
-                             "valid UTF-8 (such as a surrogate code point), which can never match " \
-                             "a skill the CLI discovered."
+                             'valid UTF-8 (such as a surrogate code point), which can never match ' \
+                             'a skill the CLI discovered.'
       end
 
-      stripped = utf8.gsub(SKILL_NAME_EDGE_WHITESPACE, "")
-      raise ArgumentError, "Skill names must be non-empty strings" if stripped.empty?
+      stripped = utf8.gsub(SKILL_NAME_EDGE_WHITESPACE, '')
+      raise ArgumentError, 'Skill names must be non-empty strings' if stripped.empty?
 
       if utf8 != stripped
         raise ArgumentError, "Invalid skill name #{name.inspect}: leading or trailing whitespace " \
-                             "can never match -- the Skill tool trims the invoked name."
+                             'can never match -- the Skill tool trims the invoked name.'
       end
       if SKILL_NAME_INVALID_CHARS.match?(utf8)
         raise ArgumentError, "Invalid skill name #{name.inspect}: parentheses, commas, control " \
-                             "characters, and byte-order marks are not allowed. Names match the " \
+                             'characters, and byte-order marks are not allowed. Names match the ' \
                              "skill's directory name, or 'plugin:skill' for plugin-qualified skills."
       end
-      raise ArgumentError, "Invalid skill name '*': use skills: 'all' to enable every skill." if utf8 == "*"
+      raise ArgumentError, "Invalid skill name '*': use skills: 'all' to enable every skill." if utf8 == '*'
 
-      if utf8.end_with?(":*", " *")
+      if utf8.end_with?(':*', ' *')
         raise ArgumentError, "Invalid skill name #{name.inspect}: wildcard-suffix names are not " \
-                             "allowed; list each skill by its exact name."
+                             'allowed; list each skill by its exact name.'
       end
-      if utf8.start_with?("/")
+      if utf8.start_with?('/')
         raise ArgumentError, "Invalid skill name #{name.inspect}: skill names may not start with " \
                              "'/'. The skills option takes the canonical name, not the " \
-                             "slash-command form."
+                             'slash-command form.'
       end
-      if utf8.include?("\\\\")
+      if utf8.include?('\\\\')
         raise ArgumentError, "Invalid skill name #{name.inspect}: consecutive backslashes are not " \
-                             "allowed -- the per-rule parser collapses them, so the rule would " \
-                             "name a different skill."
+                             'allowed -- the per-rule parser collapses them, so the rule would ' \
+                             'name a different skill.'
       end
-      if utf8.end_with?("\\")
+      if utf8.end_with?('\\')
         raise ArgumentError, "Invalid skill name #{name.inspect}: names may not end with an " \
-                             "unpaired backslash."
+                             'unpaired backslash.'
       end
 
       utf8
     end
 
     def append_disallowed_tools(cmd)
-      cmd.push("--disallowedTools", @options.disallowed_tools.join(",")) unless @options.disallowed_tools.empty?
+      cmd.push('--disallowedTools', @options.disallowed_tools.join(',')) unless @options.disallowed_tools.empty?
     end
 
     def append_max_turns(cmd)
-      cmd.push("--max-turns", @options.max_turns.to_s) if @options.max_turns
+      cmd.push('--max-turns', @options.max_turns.to_s) if @options.max_turns
     end
 
     def append_model(cmd)
-      cmd.push("--model", @options.model) if @options.model
-      cmd.push("--fallback-model", @options.fallback_model) if @options.fallback_model
+      cmd.push('--model', @options.model) if @options.model
+      cmd.push('--fallback-model', @options.fallback_model) if @options.fallback_model
       # Server-side advisor tool (experimental, Anthropic API only). The CLI
       # validates the main-model/advisor pairing; pairing rules are
       # CLI-version-dependent, so the SDK passes the value through verbatim.
-      cmd.push("--advisor", @options.advisor_model) if @options.advisor_model
+      cmd.push('--advisor', @options.advisor_model) if @options.advisor_model
     end
 
     def append_permission(cmd)
-      cmd.push("--permission-prompt-tool", @options.permission_prompt_tool_name) if @options.permission_prompt_tool_name
-      cmd.push("--permission-mode", @options.permission_mode) if @options.permission_mode
+      cmd.push('--permission-prompt-tool', @options.permission_prompt_tool_name) if @options.permission_prompt_tool_name
+      cmd.push('--permission-mode', @options.permission_mode) if @options.permission_mode
     end
 
     def append_session(cmd)
@@ -236,10 +236,10 @@ module ClaudeAgentSDK
       # modes. Passing both surfaces as a generic non-zero CLI exit, which is
       # painful to debug at the caller; raise early in the SDK stack instead.
       if @options.continue_conversation && @options.resume
-        raise ArgumentError, "continue_conversation and resume are mutually exclusive"
+        raise ArgumentError, 'continue_conversation and resume are mutually exclusive'
       end
 
-      cmd.push("--continue") if @options.continue_conversation
+      cmd.push('--continue') if @options.continue_conversation
       # =-joined single tokens: the CLI declares `--resume [value]` with an
       # OPTIONAL value, so in the two-token form a dash-leading value is not
       # bound to the flag and parses as an independent CLI flag — letting an
@@ -259,7 +259,7 @@ module ClaudeAgentSDK
     def append_resume_session_at(cmd)
       return unless @options.resume_session_at
 
-      raise ArgumentError, "resume_session_at requires resume to be set" unless @options.resume
+      raise ArgumentError, 'resume_session_at requires resume to be set' unless @options.resume
 
       # Equals form for the same reason as --resume above: never let a
       # dash-leading value parse as a separate flag.
@@ -307,7 +307,7 @@ module ClaudeAgentSDK
           rescue JSON::ParserError
             if @options.sandbox.nil?
               settings_is_path = true
-              cmd.push("--settings", @options.settings)
+              cmd.push('--settings', @options.settings)
             else
               settings_hash = load_settings_file(@options.settings)
             end
@@ -321,20 +321,20 @@ module ClaudeAgentSDK
         settings_hash[:sandbox] = @options.sandbox.is_a?(SandboxSettings) ? @options.sandbox.to_h : @options.sandbox
       end
 
-      cmd.push("--settings", JSON.generate(settings_hash)) if !settings_is_path && !settings_hash.empty?
+      cmd.push('--settings', JSON.generate(settings_hash)) if !settings_is_path && !settings_hash.empty?
     end
 
     def append_budget(cmd)
-      cmd.push("--max-budget-usd", @options.max_budget_usd.to_s) if @options.max_budget_usd
+      cmd.push('--max-budget-usd', @options.max_budget_usd.to_s) if @options.max_budget_usd
 
       return unless @options.task_budget
 
       total = if @options.task_budget.is_a?(TaskBudget)
                 @options.task_budget.total
               else
-                @options.task_budget[:total] || @options.task_budget["total"]
+                @options.task_budget[:total] || @options.task_budget['total']
               end
-      cmd.push("--task-budget", total.to_s) if total
+      cmd.push('--task-budget', total.to_s) if total
     end
 
     # Thinking configuration takes precedence over deprecated
@@ -347,21 +347,21 @@ module ClaudeAgentSDK
       if @options.thinking
         type, budget, display = thinking_fields(@options.thinking)
         case type
-        when "adaptive"
-          cmd.push("--thinking", "adaptive")
+        when 'adaptive'
+          cmd.push('--thinking', 'adaptive')
           append_thinking_display(cmd, display)
-        when "enabled"
+        when 'enabled'
           raise ArgumentError, "thinking type 'enabled' requires budget_tokens" if budget.nil?
 
-          cmd.push("--max-thinking-tokens", budget.to_s)
+          cmd.push('--max-thinking-tokens', budget.to_s)
           append_thinking_display(cmd, display)
-        when "disabled"
-          cmd.push("--thinking", "disabled")
+        when 'disabled'
+          cmd.push('--thinking', 'disabled')
         else
           raise ArgumentError, "unsupported thinking config: #{@options.thinking.inspect}"
         end
       elsif @options.max_thinking_tokens
-        cmd.push("--max-thinking-tokens", @options.max_thinking_tokens.to_s)
+        cmd.push('--max-thinking-tokens', @options.max_thinking_tokens.to_s)
       end
     end
 
@@ -370,8 +370,8 @@ module ClaudeAgentSDK
     def thinking_fields(thinking)
       case thinking
       when Hash
-        type = (thinking[:type] || thinking["type"])&.to_s
-        [type, thinking[:budget_tokens] || thinking["budget_tokens"], thinking[:display] || thinking["display"]]
+        type = (thinking[:type] || thinking['type'])&.to_s
+        [type, thinking[:budget_tokens] || thinking['budget_tokens'], thinking[:display] || thinking['display']]
       when ThinkingConfigAdaptive then [thinking.type, nil, thinking.display]
       when ThinkingConfigEnabled then [thinking.type, thinking.budget_tokens, thinking.display]
       when ThinkingConfigDisabled then [thinking.type, nil, nil]
@@ -385,20 +385,20 @@ module ClaudeAgentSDK
     def append_thinking_display(cmd, display)
       return if display.nil?
 
-      cmd.push("--thinking-display", display.to_s)
+      cmd.push('--thinking-display', display.to_s)
     end
 
     # The set of supported levels is model-dependent; the CLI falls back to
     # the highest supported level at or below the one requested
     # (e.g. `xhigh` → `high` on Opus 4.6).
     def append_effort(cmd)
-      cmd.push("--effort", @options.effort.to_s) if @options.effort
+      cmd.push('--effort', @options.effort.to_s) if @options.effort
     end
 
     def append_betas(cmd)
       return unless @options.betas && !@options.betas.empty?
 
-      cmd.push("--betas", @options.betas.join(","))
+      cmd.push('--betas', @options.betas.join(','))
     end
 
     def append_tools(cmd)
@@ -406,15 +406,15 @@ module ClaudeAgentSDK
 
       case @options.tools
       when Array
-        tools_value = @options.tools.empty? ? "" : @options.tools.join(",")
-        cmd.push("--tools", tools_value)
+        tools_value = @options.tools.empty? ? '' : @options.tools.join(',')
+        cmd.push('--tools', tools_value)
       when ToolsPreset
-        cmd.push("--tools", "default")
+        cmd.push('--tools', 'default')
       when Hash
-        if (@options.tools[:type] || @options.tools["type"]) == "preset"
-          cmd.push("--tools", "default")
+        if (@options.tools[:type] || @options.tools['type']) == 'preset'
+          cmd.push('--tools', 'default')
         else
-          cmd.push("--tools", JSON.generate(@options.tools))
+          cmd.push('--tools', JSON.generate(@options.tools))
         end
       end
     end
@@ -422,10 +422,10 @@ module ClaudeAgentSDK
     def append_output_format(cmd)
       return unless @options.output_format
 
-      schema = if @options.output_format.is_a?(Hash) && @options.output_format[:type] == "json_schema"
+      schema = if @options.output_format.is_a?(Hash) && @options.output_format[:type] == 'json_schema'
                  @options.output_format[:schema]
-               elsif @options.output_format.is_a?(Hash) && @options.output_format["type"] == "json_schema"
-                 @options.output_format["schema"]
+               elsif @options.output_format.is_a?(Hash) && @options.output_format['type'] == 'json_schema'
+                 @options.output_format['schema']
                else
                  @options.output_format
                end
@@ -435,11 +435,11 @@ module ClaudeAgentSDK
       return if schema.nil?
 
       schema_json = schema.is_a?(String) ? schema : JSON.generate(schema)
-      cmd.push("--json-schema", schema_json)
+      cmd.push('--json-schema', schema_json)
     end
 
     def append_additional_dirs(cmd)
-      @options.add_dirs.each { |dir| cmd.push("--add-dir", dir.to_s) }
+      @options.add_dirs.each { |dir| cmd.push('--add-dir', dir.to_s) }
     end
 
     def append_mcp_servers(cmd)
@@ -455,28 +455,28 @@ module ClaudeAgentSDK
           # either key style (and a Symbol :sdk type). The live instance is
           # never serialized — JSON.generate would raise on it or leak its
           # #to_s onto the command line.
-          servers_for_cli[name] = if config.is_a?(Hash) && (config[:type] || config["type"]).to_s == "sdk"
-                                    config.except(:instance, "instance")
+          servers_for_cli[name] = if config.is_a?(Hash) && (config[:type] || config['type']).to_s == 'sdk'
+                                    config.except(:instance, 'instance')
                                   else
                                     config
                                   end
         end
-        cmd.push("--mcp-config", JSON.generate({ mcpServers: servers_for_cli })) unless servers_for_cli.empty?
+        cmd.push('--mcp-config', JSON.generate({ mcpServers: servers_for_cli })) unless servers_for_cli.empty?
       else
-        cmd.push("--mcp-config", @options.mcp_servers.to_s)
+        cmd.push('--mcp-config', @options.mcp_servers.to_s)
       end
     end
 
     # NOTE: agents are sent via the initialize control request (not CLI args)
     # to avoid OS ARG_MAX limits with large agent configurations.
     def append_boolean_flags(cmd)
-      cmd.push("--include-partial-messages") if @options.include_partial_messages
-      cmd.push("--fork-session") if @options.fork_session
-      cmd.push("--bare") if @options.bare
-      cmd.push("--include-hook-events") if @options.include_hook_events
-      cmd.push("--strict-mcp-config") if @options.strict_mcp_config
+      cmd.push('--include-partial-messages') if @options.include_partial_messages
+      cmd.push('--fork-session') if @options.fork_session
+      cmd.push('--bare') if @options.bare
+      cmd.push('--include-hook-events') if @options.include_hook_events
+      cmd.push('--strict-mcp-config') if @options.strict_mcp_config
       # When a session_store is set, ask the CLI to emit transcript_mirror frames.
-      cmd.push("--session-mirror") if @options.session_store
+      cmd.push('--session-mirror') if @options.session_store
     end
 
     def append_plugins(cmd)
@@ -484,22 +484,22 @@ module ClaudeAgentSDK
 
       @options.plugins.each do |plugin|
         plugin_config = plugin.is_a?(SdkPluginConfig) ? plugin.to_h : plugin
-        plugin_type = plugin_config[:type] || plugin_config["type"]
-        plugin_path = plugin_config[:path] || plugin_config["path"]
+        plugin_type = plugin_config[:type] || plugin_config['type']
+        plugin_path = plugin_config[:path] || plugin_config['path']
 
         unless %w[local plugin].include?(plugin_type)
           raise ArgumentError, "Unsupported plugin type: #{plugin_type.inspect}"
         end
         next unless plugin_path
 
-        cmd.push("--plugin-dir", plugin_path)
+        cmd.push('--plugin-dir', plugin_path)
       end
     end
 
     def append_setting_sources(cmd, setting_sources)
       return if setting_sources.nil?
 
-      cmd.push("--setting-sources", setting_sources.join(","))
+      cmd.push('--setting-sources', setting_sources.join(','))
     end
 
     def append_extra_args(cmd)
@@ -510,7 +510,7 @@ module ClaudeAgentSDK
 
         if value.nil?
           cmd.push("--#{flag}")
-        elsif value.to_s.start_with?("-")
+        elsif value.to_s.start_with?('-')
           # A dash-leading value must bind via `=` or the CLI parses it as a
           # separate flag — same injection class as --resume above.
           cmd.push("--#{flag}=#{value}")

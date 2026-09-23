@@ -26,7 +26,7 @@ RSpec.describe 'require surface' do
     # `require 'claude_agent_sdk/instrumentation'` as their only require;
     # it must pull in the core (configure, ClaudeAgentOptions, ...) too.
     code = "require 'claude_agent_sdk/instrumentation'; " \
-           "ClaudeAgentSDK.configure { |c| c.default_options = {} }; " \
+           'ClaudeAgentSDK.configure { |c| c.default_options = {} }; ' \
            'exit(defined?(ClaudeAgentSDK::ClaudeAgentOptions) ? 0 : 1)'
     _out, err, status = run_ruby(code)
     expect(status.exitstatus).to eq(0), "instrumentation entry point must load the SDK core: #{err}"

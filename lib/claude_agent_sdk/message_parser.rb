@@ -9,7 +9,7 @@ module ClaudeAgentSDK
   # @api private
   class MessageParser
     def self.parse(data)
-      raise MessageParseError.new("Invalid message data type", data: data) unless data.is_a?(Hash)
+      raise MessageParseError.new('Invalid message data type', data: data) unless data.is_a?(Hash)
 
       message_type = data[:type]
       raise MessageParseError.new("Message missing 'type' field", data: data) unless message_type
@@ -49,7 +49,7 @@ module ClaudeAgentSDK
       uuid = data[:uuid] # UUID for rewind support
       tool_use_result = data[:tool_use_result]
       message_data = data[:message]
-      raise MessageParseError.new("Missing message field in user message", data: data) unless message_data
+      raise MessageParseError.new('Missing message field in user message', data: data) unless message_data
       # A non-Hash message (malformed CLI output) raised a raw TypeError from
       # message_data[:content] instead of the documented MessageParseError.
       unless message_data.is_a?(Hash)
@@ -59,7 +59,7 @@ module ClaudeAgentSDK
       end
 
       content = message_data[:content]
-      raise MessageParseError.new("Missing content in user message", data: data) unless content
+      raise MessageParseError.new('Missing content in user message', data: data) unless content
 
       origin = parse_origin(data)
 
@@ -98,7 +98,7 @@ module ClaudeAgentSDK
       end
 
       content = message_data[:content]
-      raise MessageParseError.new("Missing content in assistant message", data: data) unless content
+      raise MessageParseError.new('Missing content in assistant message', data: data) unless content
       unless content.is_a?(Array)
         raise MessageParseError.new("Invalid assistant content (expected Array, got #{content.class})", data: data)
       end
