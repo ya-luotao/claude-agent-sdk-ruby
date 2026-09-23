@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-23
+
+**1.0 is a stability commitment.** From here on the public API — everything documented in `docs/` plus the YARD docs without `@api private`, now also described by the RBS signatures in `sig/` — follows Semantic Versioning: no breaking changes within 1.x. Upgrading from 0.x? Read [UPGRADING-1.0.md](UPGRADING-1.0.md) and run your suite on 0.37 first.
+
 1.0 ([#126](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues/126)): three breaking changes, the first two of which 0.37 warns about at the call site. **Read [UPGRADING-1.0.md](UPGRADING-1.0.md) before upgrading** and run your suite on 0.37 with warnings visible first: an app that runs on 0.37 without SDK warnings is unaffected by those two, except that `respond_to?` on a camelCase non-attribute (`msg.respond_to?(:toH)`) silently answered `true` on 0.37 and answers `false` now.
 
 ### Added

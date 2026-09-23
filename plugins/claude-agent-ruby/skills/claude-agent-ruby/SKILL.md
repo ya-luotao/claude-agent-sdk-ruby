@@ -89,7 +89,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 - Hashes passed through from the live CLI stream (`origin`, `usage`, `model_usage`, hook `tool_input`, `can_use_tool` `input`, SDK MCP tool args, `mcp_status`) have **Symbol** keys spelled as on the wire: `tool_input[:command]`, `origin[:fromSession]`
 - Hashes read from transcripts or a SessionStore (`SessionMessage#message`, `get_subagent_metadata`, store keys/entries, `fold_session_summary`) have **String** keys: `meta['toolUseId']`
 - Use the one correct form; the wrong one silently returns `nil`. Typed objects also accept `msg[:session_id]`, `msg['sessionId']`, `msg.sessionId`; `msg[:x] = v` mutates the received object
-- Typed accessors (`msg[:x]`, camelCase readers) reach **attributes only**; call methods directly (`msg.to_h`, `msg.text`). Value types you construct (`HookMatcher`, `AgentDefinition`, `SandboxSettings`, MCP configs, permission results, hook outputs) warn once on an unknown key in 0.37 and raise `ArgumentError` from 1.0 — spell keys exactly; `ClaudeAgentOptions` already raises
+- Typed accessors (`msg[:x]`, camelCase readers) reach **attributes only**; call methods directly (`msg.to_h`, `msg.text`). Value types you construct (`HookMatcher`, `AgentDefinition`, `SandboxSettings`, MCP configs, permission results, hook outputs) raise `ArgumentError` on an unknown key (1.0+) — spell keys exactly, as `ClaudeAgentOptions` always required. Store-backed resume failures raise `ClaudeAgentSDK::SessionStoreError` (a `ClaudeSDKError`; the adapter's exception is `#cause`)
 
 ## Where To Look For Exact Details
 - Locate the gem: `bundle show claude-agent-sdk`
@@ -99,6 +99,8 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 - Inspect `<gem_path>/lib/claude_agent_sdk/message_parser.rb` for message parsing
 - Inspect `<gem_path>/lib/claude_agent_sdk/sessions.rb` for session browsing
 - Inspect `<gem_path>/lib/claude_agent_sdk/errors.rb` for error classes
+- Inspect `<gem_path>/sig/` for RBS signatures of the public API (anything tagged `@api private` in YARD is internal and may change in any release)
+- Read `<gem_path>/UPGRADING-1.0.md` when migrating code written for 0.x
 - Use `references/usage-map.md` for a documentation map (README + docs/) and minimal skeletons
 
 ## Resources
