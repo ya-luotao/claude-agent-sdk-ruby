@@ -53,7 +53,7 @@ module ClaudeAgentSDK
     # Single source of truth: bumped here (and only here) by
     # .github/workflows/cli-pin-bump.yml or a Python-sync release, so a
     # Dependabot bump of the gem carries the CLI forward with it.
-    PINNED_CLI_VERSION = '2.1.280'
+    PINNED_CLI_VERSION = '2.1.282'
     # @api private
     BINARY_NAME = 'claude'
     # @api private
