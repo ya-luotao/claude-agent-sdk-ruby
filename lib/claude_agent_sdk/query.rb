@@ -49,6 +49,39 @@ module ClaudeAgentSDK
     # status, or it will hang the query (see #track_task_lifecycle).
     DEFERRING_TASK_TYPES = %w[local_agent local_workflow].freeze
 
+    # Apply ClaudeAgentOptions#verbatim_prompts to one outgoing user message
+    # (Python #1269's stamp_user_message). Off: returns +message+ unchanged.
+    # On: returns a new Hash with `client_composed: true`, dropping any
+    # caller-supplied value under either key spelling first (JSON.generate
+    # would otherwise emit the key twice). A pre-serialized JSONL String — a
+    # Ruby-only input shape — is parsed, marked and handed back as a Hash; one
+    # that is not a single JSON object raises ArgumentError, because sending it
+    # unmarked would silently defeat the option.
+    def self.stamp_user_message(message, verbatim_prompts)
+      return message unless verbatim_prompts
+
+      hash = message.is_a?(Hash) ? message : parse_streamed_message(message.to_s)
+      hash.reject { |key, _| key.to_s == 'client_composed' }.merge(client_composed: true)
+    end
+
+    # The serialized line for one outgoing user message, stamped per
+    # verbatim_prompts. Hashes are JSON-generated; other items pass through
+    # as their String form unless they must be stamped.
+    def self.serialize_user_message(message, verbatim_prompts)
+      stamped = stamp_user_message(message, verbatim_prompts)
+      stamped.is_a?(Hash) ? JSON.generate(stamped) : stamped.to_s
+    end
+
+    def self.parse_streamed_message(string)
+      parsed = JSON.parse(string)
+      return parsed if parsed.is_a?(Hash)
+
+      raise ArgumentError, "verbatim_prompts: a streamed message String must be one JSON object (got #{parsed.class})"
+    rescue JSON::ParserError => e
+      raise ArgumentError, "verbatim_prompts: a streamed message String must be one JSON object (#{e.message})"
+    end
+    private_class_method :parse_streamed_message
+
     # Waiter for control responses awaited OFF the reactor — i.e. a control
     # method called from inside a hook/can_use_tool/SDK-MCP callback, which
     # runs on a FiberBoundary worker thread (Python supports this reentrancy
@@ -74,7 +107,7 @@ module ClaudeAgentSDK
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil, # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- initializes every control-protocol concern in one place
                    exclude_dynamic_sections: nil, system_prompt_snapshot: nil, skills: nil,
                    forward_subagent_text: false, agent_progress_summaries: nil,
-                   callback_scheduling: :thread, callback_wrapper: nil)
+                   callback_scheduling: :thread, callback_wrapper: nil, verbatim_prompts: false)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
@@ -88,6 +121,7 @@ module ClaudeAgentSDK
       @skills = skills
       @forward_subagent_text = forward_subagent_text
       @agent_progress_summaries = agent_progress_summaries
+      @verbatim_prompts = verbatim_prompts
 
       # Control protocol state
       @pending_control_responses = {}
@@ -1436,8 +1470,7 @@ module ClaudeAgentSDK
       stream.each do |message|
         break if @closed
 
-        serialized = message.is_a?(Hash) ? JSON.generate(message) : message.to_s
-        writeln(serialized)
+        writeln(Query.serialize_user_message(message, @verbatim_prompts))
         wrote_message = true
       end
     rescue StandardError => e

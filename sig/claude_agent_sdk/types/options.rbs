@@ -85,6 +85,7 @@ module ClaudeAgentSDK
                       ?include_hook_events: bool?,
                       ?strict_mcp_config: bool?,
                       ?forward_subagent_text: bool?,
+                      ?verbatim_prompts: bool?,
                       ?agent_progress_summaries: bool?,
                       ?callback_scheduling: (:thread | :inline | "thread" | "inline")?,
                       ?callback_wrapper: _CallbackWrapper?
@@ -263,6 +264,14 @@ module ClaudeAgentSDK
     def forward_subagent_text=: (untyped value) -> bool?
 
     def forward_subagent_text?: () -> bool
+
+    # Mark every outgoing user message client_composed, so the CLI delivers
+    # it as written (false by default).
+    attr_reader verbatim_prompts: bool?
+
+    def verbatim_prompts=: (untyped value) -> bool?
+
+    def verbatim_prompts?: () -> bool
 
     # Request model-generated progress summaries for subagent tasks (nil:
     # unset, not sent).

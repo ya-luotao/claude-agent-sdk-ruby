@@ -16,6 +16,10 @@ module ClaudeAgentSDK
     DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024 # 1MB buffer limit
     # @api private
     MINIMUM_CLAUDE_CODE_VERSION = '2.0.0'
+    # First Claude Code version that honors `client_composed` on user
+    # messages, which ClaudeAgentOptions#verbatim_prompts relies on.
+    # @api private
+    VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION = '2.1.248'
     # @api private
     SKIP_VERSION_CHECK_ENV_VAR = 'CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'
     # @api private
@@ -921,6 +925,13 @@ module ClaudeAgentSDK
                       "Minimum required version is #{MINIMUM_CLAUDE_CODE_VERSION}. " \
                       'Some features may not work correctly.'
             warn warning
+          end
+
+          verbatim_min_parts = VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION.split('.').map(&:to_i)
+          if @options.verbatim_prompts? && (version_parts <=> verbatim_min_parts).negative?
+            warn "Warning: verbatim_prompts is enabled, but Claude Code version #{version} at #{@cli_path} " \
+                 'ignores it: prompts will still have @path mentions expanded and slash commands dispatched. ' \
+                 "Claude Code #{VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION} or later is required."
           end
         end
       rescue StandardError
