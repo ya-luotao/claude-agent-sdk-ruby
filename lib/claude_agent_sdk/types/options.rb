@@ -81,21 +81,11 @@ module ClaudeAgentSDK
       self.include_hook_events = false
       self.strict_mcp_config = false
       self.forward_subagent_text = false
+      self.verbatim_prompts = false
 
       super(merge_with_defaults(attributes || {}))
 
-      # Non-nil defaults for options that need them.
-      self.env                 ||= {}
-      self.extra_args          ||= {}
-      self.mcp_servers         ||= {}
-      self.add_dirs            ||= []
-      self.observers           ||= []
-      self.allowed_tools       ||= []
-      self.disallowed_tools    ||= []
-      self.session_store_flush ||= 'batched'
-      # 0 is a valid (immediate) timeout, so only fill in the default for nil.
-      self.load_timeout_ms = 60_000 if load_timeout_ms.nil?
-      self.callback_scheduling = :thread if callback_scheduling.nil?
+      fill_nil_defaults
     end
 
     def dup_with(**changes)
@@ -203,6 +193,58 @@ module ClaudeAgentSDK
       @forward_subagent_text = coerce_boolean(value)
     end
 
+    # Deliver every prompt to Claude as written.
+    #
+    # When true, every user message the SDK sends is marked `client_composed`:
+    # a String prompt to {ClaudeAgentSDK.query}, {Client#connect} or
+    # {Client#query}, and every message of a streamed (Enumerable) prompt to
+    # any of them. Claude Code then delivers the text exactly as given: no
+    # `@path` file-mention expansion and no slash-command dispatch. Use it when
+    # the prompt is assembled from content your end user did not type (earlier
+    # turns, tool output, third-party text), so an `@/absolute/path` inside it
+    # cannot make Claude Code read a local file. `tools: []`, `allowed_tools`
+    # and `disallowed_tools` do not stop that expansion: it happens before the
+    # model runs, without a tool call.
+    #
+    # While the option is on there is no per-message opt-out: a
+    # `client_composed` key on a streamed message Hash (either spelling) is
+    # overwritten. For per-turn control, leave the option off and set
+    # `client_composed: true` on individual streamed messages. The caller's
+    # Hashes are never mutated. A streamed JSONL String is parsed, marked and
+    # re-serialized; one that is not a single JSON object raises
+    # `ArgumentError` rather than being sent unmarked (on the background
+    # streaming paths that ends the stream with a warning, like any other
+    # stream error).
+    #
+    # On current Claude Code versions a turn delivered this way also skips the
+    # turn-start attachment pass as a whole: `@server:resource` MCP mentions
+    # are not expanded either, and the prompt goes without the context Claude
+    # Code normally attaches (nested `CLAUDE.md` and rules files, skill and
+    # tool listings, other per-turn reminders). The pass between tool calls is
+    # unaffected, so most of that context arrives after the turn's first tool
+    # call instead.
+    #
+    # Requires Claude Code 2.1.248 or later; older versions ignore the field,
+    # so prompts are still expanded there, and the SDK warns when it connects
+    # to one with this option on. Read once when the session starts. Not a
+    # CLI flag. Matches the Python SDK's `verbatim_prompts`.
+    #
+    # Assigning coerces to a Boolean; {#verbatim_prompts?} is the predicate
+    # form.
+    #
+    # @return [Boolean]
+    attr_reader :verbatim_prompts
+
+    # @return [Boolean] {#verbatim_prompts}, as a strict Boolean.
+    def verbatim_prompts?
+      !!verbatim_prompts
+    end
+
+    # @see #verbatim_prompts
+    def verbatim_prompts=(value)
+      @verbatim_prompts = coerce_boolean(value)
+    end
+
     # Request model-generated progress summaries for subagent (`local_agent`)
     # tasks. `true` *requests* generation: while the CLI has it enabled, a
     # subagent's {TaskProgressMessage#summary} **may** carry a one-line status.
@@ -287,6 +329,21 @@ module ClaudeAgentSDK
     end
 
     private
+
+    # Non-nil defaults for options that need them.
+    def fill_nil_defaults
+      self.env                 ||= {}
+      self.extra_args          ||= {}
+      self.mcp_servers         ||= {}
+      self.add_dirs            ||= []
+      self.observers           ||= []
+      self.allowed_tools       ||= []
+      self.disallowed_tools    ||= []
+      self.session_store_flush ||= 'batched'
+      # 0 is a valid (immediate) timeout, so only fill in the default for nil.
+      self.load_timeout_ms = 60_000 if load_timeout_ms.nil?
+      self.callback_scheduling = :thread if callback_scheduling.nil?
+    end
 
     # Strict key validation: unlike other Type subclasses (which silently drop
     # unknown keys for forward-compat with newer CLI output), ClaudeAgentOptions

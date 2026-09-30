@@ -245,6 +245,48 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 See [examples/bare_mode_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/bare_mode_example.rb).
 
+## Verbatim Prompts
+
+Claude Code expands an `@/absolute/path` token anywhere in a user message into
+that file's contents, and dispatches a leading `/name` as a slash command. The
+expansion happens before the model runs and without a tool call, so `tools: []`,
+`allowed_tools` and `disallowed_tools` do not stop it. If your prompt includes
+text your end user did not type (earlier turns, tool output, third-party
+content), set `verbatim_prompts` so that text cannot make Claude Code read a
+local file:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(verbatim_prompts: true)
+ClaudeAgentSDK.query(prompt: text_that_may_contain_at_paths, options: options) { |message| ... }
+```
+
+Every user message the SDK writes is then marked `client_composed`, and Claude
+Code delivers it exactly as written. That covers String prompts and every
+message of a streamed prompt, through `ClaudeAgentSDK.query`, `Client#connect`
+and `Client#query`.
+
+- **No per-message opt-out.** A `client_composed` key on a streamed message
+  Hash is overwritten. For per-turn control, leave the option off and set
+  `client_composed: true` on individual streamed messages.
+- Your message Hashes are never mutated.
+- A streamed JSONL String is parsed, marked and re-serialized. One that is not
+  a single JSON object raises `ArgumentError` instead of going out unmarked
+  (on the background streaming paths the stream stops with a warning, like any
+  stream error).
+- `Client` reads the option once, at `connect`.
+- **It skips more than `@path` expansion.** On current Claude Code versions a
+  turn delivered this way skips the whole turn-start attachment pass:
+  `@server:resource` MCP mentions are not expanded, and the prompt goes without
+  the context Claude Code normally attaches (nested `CLAUDE.md` and rules files,
+  skill and tool listings, other per-turn reminders). The pass between tool
+  calls still runs, so most of that context arrives after the turn's first tool
+  call.
+- Requires Claude Code **2.1.248** or later. Older versions ignore the field
+  and still expand prompts; the SDK prints a warning when it connects to one
+  with the option on.
+
+Matches the Python SDK's `verbatim_prompts`.
+
 ## Forwarding Subagent Text
 
 By default only `tool_use` / `tool_result` blocks from subagents (spawned via

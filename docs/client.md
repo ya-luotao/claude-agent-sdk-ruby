@@ -117,6 +117,17 @@ A transport must implement six methods:
 | `close` | Terminate and clean up |
 | `ready?` | Report whether the transport can accept I/O |
 
+**Environment your transport should give the CLI.** `SubprocessCLITransport`
+sets a few variables that a custom transport has to set itself. The one that
+changes SDK behavior is `CLAUDE_CODE_SDK_READS_SESSION_STATE=1`: with it, the
+CLI reports its session state, and a one-shot `query()` with hooks,
+`can_use_tool` or SDK MCP servers keeps stdin open until the CLI reports
+`idle`. That is what lets a follow-up turn woken by a background subagent get
+its control requests answered. Without it, `query()` closes stdin at the first
+result with no tracked task in flight, the pre-1.1 behavior. The state frames
+arrive marked `sdk_host_only`, and the SDK drops them from your message
+stream.
+
 Then plug it into `Client` via `transport_class:` / `transport_args:`. All connect orchestration (option transforms, MCP extraction, hook conversion, Query lifecycle) is handled for you.
 
 ```ruby

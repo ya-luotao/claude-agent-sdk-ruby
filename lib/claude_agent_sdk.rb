@@ -749,7 +749,9 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
           forward_subagent_text: configured_options.forward_subagent_text?,
           agent_progress_summaries: configured_options.agent_progress_summaries,
           callback_scheduling: callback_scheduling,
-          callback_wrapper: callback_wrapper
+          callback_wrapper: callback_wrapper,
+          verbatim_prompts: configured_options.verbatim_prompts?,
+          run_end_ceiling_ms: Query.run_end_ceiling_ms(configured_options.env)
         )
 
         # Mirror transcripts to the session_store, if configured. Installed
@@ -782,7 +784,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
             parent_tool_use_id: nil,
             session_id: ''
           }
-          transport.write("#{JSON.generate(message)}\n")
+          transport.write("#{Query.serialize_user_message(message, configured_options.verbatim_prompts?)}\n")
           # Background-spawn so messages stream to the user block while stdin
           # close waits (without timeout) for the first result; a synchronous
           # call would defer all delivery until the turn completes (mirrors
@@ -1084,7 +1086,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
             parent_tool_use_id: nil,
             session_id: session_id
           }
-          writeln(JSON.generate(message))
+          writeln(Query.serialize_user_message(message, @verbatim_prompts))
         elsif prompt.respond_to?(:each)
           # Inline iteration on the caller, Python client.py parity — NOT
           # Query#stream_input, whose ensure always ends input after
@@ -1394,6 +1396,10 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       exclude_dynamic_sections = ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt)
       system_prompt_snapshot = ClaudeAgentSDK.extract_system_prompt_snapshot(configured_options.system_prompt)
 
+      # Captured once, so String and streamed prompts in one session are
+      # stamped alike (the Query stamps the streamed ones with this value).
+      @verbatim_prompts = configured_options.verbatim_prompts?
+
       # Create Query handler
       @query_handler = Query.new(
         transport: @transport,
@@ -1408,7 +1414,9 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         forward_subagent_text: configured_options.forward_subagent_text?,
         agent_progress_summaries: configured_options.agent_progress_summaries,
         callback_scheduling: @callback_scheduling,
-        callback_wrapper: @callback_wrapper
+        callback_wrapper: @callback_wrapper,
+        verbatim_prompts: @verbatim_prompts,
+        run_end_ceiling_ms: Query.run_end_ceiling_ms(configured_options.env)
       )
 
       # Mirror transcripts to the session_store, if configured.
@@ -1450,7 +1458,9 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # key styles — an explicit nil is preserved, mirroring Python's
     # `"session_id" not in msg`). Strings pass through verbatim (Ruby
     # superset: Streaming.user_message emits pre-serialized JSONL; no
-    # parse-stamp-regenerate, which would block the reactor on huge frames).
+    # parse-stamp-regenerate, which would block the reactor on huge frames),
+    # except that verbatim_prompts must mark them `client_composed`, so with
+    # that option on they are parsed and re-serialized (Query.stamp_user_message).
     def stream_query_messages(prompt, session_id)
       prompt.each do |msg|
         case msg
@@ -1460,13 +1470,13 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
             ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text,
                                             scheduling: @callback_scheduling, wrapper: @callback_wrapper)
           end
-          writeln(JSON.generate(msg))
+          writeln(Query.serialize_user_message(msg, @verbatim_prompts))
         when String
           if (text = ClaudeAgentSDK.extract_user_prompt_text(msg))
             ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text,
                                             scheduling: @callback_scheduling, wrapper: @callback_wrapper)
           end
-          writeln(msg)
+          writeln(Query.serialize_user_message(msg, @verbatim_prompts))
         else
           # No to_s fallback — silently serializing arbitrary objects is the
           # exact inspect-garbage bug class this method exists to prevent.

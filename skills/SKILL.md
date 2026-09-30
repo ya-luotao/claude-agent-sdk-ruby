@@ -27,7 +27,7 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
   - Tasks: `TaskStartedMessage` (+ workflow_name, prompt, subagent_type, is_backgrounded, spawn_depth, skip_transcript, ambient), `TaskProgressMessage` (+ summary, subagent_type), `TaskNotificationMessage` (+ reason, resource_links, skip_transcript, ambient), `TaskUpdatedMessage` (lifecycle state change; `status` — and `is_backgrounded`, `error`, `end_time`, `total_paused_ms`, `description` — derived from `patch`, `task_id` always a String — clear active-task tracking when `status` is in `TERMINAL_TASK_STATUSES`). Optional booleans keep `nil` (absent) distinct from `false`: `is_backgrounded == false` means foreground/blocking
   - Subagent UI: `BackgroundTasksChangedMessage` (`tasks` — the full live background set, REPLACE semantics; reset on CLI restart), `PermissionDeniedMessage` (auto-denied tool call; best-effort advisory — `ResultMessage#permission_denials` is authoritative). See docs/subagents.md
   - Hooks: `HookStartedMessage`, `HookProgressMessage`, `HookResponseMessage`
-  - Sessions: `SessionStateChangedMessage` (idle/running/requires_action)
+  - Sessions: `SessionStateChangedMessage` (idle/running/requires_action) — only reaches your code when you set `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` in `env`; the frames the SDK requests for itself (to know when a `query()` run is over) are hidden
   - Tools: `ToolProgressMessage` (elapsed_time_seconds per tool), `ToolUseSummaryMessage`
   - Auth: `AuthStatusMessage` (isAuthenticating, output, error)
   - Files: `FilesPersistedMessage` (files, failed, processed_at)
