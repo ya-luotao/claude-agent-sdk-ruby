@@ -16,11 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **`query()` with hooks, `can_use_tool` or SDK MCP servers no longer closes stdin while a follow-up turn is still owed** (Python SDK #1279, fixing Python issue #1190). A background subagent that finished just before the turn's result was already off the in-flight ledger, so stdin closed at that result, and the follow-up turn its completion triggered had every hook, permission and SDK MCP request fail with "Stream closed" (the model reported the tool as refused). The transport now sets `CLAUDE_CODE_SDK_READS_SESSION_STATE=1` unless `options.env` or the environment already names it (in any case; a `nil` value in `options.env` unsets it). The CLI then sends `session_state_changed` frames marked `sdk_host_only`, which the SDK drops from the message stream for `query()` and `Client` alike. `query()` keeps stdin open until the CLI reports `idle` after a result:
-  - The wait between turns is bounded by `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, read from `options.env` and then the environment; the default is 10 minutes and `0` means no limit. The clock restarts at each result and at each `running`. A main-thread turn, a request the SDK is still answering (`requires_action`) and a tracked background agent each stop it.
+  - The wait between turns is bounded by `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, read from `options.env` and then the environment; the default is 10 minutes and `0` means no limit. The clock restarts at each result and at each `running`. A main-thread turn, the CLI reporting `requires_action`, a tracked background agent and a hook, permission or SDK MCP request the SDK is still answering each stop it.
   - With an Enumerable prompt, each message written waits for its own run. Work the CLI takes up after the run ended reopens it.
   - A CLI that sends no state (2.1.282 and earlier) gets the old behavior: stdin closes at the first result with no tracked task in flight.
   - Background agents, bounded monitors and MCP tasks can now keep a one-shot run open, up to the ceiling. Background shells, persistent monitors and remote agents do not, because the CLI leaves them out of its `running` report.
   - `SessionStateChangedMessage` reaches your code only if you set `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` yourself; the SDK never sets it.
+  - A custom transport must pass `CLAUDE_CODE_SDK_READS_SESSION_STATE=1` to the CLI itself to get this behavior (see `docs/client.md`); the E2B example transport now does.
 
 ## [1.0.0] - 2026-09-23
 

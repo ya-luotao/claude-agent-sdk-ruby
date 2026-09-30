@@ -292,6 +292,40 @@ RSpec.describe ClaudeAgentSDK::Query do
       end
     end
 
+    it 'does not close stdin under a control request the SDK is still answering' do
+      log = []
+      queue = Async::Queue.new
+      transport = mock_transport
+      allow(transport).to receive(:write) { |data| log << [:write, data] }
+      allow(transport).to receive(:end_input) { log << [:end_input] }
+      allow(transport).to receive(:read_messages) do |&blk|
+        loop { blk.call(queue.dequeue) }
+      end
+      slow_hook = lambda do |_input, _tool_use_id, _context|
+        sleep 0.25 # on its worker thread, several ceilings long
+        {}
+      end
+      query = build_query(transport, run_end_ceiling_ms: 50)
+      query.instance_variable_set(:@hook_callbacks, { 'hook_0' => slow_hook })
+
+      Async do |task|
+        query.start
+        waiter = task.async { query.wait_for_result_and_end_input }
+        [state('running'), result,
+         { type: 'control_request', request_id: 'req_1',
+           request: { subtype: 'hook_callback', callback_id: 'hook_0', tool_use_id: nil,
+                      input: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {},
+                               session_id: 's', cwd: '/tmp' } } }].each { |frame| queue.enqueue(frame) }
+        task.with_timeout(3) { waiter.wait }
+      ensure
+        query.close
+      end.wait
+
+      reply = log.index { |entry| entry[0] == :write && entry[1].include?('req_1') }
+      expect(reply).not_to be_nil
+      expect(log.index([:end_input])).to be > reply
+    end
+
     [0, 10**12].each do |ms|
       it "waits for idle with a ceiling of #{ms}" do
         with_query(run_end_ceiling_ms: ms) do |query, feed, ended, task|
@@ -387,6 +421,9 @@ RSpec.describe ClaudeAgentSDK::Query do
       [{}, 'soon'] => 600_000,
       [{}, '-1'] => 600_000,
       [{}, '1.5'] => 600_000,
+      [{}, '1e6'] => 600_000, # the CLI reads this one; the SDK falls back, as Python does
+      [{}, '1_000'] => 600_000,
+      [{}, ' 42 '] => 42,
       [{}, ''] => 600_000
     }.each do |(options_env, ambient), expected|
       it "reads #{options_env.inspect} over ambient #{ambient.inspect} as #{expected}" do

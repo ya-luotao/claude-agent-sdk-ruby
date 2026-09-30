@@ -195,6 +195,10 @@ class E2BCliTransport < ClaudeAgentSDK::Transport
     env['CLAUDECODE'] = '' # prevent nested-session detection
     env['CLAUDE_AGENT_SDK_VERSION'] = ClaudeAgentSDK::VERSION
     env['CLAUDE_CODE_ENTRYPOINT'] ||= 'sdk-rb'
+    # Lets query() keep stdin open until the CLI reports idle (see
+    # docs/client.md, "Custom Transport"); the caller may opt out by naming it.
+    caller_named = (@options.env || {}).keys.any? { |k| k.to_s.casecmp?('CLAUDE_CODE_SDK_READS_SESSION_STATE') }
+    env['CLAUDE_CODE_SDK_READS_SESSION_STATE'] = '1' unless caller_named
     env['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING'] = 'true' if @options.enable_file_checkpointing
     env['PWD'] = @options.cwd.to_s if @options.cwd
     env

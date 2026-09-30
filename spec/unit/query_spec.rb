@@ -182,7 +182,7 @@ RSpec.describe ClaudeAgentSDK::Query do
       allow(transport).to receive(:end_input) { ended << true }
       query = described_class.new(transport: transport, is_streaming_mode: true, can_use_tool: false)
 
-      # Bounded: the regression parks on @first_result_condition forever, and
+      # Bounded: the regression parks on the run's end (@run_end) forever, and
       # the ensure in wait_for_result_and_end_input still runs on timeout, so
       # `ended` alone cannot tell the two apart — completing without timing
       # out is the actual assertion.

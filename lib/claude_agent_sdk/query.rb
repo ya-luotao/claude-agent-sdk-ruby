@@ -57,22 +57,23 @@ module ClaudeAgentSDK
     # The longest ceiling honored (~24.8 days), as in the TypeScript and
     # Python SDKs, whose timers cannot run longer.
     MAX_RUN_END_CEILING_MS = (2**31) - 1
+    # Frame types that mark a main-thread turn under way (when they carry no
+    # parent_tool_use_id), and the states that do not re-arm the ceiling.
+    TURN_FRAME_TYPES = %w[assistant stream_event].freeze
+    NON_RUNNING_SESSION_STATES = %w[idle requires_action].freeze
 
-    # Read CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS as the CLI will see it:
+    # Read CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS from where the CLI gets it:
     # +options_env+ (ClaudeAgentOptions#env) overrides the inherited
     # environment, as it does for the subprocess, and a key present with a nil
     # value is unset in the child, so the CLI falls back to its default. 0
-    # means no limit; anything that is not a plain non-negative integer falls
-    # back to the CLI's default of 10 minutes.
+    # means no limit. Only plain non-negative integers are read; anything else
+    # falls back to the CLI's default of 10 minutes, including spellings the
+    # CLI itself also reads, such as 1e6 (as in the Python SDK).
     def self.run_end_ceiling_ms(options_env)
       env = (options_env || {}).transform_keys(&:to_s)
       raw = env.key?(RUN_END_CEILING_ENV_VAR) ? env[RUN_END_CEILING_ENV_VAR] : ENV.fetch(RUN_END_CEILING_ENV_VAR, nil)
-      return DEFAULT_RUN_END_CEILING_MS if raw.nil?
-
-      value = Integer(raw.to_s.strip, 10)
-      value.negative? ? DEFAULT_RUN_END_CEILING_MS : value
-    rescue ArgumentError
-      DEFAULT_RUN_END_CEILING_MS
+      digits = raw.to_s.strip
+      digits.match?(/\A\d+\z/) ? Integer(digits, 10) : DEFAULT_RUN_END_CEILING_MS
     end
 
     # One run's end, set at most once (the Python SDK's per-run anyio.Event).
@@ -514,7 +515,7 @@ module ClaudeAgentSDK
             # A main-thread turn is under way, so the ceiling stops (it counts
             # only the wait between turns, as the CLI's does) and the run
             # reopens even if the ceiling ended it while no state changed.
-            if %w[assistant stream_event].include?(msg_type) && message[:parent_tool_use_id].nil?
+            if TURN_FRAME_TYPES.include?(msg_type) && message[:parent_tool_use_id].nil?
               @turn_in_progress = true
               reopen_run
               clear_run_end_ceiling
@@ -689,8 +690,7 @@ module ClaudeAgentSDK
     # and whenever the CLI reports "running" again, cleared by main-thread
     # turn activity and by "requires_action", never armed mid-turn.
     #
-    # The sleeper is a child of the current task (the read loop's — every
-    # caller runs there), NOT a #spawn_task entry: it is re-armed at every
+    # The sleeper is a child of the read task, NOT a #spawn_task entry: it is re-armed at every
     # result and every "running", and @child_tasks never prunes. The read
     # task's stop cascades to it, and every exit path clears it (#end_run in
     # the read loop's ensure, #wait_for_result_and_end_input's ensure), so a
@@ -704,7 +704,7 @@ module ClaudeAgentSDK
 
       generation = @run_end_ceiling_generation
       seconds = [@run_end_ceiling_ms, MAX_RUN_END_CEILING_MS].min / 1000.0
-      @run_end_ceiling_task = Async::Task.current.async do
+      @run_end_ceiling_task = @task.async do
         sleep seconds
         end_run_at_ceiling(generation)
       end
@@ -714,7 +714,7 @@ module ClaudeAgentSDK
     # the CLI still reporting work ("running").
     def rearm_run_end_ceiling_between_turns
       return unless @result_received
-      return if @session_state.nil? || %w[idle requires_action].include?(@session_state)
+      return if @session_state.nil? || NON_RUNNING_SESSION_STATES.include?(@session_state)
 
       arm_run_end_ceiling
     end
@@ -729,7 +729,15 @@ module ClaudeAgentSDK
       # A tracked background agent still running may still need stdin for its
       # hook, permission and SDK MCP requests (Python #1088), so it is not cut
       # off; the ceiling starts over once it settles (#read_messages).
-      end_run if @inflight_tasks.empty?
+      return unless @inflight_tasks.empty?
+
+      # A control request the SDK is still answering (a slow hook or SDK MCP
+      # tool) must be able to write its reply, so the clock starts over rather
+      # than closing stdin under it. Ruby-only guard: Python relies on the CLI
+      # reporting requires_action for every such request.
+      return arm_run_end_ceiling unless @inflight_control_request_tasks.empty?
+
+      end_run
     end
 
     def clear_run_end_ceiling
