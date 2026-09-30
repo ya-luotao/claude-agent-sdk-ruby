@@ -192,7 +192,13 @@ module ClaudeAgentSDK
                   :outcome # "success", "error", or "cancelled"
   end
 
-  # Session state changed system message
+  # Session state changed system message.
+  #
+  # Reaches your code only when you opt in with
+  # `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` in ClaudeAgentOptions#env. The
+  # SDK also asks the CLI for these frames on its own behalf (to tell when a
+  # query() run is over), but those arrive marked `sdk_host_only` and are
+  # dropped before the message stream.
   class SessionStateChangedMessage < SystemMessage
     attr_accessor :uuid, :session_id,
                   :state # "idle", "running", or "requires_action"

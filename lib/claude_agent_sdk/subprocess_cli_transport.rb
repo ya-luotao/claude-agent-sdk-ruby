@@ -20,6 +20,11 @@ module ClaudeAgentSDK
     # messages, which ClaudeAgentOptions#verbatim_prompts relies on.
     # @api private
     VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION = '2.1.248'
+    # Asks the CLI for session_state_changed frames marked sdk_host_only,
+    # which Query reads to tell when the run is over and keeps out of the
+    # caller's stream. CLIs that predate it send no frames.
+    # @api private
+    SDK_READS_SESSION_STATE_ENV_VAR = 'CLAUDE_CODE_SDK_READS_SESSION_STATE'
     # @api private
     SKIP_VERSION_CHECK_ENV_VAR = 'CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'
     # @api private
@@ -292,6 +297,15 @@ module ClaudeAgentSDK
       # under the caller's distributed trace (Python SDK #821 parity). No-op
       # when opentelemetry is not loaded or there is no active span.
       inject_otel_trace_context(process_env, custom_env)
+      # Query waits for the CLI's session_state_changed "idle" before closing
+      # stdin on a run that serves control requests (Python #1279). Ask for
+      # the frames it drops (sdk_host_only) unless the caller named the
+      # variable, in any case, in options.env (a nil value unsets it) or the
+      # inherited environment. CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS stays the
+      # caller's own opt-in to seeing the frames; the SDK never sets it.
+      unless process_env.keys.any? { |key| key.casecmp?(SDK_READS_SESSION_STATE_ENV_VAR) }
+        process_env[SDK_READS_SESSION_STATE_ENV_VAR] = '1'
+      end
       process_env['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING'] = 'true' if @options.enable_file_checkpointing
       process_env['PWD'] = @cwd.to_s if @cwd
 

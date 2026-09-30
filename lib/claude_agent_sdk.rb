@@ -750,7 +750,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
           agent_progress_summaries: configured_options.agent_progress_summaries,
           callback_scheduling: callback_scheduling,
           callback_wrapper: callback_wrapper,
-          verbatim_prompts: configured_options.verbatim_prompts?
+          verbatim_prompts: configured_options.verbatim_prompts?,
+          run_end_ceiling_ms: Query.run_end_ceiling_ms(configured_options.env)
         )
 
         # Mirror transcripts to the session_store, if configured. Installed
@@ -1414,7 +1415,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         agent_progress_summaries: configured_options.agent_progress_summaries,
         callback_scheduling: @callback_scheduling,
         callback_wrapper: @callback_wrapper,
-        verbatim_prompts: @verbatim_prompts
+        verbatim_prompts: @verbatim_prompts,
+        run_end_ceiling_ms: Query.run_end_ceiling_ms(configured_options.env)
       )
 
       # Mirror transcripts to the session_store, if configured.

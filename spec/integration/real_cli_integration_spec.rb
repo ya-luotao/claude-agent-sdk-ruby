@@ -403,4 +403,105 @@ RSpec.describe 'Real Claude CLI Integration', :integration do
       end
     end
   end
+
+  # Python SDK #1279 (issue #1190): query() keeps stdin open until the CLI
+  # reports the session idle, so a follow-up turn woken by a background
+  # subagent can still get its hook answered.
+  describe 'one-shot run end' do
+    def allowing_hook(asked)
+      lambda do |input, _tool_use_id, _context|
+        asked << input.tool_name
+        ClaudeAgentSDK::SyncHookJSONOutput.new(
+          hook_specific_output: ClaudeAgentSDK::PreToolUseHookSpecificOutput.new(permission_decision: 'allow')
+        ).to_h
+      end
+    end
+
+    # Record every session_state_changed frame the CLI writes, including the
+    # sdk_host_only ones the SDK keeps out of the caller's stream.
+    def record_state_frames
+      frames = []
+      original = ClaudeAgentSDK::SubprocessCLITransport.instance_method(:read_messages)
+      allow_any_instance_of(ClaudeAgentSDK::SubprocessCLITransport)
+        .to receive(:read_messages) do |transport, &block|
+          original.bind_call(transport) do |message|
+            frames << message if message[:subtype] == 'session_state_changed'
+            block.call(message)
+          end
+        end
+      frames
+    end
+
+    it 'ends a hook run with one result and no state frames in the stream' do
+      asked = []
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        model: 'haiku', setting_sources: [], tools: [], max_budget_usd: 0.05,
+        hooks: { 'PreToolUse' => [ClaudeAgentSDK::HookMatcher.new(hooks: [allowing_hook(asked)])] }
+      )
+      messages = []
+      ClaudeAgentSDK.query(prompt: 'Reply with OK.', options: options) { |message| messages << message }
+
+      results = messages.grep(ClaudeAgentSDK::ResultMessage)
+      expect(results.length).to eq(1)
+      expect(results.first.is_error).to be false
+      expect(messages.grep(ClaudeAgentSDK::SessionStateChangedMessage)).to be_empty
+    end
+
+    { 'sdk' => false, 'caller' => true }.each do |variant, caller_opted_in|
+      it "serves the follow-up turn a background subagent wakes (#{variant})" do
+        frames = record_state_frames
+        asked = []
+        Dir.mktmpdir do |dir|
+          target = File.join(dir, 'out.txt')
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+            cwd: dir, model: 'haiku', setting_sources: [], max_budget_usd: 0.3,
+            extra_args: { 'strict-mcp-config' => nil },
+            system_prompt: "Be terse. Follow the user's steps exactly.",
+            tools: %w[Agent Write],
+            hooks: { 'PreToolUse' => [ClaudeAgentSDK::HookMatcher.new(matcher: 'Write', hooks: [allowing_hook(asked)])] },
+            agents: {
+              'worker' => ClaudeAgentSDK::AgentDefinition.new(
+                description: 'Answers with one word.', prompt: 'Reply with the single word DONE and nothing else.',
+                tools: [], model: 'haiku'
+              )
+            },
+            env: caller_opted_in ? { 'CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS' => '1' } : {}
+          )
+          prompt = 'Step 1: call the Agent tool once with subagent_type `worker`, description `say done`, ' \
+                   'prompt `Say DONE.` and run_in_background true, then end your turn right away with the ' \
+                   'single word LAUNCHED. Do not wait for it. ' \
+                   'Step 2: when you are told the subagent finished, use the Write tool to write its reply to ' \
+                   "#{target}, then answer FINISHED."
+          messages = []
+          ClaudeAgentSDK.query(prompt: prompt, options: options) { |message| messages << message }
+
+          skip 'this CLI predates CLAUDE_CODE_SDK_READS_SESSION_STATE' if caller_opted_in ? frames.empty? : frames.none? { |f| f[:sdk_host_only] == true }
+          states = messages.grep(ClaudeAgentSDK::SessionStateChangedMessage)
+          expect(states.empty?).to be(!caller_opted_in)
+          expect(messages.grep(ClaudeAgentSDK::ResultMessage).length).to be >= 2
+          expect(asked).to include('Write')
+          expect(File.exist?(target)).to be true
+        end
+      end
+    end
+  end
+
+  # Python SDK #1269: verbatim_prompts stops @path expansion.
+  describe 'verbatim_prompts' do
+    it 'keeps an @path mention from pulling a file into the prompt' do
+      Dir.mktmpdir do |dir|
+        marker = "MARK-#{SecureRandom.hex(4)}"
+        path = File.join(dir, 'secret.txt')
+        File.write(path, marker)
+        prompt = "Repeat back any file contents you were given in this message, verbatim. If none, say NONE. @#{path}"
+        echoed = [false, true].to_h do |verbatim|
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(model: 'haiku', setting_sources: [], tools: [],
+                                                           max_budget_usd: 0.05, verbatim_prompts: verbatim)
+          [verbatim, ClaudeAgentSDK.ask(prompt, options: options).result.to_s.include?(marker)]
+        end
+
+        expect(echoed).to eq(false => true, true => false)
+      end
+    end
+  end
 end

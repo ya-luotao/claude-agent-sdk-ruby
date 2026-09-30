@@ -49,6 +49,59 @@ module ClaudeAgentSDK
     # status, or it will hang the query (see #track_task_lifecycle).
     DEFERRING_TASK_TYPES = %w[local_agent local_workflow].freeze
 
+    # The CLI's own wait for background work once stdin is closed; the SDK
+    # bounds its wait for the CLI's "idle" by the same value
+    # (#arm_run_end_ceiling, Python #1279).
+    RUN_END_CEILING_ENV_VAR = 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS'
+    DEFAULT_RUN_END_CEILING_MS = 600_000
+    # The longest ceiling honored (~24.8 days), as in the TypeScript and
+    # Python SDKs, whose timers cannot run longer.
+    MAX_RUN_END_CEILING_MS = (2**31) - 1
+
+    # Read CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS as the CLI will see it:
+    # +options_env+ (ClaudeAgentOptions#env) overrides the inherited
+    # environment, as it does for the subprocess, and a key present with a nil
+    # value is unset in the child, so the CLI falls back to its default. 0
+    # means no limit; anything that is not a plain non-negative integer falls
+    # back to the CLI's default of 10 minutes.
+    def self.run_end_ceiling_ms(options_env)
+      env = (options_env || {}).transform_keys(&:to_s)
+      raw = env.key?(RUN_END_CEILING_ENV_VAR) ? env[RUN_END_CEILING_ENV_VAR] : ENV.fetch(RUN_END_CEILING_ENV_VAR, nil)
+      return DEFAULT_RUN_END_CEILING_MS if raw.nil?
+
+      value = Integer(raw.to_s.strip, 10)
+      value.negative? ? DEFAULT_RUN_END_CEILING_MS : value
+    rescue ArgumentError
+      DEFAULT_RUN_END_CEILING_MS
+    end
+
+    # One run's end, set at most once (the Python SDK's per-run anyio.Event).
+    # A waiter holds the object it started waiting on, so a run that ends and
+    # is then reopened (#reopen_run swaps in a fresh RunEnd) still releases the
+    # waiters the ended run woke, while later waits wait for the new run.
+    # Reactor-only, like every caller.
+    class RunEnd
+      def initialize
+        @ended = false
+        @condition = Async::Condition.new
+      end
+
+      def ended?
+        @ended
+      end
+
+      def end!
+        return if @ended
+
+        @ended = true
+        @condition.signal
+      end
+
+      def wait
+        @condition.wait until @ended
+      end
+    end
+
     # Apply ClaudeAgentOptions#verbatim_prompts to one outgoing user message
     # (Python #1269's stamp_user_message). Off: returns +message+ unchanged.
     # On: returns a new Hash with `client_composed: true`, dropping any
@@ -107,7 +160,8 @@ module ClaudeAgentSDK
     def initialize(transport:, is_streaming_mode:, can_use_tool: nil, hooks: nil, sdk_mcp_servers: nil, agents: nil, # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- initializes every control-protocol concern in one place
                    exclude_dynamic_sections: nil, system_prompt_snapshot: nil, skills: nil,
                    forward_subagent_text: false, agent_progress_summaries: nil,
-                   callback_scheduling: :thread, callback_wrapper: nil, verbatim_prompts: false)
+                   callback_scheduling: :thread, callback_wrapper: nil, verbatim_prompts: false,
+                   run_end_ceiling_ms: DEFAULT_RUN_END_CEILING_MS)
       @transport = transport
       @is_streaming_mode = is_streaming_mode
       @can_use_tool = can_use_tool
@@ -122,6 +176,7 @@ module ClaudeAgentSDK
       @forward_subagent_text = forward_subagent_text
       @agent_progress_summaries = agent_progress_summaries
       @verbatim_prompts = verbatim_prompts
+      @run_end_ceiling_ms = run_end_ceiling_ms
 
       # Control protocol state
       @pending_control_responses = {}
@@ -137,10 +192,30 @@ module ClaudeAgentSDK
 
       # Message stream
       @message_queue = Async::Queue.new
-      # Set when a run-ending result arrives (a result frame with no tasks in
-      # flight) so the stdin-closing waiter can wake. Named for history — it
-      # once tracked the literal first result.
-      @first_result_received = false
+      # Ends when the run is over, so the stdin-closing waiter can wake; see
+      # #read_messages and @inflight_tasks below (Python #1088, #1190/#1279).
+      # Work the CLI takes up after the run ended swaps in a fresh one
+      # (#reopen_run).
+      @run_end = RunEnd.new
+      @result_received = false
+      # The CLI's latest session_state_changed state, or nil while it sends
+      # none (a CLI too old to honor CLAUDE_CODE_SDK_READS_SESSION_STATE). A
+      # CLI that reports state stays "running" while a background agent is
+      # live or its completion is still to be handled, and reports "idle" once
+      # no further turn is owed.
+      @session_state = nil
+      # Ends the run if no new turn starts within the ceiling after a result
+      # (#arm_run_end_ceiling). The generation tells a sleeper that woke after
+      # it was cleared or re-armed to stand down.
+      @run_end_ceiling_task = nil
+      @run_end_ceiling_generation = 0
+      # A main-thread turn is under way (its assistant/stream_event frames
+      # have started and its result has not arrived): the ceiling counts only
+      # the wait between turns, so it is not armed meanwhile.
+      @turn_in_progress = false
+      # Set once stdin is closed or the reader is gone: the run then stays
+      # ended, since nothing can wait on a reopened one.
+      @run_final = false
       # Task IDs of started-but-not-finished deferring tasks. A result frame
       # only ends one turn, not the run: a background task keeps running past
       # it and still needs stdin for hook/SDK-MCP control responses (Python
@@ -153,7 +228,6 @@ module ClaudeAgentSDK
       # reported. Mirrors the TypeScript SDK's `lastErrorResultText`
       # (Query.ts), but keeps the whole payload rather than just the text.
       @last_error_result = nil
-      @first_result_condition = Async::Condition.new
       @task = nil
       @child_tasks = []
       @initialized = false
@@ -410,22 +484,26 @@ module ClaudeAgentSDK
         else
           # Track task lifecycle frames so results can tell "one turn ended"
           # apart from "the run is done" (Python #1088/#1103).
-          track_task_lifecycle(message) if message[:type] == 'system'
+          if msg_type == 'system'
+            had_tasks_in_flight = !@inflight_tasks.empty?
+            track_task_lifecycle(message)
+            # The ceiling left the last tracked agent alone; the wait between
+            # turns starts over now that it settled.
+            rearm_run_end_ceiling_between_turns if had_tasks_in_flight && @inflight_tasks.empty?
+            if message[:subtype] == 'session_state_changed'
+              on_session_state(message[:state])
+              # Frames the CLI sent only because the transport asked for them
+              # (CLAUDE_CODE_SDK_READS_SESSION_STATE); the caller did not opt
+              # in, so they never reach the stream, observers or the parser.
+              next if message[:sdk_host_only] == true
+            end
+          end
 
-          if message[:type] == 'result'
+          if msg_type == 'result'
             # Flush the mirror before signaling/yielding the result so a
             # consumer observing the result sees an up-to-date store for the turn.
             flush_transcript_mirror
-            # A result with tasks still in flight ends one turn, not the run:
-            # the tasks may still need hook/SDK-MCP control responses over
-            # stdin, and closing it now silently disables hooks and fails
-            # SDK-MCP calls with "Stream closed". Each deferring task's
-            # completion wakes the parent for a follow-up turn, so a later
-            # result arrives with no tasks in flight and closes stdin then.
-            if @inflight_tasks.empty? && !@first_result_received
-              @first_result_received = true
-              @first_result_condition.signal
-            end
+            on_result
             @last_error_result = message[:is_error] ? message : nil
           elsif !(msg_type == 'system' && message[:subtype] == 'session_state_changed')
             # Anything other than the post-turn session_state_changed marker
@@ -433,6 +511,14 @@ module ClaudeAgentSDK
             # crash, not the expected exit from a prior error result. Mirrors
             # the Python/TypeScript SDK reset logic.
             @last_error_result = nil
+            # A main-thread turn is under way, so the ceiling stops (it counts
+            # only the wait between turns, as the CLI's does) and the run
+            # reopens even if the ceiling ended it while no state changed.
+            if %w[assistant stream_event].include?(msg_type) && message[:parent_tool_use_id].nil?
+              @turn_in_progress = true
+              reopen_run
+              clear_run_end_ceiling
+            end
           end
           # Regular SDK messages go to the queue
           @message_queue.enqueue(message)
@@ -481,10 +567,11 @@ module ClaudeAgentSDK
       begin
         flush_transcript_mirror
       ensure
-        unless @first_result_received
-          @first_result_received = true
-          @first_result_condition.signal
-        end
+        # Unblock the stdin-closing waiter so it doesn't stall on early exit;
+        # with the reader gone the run stays ended. Also stops a pending
+        # ceiling sleeper, which would otherwise keep the reactor alive.
+        @run_final = true
+        end_run
         # Always signal end of stream
         @message_queue.enqueue({ type: 'end' })
       end
@@ -532,6 +619,124 @@ module ClaudeAgentSDK
         status = patch.is_a?(Hash) ? patch[:status] : nil
         @inflight_tasks.delete(task_id) if TERMINAL_TASK_STATUSES.include?(status)
       end
+    end
+
+    # A result ends a turn, not necessarily the run: a background agent that
+    # finished just before it still wakes the session for another turn, whose
+    # hook, permission and SDK MCP requests need stdin (Python #1190/#1279). A
+    # CLI that reports session state stays "running" while such a turn is
+    # owed, so wait for "idle" (some hosts send it just before the result).
+    # Without state events the result is all there is to go on.
+    def on_result
+      @result_received = true
+      @turn_in_progress = false
+      if @session_state.nil? || @session_state == 'idle' || !bidirectional_needs?
+        maybe_end_run
+      elsif @session_state != 'requires_action'
+        # While the SDK is still answering a request the ceiling waits for
+        # the "running" that follows.
+        arm_run_end_ceiling
+      end
+    end
+
+    # Track the CLI's session_state_changed state (Python #1279).
+    def on_session_state(state)
+      @session_state = state
+      if state == 'idle'
+        maybe_end_run if @result_received
+        return
+      end
+      # Work the CLI took up after the run ended (a finished background task
+      # woke it) reopens the run until the next "idle".
+      reopen_run
+      if state == 'requires_action'
+        # The host is answering a request; stdin must outlast it.
+        clear_run_end_ceiling
+      else
+        rearm_run_end_ceiling_between_turns
+      end
+    end
+
+    # End the run unless a tracked background task is still in flight: such
+    # a task may still need hook/SDK-MCP control responses over stdin
+    # (Python #1088), and its completion wakes the parent for a follow-up
+    # turn whose result (or "idle") ends the run then. A CLI that reports
+    # session state never reports "idle" with an agent still live, so this
+    # matters for CLIs that report "idle" at every turn end or not at all.
+    def maybe_end_run
+      end_run if @inflight_tasks.empty?
+    end
+
+    # The run is over: wake the stdin-closing waiter. Idempotent.
+    def end_run
+      clear_run_end_ceiling
+      @run_end.end!
+    end
+
+    # Reopen an ended run for work that started after it ended. A waiter the
+    # ended run already woke still closes stdin; this makes a later wait
+    # (stream_input's, once its prompts are all written) wait for the new
+    # work too. Once stdin is closed, or the reader is gone, the run stays
+    # ended.
+    def reopen_run
+      @run_end = RunEnd.new if @run_end.ended? && !@run_final
+    end
+
+    # End the run anyway once the ceiling passes with no new turn. The CLI's
+    # own background-wait ceiling only counts once stdin is closed, so without
+    # this, work that never finishes would hold "running", and stdin, open
+    # forever. It counts only the wait between turns: restarted at each result
+    # and whenever the CLI reports "running" again, cleared by main-thread
+    # turn activity and by "requires_action", never armed mid-turn.
+    #
+    # The sleeper is a child of the current task (the read loop's — every
+    # caller runs there), NOT a #spawn_task entry: it is re-armed at every
+    # result and every "running", and @child_tasks never prunes. The read
+    # task's stop cascades to it, and every exit path clears it (#end_run in
+    # the read loop's ensure, #wait_for_result_and_end_input's ensure), so a
+    # pending sleeper can never keep the enclosing reactor alive.
+    def arm_run_end_ceiling
+      clear_run_end_ceiling
+      # A frame read while close is under way (the result branch flushes the
+      # mirror first) must not leave a sleeper behind either.
+      return if @run_end_ceiling_ms <= 0 || @run_end.ended? || @run_final || @closed ||
+                @turn_in_progress || !bidirectional_needs?
+
+      generation = @run_end_ceiling_generation
+      seconds = [@run_end_ceiling_ms, MAX_RUN_END_CEILING_MS].min / 1000.0
+      @run_end_ceiling_task = Async::Task.current.async do
+        sleep seconds
+        end_run_at_ceiling(generation)
+      end
+    end
+
+    # Restart the ceiling if the run is between turns, past a result, with
+    # the CLI still reporting work ("running").
+    def rearm_run_end_ceiling_between_turns
+      return unless @result_received
+      return if @session_state.nil? || %w[idle requires_action].include?(@session_state)
+
+      arm_run_end_ceiling
+    end
+
+    def end_run_at_ceiling(generation)
+      # Cleared or re-armed while this sleeper was already waking up.
+      return unless generation == @run_end_ceiling_generation
+
+      # Detach before ending the run: #end_run clears the ceiling, and
+      # clearing it must not stop the task running this very method.
+      @run_end_ceiling_task = nil
+      # A tracked background agent still running may still need stdin for its
+      # hook, permission and SDK MCP requests (Python #1088), so it is not cut
+      # off; the ceiling starts over once it settles (#read_messages).
+      end_run if @inflight_tasks.empty?
+    end
+
+    def clear_run_end_ceiling
+      @run_end_ceiling_generation += 1
+      task = @run_end_ceiling_task
+      @run_end_ceiling_task = nil
+      task&.stop
     end
 
     # Whether the CLI may still send control requests that need a reply.
@@ -1433,44 +1638,62 @@ module ClaudeAgentSDK
                            })
     end
 
-    # Wait for a run-ending result before closing stdin when hooks, SDK MCP
-    # servers or a can_use_tool callback may still need to exchange control
-    # messages with the CLI.
-    # The control protocol requires stdin to stay open for the entire turn
-    # (hook replies, can_use_tool replies and SDK MCP tool results are all
-    # written to stdin), so no timeout is applied — closing stdin mid-turn
-    # silently broke hooks/MCP on turns longer than the old 60s bound
-    # (mirrors Python SDK commit c3d96cb). A result frame ends one turn, not
-    # necessarily the run: while background tasks are in flight the result
-    # branch withholds the signal (Python #1088/#1103), and each deferring
-    # task's completion wakes the parent for a follow-up turn that ends in
-    # another result. The condition is guaranteed to be signaled: by the
-    # result branch in read_messages once no tasks are in flight, or by its
-    # ensure block when the process exits early.
+    # Wait for the end of the run, when hooks, SDK MCP servers or a
+    # can_use_tool callback may still need to exchange control messages with
+    # the CLI, then close stdin. Their replies are all written to stdin, so it
+    # must stay open until the run ends: at the CLI's "idle" session state
+    # after a result, or, from a CLI that reports no session state, at the
+    # first result with no tracked tasks in flight. A result frame ends one
+    # turn, not necessarily the run: background tasks keep running past it,
+    # or have just finished and still wake the parent for a follow-up turn,
+    # and those turns need stdin for control responses (Python #1088, #1190).
     #
-    # Known limitation (same as Python's): the condition is one-shot and is
-    # not aware of prompt messages still queued CLI-side, so an Enumerator
-    # prompt yielding several user messages (several turns) releases the hold
-    # at the first turn boundary with no tracked tasks; control requests from
-    # later turns can then find stdin closed. Single-message and String
-    # prompts — the common one-shot shapes — are fully covered.
+    # No timeout bounds a turn (closing stdin mid-turn silently broke
+    # hooks/MCP on turns longer than the old 60s bound; Python c3d96cb). The
+    # wait BETWEEN turns is bounded: if the CLI still reports "running"
+    # CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS (10 minutes by default, 0 for no
+    # limit) after a result with no new turn, the run ends anyway
+    # (#arm_run_end_ceiling). A turn under way, a request the SDK is still
+    # answering and a tracked background agent still in flight (Python #1088)
+    # stop that clock. The run is guaranteed to end: as above, or in
+    # read_messages' ensure when the process exits early.
+    #
+    # Known limitation (same as Python's): from a CLI that reports no session
+    # state, a result for an earlier message of an Enumerator prompt still
+    # ends the run even when a later message is already queued CLI-side, so
+    # control requests from that later turn can find stdin closed.
+    # Single-message and String prompts are fully covered.
     def wait_for_result_and_end_input
-      @first_result_condition.wait if !@first_result_received && bidirectional_needs?
+      @run_end.wait if bidirectional_needs?
     ensure
+      @run_final = true
+      clear_run_end_ceiling
       @transport.end_input
     end
 
-    # Stream input messages to transport. NOTE: iteration runs on the
-    # reactor (the deliberate FiberBoundary carve-out — see
-    # fiber_boundary.rb): scheduler-aware blocking (Thread::Queue#pop,
-    # sleep, socket IO) parks only this task; CPU-bound or scheduler-opaque
-    # work in the enumerator must be moved to a producer Thread by the user.
+    # Stream input messages to transport, then close stdin once the run ends
+    # (#wait_for_result_and_end_input). Each message written owes a run of its
+    # own, so the wait is for the last message's run, not an earlier one's.
+    #
+    # NOTE: iteration runs on the reactor (the deliberate FiberBoundary
+    # carve-out — see fiber_boundary.rb): scheduler-aware blocking
+    # (Thread::Queue#pop, sleep, socket IO) parks only this task; CPU-bound or
+    # scheduler-opaque work in the enumerator must be moved to a producer
+    # Thread by the user.
     def stream_input(stream)
       wrote_message = false
       stream.each do |message|
         break if @closed
 
-        writeln(Query.serialize_user_message(message, @verbatim_prompts))
+        # Serialized first: a message verbatim_prompts cannot mark raises
+        # here, before the run is reopened for a message that never went out.
+        line = Query.serialize_user_message(message, @verbatim_prompts)
+        # This message owes a run of its own, result included: an earlier
+        # one having ended does not end it.
+        reopen_run
+        @result_received = false
+        clear_run_end_ceiling
+        writeln(line)
         wrote_message = true
       end
     rescue StandardError => e
@@ -1479,13 +1702,12 @@ module ClaudeAgentSDK
     ensure
       # Three teardown shapes:
       # - #close in progress (@closed, Async::Stop unwinding): do nothing —
-      #   the transport is about to be closed, and waiting on
-      #   @first_result_condition inside a stopping fiber could suspend
-      #   teardown. Mirrors Python, where cancellation skips this entirely.
+      #   the transport is about to be closed, and waiting on the run's end
+      #   inside a stopping fiber could suspend teardown. Mirrors Python,
+      #   where cancellation skips this entirely.
       # - A turn is in flight (some message reached the CLI): hold stdin
-      #   open until its first result so hooks/SDK MCP control replies can
-      #   still be written (no timeout — the result or process exit is
-      #   guaranteed to signal).
+      #   open until the run ends so hooks/SDK MCP control replies can still
+      #   be written (the run's end or process exit is guaranteed to signal).
       # - No complete message ever reached the CLI (empty stream, or the
       #   stream raised before the first write): no result can ever arrive,
       #   so waiting would park query() forever beside an idle CLI. Close
@@ -1495,6 +1717,7 @@ module ClaudeAgentSDK
         if wrote_message
           wait_for_result_and_end_input
         else
+          @run_final = true
           @transport.end_input
         end
       end
