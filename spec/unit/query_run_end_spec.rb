@@ -183,6 +183,24 @@ RSpec.describe ClaudeAgentSDK::Query do
       end
     end
 
+    # Frame sequence observed from CLI 2.1.285 for three messages written
+    # before any result: it merges queued messages into fewer turns (two
+    # results here) and reports no idle until all queued input is served.
+    it 'keeps stdin open across results for eagerly streamed messages until the final idle' do
+      with_query do |query, feed, ended, task|
+        streamer = task.async { query.stream_input([user_message('one'), user_message('two'), user_message('three')]) }
+        feed.call(state('running'), result)
+        expect(ended).to be_empty
+
+        feed.call(result)
+        expect(ended).to be_empty
+
+        feed.call(state('idle'))
+        task.with_timeout(2) { streamer.wait }
+        expect(ended).not_to be_empty
+      end
+    end
+
     %w[running requires_action].each do |wake|
       it "reopens an ended run for work the CLI takes up after idle (#{wake})" do
         gate = Async::Queue.new
