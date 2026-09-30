@@ -33,6 +33,14 @@ Failures (unsupported platform, invalid version, HTTP error, response-size cap, 
 
 **A failed install never breaks a working one.** The new binary is downloaded to a temp file, checksum-verified and recorded, and only then renamed into place — the rename is the last step, and nothing can fail after it. So a failed upgrade leaves the previously installed binary intact and runnable (the SDK keeps working), and the next `install` redoes it cleanly. A first install that fails leaves nothing behind at all.
 
+## When the pin moves
+
+`PINNED_CLI_VERSION` follows the CLI the Python SDK bundles. A bot PR moves it on `main`, usually within a few days, but the new pin reaches rubygems only with the next gem release: pin-only changes are batched rather than released one by one. A CLI security fix, or an SDK change that needs a newer CLI, gets a release sooner. Each release's CHANGELOG says when the pin moved. So `install_pinned` can trail the newest CLI by days. That is the price of installing the version the gem was tested with.
+
+A gem upgrade can therefore move your CLI, even in a patch release. If Dependabot merges gem patches for you, check the CHANGELOG for a `PINNED_CLI_VERSION` entry: a new CLI can behave differently even where the SDK's API does not change.
+
+To run a newer CLI before a gem release pins it, pin it yourself with `install(version: 'x.y.z')`, or `CLAUDE_CLI_VERSION=x.y.z` for the rake task and the `bin/setup` example below. Go back to `install_pinned` once a gem release catches up. `'stable'` and `'latest'` follow the newest CLI automatically, but they are not pins: a rebuild can pick up a different version.
+
 ## Where `vendor/claude` is
 
 With no `dir:`, `install`, `install_pinned` and `installed_path` use `CLIInstaller.default_dir`: `vendor/claude` under `CLIInstaller.root`, or under the process's working directory at call time while `root` is unset (the default). Transport discovery uses the same directory, so installing and finding the binary agree.

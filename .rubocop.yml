@@ -1,6 +1,15 @@
+inherit_mode:
+  merge:
+    - Include
+
 AllCops:
   TargetRubyVersion: 3.2
   NewCops: enable
+  # RuboCop skips dot-directories by default; CI's helper scripts are Ruby
+  # too. Merged into the default Include list (inherit_mode above), not
+  # replacing it, so Gemfile, *.gemspec and *.rake stay covered.
+  Include:
+    - '.github/scripts/**/*.rb'
   Exclude:
     - 'vendor/**/*'
     - 'tmp/**/*'
