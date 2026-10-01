@@ -1,9 +1,16 @@
 # Tracks the Python SDK's bundled-CLI pin (src/claude_agent_sdk/_cli_version.py
 # on anthropics/claude-agent-sdk-python main) and opens a PR moving
 # PINNED_CLI_VERSION in lib/claude_agent_sdk/cli_installer.rb when it changes.
-# That constant is the pin's single source of truth, so this workflow touches
-# exactly one line; the CHANGELOG entry and the follow-up patch release (which
-# is what Dependabot consumers actually see) stay human decisions.
+# That constant is the pin's single source of truth. The PR also keeps one
+# [Unreleased] CHANGELOG entry for it (.github/scripts/pin_changelog.rb), so a
+# run of bumps merged between releases reads "moves from <released> to <now>".
+#
+# Merging does not release anything. Pin-only changes are batched into the
+# next gem release rather than shipped one per bump: each release is a
+# Dependabot PR and a ~280MB CLI download for every install_pinned consumer,
+# and a CLI bump can change observable behaviour that a green integration run
+# does not cover (2.1.285's run-end timing, 10bbf78). Cut a release sooner for
+# a CLI security fix or when the SDK needs the newer CLI.
 #
 # Requirements:
 # - Repo setting: Settings → Actions → General → "Allow GitHub Actions to
@@ -41,6 +48,16 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Read current pin
+        id: current
+        run: |
+          version=$(sed -n "s/^    PINNED_CLI_VERSION = '\([^']*\)'$/\1/p" lib/claude_agent_sdk/cli_installer.rb)
+          if [ -z "$version" ]; then
+            echo "Could not find PINNED_CLI_VERSION in cli_installer.rb" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Apply pin
         run: |
           sed -i "s/^\(    PINNED_CLI_VERSION = \)'[^']*'/\1'${{ steps.upstream.outputs.version }}'/" \
@@ -48,6 +65,19 @@ jobs:
           # A silent sed no-op must fail loudly, not open an empty PR.
           grep -q "PINNED_CLI_VERSION = '${{ steps.upstream.outputs.version }}'" \
             lib/claude_agent_sdk/cli_installer.rb
+
+      # The script is stdlib only: a Ruby, no bundle.
+      - uses: ruby/setup-ruby@v1
+        if: steps.current.outputs.version != steps.upstream.outputs.version
+        with:
+          ruby-version: '3.4'
+
+      - name: Update CHANGELOG entry
+        if: steps.current.outputs.version != steps.upstream.outputs.version
+        run: ruby .github/scripts/pin_changelog.rb "$FROM" "$TO" CHANGELOG.md
+        env:
+          FROM: ${{ steps.current.outputs.version }}
+          TO: ${{ steps.upstream.outputs.version }}
 
       # No-ops (creates no PR) when the tree is unchanged, i.e. already current.
       - name: Open PR
@@ -60,6 +90,10 @@ jobs:
           body: |
             Tracks `_cli_version.py` on anthropics/claude-agent-sdk-python `main`.
 
-            Only the pin moves. After merging, cut a patch release so gem
-            consumers (e.g. Dependabot-driven Docker builds using
-            `CLIInstaller.install_pinned`) pick the new CLI up.
+            Moves the pin (${{ steps.current.outputs.version }} → ${{ steps.upstream.outputs.version }})
+            and its `[Unreleased]` CHANGELOG entry. CLI changes:
+            https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md
+
+            Merging does not need a release of its own: the pin ships with
+            the next gem release. Cut one sooner only for a CLI security fix
+            or when the SDK needs this CLI.
