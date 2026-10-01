@@ -10,8 +10,10 @@
 #
 # Only the bold target version of an existing entry is rewritten, so prose a
 # maintainer adds after it survives. Keep the "moves from X to **Y**" prefix
-# intact when editing the entry: without it the next bump adds a second one. A bump back to the released pin removes the
-# entry (and a `### Changed` heading it leaves empty).
+# intact when editing the entry: without it the next bump adds a second one.
+#
+# A bump back to the released pin removes the entry (and a `### Changed`
+# heading it leaves empty).
 module PinChangelog
   UNRELEASED = /^## \[Unreleased\][^\n]*\n/
   SECTION_END = /^## /
