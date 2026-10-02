@@ -119,6 +119,8 @@ ClaudeAgentSDK.delete_session(
 )
 ```
 
+Delete only sessions whose CLI process has exited. A CLI that is still running the session does not notice the deletion: its next write recreates the file with only the entries it writes from then on, so the session comes back in listings holding just the later part of the conversation.
+
 ## Forking a Session
 
 ```ruby
@@ -138,7 +140,7 @@ ClaudeAgentSDK.fork_session(
 
 Without `title:` the fork is named after its source, `<title> (fork)`: the title the listing shows for the source (its custom title, else its AI title), else its first prompt, else `Forked session`. The disk and the store path use the same rule.
 
-> Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process. `fork_session` writes and closes a private staging file before atomically publishing it with a hard link, so partial forks are not discoverable and existing sessions are never overwritten. The project filesystem must support hard links; publication failures leave the source and any existing destination untouched.
+> `rename_session` and `tag_session` use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They, and `fork_session`, are safe to call while the session is open in a CLI process; `delete_session` is not (see [Deleting a Session](#deleting-a-session)). `fork_session` writes and closes a private staging file before atomically publishing it with a hard link, so partial forks are not discoverable and existing sessions are never overwritten. The project filesystem must support hard links; publication failures leave the source and any existing destination untouched.
 
 ## Resuming at a Specific Message
 
