@@ -1746,10 +1746,21 @@ module ClaudeAgentSDK
       #   open until the run ends so hooks/SDK MCP control replies can still
       #   be written (the run's end or process exit is guaranteed to signal).
       # - No complete message ever reached the CLI (empty stream, or the
-      #   stream raised before the first write): no result can ever arrive,
-      #   so waiting would park query() forever beside an idle CLI. Close
-      #   stdin so the CLI sees EOF and exits. Deliberate improvement over
-      #   Python, which leaves stdin open and hangs on this path.
+      #   stream raised before the first write): no result is owed, so there
+      #   is nothing to wait for. Close stdin at once so the CLI sees EOF and
+      #   exits, as the Python and TypeScript SDKs do.
+      #   This is a trade-off, not a free win. An empty stream is also how a
+      #   caller says "send nothing, just resume", and a resumed session can
+      #   have work of its own: a tool call that a PreToolUse hook deferred
+      #   is re-run by the CLI on resume. If that tool is served by an SDK
+      #   MCP server, the CLI's request for it finds stdin already closed and
+      #   the CLI exits with an error (ProcessError, exit code 1;
+      #   anthropics/claude-agent-sdk-python#1226). Waiting instead would
+      #   hang every empty resume that has nothing pending: a CLI that is
+      #   idle with no input reports no session state (seen with 2.1.286),
+      #   so the two cases cannot be told apart without a signal from the
+      #   CLI. Until there is one, resume a deferred tool through Client,
+      #   which keeps stdin open.
       unless @closed
         if wrote_message
           wait_for_result_and_end_input
