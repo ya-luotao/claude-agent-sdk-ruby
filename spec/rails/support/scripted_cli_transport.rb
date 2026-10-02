@@ -13,6 +13,9 @@ module ClaudeAgentSDKRailsSpec
   #
   # Like the process it replaces, it ends the stream once the script is
   # played and the SDK has closed stdin (#end_input), or on #close.
+  #
+  # Plain Ruby with no RSpec dependency: booted_app_child.rb loads it into a
+  # child process too.
   class ScriptedCLITransport < ClaudeAgentSDK::Transport
     END_OF_STREAM = :end_of_stream
 
@@ -24,14 +27,16 @@ module ClaudeAgentSDKRailsSpec
     #   frame (Hash), a control request (Frames.control_request: the script
     #   waits for the SDK's answer before going on), or a callable that is
     #   given this transport and returns either.
-    def initialize(_options = nil, turns:)
+    # @param control_responses [Hash] where to record the SDK's answers; pass
+    #   one to read them when a Client builds the transport itself.
+    def initialize(_options = nil, turns:, control_responses: {})
       super()
       @turns = turns.map(&:dup)
       @steps = []
       @stdout = Thread::Queue.new
       @lock = Mutex.new
       @hook_callback_ids = []
-      @control_responses = {}
+      @control_responses = control_responses
       @awaited_request_id = nil
       @input_ended = false
       @closed = false

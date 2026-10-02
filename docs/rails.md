@@ -43,23 +43,25 @@ The gem ships a Railtie, an install generator and a rake task for vendoring the 
    end
    ```
 
-   The block runs on a plain thread (see the next section), so ActiveRecord calls inside it just work. For multi-turn sessions, hooks, custom tools and interrupts use `ClaudeAgentSDK::Client.open` — see [ActionCable streaming](#actioncable-streaming) below.
+   The block runs on a plain thread (see the next section), so ActiveRecord calls inside it are safe. It is a thread of its own, though: the job's `Current` attributes, time zone, log tags and database role or shard are not set there — see [Request state does not follow into callbacks](#request-state-does-not-follow-into-callbacks). For multi-turn sessions, hooks, custom tools and interrupts use `ClaudeAgentSDK::Client.open` — see [ActionCable streaming](#actioncable-streaming) below.
 
 ## Thread-keyed libraries are safe inside SDK callbacks
 
 The SDK depends on [`async`](https://github.com/socketry/async), which installs a Fiber scheduler that multiplexes fibers onto a single OS thread and intercepts IO so blocking calls yield to siblings. Most mature Ruby libraries are thread-safe but not fiber-safe — they key state (checked-out DB connections, per-thread caches, request stores) on `Thread.current`. When the scheduler interleaves two fibers on one thread, those fibers share the same state slot, and interleaved IO on a shared connection silently corrupts wire protocols. This affects every DB driver keyed by thread (`pg`, `mysql2`, `sqlite3`), ActiveRecord's connection pool, and HTTP/cache clients pooled per thread.
 
-You do **not** need to think about this. By default (`callback_scheduling: :thread`; see the fiber-workers section below for the opt-in alternative) the SDK hops to a plain thread at every user-callback boundary — message blocks given to `query` / `Client`, SDK MCP tool handlers, hooks, permission callbacks, and observer methods — so your code runs with no Fiber scheduler active and inherits the ordinary thread-keyed assumptions every Rails / Sidekiq / Kamal app already makes:
+The SDK keeps your callbacks out of this. By default (`callback_scheduling: :thread`; see the fiber-workers section below for the opt-in alternative) it hops to a plain thread at every user-callback boundary — message blocks given to `query` / `Client`, SDK MCP tool handlers, hooks, permission callbacks, and observer methods — so your code runs with no Fiber scheduler active, and thread-keyed libraries behave there as they do on any other thread:
 
 ```ruby
 tool = ClaudeAgentSDK.create_tool('lookup_user', 'Look up a user', { id: Integer }) do |args|
-  User.find(args[:id]).name                  # just works
+  User.find(args[:id]).name                  # a connection of this thread's own: safe
 end
 
 ClaudeAgentSDK.query(prompt: '...') do |message|
-  Message.create!(role: 'assistant', body: message.to_s)   # just works
+  Message.create!(role: 'assistant', body: message.to_s)   # likewise
 end
 ```
+
+That thread is a new one, not the thread that called the SDK. The connection pool does not mind; everything Rails keeps for the current request or job does — `Current` attributes, `Time.zone`, log tags, the database role and shard are all back at their defaults inside a callback. Read [Request state does not follow into callbacks](#request-state-does-not-follow-into-callbacks) before a callback touches anything scoped to the request.
 
 The trade-off: because callbacks run on a plain thread rather than inside an `Async::Task`, fiber-specific primitives aren't available to them — `Async::Task.current` will raise "No async task available". If a callback wants cooperative concurrency it should open its own `Async { }` block. In practice, callbacks typically do some Ruby work, call external services, and return — so this rarely matters. If you wrap your own call site in an outer `Async { }` block, the scheduler is visible to your code again; you've opted in, and whatever fiber-safety rules your app uses apply there.
 
@@ -79,7 +81,7 @@ It runs each callback inside the Rails executor — except where that would dead
 
 - **Development (code reloading enabled).** Every executor then holds a share of the code-reload interlock. The request or job calling the SDK is already inside the executor, and in `:thread` mode it waits for the callback's thread. If a reload is requested meanwhile (say, another request arrives after the agent edited an app file), the reloader queues for the exclusive unload lock, and a callback thread entering `executor.wrap` queues behind it for a fresh share — which the reloader can never let through while the waiting caller holds its own. Everything hangs. The helper instead runs the callback without entering the executor (the caller's share still keeps code from being unloaded under it) and returns the thread's ActiveRecord connections to the pool when the callback finishes. The executor's other per-run hooks (query cache, `CurrentAttributes` reset) do not run for callbacks in this case.
 - **`config.allow_concurrency = false`.** The executor holds a process-wide monitor that the calling thread already owns, so a callback thread's `executor.wrap` would block every time; same treatment.
-- **Already inside the executor** (`:inline` scheduling on a job's own fiber): the callback runs straight through, leaving cleanup to the enclosing executor.
+- **Already inside the executor** — a callback that runs on the caller's own fiber, which under `:inline` scheduling is a `Client`'s message block and observers: it runs straight through, leaving cleanup to the enclosing executor. The other `:inline` callbacks run on fibers of their own, where under fiber isolation the executor is not active; they take one of the other paths.
 
 Everywhere else — production, with no reloading — the callback runs inside the executor: its run hooks before the callback and its complete hooks after it, also when the callback raises. The configuration is read per call, so one initializer is correct in every environment.
 
@@ -93,6 +95,141 @@ Writing your own wrapper: it is a callable receiving a zero-arg `invocation`; it
 The wrapper also composes around every timeout-bounded `SessionStore` adapter call (mirror-batcher appends, resume-materialization loads and listings), inside the timeout bound — so an ActiveRecord-backed store adapter gets the same connection hygiene as your callbacks.
 
 When do you want this vs `callback_scheduling: :inline`? `callback_wrapper` + default `:thread` mode is the right choice for ordinary threaded hosts (Puma, threaded Sidekiq/solid_queue): it fixes connection hygiene without any fiber-isolation precondition. `:inline` is only for hosts that are fiber-isolated end to end (solid_queue fiber workers with `isolation_level = :fiber`); there the wrapper still applies — it simply runs in place on the reactor fiber.
+
+## Request state does not follow into callbacks
+
+A callback is written inside your controller action or job, a few lines below its `Current.set` or `connected_to` block — but it does not run there. It runs on a thread the SDK starts for it (the default `:thread` scheduling) or on a fiber of the SDK's reactor (`:inline`), and Rails keeps what belongs to the current request or job per thread or per fiber. A thread or fiber Rails never set up reads all of it as the default:
+
+| Set on the caller | What a callback sees |
+| --- | --- |
+| `Current.user = alice` (any `ActiveSupport::CurrentAttributes`) | `nil` |
+| `Time.zone = "Tokyo"`, `Time.use_zone` | the application's default zone (`UTC` unless configured) |
+| log tags: `Rails.logger.tagged("req-123")`, the request id, ActiveJob's job id | none |
+| `connected_to(role: :reading)` | `:writing` |
+| `connected_to(shard: :tenant_b)` | `:default` |
+| `connected_to(prevent_writes: true)` | writes allowed |
+| the error context: `Rails.error.set_context`, the controller or job Rails records | empty |
+| `I18n.locale = :de` | `:de` — i18n 1.14 and later keep it in fiber storage, which new threads and fibers inherit |
+| the OpenTelemetry context | kept — the SDK carries it across |
+
+This is the same in a message block, an observer, a hook, `can_use_tool` and an SDK MCP tool handler; with and without `Railtie.callback_wrapper`; in development and in production. It is the same under `callback_scheduling: :inline` with fiber isolation, with one exception: there a `Client`'s message block and observers run on the fiber that called the SDK, and see its state. (`ClaudeAgentSDK.query` runs every callback on another fiber, and hooks, `can_use_tool` and tool handlers always do.)
+
+Nothing raises. The consequences are silent:
+
+- A job inside `connected_to(shard: :tenant_b)` writes its own records to `tenant_b`; the same `create!` in a tool handler or in the message block writes to the **default** shard. Inside `connected_to(role: :reading)` the caller's own write raises `ActiveRecord::ReadOnlyError`; the same write in a callback succeeds, on the primary.
+- A scope or policy that reads `Current.account` runs unscoped. Log lines written by callbacks carry no request id, errors reported from them no controller or job, and times are formatted in the default zone.
+
+### Carrying the caller's state into callbacks
+
+The SDK has no option for this yet. The supported way today is a wrapper of your own that captures the state **on the caller** and restores it **inside** the Rails wrapper, on the callback's thread or fiber:
+
+<!-- spec/rails/request_state_spec.rb runs the next code block verbatim -->
+```ruby
+# app/lib/agent_context.rb
+module AgentContext
+  # A callback_wrapper that runs SDK callbacks under the state of whoever
+  # calls this method. Call it from the request or job, once per SDK call.
+  def self.callback_wrapper
+    rails   = ClaudeAgentSDK::Railtie.callback_wrapper
+    origin  = Fiber.current
+    restore = capture
+
+    lambda do |invocation|
+      # The callback is running on the caller itself: the state is there.
+      next rails.call(invocation) if Fiber.current.equal?(origin)
+
+      # Restore inside the Rails wrapper: the executor it enters starts
+      # every execution from a clean slate.
+      rails.call(-> { restore.call(invocation) })
+    end
+  end
+
+  # Snapshots the caller. Returns a lambda that runs an invocation under
+  # that snapshot, on whatever thread or fiber it is called on.
+  def self.capture
+    attributes = Current.attributes.dup
+    context    = ActiveSupport::ExecutionContext.to_h
+    zone       = Time.zone
+    tags       = log_tags
+
+    lambda do |invocation|
+      Current.set(attributes) do
+        ActiveSupport::ExecutionContext.set(**context) do
+          Time.use_zone(zone) do
+            with_log_tags(tags) { invocation.call }
+          end
+        end
+      end
+    end
+  end
+
+  def self.log_tags
+    formatter = Rails.logger.formatter if Rails.logger.respond_to?(:formatter)
+    formatter.respond_to?(:current_tags) ? formatter.current_tags.dup : []
+  end
+
+  # push / pop, not `Rails.logger.tagged(*tags) { ... }`: a BroadcastLogger
+  # runs that block once for every tagged logger it broadcasts to.
+  def self.with_log_tags(tags)
+    logger = Rails.logger
+    return yield if tags.empty? || !logger.respond_to?(:push_tags)
+
+    logger.push_tags(*tags)
+    begin
+      yield
+    ensure
+      logger.pop_tags(tags.size)
+    end
+  end
+end
+```
+
+Build the wrapper where the state is set, and pass it in that call's options:
+
+```ruby
+class SummarizeTicketJob < ApplicationJob
+  def perform(ticket)
+    Current.account = ticket.account
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+      callback_wrapper: AgentContext.callback_wrapper,   # replaces the configured Rails wrapper, and calls it
+      tools: [], max_turns: 1
+    )
+
+    ClaudeAgentSDK.query(prompt: "Summarize:\n\n#{ticket.body}", options: options) do |message|
+      # Current.account, Time.zone, the job's log tags and error context are set here
+      ticket.update!(summary: message.result) if message.is_a?(ClaudeAgentSDK::ResultMessage)
+    end
+  end
+end
+```
+
+What the recipe depends on:
+
+- **One wrapper per call, built on the caller.** `AgentContext.callback_wrapper` snapshots whoever calls it. Call it from the request or job, after its state is set and before `query` / `Client.open` — not inside their blocks, which may already run on another fiber. It cannot go into the initializer: a process-wide wrapper only ever runs at the destination and has no caller to look at. And it must not outlive the call: a wrapper is fixed for the lifetime of the session it was passed to, so one built when a long-lived `Client` connects makes every later turn run its callbacks as the **first** caller — another user's turn would read and write under the first user's account and shard. Open a session per request or job and resume it by id, as the examples below do, and the capture happens once per call.
+- **The restore happens inside `rails.call`.** In production the Rails wrapper enters the executor, and the executor starts every execution from a clean slate: it resets `Current` and the error context. State set around `rails.call` is wiped on the way in; state set inside it survives.
+- **No restore on the fiber that captured the state.** Under `:inline` scheduling a `Client`'s message block and observers run on the caller itself. The state is already there, and restoring it again would add the log tags a second time.
+- **Log tags are pushed and popped.** `Rails.logger` is an `ActiveSupport::BroadcastLogger`, and `Rails.logger.tagged(*tags) { ... }` runs its block once for every tagged logger in the broadcast, returning an array: with two tagged loggers the callback would run twice. `push_tags` / `pop_tags` reach every logger and run nothing. The two `respond_to?` checks keep the recipe working with a logger that has no tags.
+- **`ActiveSupport::ExecutionContext` is restored explicitly.** It is where `Rails.error.set_context` and Rails' own controller and job entries live; `Current.set` does not bring it back. Rails has no public reader for it, so recheck this line when you upgrade Rails.
+- **Values travel, containers do not.** The recipe rebuilds the caller's state from values. The objects themselves — `Current.user`, say — are shared with the caller, so treat them as read-only in callbacks. Do not go further and copy thread-local variables wholesale, hand the caller's ActiveRecord connection to a callback, or pass `ActiveRecord::Base.connected_to_stack` across: those are mutable and belong to one thread.
+
+An application with replicas or shards also carries the role, the shard and `prevent_writes`. Capture them in `capture`:
+
+```ruby
+    role, shard    = ApplicationRecord.current_role, ApplicationRecord.current_shard
+    prevent_writes = ApplicationRecord.current_preventing_writes
+```
+
+and re-enter them innermost, in place of `with_log_tags(tags) { invocation.call }`:
+
+```ruby
+            with_log_tags(tags) do
+              ApplicationRecord.connected_to(role: role, shard: shard, prevent_writes: prevent_writes) { invocation.call }
+            end
+```
+
+`connected_to` on `ApplicationRecord` switches the models that inherit from it; an application with several connection classes captures and re-enters each of them.
+
+What is checked: `spec/rails/request_state_spec.rb` boots a Rails application for each combination of production / development, `:thread` / `:inline` scheduling and `ClaudeAgentSDK.query` / `Client.open`. It pins the `Current`, `Time.zone`, log tag, error context and `I18n.locale` rows of the table, and runs the `AgentContext` block exactly as printed above through all five kinds of callback. It does not cover the three `connected_to` rows or the role / shard lines — the gem's Rails test bundles carry no ActiveRecord; those were measured in a Rails 8.1 application with ActiveRecord and SQLite.
 
 ## Fiber workers (solid_queue) and `callback_scheduling: :inline`
 
@@ -116,9 +253,13 @@ ClaudeAgentSDK.configure do |config|
 end
 ```
 
-With `:inline`, every user callback — message blocks, hooks, permission callbacks, SDK MCP handlers, observers — runs in place on the reactor fiber of the job. This is the same execution model as the Python SDK (async callbacks run natively on the event loop). Concretely:
+With `:inline`, no user callback leaves the job's reactor: message blocks, hooks, permission callbacks, SDK MCP handlers and observers all run in place, on a fiber of that reactor. This is the same execution model as the Python SDK (async callbacks run natively on the event loop).
 
-- `Fiber.scheduler` is live inside callbacks; reactor primitives work directly. DB access goes through the Rails 7.2+ fiber-aware pool under the same assumptions as the rest of your fiber-worker jobs.
+In place on the reactor is not the same as on the job's own fiber, and under fiber isolation the fiber is what Rails keys the job's state on. A `Client`'s message block and observers run on the fiber that called the SDK. Hooks, permission callbacks and SDK MCP handlers run on child fibers of the session's read task, and `ClaudeAgentSDK.query` runs its whole body, message block included, on a fiber of its own. On those fibers `Current`, `Time.zone`, the log tags and the database role and shard start from their defaults, exactly as on a callback thread — see [Request state does not follow into callbacks](#request-state-does-not-follow-into-callbacks).
+
+Concretely:
+
+- `Fiber.scheduler` is live inside callbacks; reactor primitives work directly. DB access goes through the Rails 7.2+ fiber-aware pool, as in the rest of your fiber-worker jobs.
 - No per-call threads exist, so nothing can strand an AR connection.
 - The whole SDK session can live directly on the job fiber — no bridge threads. `Client#connect` already requires an Async context, and the transport's pipe I/O is scheduler-aware.
 - Hook timeouts become **cooperative**: a timed-out inline hook is cancelled at its next suspension point (its `ensure` blocks run), instead of being abandoned on a worker thread. A CPU-stuck hook cannot be timed out.
