@@ -61,4 +61,25 @@ RSpec.configure do |config|
 
   # Show the slowest examples
   config.profile_examples = 10 if ENV['PROFILE']
+
+  # SubprocessCLITransport's at-exit registry is process-wide, so an entry one
+  # example leaves in it is seen by whichever example runs next: the suite
+  # used to fail for the seeds (81, 124) that ran a registry example right
+  # after a leaking one. Fail the example that leaked, and hand the next one
+  # an empty registry either way. This runs after a group's own `after`
+  # hooks. Snapshot and clear in one step under the registry's own mutex: a
+  # fallback-termination worker started by an earlier example may still be
+  # deregistering on its own thread.
+  config.after do
+    transport = ClaudeAgentSDK::SubprocessCLITransport
+    leaked = transport.active_processes_mutex.synchronize do
+      entries = transport.active_processes.to_a
+      transport.active_processes.clear
+      entries
+    end
+
+    leak = "this example left #{leaked.size} process(es) in SubprocessCLITransport's at-exit registry " \
+           "(#{leaked.inspect}): close the transport it connected, or deregister what it registered"
+    expect(leaked).to be_empty, leak
+  end
 end

@@ -475,6 +475,12 @@ RSpec.describe ClaudeAgentSDK::Query do
 end
 
 RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
+  # #connect registers the stubbed Process::Waiter in the process-wide
+  # at-exit registry and these examples never #close: drop it here, so the
+  # double does not outlive its example (see the suite-wide check in
+  # spec_helper.rb).
+  after { described_class.active_processes_mutex.synchronize { described_class.active_processes.clear } }
+
   def connect_and_capture_env(options)
     transport = described_class.new('hi', options)
     allow(transport).to receive(:check_claude_version)
