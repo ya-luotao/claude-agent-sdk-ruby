@@ -72,6 +72,46 @@ RSpec.describe 'Real Claude CLI Integration', :integration do
     expect(hook_invocations.any? { |invocation| invocation[:tool_use_id] }).to eq(true)
   end
 
+  # A hook may answer with a Hash in Ruby spelling. The CLI reads only
+  # hookEventName / permissionDecision, so while the SDK forwarded the nested
+  # keys as written the CLI ignored such an answer and ran the command; the
+  # marker file is what a dropped deny leaves behind. The unit specs pin the
+  # frame the SDK writes; only the real CLI can show that it acts on it.
+  it 'denies a Bash call when a PreToolUse hook answers with a snake_case Hash' do
+    asked = []
+    deny = lambda do |input, _tool_use_id, _context|
+      asked << input.tool_name
+      {
+        hook_specific_output: {
+          hook_event_name: 'PreToolUse',
+          permission_decision: 'deny',
+          permission_decision_reason: 'blocked by the snake_case hook'
+        }
+      }
+    end
+
+    Dir.mktmpdir('cas-hook-deny') do |dir|
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+        cwd: dir, model: 'haiku', setting_sources: [], max_turns: 4, max_budget_usd: 0.05,
+        allowed_tools: ['Bash'], tools: ['Bash'],
+        hooks: { 'PreToolUse' => [ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash', hooks: [deny])] }
+      )
+      messages = []
+      ClaudeAgentSDK.query(
+        prompt: 'Run exactly this one bash command and then stop, without retrying if it is blocked: touch marker.txt',
+        options: options
+      ) { |message| messages << message }
+
+      tool_results = messages.grep(ClaudeAgentSDK::UserMessage)
+                             .flat_map { |message| Array(message.content).grep(ClaudeAgentSDK::ToolResultBlock) }
+      expect(asked).to include('Bash')
+      expect(tool_results).not_to be_empty
+      expect(tool_results.first.is_error).to be true
+      expect(File.exist?(File.join(dir, 'marker.txt'))).to be false
+      expect(messages.grep(ClaudeAgentSDK::ResultMessage).last.permission_denials).not_to be_empty
+    end
+  end
+
   it 'invokes SDK MCP tools for one-shot query() calls through Claude CLI' do
     executions = []
 

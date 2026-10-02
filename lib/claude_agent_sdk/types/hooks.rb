@@ -637,4 +637,77 @@ module ClaudeAgentSDK
       result
     end
   end
+
+  # The spellings a hook callback's return value may use for a field of the
+  # typed output classes above, mapped to the key the CLI reads. A Hash a
+  # callback returns stands for the typed output with the same fields: its
+  # keys may be Symbols or Strings, the attribute names (snake_case) or what
+  # #to_h emits (camelCase), at the top level and inside hook_specific_output.
+  #
+  # Only names that differ from their wire key are listed. A key that is not
+  # listed is sent as written, so a field of a newer CLI that the typed
+  # classes do not model still gets through, in the CLI's own spelling.
+  # spec/unit/hook_output_normalization_spec.rb walks every typed output
+  # class and fails when an attribute and these tables disagree.
+  #
+  # @api private
+  module HookOutputKeys
+    # SyncHookJSONOutput and AsyncHookJSONOutput attributes, plus the
+    # Ruby-safe spellings of the two keywords.
+    TOP_LEVEL = {
+      'continue_' => 'continue',
+      'async_' => 'async',
+      'suppress_output' => 'suppressOutput',
+      'stop_reason' => 'stopReason',
+      'system_message' => 'systemMessage',
+      'hook_specific_output' => 'hookSpecificOutput',
+      'async_timeout' => 'asyncTimeout'
+    }.freeze
+
+    # Attributes of the *HookSpecificOutput classes.
+    HOOK_SPECIFIC = {
+      'hook_event_name' => 'hookEventName',
+      'permission_decision' => 'permissionDecision',
+      'permission_decision_reason' => 'permissionDecisionReason',
+      'updated_input' => 'updatedInput',
+      'additional_context' => 'additionalContext',
+      'updated_tool_output' => 'updatedToolOutput',
+      'updated_mcp_tool_output' => 'updatedMCPToolOutput',
+      'watch_paths' => 'watchPaths'
+    }.freeze
+
+    # The hook output Hash as the CLI reads it: String keys in wire
+    # spelling, at the top level and one level down, inside
+    # hookSpecificOutput. Values are never rewritten: updatedInput and the
+    # tool outputs are the tool's own payloads, and a PermissionRequest
+    # decision goes out as the caller wrote it.
+    def self.normalize(output)
+      normalized = rename(output, TOP_LEVEL)
+      specific = normalized['hookSpecificOutput']
+      normalized['hookSpecificOutput'] = rename(specific, HOOK_SPECIFIC) if specific.is_a?(Hash)
+      normalized
+    end
+
+    # Every key ends up as one String, so a Symbol and a String spelling the
+    # same field cannot both reach JSON.generate (json 3.x raises on that;
+    # 2.x emits the key twice). When a Hash carries both spellings of one
+    # field the wire spelling wins, whichever comes first; between two keys
+    # in the same spelling the later one does.
+    def self.rename(hash, table)
+      renamed = {}
+      wire_spelled = {}
+      hash.each do |key, value|
+        name = key.to_s
+        wire = table.fetch(name, name)
+        if wire == name
+          wire_spelled[wire] = true
+        elsif wire_spelled.key?(wire)
+          next
+        end
+        renamed[wire] = value
+      end
+      renamed
+    end
+    private_class_method :rename
+  end
 end

@@ -41,7 +41,8 @@ module ClaudeAgentSDK
 
     attr_accessor directories: Array[String]?
 
-    # One of PERMISSION_UPDATE_DESTINATIONS.
+    # One of PERMISSION_UPDATE_DESTINATIONS. When nil, #to_h sends "session"
+    # (unless type is nil too).
     attr_accessor destination: String?
 
     attr_reader rules: Array[PermissionRuleValue]?
@@ -49,7 +50,8 @@ module ClaudeAgentSDK
     # Hash entries (camelCase or snake_case keys) become PermissionRuleValue.
     def rules=: (Array[PermissionRuleValue | Hash[Symbol | String, untyped]]? value) -> Array[PermissionRuleValue | Hash[Symbol | String, untyped]]?
 
-    # The wire form (camelCase keys).
+    # The wire form (camelCase keys). A rule without content has no
+    # ruleContent key.
     def to_h: () -> Hash[Symbol, untyped]
   end
 

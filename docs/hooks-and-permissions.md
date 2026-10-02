@@ -79,6 +79,25 @@ end.wait
 
 See [examples/hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/hooks_example.rb), [examples/advanced_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/advanced_hooks_example.rb), and [examples/lifecycle_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
 
+### Hook output
+
+A callback returns a typed output (`AsyncHookJSONOutput`, or `SyncHookJSONOutput`, which can hold a `*HookSpecificOutput`), a Hash, or `nil` (the same as `{}`). A Hash stands for the typed output with the same fields. Its keys may be Symbols or Strings, and each field may be spelled as the typed class's attribute (`permission_decision`) or as the CLI reads it (`permissionDecision`), at the top level and inside `hook_specific_output`. The deny in the example above can also be written as:
+
+```ruby
+{
+  hook_specific_output: {
+    hook_event_name: 'PreToolUse', # a typed output sets this itself; a Hash has to carry it
+    permission_decision: 'deny',
+    permission_decision_reason: "Command contains forbidden pattern: #{pattern}"
+  }
+}
+```
+
+- `continue_` and `async_` stand for `continue` and `async`.
+- A key the typed classes do not have is sent as written, so a CLI field the SDK does not model has to be spelled the way the CLI spells it.
+- The keys inside `updated_input`, `updated_tool_output`, `updated_mcp_tool_output` and a `PermissionRequest` `decision` are not renamed: those are the tool's own payloads (for `decision`, the CLI's), so spell them as the tool or the CLI does.
+- If one Hash spells the same field both ways, the CLI's spelling is the one sent (`permissionDecision` over `permission_decision`, `continue` over `continue_`).
+
 ### Hook cancellation
 
 Dispatched hooks receive `HookContext#request_id` and `HookContext#signal`, using

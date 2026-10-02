@@ -47,8 +47,9 @@ module ClaudeAgentSDK
                             | CwdChangedHookSpecificOutput
                             | FileChangedHookSpecificOutput
 
-  # What a hook callback returns: a Hash (snake_case or camelCase keys), a
-  # typed output, or nil (treated as {}).
+  # What a hook callback returns: a Hash (Symbol or String keys, snake_case
+  # or camelCase, also inside hook_specific_output), a typed output, or nil
+  # (treated as {}).
   type hook_output = Hash[Symbol | String, untyped] | SyncHookJSONOutput | AsyncHookJSONOutput | nil
 
   # A hook callback (HookMatcher#hooks entries). tool_use_id is nil for
@@ -520,7 +521,9 @@ module ClaudeAgentSDK
 
     attr_accessor reason: String?
 
-    # A typed output, or the equivalent Hash (camelCase wire keys, sent as-is).
+    # A typed output, or the equivalent Hash (snake_case or camelCase keys).
+    # #to_h returns a Hash as written; the SDK puts its keys in wire spelling
+    # when it sends the output.
     attr_accessor hook_specific_output: (hook_specific_output | Hash[Symbol | String, untyped])?
 
     def to_h: () -> Hash[Symbol, untyped]
