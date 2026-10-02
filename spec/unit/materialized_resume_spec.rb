@@ -57,8 +57,10 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
       File.symlink(outside, File.join(config_dir, 'linked-elsewhere'))
     end
 
+    # config_dir may have been replaced by a symlink whose target is gone by
+    # now: File.directory? is false for that, so test for the link itself.
     after do
-      [config_dir, outside].each { |dir| FileUtils.remove_entry(dir) if File.directory?(dir) }
+      [config_dir, outside].each { |dir| FileUtils.remove_entry(dir) if File.symlink?(dir) || File.directory?(dir) }
     end
 
     def preserve
