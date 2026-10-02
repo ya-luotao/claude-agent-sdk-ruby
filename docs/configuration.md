@@ -287,6 +287,110 @@ and `Client#query`.
 
 Matches the Python SDK's `verbatim_prompts`.
 
+## Session Isolation
+
+Claude Code keeps an **auto-memory** for each project: Markdown notes and an
+index file, `<config dir>/projects/<project key>/memory/MEMORY.md`. It is a
+CLI feature, it is on by default, and SDK sessions take part in it. If one
+process runs sessions for more than one user or tenant, three things follow:
+
+- **Every session reads the index.** The CLI puts `MEMORY.md` into the context
+  of every session of that project, under the same heading as `CLAUDE.md` (in
+  CLI 2.1.287: "IMPORTANT: These instructions OVERRIDE any default behavior
+  and you MUST follow them exactly as written"). That holds with the SDK's
+  default (empty) system prompt and with `tools: []`. `setting_sources: []`
+  does not change it either: that option selects the user, project and local
+  sources (their settings files and their `CLAUDE.md` files), and the
+  auto-memory is not one of them.
+- **A session on the `claude_code` preset also writes it.** The preset system
+  prompt includes instructions for keeping memories, so a message such as
+  "remember that ..." makes the model save a note and update the index with
+  its file tools. The CLI allows those writes by itself: in testing (CLI
+  2.1.286) they succeeded in the default permission mode with no
+  `can_use_tool` callback, no hook and no allow rule. Do not count on your
+  permission setup to stop them. With the SDK's default system prompt the
+  sessions tested only read the index: asked to remember something, they
+  wrote nothing (an observation, not a guarantee).
+- **The memory belongs to the project, not to the session.** The project key
+  is the root of the git repository that contains the working directory, so
+  every subdirectory and every git worktree of one repository shares one
+  memory directory. Outside a repository the key is the working directory
+  itself.
+
+So on a server that runs every user's session from one checkout and one config
+directory with the `claude_code` preset, what one user asks the agent to
+remember can be saved without a permission check and then reach every later
+session as an instruction. With the default system prompt the exposure is the
+read side: whatever memory already exists for that project and config
+directory, a developer's own for instance, is in every session's context.
+
+### Turning auto-memory off
+
+Servers and multi-tenant hosts should switch it off. Both forms work with
+`query()` and `Client`:
+
+```ruby
+# An environment variable for the CLI process
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }
+)
+
+# Or the CLI setting
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  settings: { autoMemoryEnabled: false }
+)
+```
+
+To apply it to every session, set it as a default (a per-call `env` Hash is
+merged into the configured one):
+
+```ruby
+ClaudeAgentSDK.configure do |config|
+  config.default_options = { env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' } }
+end
+```
+
+- The variable must be `'1'`. `'0'` and `'false'` do not mean "the default":
+  they force auto-memory **on** and override `autoMemoryEnabled: false`.
+- `bare: true` turns auto-memory off as well, but bare mode never reads an
+  OAuth login or the keychain: it authenticates with `ANTHROPIC_API_KEY` (or
+  an `apiKeyHelper` setting) only. See [Bare Mode](#bare-mode).
+- With a [custom transport](client.md#custom-transport), `env` reaches the CLI
+  only if the transport passes it on. `settings` travels in the `--settings`
+  argument that `CommandBuilder` builds.
+
+### What does not isolate sessions
+
+- **A different `cwd`** separates the memory only when the two directories
+  are not in the same git repository.
+- **A different `CLAUDE_CONFIG_DIR`** separates it only when the two config
+  directories do not share `projects/` (a `projects/` that is a symlink to
+  another config directory's is shared). A new config directory also has no
+  login, so give the CLI `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`
+  (in the process environment or in `env`).
+- **`setting_sources: []`** keeps the user, project and local settings and
+  `CLAUDE.md` files out of a session. The auto-memory index still loads.
+
+"One working directory per tenant" is therefore not enough on its own. Use the
+switch.
+
+### Checking what a session loaded
+
+`Client#context_usage` reports the files in a session's context without a
+model call. The auto-memory index is the entry whose `:type` is `"AutoMem"`:
+
+```ruby
+ClaudeAgentSDK::Client.open(options: options) do |client|
+  client.context_usage.fetch(:memoryFiles, []).each do |file|
+    puts "#{file[:type]} #{file[:path]} (#{file[:tokens]} tokens)"
+  end
+end
+# AutoMem /home/app/.claude/projects/-srv-app/memory/MEMORY.md (27 tokens)
+```
+
+With auto-memory off the list has no `AutoMem` entry. `query()` has no
+equivalent; run the check through a `Client` with the same options.
+
 ## Forwarding Subagent Text
 
 By default only `tool_use` / `tool_result` blocks from subagents (spawned via
