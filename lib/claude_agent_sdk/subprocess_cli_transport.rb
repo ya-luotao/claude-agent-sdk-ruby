@@ -291,8 +291,10 @@ module ClaudeAgentSDK
       cmd = build_command
 
       # Build environment
-      # Convert symbol keys to strings for spawn compatibility
-      custom_env = @options.env.transform_keys(&:to_s)
+      # Convert symbol keys to strings for spawn compatibility. `|| {}`: the
+      # constructor defaults env (and extra_args, below) to {}, but both are
+      # nil again after `options.dup_with(env: nil)` or `options.env = nil`.
+      custom_env = (@options.env || {}).transform_keys(&:to_s)
       # Explicitly unset CLAUDECODE to prevent "nested session" detection when the SDK
       # launches Claude Code from within an existing Claude Code terminal.
       # NOTE: Must set to nil (not just omit the key) — Ruby's spawn only overlays
@@ -322,7 +324,8 @@ module ClaudeAgentSDK
       process_env['PWD'] = @cwd.to_s if @cwd
 
       # Determine stderr handling
-      should_pipe_stderr = @options.stderr || @options.debug_stderr || @options.extra_args.key?('debug-to-stderr')
+      should_pipe_stderr = @options.stderr || @options.debug_stderr ||
+                           (@options.extra_args || {}).key?('debug-to-stderr')
 
       begin
         # A path #resolve_cli_path could not settle is never handed to spawn:
