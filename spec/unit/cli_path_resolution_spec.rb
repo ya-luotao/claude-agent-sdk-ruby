@@ -26,7 +26,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
   end
 
   # Keep a vendored binary (CLIInstaller.root may point anywhere on a
-  # developer machine) out of the discovery examples; `which` is real.
+  # developer machine) out of the discovery examples.
   before { allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_return(nil) }
 
   # The examples assert on the marker line the probe leg writes. The fakes
@@ -262,43 +262,69 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
     end
   end
 
+  # Discovery looks for `claude` itself, on the process's PATH. HOME at the
+  # tmp root keeps the well-known `~/...` install locations empty, so a
+  # regression in the PATH step fails here instead of reaching the
+  # developer's real CLI.
   describe 'discovery (no cli_path)' do
-    # Discovery looks for `claude` itself. HOME at the tmp root keeps the
-    # well-known `~/...` install locations empty, so a regression in the
-    # `which` step fails here instead of reaching the developer's real CLI.
-    context "with the host's own `which`" do
-      before do
-        skip 'which(1) is not installed here' unless system('which', 'which', out: File::NULL, err: File::NULL)
-      end
+    it 'runs the hit of a relative PATH entry from the process cwd, for the probe and the spawn' do
+      install_fake_cli('app/bin/claude')
+      install_fake_cli('target/bin/claude')
 
-      it 'runs the hit of a relative PATH entry from the process cwd, for the probe and the spawn' do
-        install_fake_cli('app/bin/claude')
-        install_fake_cli('target/bin/claude')
-
-        with_env('PATH' => path_with('bin'), 'HOME' => root) do
-          expect(legs_executed).to eq(%w[probe:app/bin/claude spawn:app/bin/claude])
-        end
-      end
-
-      it 'runs the hit of a `.` PATH entry from the process cwd' do
-        install_fake_cli('app/claude')
-        install_fake_cli('target/claude')
-
-        with_env('PATH' => path_with('.'), 'HOME' => root) do
-          expect(legs_executed).to eq(%w[probe:app/claude spawn:app/claude])
-        end
+      with_env('PATH' => path_with('bin'), 'HOME' => root) do
+        expect(legs_executed).to eq(%w[probe:app/bin/claude spawn:app/bin/claude])
       end
     end
 
-    # `which` implementations differ (BSD, busybox and Debian's print the
-    # relative hit, GNU's prints an absolute one), so pin the relative
-    # spelling itself.
-    it 'absolutizes a relative `which` hit against the process cwd' do
-      install_fake_cli('app/bin/claude')
-      allow(Open3).to receive(:capture2).and_call_original
-      allow(Open3).to receive(:capture2).with('which', 'claude').and_return(["bin/claude\n", nil])
+    it 'runs the hit of a `.` PATH entry from the process cwd' do
+      install_fake_cli('app/claude')
+      install_fake_cli('target/claude')
 
-      transport = Dir.chdir(app) { described_class.new(options) }
+      with_env('PATH' => path_with('.'), 'HOME' => root) do
+        expect(legs_executed).to eq(%w[probe:app/claude spawn:app/claude])
+      end
+    end
+
+    # `which` is a program like any other: looked up on PATH — here through
+    # the relative `bin` entry — and free to answer anything. This one names
+    # the binary inside options.cwd. Discovery searches PATH itself, so it
+    # neither runs `which` nor has an answer to believe.
+    it 'does not run or believe a `which` found on PATH' do
+      install_fake_cli('app/bin/claude')
+      install_fake_cli('target/bin/claude')
+      lying_which = File.join(app, 'bin', 'which')
+      File.write(lying_which, <<~SH)
+        #!/bin/sh
+        echo 'which-ran' >> '#{marker}'
+        echo '#{File.join(target, 'bin', 'claude')}'
+      SH
+      File.chmod(0o755, lying_which)
+      search = ['bin', '/usr/bin', '/bin'].join(File::PATH_SEPARATOR)
+
+      with_env('PATH' => search, 'HOME' => root) do
+        expect(legs_executed).to eq(%w[probe:app/bin/claude spawn:app/bin/claude])
+      end
+    end
+
+    # A PATH in options.env is the session's. Discovery searches the PATH
+    # `which claude` used to see, the process's; only an explicit bare
+    # cli_path is looked up on the session's.
+    it 'searches the process PATH, not the one options.env gives the session' do
+      install_fake_cli('app/bin/claude')
+      install_fake_cli('tools/claude')
+      session_env = { 'PATH' => path_with(File.join(root, 'tools')) }
+
+      with_env('PATH' => path_with('bin'), 'HOME' => root) do
+        expect(legs_executed(env: session_env)).to eq(%w[probe:app/bin/claude spawn:app/bin/claude])
+      end
+    end
+
+    it 'puts the anchored absolute path in the argv before connecting' do
+      install_fake_cli('app/bin/claude')
+
+      transport = with_env('PATH' => path_with('bin'), 'HOME' => root) do
+        Dir.chdir(app) { described_class.new(options) }
+      end
 
       expect(transport.build_command.first).to eq(File.join(app, 'bin', 'claude'))
     end
@@ -349,15 +375,15 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
       end
     end
 
-    it 'keeps an absolute `which` hit exactly as printed' do
-      hit = File.join(symlinked_dotdot('claude'), 'claude')
-      allow(Open3).to receive(:capture2).and_call_original
-      allow(Open3).to receive(:capture2).with('which', 'claude').and_return(["#{hit}\n", nil])
+    it 'discovers `claude` through such a PATH entry and keeps the entry as written' do
+      bin = symlinked_dotdot('claude')
 
       # HOME at the tmp root: no well-known install location to fall back on.
-      transport = with_env('HOME' => root) { Dir.chdir(app) { described_class.new(options) } }
+      transport = with_env('PATH' => path_with(bin), 'HOME' => root) do
+        Dir.chdir(app) { described_class.new(options) }
+      end
 
-      expect(transport.build_command.first).to eq(hit)
+      expect(transport.build_command.first).to eq(File.join(bin, 'claude'))
     end
   end
 

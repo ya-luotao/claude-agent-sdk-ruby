@@ -179,13 +179,16 @@ module ClaudeAgentSDK
     #   2. A project-local vendored binary (CLIInstaller). Deliberately ahead
     #      of PATH: the point of a pinned, vendored CLI is that it beats
     #      whatever version happens to be installed globally on the host.
-    #   3. `which claude`.
+    #   3. `claude` on this process's PATH, searched here
+    #      (#executable_on_path). Not by running `which`: that program would
+    #      itself be looked up on PATH, relative entries included, and its
+    #      answer would have to be believed.
     #   4. Well-known install locations.
     #
     # Every hit is returned as an absolute path — see #settle_cli_path.
     #
     # @api private
-    def find_cli # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- ordered discovery probes (env, vendored, PATH, known locations)
+    def find_cli # rubocop:disable Metrics/MethodLength -- ordered discovery probes (env, vendored, PATH, known locations)
       env_path = ENV.fetch(CLI_PATH_ENV_VAR, nil).to_s
       unless env_path.empty?
         # Absolutize against the CURRENT working directory, which is where the
@@ -208,19 +211,11 @@ module ClaudeAgentSDK
       end
       return vendored if vendored
 
-      # Try which command first (using Open3 for thread safety)
-      cli = nil
-      begin
-        stdout, _status = Open3.capture2('which', 'claude')
-        hit = stdout.strip
-        # A relative PATH entry (`bin`, `.`, the empty entry) makes most
-        # `which` implementations print a relative hit. Anchor it to the cwd
-        # `which` ran in, for the same reason as CLAUDE_CLI_PATH.
-        cli = anchor_to_cwd(hit) unless hit.empty?
-      rescue StandardError
-        # which command failed, try common locations
-      end
-      return cli if cli && File.executable?(cli)
+      # The process's own PATH, the one `which claude` used to search here: a
+      # PATH set through options.env is the session's, and only a bare
+      # cli_path is searched on it (#spawn_search_path). No PATH, no step.
+      on_path = executable_on_path('claude', ENV.fetch('PATH', nil))
+      return on_path if on_path
 
       # Try common locations. The home-relative ones are skipped when no
       # usable home exists (see #home_dir), so a HOME-less container still
@@ -1032,7 +1027,7 @@ module ClaudeAgentSDK
     # byte) is returned as given, and #connect reports it as
     # CLINotFoundError.
     def settle_cli_path(path)
-      return executable_on_path(path) || path unless path.include?(File::SEPARATOR)
+      return executable_on_path(path, spawn_search_path) || path unless path.include?(File::SEPARATOR)
 
       path.start_with?('~') ? expand_leading_tilde(path) : anchor_to_cwd(path)
     rescue ArgumentError, EncodingError, SystemCallError
@@ -1051,17 +1046,17 @@ module ClaudeAgentSDK
       File.join(File.expand_path(head), rest)
     end
 
-    # The lookup spawn used to do for a bare command name, done here so that
-    # the result is absolute: same PATH (#search_path_entries), same test (an
-    # executable regular file), first hit wins. The difference is the point
-    # of doing it here: a relative entry — `bin`, `.`, the empty entry — is
-    # anchored to the process cwd, where spawn found the file here and then
-    # executed that relative path inside options.cwd. Returns nil when
-    # nothing matches.
-    def executable_on_path(name)
-      return nil if name.empty?
+    # The first executable regular file called +name+ on +search_path+, as an
+    # absolute path, or nil. This is the lookup spawn did for a bare command
+    # name (and `which` for discovery), done here so that nothing is run to
+    # find the CLI and nothing relative comes back: a relative entry — `bin`,
+    # `.`, the empty entry — is anchored to the process cwd, where spawn
+    # found the file here and then executed that relative path inside
+    # options.cwd.
+    def executable_on_path(name, search_path)
+      return nil if name.empty? || search_path.nil?
 
-      search_path_entries.each do |entry|
+      search_path_entries(search_path).each do |entry|
         candidate = File.join(path_entry_dir(entry), name)
         return candidate if File.file?(candidate) && File.executable?(candidate)
       rescue ArgumentError, EncodingError, SystemCallError
@@ -1070,12 +1065,18 @@ module ClaudeAgentSDK
       nil
     end
 
-    # The PATH spawn searched: the one the child is given through options.env
-    # when it sets one, else this process's, else Ruby's built-in default.
-    def search_path_entries
+    # The PATH spawn searched for a bare cli_path: the one the child is given
+    # through options.env when it sets one, else this process's, else Ruby's
+    # built-in default. (Discovery searches the process's PATH — #find_cli.)
+    def spawn_search_path
       env = @options.env
-      search_path = env.transform_keys(&:to_s)['PATH'] if env.is_a?(Hash)
-      search_path = (search_path || ENV.fetch('PATH', DEFAULT_EXEC_SEARCH_PATH)).to_s
+      from_options = env.transform_keys(&:to_s)['PATH'] if env.is_a?(Hash)
+      from_options || ENV.fetch('PATH', DEFAULT_EXEC_SEARCH_PATH)
+    end
+
+    # A PATH value as its entries.
+    def search_path_entries(search_path)
+      search_path = search_path.to_s
       # spawn searched bytes; a PATH that is invalid in its encoding cannot
       # be split as text.
       search_path = search_path.b unless search_path.valid_encoding?
