@@ -83,6 +83,10 @@ module ClaudeAgentSDK
     KEYCHAIN_SERVICE_NAME = 'Claude Code-credentials'
     KEYCHAIN_TIMEOUT_SECONDS = 5
 
+    # The default ClaudeAgentOptions gives load_timeout_ms; used when a caller
+    # set the attribute back to nil.
+    DEFAULT_LOAD_TIMEOUT_MS = 60_000
+
     # SystemCallError classes that indicate a transiently-held handle (Windows
     # AV/indexer scanning a freshly-written file) or a recoverable resource
     # shortage (file-table exhaustion) rather than a permanent failure. EMFILE/
@@ -97,9 +101,11 @@ module ClaudeAgentSDK
     # Return a copy of +options+ repointed at a materialized temp config dir:
     # CLAUDE_CONFIG_DIR in env, resume set to the materialized session id, and
     # continue_conversation cleared (already resolved to a concrete session id).
+    # options.env reads nil once a caller set it back to nil (the constructor
+    # default is {}); that means no overrides.
     def apply_materialized_options(options, materialized)
       options.dup_with(
-        env: options.env.merge('CLAUDE_CONFIG_DIR' => materialized.config_dir.to_s),
+        env: (options.env || {}).merge('CLAUDE_CONFIG_DIR' => materialized.config_dir.to_s),
         resume: materialized.resume_session_id,
         continue_conversation: false
       )
@@ -134,7 +140,9 @@ module ClaudeAgentSDK
       return nil if store.nil?
       return nil if options.resume.nil? && !options.continue_conversation
 
-      timeout_s = options.load_timeout_ms / 1000.0
+      # load_timeout_ms reads nil once a caller set it back to nil; the
+      # constructor default applies then. 0 is a valid (immediate) timeout.
+      timeout_s = (options.load_timeout_ms || DEFAULT_LOAD_TIMEOUT_MS) / 1000.0
       # Probed ONCE at materialization entry (the resume path's construction
       # point) so an invalid callback_scheduling declaration fails fast here,
       # before any store IO or temp-dir work.
