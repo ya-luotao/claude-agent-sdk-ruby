@@ -135,6 +135,23 @@ module ClaudeAgentSDK
       end
     end
 
+    # What a failing user callback raises — a hook, can_use_tool, an SDK MCP
+    # tool / resource / prompt handler, or the callback_wrapper around one.
+    # The Ruby spelling of Python's `except Exception`: NotImplementedError
+    # and LoadError (both ScriptError), SystemStackError and SecurityError
+    # are not StandardErrors, so `rescue StandardError` lets them through.
+    # The control request then goes unanswered and its handler task ends
+    # with an exception Async treats as fatal for the whole reactor. Rescue
+    # `*FiberBoundary::CALLBACK_FAILURES` wherever a callback's failure is
+    # turned into the answer the CLI is waiting for.
+    #
+    # An explicit list, not `rescue Exception`: cancellation (Async::Stop,
+    # InlineCancellation) and process exits (SystemExit, SignalException —
+    # see .invoke_callback) must keep propagating. NoMemoryError stays out
+    # as well: building the answer would most likely fail again.
+    # @api private
+    CALLBACK_FAILURES = [StandardError, ScriptError, SystemStackError, SecurityError].freeze
+
     # Carries a SystemExit / SignalException (Interrupt included) raised by
     # a user callback out of the FiberBoundary hop — see .invoke_callback.
     # A StandardError so the hop ends normally: a :thread worker that died

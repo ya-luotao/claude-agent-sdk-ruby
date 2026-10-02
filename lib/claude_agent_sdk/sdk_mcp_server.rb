@@ -306,8 +306,10 @@ module ClaudeAgentSDK
       return error_tool_result("Tool '#{name}' must return a hash with :content key") unless content
 
       result
-    rescue StandardError => e
-      # Bare e.message like Python's str(e) — no prefix.
+    rescue *FiberBoundary::CALLBACK_FAILURES => e
+      # Bare e.message like Python's str(e) — no prefix. The list, not just
+      # StandardError: a handler's NotImplementedError, LoadError or
+      # SystemStackError is a tool failure the model should read as well.
       error_tool_result(e.message)
     end
 
@@ -507,12 +509,15 @@ module ClaudeAgentSDK
                 error: !!is_error,
                 structured_content: structured_content
               )
-            rescue StandardError => e
+            rescue *FiberBoundary::CALLBACK_FAILURES => e
               # Report handler failures in-band HERE rather than letting them
               # reach the gem: mcp >= 1.2 deliberately drops e.message from
               # its "Internal error calling tool X" wrapper (CWE-209), which
               # would hide the text the model needs to self-correct. Bare
               # e.message like Python's str(e) and #call_tool — no prefix.
+              # The list, not just StandardError: the gem rescues only
+              # StandardError, so a handler's NotImplementedError / LoadError /
+              # SystemStackError would pass it unanswered.
               # Nothing gem-internal can be swallowed here today: handlers get
               # no server_context, so MCP::CancelledError never originates
               # inside this method. Revisit if cancellation is ever plumbed in.
