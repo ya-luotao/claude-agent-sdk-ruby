@@ -382,10 +382,21 @@ module ClaudeAgentSDK
     # unknown keys for forward-compat with newer CLI output), ClaudeAgentOptions
     # is a developer-facing config object — typos should fail loudly.
     def assign_attribute(name, value)
-      setter = :"#{normalize_name(name)}="
-      raise ArgumentError, "unknown ClaudeAgentOptions option: #{name.inspect}" unless respond_to?(setter)
+      setter = option_setter(normalize_name(name))
+      raise ArgumentError, "unknown ClaudeAgentOptions option: #{name.inspect}" unless setter
 
       public_send(setter, value)
+    end
+
+    # The writer of the option with this normalized name, nil when the name
+    # is not an option. An option is a declared attribute, or a setter user
+    # code defined (on a subclass, a module it includes, or the object);
+    # respond_to? alone would also answer for '[]' (#[]=) and '=' (#==).
+    def option_setter(normalized)
+      setter = :"#{normalized}="
+      return unless respond_to?(setter)
+
+      setter if self.class.attribute?(normalized) || user_defined_method?(setter)
     end
 
     # Merge caller-provided attributes with configured defaults.
@@ -436,7 +447,7 @@ module ClaudeAgentSDK
     # reports the typo exactly as the developer wrote it.
     def option_key(name)
       normalized = normalize_name(name)
-      respond_to?(:"#{normalized}=") ? normalized.to_sym : name
+      option_setter(normalized) ? normalized.to_sym : name
     end
   end
 end

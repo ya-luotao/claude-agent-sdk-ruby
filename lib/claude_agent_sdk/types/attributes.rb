@@ -184,6 +184,10 @@ module ClaudeAgentSDK
     end
 
     def read_attribute(name)
+      # A writer's name (`session_id=`) is not readable. Checked before the
+      # cache, which also holds the camelCase writers method_missing resolved.
+      return if writer_name?(name)
+
       reader = self.class.cached_attribute_reader(name)
       return public_send(reader) if reader
 
@@ -196,6 +200,11 @@ module ClaudeAgentSDK
       elsif user_defined_method?(getter)
         public_send(getter)
       end
+    end
+
+    def writer_name?(name)
+      name = name.to_s unless name.is_a?(Symbol) || name.is_a?(String)
+      name.end_with?('=')
     end
 
     # Whether a normalized reader, writer or predicate name belongs to an
