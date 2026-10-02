@@ -16,23 +16,26 @@ RSpec.describe 'the 64 KiB windows of the disk session reader' do
   let(:prompt) { '请总结这个仓库的结构' }
   let(:title) { '仓库结构总结' }
   let(:branch) { '功能/会话读取' }
+  let(:answer) { '好的。' }
+  let(:last_prompt) { '最后一个问题' }
 
   # A session of about 350 KB of CJK text: neither window is ASCII-only.
-  # +head_pad+ / +tail_pad+ ASCII bytes shift where the two windows are cut.
+  # +head_pad+ ASCII bytes in front of the first answer and +tail_pad+ after
+  # the last prompt shift where the two windows are cut.
   def transcript_bytes(head_pad, tail_pad)
     transcript = CLITranscript.new(session_id: session_id, cwd: cwd, git_branch: branch)
     transcript.queue_operations(prompt)
     transcript.prompt(:prompt, prompt)
     parent = :prompt
     60.times do |turn|
-      answer = transcript.text("#{'x' * head_pad if turn.zero?}#{'好的。' * 500}")
-      transcript.assistant(:"answer_#{turn}", answer, parent: parent, message: "msg_#{turn}")
+      text = transcript.text("#{'x' * head_pad if turn.zero?}#{answer * 500}")
+      transcript.assistant(:"answer_#{turn}", text, parent: parent, message: "msg_#{turn}")
       transcript.prompt(:"next_#{turn}", "继续 #{turn} #{'请继续说明' * 100}", parent: :"answer_#{turn}")
       parent = :"next_#{turn}"
     end
     transcript.custom_title(title)
     transcript.tag('重要')
-    transcript.last_prompt("最后一个问题#{'x' * tail_pad}", leaf: parent)
+    transcript.last_prompt("#{last_prompt}#{'x' * tail_pad}", leaf: parent)
     transcript.to_jsonl
   end
 
@@ -43,11 +46,41 @@ RSpec.describe 'the 64 KiB windows of the disk session reader' do
     end
   end
 
+  # The smallest of +pads+ for which the block names a UTF-8 continuation
+  # byte (the second or third byte of one of the fixture's CJK characters).
+  def smallest_pad(pads)
+    pads.find { |pad| yield(pad).between?(0x80, 0xBF) } || raise('no CJK text where the window is cut')
+  end
+
+  # [head pad, tail pad] that cut both windows of the fixture inside a
+  # character, read off its unpadded bytes.
+  #
+  # cwd is on every line and is a temp dir, whose length differs between
+  # machines and from run to run. It decides where the windows begin and
+  # end, and that can be deep in the ASCII keys and ids of a line, where a
+  # byte or two of padding changes nothing. So the pads are computed:
+  #
+  # * the head window ends inside a character when the byte after it is a
+  #   continuation byte; +pad+ bytes in front of the first answer bring the
+  #   byte from +pad+ places earlier there (it must lie behind the padding);
+  # * the tail window starts inside a character when its first byte is one;
+  #   +pad+ bytes after the last prompt move its start +pad+ places on.
+  #   Padding in front of the window moves its start and the text alike, so
+  #   the head pad does not come into it.
+  def window_pads
+    plain = transcript_bytes(0, 0).b
+    window = ClaudeAgentSDK::Sessions::LITE_READ_BUF_SIZE
+    tail_start = plain.bytesize - window
+    [
+      smallest_pad(0...(window - plain.index(answer.b))) { |pad| plain.getbyte(window - pad) },
+      smallest_pad(0...(plain.rindex(last_prompt.b) - tail_start)) { |pad| plain.getbyte(tail_start + pad) }
+    ]
+  end
+
   # The fixture with both of its windows cut inside a 3-byte character.
   def write_transcript
-    candidates = [0, 1, 2].product([0, 1, 2]).lazy.map { |pads| transcript_bytes(*pads) }
-    bytes = candidates.find { |candidate| cut_inside_a_character?(candidate) }
-    raise 'no padding cuts both windows inside a character' unless bytes
+    bytes = transcript_bytes(*window_pads)
+    expect(cut_inside_a_character?(bytes)).to be(true), 'the fixture does not cut both windows inside a character'
 
     path = transcript_path(session_id)
     FileUtils.mkdir_p(File.dirname(path))
