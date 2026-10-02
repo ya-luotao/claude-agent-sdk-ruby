@@ -191,6 +191,34 @@ module ClaudeAgentSDKRailsSpec
       Rails.logger.stop_broadcasting_to(second)
     end
 
+    # Two fiber-worker jobs on one reactor thread: job A sets its locale with
+    # I18n.with_locale — as the recipe does in an :inline callback — and
+    # suspends; job B runs meanwhile and sets its own. Buffered queues order
+    # the steps, so nothing waits on a clock. No SDK involved: this is what
+    # i18n does with the restore.
+    def run_two_jobs_switching_locales
+      a_inside = Thread::Queue.new
+      b_done = Thread::Queue.new
+      seen = {}
+      Sync do |task|
+        job_a = task.async do
+          I18n.with_locale(:de) do
+            a_inside << true
+            b_done.pop
+            seen['own_job_sees_after'] = I18n.locale.to_s
+          end
+        end
+        job_b = task.async do
+          a_inside.pop
+          seen['other_job_sees'] = I18n.locale.to_s
+          I18n.locale = :fr
+          b_done << true
+        end
+        [job_a, job_b].each(&:wait)
+      end
+      seen
+    end
+
     private
 
     def in_executor(&block)
@@ -286,6 +314,7 @@ end
 end
 observed['reused wrapper'] = requests.run_reusing_a_wrapper
 observed['two tagged loggers'] = requests.run_with_two_tagged_loggers(scheduling: schedulings.first)
+observed['two jobs switching locales'] = requests.run_two_jobs_switching_locales
 
 puts "BOOTED_APP_RESULT #{JSON.generate(observed)}"
 FileUtils.rm_rf(Rails.root.to_s)

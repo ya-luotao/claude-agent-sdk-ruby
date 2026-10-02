@@ -41,6 +41,28 @@ RSpec.describe 'Request state inside SDK callbacks' do
     ClaudeAgentSDKRailsSpec::BootedApp.observe(reloading: reloading, isolation: isolation)
   end
 
+  # The I18n.locale table in docs/rails.md: what a callback off the caller's
+  # fiber gets by itself — the caller's :de or the default :en — depends on
+  # where i18n keeps its config: a fiber-local up to 1.14.7, a thread variable
+  # in 1.14.8 (every fiber of the thread shares it), fiber storage from 1.15
+  # (new threads and fibers inherit it).
+  def locale_by_itself(i18n, own_thread:)
+    version = Gem::Version.new(i18n)
+    return 'de' if version >= Gem::Version.new('1.15')
+    return 'de' if version >= Gem::Version.new('1.14.8') && !own_thread
+
+    'en'
+  end
+
+  # i18n 1.14.8 under :inline: the locale is shared by every fiber of the
+  # reactor thread, so I18n.with_locale in one job (the recipe's restore in a
+  # callback) leaks into another job, and the other job's I18n.locale= leaks
+  # back. Every other i18n keeps the two apart.
+  def thread_shared_locale?(i18n)
+    version = Gem::Version.new(i18n)
+    version >= Gem::Version.new('1.14.8') && version < Gem::Version.new('1.15')
+  end
+
   { 'production' => false, 'development (code reloading)' => true }.each do |environment, reloading|
     [%i[thread thread], %i[fiber inline], %i[fiber thread]].each do |isolation, scheduling|
       { 'ClaudeAgentSDK.query' => 'query', 'Client.open' => 'client' }.each do |entry_point, api|
@@ -72,12 +94,11 @@ RSpec.describe 'Request state inside SDK callbacks' do
             end
           end
 
-          it 'hands I18n.locale down to every callback by itself when i18n keeps it in fiber storage (1.15+)' do
-            i18n = observed.fetch('i18n')
-            skip "i18n #{i18n} keeps the locale per thread or fiber" if Gem::Version.new(i18n) < Gem::Version.new('1.15')
-
+          it 'gives every callback the I18n.locale the guide states for this i18n version' do
+            by_itself = locale_by_itself(observed.fetch('i18n'), own_thread: scheduling == :thread)
             callbacks.each do |kind|
-              expect(with_railtie_wrapper.fetch(kind)).to contain_exactly(include('locale' => 'de')), "in #{kind}"
+              locale = on_caller_fiber.include?(kind) ? 'de' : by_itself
+              expect(with_railtie_wrapper.fetch(kind)).to contain_exactly(include('locale' => locale)), "in #{kind}"
             end
           end
 
@@ -110,6 +131,19 @@ RSpec.describe 'Request state inside SDK callbacks' do
       )
       callbacks.each do |kind|
         expect(later_request.fetch(kind)).to contain_exactly(include(caller_state)), "in #{kind}"
+      end
+    end
+  end
+
+  describe 'I18n.with_locale in one fiber-worker job while another runs on the same reactor thread' do
+    let(:observed) { booted_app(reloading: false, isolation: :fiber) }
+    let(:seen) { observed.fetch('two jobs switching locales') }
+
+    it 'stays in the job that set it, unless i18n shares the locale across the thread (1.14.8)' do
+      if thread_shared_locale?(observed.fetch('i18n'))
+        expect(seen).to eq('other_job_sees' => 'de', 'own_job_sees_after' => 'fr')
+      else
+        expect(seen).to eq('other_job_sees' => 'en', 'own_job_sees_after' => 'de')
       end
     end
   end

@@ -131,10 +131,18 @@ A callback is written inside your controller action or job, a few lines below it
 | `connected_to(shard: :tenant_b)` | `:default` |
 | `connected_to(prevent_writes: true)` | writes allowed |
 | the error context: `Rails.error.set_context`, the controller or job Rails records | empty |
-| `I18n.locale = :de` | `:de` with i18n 1.15 or later, which keeps the locale in fiber storage that new threads and fibers inherit; the default locale with older i18n |
+| `I18n.locale = :de` | depends on the i18n version — see below |
 | the OpenTelemetry context | kept — the SDK carries it across |
 
 This is the same in a message block, an observer, a hook, `can_use_tool` and an SDK MCP tool handler; with and without `Railtie.callback_wrapper`; in development and in production. It is the same under `callback_scheduling: :inline` with fiber isolation, with one exception: there a `Client`'s message block and observers run on the fiber that called the SDK, and see its state. (`ClaudeAgentSDK.query` runs every callback on another fiber, and hooks, `can_use_tool` and tool handlers always do.)
+
+What a callback gets of `I18n.locale` depends on where i18n keeps its configuration:
+
+| i18n | Callback on a thread of its own (`:thread` scheduling) | Callback on another fiber of the caller's thread (`:inline`) |
+| --- | --- | --- |
+| 1.14.7 and earlier: a fiber-local | the default locale | the default locale |
+| 1.14.8: a thread variable | the default locale | `:de` — every fiber of the thread shares one locale |
+| 1.15 and later: fiber storage | `:de` — new threads and fibers inherit it | `:de` |
 
 Nothing raises. The consequences are silent:
 
@@ -236,7 +244,7 @@ What the recipe depends on:
 - **No restore on the fiber that captured the state.** Under `:inline` scheduling a `Client`'s message block and observers run on the caller itself. The state is already there, and restoring it again would add the log tags a second time.
 - **Log tags are pushed and popped.** `Rails.logger` is an `ActiveSupport::BroadcastLogger`, and `Rails.logger.tagged(*tags) { ... }` runs its block once for every tagged logger in the broadcast, returning an array: with two tagged loggers the callback would run twice. `push_tags` / `pop_tags` reach every logger and run nothing. The two `respond_to?` checks keep the recipe working with a logger that has no tags.
 - **`ActiveSupport::ExecutionContext` is restored explicitly.** It is where `Rails.error.set_context` and Rails' own controller and job entries live; `Current.set` does not bring it back. Rails has no public reader for it, so recheck this line when you upgrade Rails.
-- **The locale is restored rather than assumed.** Only i18n 1.15 and later hand the caller's locale down to new threads and fibers; with an older i18n a callback starts from the default locale, like the rest of the table.
+- **The locale is restored rather than assumed**, because only i18n 1.15 and later hand it to every callback by themselves. The restore is safe wherever a callback has a thread of its own, which is `:thread` scheduling, with any i18n. With i18n 1.14.8 it is only safe there: under `:inline` all fibers of the reactor thread share one locale, so a callback's `I18n.with_locale` changes the locale of every job on that worker while the callback runs, and another job that sets its own locale meanwhile changes the callback's. On a fiber-isolated host with `:inline` scheduling, keeping jobs' locales apart needs i18n 1.15 or later, or `:thread` scheduling.
 - **Values travel, containers do not.** The recipe rebuilds the caller's state from values. The objects themselves — `Current.user`, say — are shared with the caller, so treat them as read-only in callbacks. Do not go further and copy thread-local variables wholesale, hand the caller's ActiveRecord connection to a callback, or pass `ActiveRecord::Base.connected_to_stack` across: those are mutable and belong to one thread.
 
 An application with replicas or shards also carries the role, the shard and `prevent_writes`. Capture them in `capture`:
@@ -256,7 +264,7 @@ and re-enter them innermost, in place of `with_log_tags(tags) { invocation.call 
 
 `connected_to` on `ApplicationRecord` switches the models that inherit from it; an application with several connection classes captures and re-enters each of them.
 
-What is checked: `spec/rails/request_state_spec.rb` boots a Rails application for each combination of production / development, `:thread` / `:inline` scheduling and `ClaudeAgentSDK.query` / `Client.open`. It pins the `Current`, `Time.zone`, log tag and error context rows of the table, the `I18n.locale` row for the i18n the bundle resolves (1.15 or later), and runs the `AgentContext` block exactly as printed above through all five kinds of callback. It does not cover the three `connected_to` rows or the role / shard lines — the gem's Rails test bundles carry no ActiveRecord; those were measured in a Rails 8.1 application with ActiveRecord and SQLite.
+What is checked: `spec/rails/request_state_spec.rb` boots a Rails application for each combination of production / development, `:thread` / `:inline` scheduling and `ClaudeAgentSDK.query` / `Client.open`. It pins the `Current`, `Time.zone`, log tag and error context rows of the table, the `I18n.locale` cases for whichever i18n the bundle resolves (CI's resolve 1.15 or later; the 1.14.7 and 1.14.8 rows were run against those releases), and runs the `AgentContext` block exactly as printed above through all five kinds of callback. It does not cover the three `connected_to` rows or the role / shard lines — the gem's Rails test bundles carry no ActiveRecord; those were measured in a Rails 8.1 application with ActiveRecord and SQLite.
 
 ## Transactions and the connection pool
 
