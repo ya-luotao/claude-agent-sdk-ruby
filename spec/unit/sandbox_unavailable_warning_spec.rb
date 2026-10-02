@@ -23,19 +23,21 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'unavailable sandbox warn
   # (`process.stderr.write(`\n⚠ Sandbox disabled: ${reason}\n  Commands
   # will run WITHOUT sandboxing. ...\n\n`)`), with the reason the CLI builds
   # on a Linux host that has neither bubblewrap nor socat.
-  let(:cli_line) do
-    '⚠ Sandbox disabled: sandbox is enabled but dependencies are missing: ' \
+  let(:unavailable_reason) do
+    'sandbox is enabled but dependencies are missing: ' \
       'bubblewrap (bwrap) not installed, socat not installed ' \
       '· install missing tools (e.g. apt install bubblewrap socat) ' \
       'or see https://code.claude.com/docs/en/sandboxing'
   end
+  let(:cli_line) { "⚠ Sandbox disabled: #{unavailable_reason}" }
   let(:cli_notice) do
     "\n#{cli_line}\n  " \
       "Commands will run WITHOUT sandboxing. Network and filesystem restrictions will NOT be enforced.\n\n"
   end
 
-  # Writes +stderr_text+ to stderr, then ends the run with a result frame.
-  def install_fake_cli(stderr_text, exit_status: 0)
+  # Writes +stderr_text+ to stderr, then ends the run (with a result frame
+  # unless +result+ is false).
+  def install_fake_cli(stderr_text, exit_status: 0, result: true)
     stderr_file = File.join(@dir, 'stderr.txt')
     File.write(stderr_file, stderr_text)
     path = File.join(@dir, 'claude')
@@ -46,7 +48,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'unavailable sandbox warn
         exit 0
       fi
       cat '#{stderr_file}' >&2
-      printf '%s\\n' '#{JSON.generate(sample_result_message)}'
+      #{"printf '%s\\n' '#{JSON.generate(sample_result_message)}'" if result}
       exit #{exit_status}
     SH
     File.chmod(0o755, path)
@@ -117,12 +119,18 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'unavailable sandbox warn
     end
   end
 
-  it 'stays silent when the CLI did not report the sandbox as disabled' do
-    quiet_cli = install_fake_cli("[SandboxDebug] sandbox initialized\nSandbox enabled: bubblewrap\n")
+  # With failIfUnavailable the CLI does not carry on unsandboxed: it prints
+  # this instead (2.1.286 / 2.1.287, same startup branch) and exits 1, which
+  # the session already reports as a ProcessError carrying the text.
+  it 'stays silent when the CLI refuses to start without the sandbox' do
+    refusal = "\nError: sandbox required but unavailable: #{unavailable_reason}\n  " \
+              "sandbox.failIfUnavailable is set — refusing to start without a working sandbox.\n\n"
+    refusing_cli = install_fake_cli(refusal, exit_status: 1, result: false)
+    transport = transport_with(cli_path: refusing_cli, sandbox: { enabled: true, failIfUnavailable: true })
+    captured = StringIO.new
 
-    output = stderr_during_session(transport_with(cli_path: quiet_cli, sandbox: { enabled: true }))
-
-    expect(output).to be_empty
+    expect { stderr_during_session(transport, stderr: captured) }.to raise_error(ClaudeAgentSDK::ProcessError)
+    expect(captured.string).to be_empty
   end
 
   # A host's $stderr can be a pipe nobody reads any more. The warning is

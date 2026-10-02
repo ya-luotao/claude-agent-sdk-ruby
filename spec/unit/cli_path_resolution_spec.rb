@@ -143,28 +143,46 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
     end
   end
 
+  # Names no host has on PATH: if the lookup regressed, an example must fail
+  # with CLINotFoundError, not fall through to the developer's real `claude`
+  # (which would then wait for a prompt on stdin and hang the run).
   describe 'an explicit bare name' do
     it 'is found through a relative PATH entry in the process cwd, for the probe and the spawn' do
-      install_fake_cli('app/bin/claude')
-      install_fake_cli('target/bin/claude')
+      install_fake_cli('app/bin/fake-claude-cli')
+      install_fake_cli('target/bin/fake-claude-cli')
 
       with_env('PATH' => path_with('bin')) do
-        expect(legs_executed(cli_path: 'claude')).to eq(%w[probe:app/bin/claude spawn:app/bin/claude])
+        expect(legs_executed(cli_path: 'fake-claude-cli'))
+          .to eq(%w[probe:app/bin/fake-claude-cli spawn:app/bin/fake-claude-cli])
       end
     end
 
     it 'treats `.` and an empty PATH entry as the process cwd' do
-      install_fake_cli('app/claude')
-      install_fake_cli('target/claude')
+      install_fake_cli('app/fake-claude-cli')
+      install_fake_cli('target/fake-claude-cli')
 
       aggregate_failures do
         ['.', ''].each do |entry|
           FileUtils.rm_f(marker)
           with_env('PATH' => path_with(entry)) do
-            expect(legs_executed(cli_path: 'claude')).to eq(%w[probe:app/claude spawn:app/claude]),
-                                                         "PATH entry #{entry.inspect}: #{legs.inspect}"
+            expect(legs_executed(cli_path: 'fake-claude-cli'))
+              .to eq(%w[probe:app/fake-claude-cli spawn:app/fake-claude-cli]), "PATH entry #{entry.inspect}: #{legs.inspect}"
           end
         end
+      end
+    end
+
+    # Ruby's spawn tests for an executable regular file; a directory of the
+    # same name earlier on PATH (executable? is true for directories) is
+    # passed over.
+    it 'takes the first executable regular file on PATH, not a directory of that name' do
+      FileUtils.mkdir_p(File.join(root, 'dirs', 'fake-claude-cli'))
+      install_fake_cli('tools/fake-claude-cli')
+      search = [File.join(root, 'dirs'), File.join(root, 'tools'), ENV.fetch('PATH')].join(File::PATH_SEPARATOR)
+
+      with_env('PATH' => search) do
+        expect(legs_executed(cli_path: 'fake-claude-cli'))
+          .to eq(%w[probe:tools/fake-claude-cli spawn:tools/fake-claude-cli])
       end
     end
 
@@ -189,11 +207,11 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
     end
 
     it 'anchors a relative entry of the options.env PATH to the process cwd as well' do
-      install_fake_cli('app/bin/claude')
-      install_fake_cli('target/bin/claude')
+      install_fake_cli('app/bin/fake-claude-cli')
+      install_fake_cli('target/bin/fake-claude-cli')
 
-      expect(legs_executed(cli_path: 'claude', env: { PATH: path_with('bin') }))
-        .to eq(%w[probe:app/bin/claude spawn:app/bin/claude])
+      expect(legs_executed(cli_path: 'fake-claude-cli', env: { PATH: path_with('bin') }))
+        .to eq(%w[probe:app/bin/fake-claude-cli spawn:app/bin/fake-claude-cli])
     end
 
     it 'reports a name that is not on PATH as CLINotFoundError at connect, not at construction' do
@@ -245,6 +263,9 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
   end
 
   describe 'discovery (no cli_path)' do
+    # Discovery looks for `claude` itself. HOME at the tmp root keeps the
+    # well-known `~/...` install locations empty, so a regression in the
+    # `which` step fails here instead of reaching the developer's real CLI.
     context "with the host's own `which`" do
       before do
         skip 'which(1) is not installed here' unless system('which', 'which', out: File::NULL, err: File::NULL)
@@ -254,7 +275,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
         install_fake_cli('app/bin/claude')
         install_fake_cli('target/bin/claude')
 
-        with_env('PATH' => path_with('bin')) do
+        with_env('PATH' => path_with('bin'), 'HOME' => root) do
           expect(legs_executed).to eq(%w[probe:app/bin/claude spawn:app/bin/claude])
         end
       end
@@ -263,7 +284,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
         install_fake_cli('app/claude')
         install_fake_cli('target/claude')
 
-        with_env('PATH' => path_with('.')) do
+        with_env('PATH' => path_with('.'), 'HOME' => root) do
           expect(legs_executed).to eq(%w[probe:app/claude spawn:app/claude])
         end
       end
