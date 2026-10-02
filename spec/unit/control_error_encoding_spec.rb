@@ -7,8 +7,11 @@ require 'rbconfig'
 # The process-exit cells of this file end their process, so each one runs in
 # a child (spec/support/callback_exit_harness.rb): all of them in parallel,
 # once, the first time an example asks for a result.
-module UnencodableExitChildren
-  CELLS = %i[hook read_resource call_tool].product(CallbackExitHarness::MODES).freeze
+module EncodedExitChildren
+  # [path, scheduling, kind]: an error control response (hook) and both
+  # MCP-shaped answers, for every exit in CallbackExitHarness::ENCODED_EXITS.
+  CELLS = %i[hook read_resource call_tool]
+          .product(CallbackExitHarness::MODES, CallbackExitHarness::ENCODED_EXITS.keys).freeze
 
   def self.result(cell)
     results.fetch(cell)
@@ -18,14 +21,13 @@ module UnencodableExitChildren
     @results ||= CELLS.zip(CELLS.map { |cell| Thread.new { run(cell) } }.map(&:value)).to_h
   end
 
-  # Read as bytes: the answer carries U+FFFD, and how a text-mode read would
-  # tag it depends on the locale.
+  # Read as bytes: the answers carry non-ASCII text, and how a text-mode read
+  # would tag it depends on the locale.
   def self.run(cell)
     lib_dir = File.expand_path('../../lib', __dir__)
     harness_file = File.expand_path('../support/callback_exit_harness.rb', __dir__)
     out, err, status = Open3.capture3(RbConfig.ruby, '-I', lib_dir, '-r', 'claude_agent_sdk', '-r', harness_file,
-                                      '-e', 'CallbackExitHarness.main(ARGV)', *cell.map(&:to_s), 'exit_invalid_utf8',
-                                      binmode: true)
+                                      '-e', 'CallbackExitHarness.main(ARGV)', *cell.map(&:to_s), binmode: true)
     [out.force_encoding(Encoding::UTF_8), err, status]
   end
 end
@@ -37,6 +39,9 @@ end
 # rescue clause that was answering the request, where nothing catches it.
 # The request was never answered, and on the process-exit path the
 # GeneratorError also replaced the SystemExit that has to end the process.
+# A process exit with valid text in an encoding that is not ASCII-compatible
+# (UTF-16) failed one step earlier, with Encoding::CompatibilityError, when
+# the exception's class name was put in front of the message.
 RSpec.describe 'control error responses for messages that are not valid UTF-8' do
   # Records every frame the SDK writes.
   let(:transport_class) do
@@ -144,8 +149,8 @@ RSpec.describe 'control error responses for messages that are not valid UTF-8' d
     end
   end
 
-  # Issue #119's promise, kept for a message that cannot be encoded: the CLI
-  # is answered, then the ORIGINAL exception ends the process. The answer is
+  # Issue #119's promise, kept whatever the exit's message holds: the CLI is
+  # answered, then the ORIGINAL exception ends the process. The answer is
   # the one an ordinary failure gets on each path — an error control response
   # (hook), a JSON-RPC internal error (resources/read) or an isError result
   # (tools/call) inside a successful control response.
@@ -166,15 +171,71 @@ RSpec.describe 'control error responses for messages that are not valid UTF-8' d
                        'response' => { 'mcp_response' => { 'jsonrpc' => '2.0', 'id' => 7 }.merge(mcp_response) })
     end
 
-    UnencodableExitChildren::CELLS.each do |path, mode|
-      it "answers #{path} once (#{mode} scheduling), then exits with the original SystemExit" do
-        out, err, status = UnencodableExitChildren.result([path, mode])
-        exit_kind = CallbackExitHarness::INVALID_UTF8_EXIT
+    messages = {
+      exit_invalid_utf8: 'cut inside a multibyte character (the stray byte is replaced)',
+      exit_utf16: 'valid UTF-16LE text (transcoded, so it stays readable)'
+    }
+
+    EncodedExitChildren::CELLS.each do |path, mode, kind|
+      it "answers #{path} once (#{mode} scheduling), then exits with the original SystemExit: #{messages.fetch(kind)}" do
+        out, err, status = EncodedExitChildren.result([path, mode, kind])
+        exit_kind = CallbackExitHarness::ENCODED_EXITS.fetch(kind)
 
         expect(out).not_to include(CallbackExitHarness::SURVIVED)
         expect(status.exitstatus).to eq(exit_kind[:exitstatus]), "child: #{status.inspect}\n#{err}"
         expect(responses(out)).to eq([failure_response(path, exit_kind[:message])])
       end
+    end
+
+    # In-process from here on, so :inline and Interrupt only, the dispatch
+    # inside `rescue Exception` (as in callback_process_exit_spec.rb): RSpec
+    # does not rescue Interrupt, so a leak has to become an expectation.
+    it 're-raises the very exception the callback raised, its message untouched' do
+      original = Interrupt.new('arrêt demandé'.encode(Encoding::UTF_16LE))
+      transport = transport_class.new
+      query = ClaudeAgentSDK::Query.new(transport: transport, is_streaming_mode: true, callback_scheduling: :inline)
+      query.instance_variable_set(:@hook_callbacks, { 'hook' => ->(*) { raise original } })
+
+      raised = begin
+        Sync { query.send(:handle_control_request, CallbackExitHarness.control_request(:hook)) }
+        nil
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        e
+      end
+
+      # Compared without letting RSpec print the UTF-16 text on a failure.
+      expect(raised.equal?(original)).to be(true), "expected the callback's own Interrupt back, got #{raised.class}"
+      message = original.message
+      expect([message.encoding, message.encode(Encoding::UTF_8)]).to eq([Encoding::UTF_16LE, 'arrêt demandé'])
+      expect(transport.frames).to eq([error_response('Interrupt: arrêt demandé')])
+    end
+  end
+
+  # Query puts the class name in front of the message itself, because the
+  # message has to be normalized first. The format is the one
+  # FiberBoundary.process_exit_message gives the carrier a callback_wrapper
+  # sees; this keeps the two from drifting apart.
+  describe 'the text a process exit is reported with' do
+    def frames_for_exit(error)
+      transport = transport_class.new
+      query = ClaudeAgentSDK::Query.new(transport: transport, is_streaming_mode: true)
+      query.send(:respond_to_process_exit, 'req_fail', CallbackExitHarness.control_request(:hook)[:request], error)
+      transport.frames
+    end
+
+    [
+      SystemExit.new(3, 'exit'), SystemExit.new(3, 'bye'), SystemExit.new(3, 'arrêt à 5 %'),
+      Interrupt.new, Interrupt.new(''), SignalException.new('TERM')
+    ].each do |error|
+      it "is FiberBoundary.process_exit_message's for #{error.class} with the message #{error.message.inspect}" do
+        expect(frames_for_exit(error)).to eq([error_response(ClaudeAgentSDK::FiberBoundary.process_exit_message(error))])
+      end
+    end
+
+    it 'has the same form when the message had to be transcoded' do
+      error = SystemExit.new(3, 'café'.encode(Encoding::UTF_16LE))
+
+      expect(frames_for_exit(error)).to eq([error_response('SystemExit: café')])
     end
   end
 end

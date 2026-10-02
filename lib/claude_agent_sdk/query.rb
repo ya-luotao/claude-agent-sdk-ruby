@@ -857,8 +857,18 @@ module ClaudeAgentSDK
     # Answers the request, then leaves the process-exit exception to its
     # caller to re-raise: the response an ordinary exception from the
     # callback would have produced, naming the exception by class.
+    #
+    # The text has the format of FiberBoundary.process_exit_message, built
+    # here from the normalized message instead of calling it: that method
+    # joins the class name to the raw message, which raises
+    # Encoding::CompatibilityError for an encoding that is not
+    # ASCII-compatible (UTF-16). Raised in the rescue clause this runs in,
+    # that error would leave the request unanswered and replace the exit.
+    # +error+ is only read, never changed.
     def respond_to_process_exit(request_id, request_data, error)
-      respond_to_callback_failure(request_id, request_data, FiberBoundary.process_exit_message(error))
+      detail = wire_text(error.message)
+      message = detail.empty? || detail == error.class.name ? error.class.name : "#{error.class}: #{detail}"
+      respond_to_callback_failure(request_id, request_data, message)
     end
 
     # The response an ordinary exception from the callback would have

@@ -57,6 +57,17 @@ module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-co
     text: 'no such order: 注文'.byteslice(0, 16), message: "SystemExit: no such order: \uFFFD", exitstatus: 3
   }.freeze
 
+  # A process exit whose message is valid text in an encoding that is not
+  # ASCII-compatible (UTF-16): it cannot be joined to the UTF-8 class name as
+  # it is. The CLI is told the same text in UTF-8, and the exit still ends
+  # the process.
+  UTF16_EXIT = {
+    text: 'no such order: 注文'.encode(Encoding::UTF_16LE), message: 'SystemExit: no such order: 注文', exitstatus: 3
+  }.freeze
+
+  # The kinds that raise the two exits above.
+  ENCODED_EXITS = { exit_invalid_utf8: INVALID_UTF8_EXIT, exit_utf16: UTF16_EXIT }.freeze
+
   RESPONSE = 'RESPONSE '
   SURVIVED = 'CALLBACK_EXIT_HARNESS_SURVIVED'
 
@@ -85,7 +96,7 @@ module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-co
     when :interrupt then raise Interrupt
     when :signal then raise SignalException, 'TERM'
     when :sigint, :sigterm then busy_until_signalled(kind == :sigint ? 'INT' : 'TERM')
-    when :exit_invalid_utf8 then raise SystemExit.new(INVALID_UTF8_EXIT[:exitstatus], INVALID_UTF8_EXIT[:text])
+    when *ENCODED_EXITS.keys then raise SystemExit.new(*ENCODED_EXITS.fetch(kind).values_at(:exitstatus, :text))
     when :none then nil # the callback succeeds
     when :standard_error then raise ORDINARY_FAILURE
     when :not_implemented, :security_error then raise(*FAILURE_KINDS.fetch(kind))
