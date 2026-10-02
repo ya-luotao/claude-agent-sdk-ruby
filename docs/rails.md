@@ -90,7 +90,24 @@ Everywhere else — production, with no reloading — the callback runs inside t
 - An exception that escapes a callback — one raised in a message block, say — comes out of `query` / `receive_response` on the thread that called the SDK. The request middleware or ActiveJob reports it there, once, with the controller or job context that thread has.
 - A failure the SDK handles is not reported: an exception in a hook or `can_use_tool` is answered to the CLI as an error response, one in an SDK MCP tool handler becomes an error result the model sees, one in an observer is swallowed, and a timed-out or cancelled callback is cancellation, not an error. To track these, report them where they happen: `rescue` inside the callback, call `Rails.error.report(e, handled: true)`, and re-raise.
 
-Writing your own wrapper: it is a callable receiving a zero-arg `invocation`; it must call it and return its value. It runs on the **same execution context as the callback** — inside the worker thread in `:thread` mode, which is the whole point: `executor.wrap` runs on the thread that touches ActiveRecord, so connections check back in when the callback ends. Exceptions from the callback propagate through the wrapper unchanged (don't rescue them); `ensure`-based wrappers like `executor.wrap` are safe, including around a `break` from a message block. Beyond the executor, this is a generic hook for APM span propagation, `CurrentAttributes`/logging context, etc. — to combine one with the Rails wrapper, call it from yours: `rails = ClaudeAgentSDK::Railtie.callback_wrapper` then `->(inv) { MyApm.trace { rails.call(inv) } }`.
+Writing your own wrapper: it is a callable receiving a zero-arg `invocation`; it must call it and return its value. It runs on the **same execution context as the callback** — inside the worker thread in `:thread` mode, which is the whole point: the executor runs on the thread that touches ActiveRecord, so connections check back in when the callback ends. Exceptions from the callback propagate through the wrapper unchanged (don't rescue them); `ensure`-based wrappers are safe, including around a `break` from a message block.
+
+Beyond the executor, this is a generic hook: APM spans, logging context, per-request state. To combine a wrapper of your own with the Rails one, call the Rails one from yours — and mind which side of that call your code is on. In production `rails.call` enters the Rails executor, and the executor starts every execution from a clean slate: on the way in it resets `CurrentAttributes` and the error context (`Rails.error.set_context`).
+
+```ruby
+rails = ClaudeAgentSDK::Railtie.callback_wrapper
+
+# What only has to surround the callback can stay outside:
+->(invocation) { MyApm.trace('agent.callback') { rails.call(invocation) } }
+
+# State that Rails resets per execution is set inside:
+->(invocation) { rails.call(-> { Current.set(account: account) { invocation.call } }) }
+
+# Not around it. This loses Current.account in every callback, in production only:
+->(invocation) { Current.set(account: account) { rails.call(invocation) } }
+```
+
+The last form is a trap because it works in development, where the Rails wrapper stays out of the executor (see above), and because the loss looks selective: `Time.zone`, log tags and `connected_to` are not reset by the executor and survive on either side. `Current.set` does not carry the error context either; that needs `ActiveSupport::ExecutionContext.set`. The [recipe below](#carrying-the-callers-state-into-callbacks) puts all of it in the right place, and `spec/rails/callback_wrapper_composition_spec.rb` pins this rule against the executor hooks of both supported Rails versions.
 
 The wrapper also composes around every timeout-bounded `SessionStore` adapter call (mirror-batcher appends, resume-materialization loads and listings), inside the timeout bound — so an ActiveRecord-backed store adapter gets the same connection hygiene as your callbacks.
 

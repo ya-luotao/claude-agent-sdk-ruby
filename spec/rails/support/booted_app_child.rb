@@ -133,6 +133,24 @@ module ClaudeAgentSDKRailsSpec
       recorder.turns.first.merge('answers' => answers(responses))
     end
 
+    # A wrapper of the application's own that sets request state itself,
+    # composed with the Rails wrapper from the outside or from the inside
+    # (docs/rails.md, "Writing your own wrapper"). The caller sets nothing.
+    def run_composing(side)
+      rails = ClaudeAgentSDK::Railtie.callback_wrapper
+      state = ->(invocation) { with_request_state(**ALICE) { invocation.call } }
+      wrapper = if side == 'outside'
+                  ->(invocation) { state.call(-> { rails.call(invocation) }) }
+                else
+                  ->(invocation) { rails.call(-> { state.call(invocation) }) }
+                end
+      recorder = Recorder.new
+      in_executor do
+        run_agent('query', options_for(recorder, scheduling: :thread, wrapper: wrapper), recorder, {})
+      end
+      recorder.turns.first
+    end
+
     # One Client connected by a first request, with a wrapper built there,
     # and used again by a second request with different state.
     def run_reusing_a_wrapper
@@ -262,6 +280,9 @@ observed = {
 }
 %w[query client].product(schedulings, %w[railtie recipe]).each do |api, scheduling, wrapper|
   observed["#{api}/#{scheduling}/#{wrapper}"] = requests.run(api: api, scheduling: scheduling, wrapper: wrapper)
+end
+%w[outside inside].each do |side|
+  observed["query/thread/state set #{side} the Rails wrapper"] = requests.run_composing(side)
 end
 observed['reused wrapper'] = requests.run_reusing_a_wrapper
 observed['two tagged loggers'] = requests.run_with_two_tagged_loggers(scheduling: schedulings.first)
