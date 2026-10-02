@@ -861,10 +861,12 @@ module ClaudeAgentSDK
     # List subagent IDs recorded for a session on local disk (counterpart to
     # list_subagents_from_store). Scans
     # <projectDir>/<sessionId>/subagents/**/agent-<id>.jsonl, including nested
-    # workflows/<runId>/ paths, in sorted walk order. Mirrors the Python SDK's
-    # list_subagents (#825) — no dedupe (the store variant dedupes because
-    # adapter subkey ordering is adapter-defined; the sorted disk walk is
-    # already deterministic).
+    # workflows/<runId>/ paths, in sorted walk order (the Python SDK's
+    # list_subagents, #825). Each id once, at its first position in the walk
+    # — the transcript the message and metadata readers take for it. Python
+    # does not dedupe here; an id whose transcript exists both directly and
+    # under workflows/<runId>/ came back twice, where the store variant
+    # returns it once.
     # @param session_id [String] The session UUID
     # @param directory [String, nil] Working directory to search in (strictly
     #   scopes to that project + its worktrees; nil searches all projects)
@@ -875,7 +877,7 @@ module ClaudeAgentSDK
       subagents_dir = resolve_subagents_dir(session_id, directory)
       return [] if subagents_dir.nil?
 
-      collect_agent_files(subagents_dir).map(&:first)
+      collect_agent_files(subagents_dir).map(&:first).uniq
     end
 
     # Read the optional subagent metadata sidecar without reading its transcript.
