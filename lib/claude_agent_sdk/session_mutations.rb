@@ -40,13 +40,12 @@ module ClaudeAgentSDK
     # @param session_id [String] UUID of the session to rename
     # @param title [String] New session title (whitespace stripped)
     # @param directory [String, nil] Project directory path
-    # @raise [ArgumentError] if session_id is invalid or title is empty
+    # @raise [ArgumentError] if session_id is invalid, or title is blank or not a String
     # @raise [Errno::ENOENT] if the session file cannot be found
     def rename_session(session_id:, title:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
-      stripped = title.strip
-      raise ArgumentError, 'title must be non-empty' if stripped.empty?
+      stripped = stripped_title(title)
 
       data = "#{JSON.generate({ type: 'custom-title', customTitle: stripped, sessionId: session_id })}\n"
 
@@ -61,19 +60,12 @@ module ClaudeAgentSDK
     # @param session_id [String] UUID of the session to tag
     # @param tag [String, nil] Tag string, or nil to clear
     # @param directory [String, nil] Project directory path
-    # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
+    # @raise [ArgumentError] if session_id is invalid, or tag is not a String or is empty after sanitization
     # @raise [Errno::ENOENT] if the session file cannot be found
     def tag_session(session_id:, tag:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
-      if tag
-        sanitized = sanitize_unicode(tag).strip
-        raise ArgumentError, 'tag must be non-empty (use nil to clear)' if sanitized.empty?
-
-        tag = sanitized
-      end
-
-      data = "#{JSON.generate({ type: 'tag', tag: tag || '', sessionId: session_id })}\n"
+      data = "#{JSON.generate({ type: 'tag', tag: sanitized_tag(tag), sessionId: session_id })}\n"
 
       append_to_session(session_id, data, directory)
     end
@@ -171,13 +163,12 @@ module ClaudeAgentSDK
     # appended entry carries a fresh uuid + ISO timestamp so adapters that dedupe
     # by entry["uuid"] (per the SessionStore#append contract) treat it correctly.
     #
-    # @raise [ArgumentError] if session_id is invalid or title is empty
+    # @raise [ArgumentError] if session_id is invalid, or title is blank or not a String
     # @raise [Errno::ENOENT] if the session is not found in the store
     def rename_session_via_store(session_store:, session_id:, title:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
-      stripped = title.strip
-      raise ArgumentError, 'title must be non-empty' if stripped.empty?
+      stripped = stripped_title(title)
 
       key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
       ensure_store_session_exists(session_store, key)
@@ -195,23 +186,17 @@ module ClaudeAgentSDK
     # counterpart to tag_session. Pass nil to clear the tag. Tags are
     # Unicode-sanitized before storing.
     #
-    # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
+    # @raise [ArgumentError] if session_id is invalid, or tag is not a String or is empty after sanitization
     # @raise [Errno::ENOENT] if the session is not found in the store
     def tag_session_via_store(session_store:, session_id:, tag:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
-      if tag
-        sanitized = sanitize_unicode(tag).strip
-        raise ArgumentError, 'tag must be non-empty (use nil to clear)' if sanitized.empty?
-
-        tag = sanitized
-      end
-
+      tag = sanitized_tag(tag)
       key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
       ensure_store_session_exists(session_store, key)
       session_store.append(key, [{
                              'type' => 'tag',
-                             'tag' => tag || '',
+                             'tag' => tag,
                              'sessionId' => session_id,
                              'uuid' => SecureRandom.uuid,
                              'timestamp' => iso_now
@@ -269,6 +254,29 @@ module ClaudeAgentSDK
     end
 
     # -- Private helpers --
+
+    # The title to store: stripped and non-empty. A value that is not a usable
+    # String (nil, another type, bytes invalid in their encoding) gets the
+    # ArgumentError an empty title gets — the boundary check the session ids
+    # have — where calling #strip on it raised NoMethodError or an encoding
+    # error from inside.
+    def stripped_title(title)
+      stripped = title.is_a?(String) && title.valid_encoding? ? title.strip : ''
+      raise ArgumentError, 'title must be non-empty' if stripped.empty?
+
+      stripped
+    end
+
+    # The tag to store: Unicode-sanitized and stripped, or '' (which clears
+    # the tag) for nil. Same boundary check as stripped_title.
+    def sanitized_tag(tag)
+      return '' unless tag
+
+      sanitized = tag.is_a?(String) && tag.valid_encoding? ? sanitize_unicode(tag).strip : ''
+      raise ArgumentError, 'tag must be non-empty (use nil to clear)' if sanitized.empty?
+
+      sanitized
+    end
 
     # Raise Errno::ENOENT (as the disk counterparts and fork_session_via_store
     # do) unless the store holds entries for +key+. Without this probe, a
@@ -686,7 +694,7 @@ module ClaudeAgentSDK
       'Other'
     end
 
-    private_class_method :find_session_file_with_dir,
+    private_class_method :stripped_title, :sanitized_tag, :find_session_file_with_dir,
                          :find_in_directory, :try_project_dir, :find_in_all_projects,
                          :parse_fork_transcript, :derive_fork_title, :build_forked_entry, :resolve_parent_uuid,
                          :append_to_session, :append_to_session_in_directory,

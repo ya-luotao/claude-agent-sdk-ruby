@@ -181,4 +181,45 @@ RSpec.describe 'session API boundaries' do
       end
     end
   end
+
+  # A title or tag that is not a usable String is rejected like an empty
+  # one, before anything is written.
+  describe 'rename_session and tag_session with a value that is not a usable String',
+           rbs_incompatible: 'passes out-of-signature input to test its rejection' do
+    let(:store) { ClaudeAgentSDK::InMemorySessionStore.new }
+    let(:key) { { 'project_key' => ClaudeAgentSDK.project_key_for_directory(cwd), 'session_id' => session_id } }
+    let!(:transcript_file) { conversation.write(transcript_path(session_id)) }
+
+    before { store.append(key, conversation.store_entries) }
+
+    { 'nil' => nil, 'an Integer' => 123, 'invalid bytes' => "caf\xC3".dup.force_encoding('UTF-8') }.each do |label, title|
+      it "raises ArgumentError for a title that is #{label}, on disk and with a store" do
+        on_disk = File.binread(transcript_file)
+
+        expect { ClaudeAgentSDK.rename_session(session_id: session_id, title: title, directory: cwd) }
+          .to raise_error(ArgumentError, 'title must be non-empty')
+        expect { ClaudeAgentSDK.rename_session(session_id: session_id, title: title, directory: cwd, session_store: store) }
+          .to raise_error(ArgumentError, 'title must be non-empty')
+        expect(File.binread(transcript_file)).to eq(on_disk)
+        expect(store.load(key).length).to eq(conversation.store_entries.length)
+      end
+    end
+
+    { 'an Integer' => 123, 'invalid bytes' => "caf\xC3".dup.force_encoding('UTF-8') }.each do |label, tag|
+      it "raises ArgumentError for a tag that is #{label}, on disk and with a store" do
+        expect { ClaudeAgentSDK.tag_session(session_id: session_id, tag: tag, directory: cwd) }
+          .to raise_error(ArgumentError, 'tag must be non-empty (use nil to clear)')
+        expect { ClaudeAgentSDK.tag_session(session_id: session_id, tag: tag, directory: cwd, session_store: store) }
+          .to raise_error(ArgumentError, 'tag must be non-empty (use nil to clear)')
+        expect(store.load(key).length).to eq(conversation.store_entries.length)
+      end
+    end
+
+    it 'still clears the tag for nil' do
+      ClaudeAgentSDK.tag_session(session_id: session_id, tag: 'keep', directory: cwd)
+      ClaudeAgentSDK.tag_session(session_id: session_id, tag: nil, directory: cwd)
+
+      expect(ClaudeAgentSDK.get_session_info(session_id: session_id, directory: cwd).tag).to be_nil
+    end
+  end
 end
