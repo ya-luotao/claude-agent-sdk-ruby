@@ -62,7 +62,13 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
       materialized # built now, like the SDK does: it records which directory this is
     end
 
+    # Stubs are still in place while this runs. A wrapper that waits for a
+    # call its example never got to must not make its swap now, in the middle
+    # of the teardown: the scratch directory would stay behind in $TMPDIR.
     after do
+      { File => %i[lstat open rename unlink], Dir => %i[children rmdir] }.each do |receiver, wrapped|
+        wrapped.each { |name| allow(receiver).to receive(name).and_call_original }
+      end
       unlock(scratch)
       FileUtils.remove_entry(scratch)
     end
