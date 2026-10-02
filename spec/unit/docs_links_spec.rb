@@ -14,18 +14,6 @@ RSpec.describe 'links in the packaged Markdown files' do
   let(:packaged) { Bundler.load_gemspec_uncached(File.join(root, 'claude-agent-sdk.gemspec')).files }
   let(:markdown_files) { packaged.grep(/\.md\z/) }
 
-  # Relative links that point at a file the gem does not ship, in files this
-  # change could not touch. Each entry is [file, link target]. An entry that
-  # no longer matches a link fails the example below, so the list cannot
-  # outlive its fix.
-  #
-  # docs/subagents.md: make the link absolute
-  # (https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/subagent_status_example.rb)
-  # and delete the entry.
-  let(:known_unpackaged_targets) do
-    [['docs/subagents.md', '../examples/subagent_status_example.rb']]
-  end
-
   # Inline links and images, and reference definitions, outside fenced code,
   # each as { file:, line:, target: }.
   def links_in(file)
@@ -91,7 +79,7 @@ RSpec.describe 'links in the packaged Markdown files' do
   it 'points every relative link at a file that ships in the gem' do
     unpackaged = relative_links.reject { |link| packaged.include?(resolve(link)) }
 
-    expect(unpackaged.map { |link| link.values_at(:file, :target) }).to match_array(known_unpackaged_targets)
+    expect(unpackaged.map { |link| "#{link[:file]}:#{link[:line]} #{link[:target]}" }).to eq([])
   end
 
   it 'points every anchor at a heading that exists' do
