@@ -1928,8 +1928,11 @@ module ClaudeAgentSDK
     #
     # The tool_use_id match is what keeps other user siblings out: a prompt
     # abandoned by a rewind is a second child of a chain entry too, and
-    # starts a branch that was dropped. +skip_flagged+ additionally rejects
-    # sidechain / meta / team entries (main transcripts; a subagent
+    # starts a branch that was dropped — and so is the old result of a call
+    # the conversation was rewound to and answered again: the chain's own
+    # result for a tool_use_id wins, and at most one off-chain result per id
+    # is ever added (the first in file order). +skip_flagged+ additionally
+    # rejects sidechain / meta / team entries (main transcripts; a subagent
     # transcript is sidechain throughout).
     def reattach_parallel_tool_results(chain, entries, skip_flagged:)
       off_chain = off_chain_tool_results(chain, entries, skip_flagged)
@@ -1954,27 +1957,31 @@ module ClaudeAgentSDK
       on_chain = Set.new
       assistants = Set.new
       tool_use_ids = Set.new
+      answered = Set.new # tool_use ids the chain's own results answer
       chain.each do |entry|
         on_chain << entry['uuid']
-        next unless entry['type'] == 'assistant'
-
-        assistants << entry['uuid']
-        tool_use_ids.merge(content_block_values(entry, 'tool_use', 'id'))
+        case entry['type']
+        when 'assistant'
+          assistants << entry['uuid']
+          tool_use_ids.merge(content_block_values(entry, 'tool_use', 'id'))
+        when 'user' then answered.merge(content_block_values(entry, 'tool_result', 'tool_use_id'))
+        end
       end
-      return {} if tool_use_ids.empty?
+      return {} if (tool_use_ids - answered).empty?
 
-      # A store may hold an entry twice (a retried mirror batch overlaps the
-      # write it retries); the first copy counts, as each uuid counts once on
-      # the chain.
-      seen = Set.new
       found = {}
       entries.each_with_index do |entry, position|
         next unless entry['type'] == 'user' && assistants.include?(entry['parentUuid'])
         next if on_chain.include?(entry['uuid'])
         next if skip_flagged && off_main_conversation?(entry)
-        next unless content_block_values(entry, 'tool_result', 'tool_use_id').any? { |id| tool_use_ids.include?(id) }
-        next unless seen.add?(entry['uuid'])
 
+        ids = content_block_values(entry, 'tool_result', 'tool_use_id')
+        next if ids.empty? || !ids.all? { |id| tool_use_ids.include?(id) && !answered.include?(id) }
+
+        # Claimed: a later result for the same call is not added — nor a
+        # second copy of this entry, which a store can hold (a retried mirror
+        # batch overlaps the write it retries).
+        answered.merge(ids)
         (found[entry['parentUuid']] ||= []) << [position, entry]
       end
       found

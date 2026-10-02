@@ -44,6 +44,16 @@ RSpec.describe 'session readers and parallel tool calls' do
     transcript
   end
 
+  def rewound_tool_call(transcript)
+    transcript.prompt(:prompt, 'Read a.rb')
+    transcript.assistant(:use, transcript.tool_use('toolu_one'), parent: :prompt)
+    transcript.tool_result(:result_old, 'toolu_one', 'old contents', parent: :use)
+    transcript.assistant(:abandoned, transcript.text('Abandoned.'), parent: :result_old, message: 'msg_02')
+    transcript.tool_result(:result_new, 'toolu_one', 'new contents', parent: :use)
+    transcript.assistant(:current, transcript.text('Current.'), parent: :result_new, message: 'msg_03')
+    transcript
+  end
+
   def main_transcript
     transcript = CLITranscript.new(session_id: session_id, cwd: cwd)
     transcript.queue_operations('Read a.rb and b.rb')
@@ -163,6 +173,56 @@ RSpec.describe 'session readers and parallel tool calls' do
       expect(transcript.labels(messages)).to eq(%w[prompt use_a result_a summary kept answer])
     end
 
+    # A rewind to the tool call: the call stays, its old result and the
+    # answer that followed it are the abandoned branch, and the call was
+    # answered again on the branch the conversation went on with.
+    #
+    #   use ─ result_old ─ abandoned
+    #     └─ result_new ─ current
+    it 'does not pull in the old result of a tool call the conversation answered again' do
+      transcript = main_transcript do |t|
+        rewound_tool_call(t)
+        t.assistant(:answer, t.text('Done.'), parent: :current, message: 'msg_04')
+      end
+      transcript.write(transcript_path(session_id))
+
+      messages = ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: cwd)
+
+      expect(transcript.labels(messages)).to eq(%w[prompt use result_new current answer])
+    end
+
+    it 'does not pull in the old result of a tool call the conversation answered again, from a store' do
+      transcript = main_transcript do |t|
+        rewound_tool_call(t)
+        t.assistant(:answer, t.text('Done.'), parent: :current, message: 'msg_04')
+      end
+      store.append({ 'project_key' => ClaudeAgentSDK.project_key_for_directory(cwd), 'session_id' => session_id },
+                   transcript.store_entries)
+
+      messages = ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: cwd, session_store: store)
+
+      expect(transcript.labels(messages)).to eq(%w[prompt use result_new current answer])
+    end
+
+    # Two results for one call that the conversation did not take up (the
+    # tool was run twice): one of them comes back, the first written.
+    it 'pulls in at most one result per tool call' do
+      transcript = main_transcript do |t|
+        t.prompt(:prompt, 'Read a.rb and b.rb')
+        t.assistant(:use_a, t.tool_use('toolu_a'), parent: :prompt)
+        t.assistant(:use_b, t.tool_use('toolu_b'), parent: :use_a)
+        t.tool_result(:result_a, 'toolu_a', 'contents of a.rb', parent: :use_a)
+        t.tool_result(:result_a_again, 'toolu_a', 'contents of a.rb', parent: :use_a)
+        t.tool_result(:result_b, 'toolu_b', 'contents of b.rb', parent: :use_b)
+        t.assistant(:answer, t.text('Both files read.'), parent: :result_b, message: 'msg_02')
+      end
+      transcript.write(transcript_path(session_id))
+
+      messages = ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: cwd)
+
+      expect(transcript.labels(messages)).to eq(%w[prompt use_a use_b result_a result_b answer])
+    end
+
     # Not a shape the CLI writes (a result is parented on its own tool_use
     # entry); it pins the check itself. A user child that carries a
     # tool_result for a call the conversation does not contain stays out.
@@ -220,6 +280,16 @@ RSpec.describe 'session readers and parallel tool calls' do
 
       expect(transcript.entries.grep(Hash)).to all(include('isSidechain' => true))
       expect(transcript.labels(messages)).to eq(batch_order)
+    end
+
+    it 'does not pull in the old result of a tool call the subagent answered again' do
+      parent_session.write(transcript_path(session_id))
+      transcript = rewound_tool_call(CLITranscript.new(session_id: session_id, cwd: cwd, agent_id: agent_id))
+      transcript.write(subagent_transcript_path(session_id, agent_id))
+
+      messages = ClaudeAgentSDK.get_subagent_messages(session_id: session_id, agent_id: agent_id, directory: cwd)
+
+      expect(transcript.labels(messages)).to eq(%w[prompt use result_new current])
     end
 
     it 'returns every result of a parallel batch from a subagent transcript in a session store' do
