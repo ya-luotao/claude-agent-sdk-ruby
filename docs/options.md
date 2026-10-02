@@ -202,7 +202,7 @@ Guides: [Observability](observability.md), [Rails Integration](rails.md).
 | Option | Type | Default | Sent to the CLI as |
 |--------|------|---------|--------------------|
 | `observers` | `Array[untyped]` | `[]` | Nothing (SDK only): observer instances, or callables that return a fresh one per query or session |
-| `callback_scheduling` | `:thread \| :inline \| "thread" \| "inline"` | `:thread` | Nothing (SDK only): `:thread` runs each callback on a plain thread, `:inline` on the reactor fiber. A String is stored as its Symbol (`callback_scheduling: 'inline'` reads back as `:inline`); anything else but `nil` raises `ArgumentError` |
+| `callback_scheduling` | `:thread \| :inline \| "thread" \| "inline"` | `:thread` | Nothing (SDK only): `:thread` runs each callback on a plain thread, `:inline` on the reactor fiber. A String is stored as its Symbol (`callback_scheduling: 'inline'` reads back as `:inline`). A value that does not convert (through `to_sym`) to `:thread` or `:inline` raises `ArgumentError`; `nil` means the default |
 | `callback_wrapper` | `_CallbackWrapper` | `nil` | Nothing (SDK only): a callable wrapped around every callback dispatch |
 
 ## Environment variables

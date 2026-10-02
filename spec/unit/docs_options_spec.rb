@@ -360,12 +360,29 @@ RSpec.describe 'docs/options.md' do
       .to eq([{ 'A' => '1', 'B' => '2' }, false, 'claude-haiku-4-5'])
   end
 
-  it 'stores a String callback_scheduling as its Symbol, as the row says' do
+  it 'stores a String callback_scheduling as its Symbol and reads nil as the default, as the row says' do
     sent = rows.find { |row| row[:name] == 'callback_scheduling' }.to_h.fetch(:sent, '')
 
     expect(options_class.new(callback_scheduling: 'inline').callback_scheduling).to be(:inline)
     expect(options_class.new(callback_scheduling: 'thread').callback_scheduling).to be(:thread)
-    expect(sent).to include('A String is stored as its Symbol')
+    expect(options_class.new(callback_scheduling: nil).callback_scheduling).to be(:thread)
+    expect(sent).to include('A String is stored as its Symbol', '`nil` means the default')
+  end
+
+  # The setter calls to_sym on whatever responds to it and rejects what does
+  # not come out as :thread or :inline, so the row may not say that every
+  # value other than a String or a Symbol raises.
+  it 'accepts what converts to :thread or :inline and rejects the rest, as the row says',
+     rbs_incompatible: 'passes out-of-signature input to test its rejection' do
+    sent = rows.find { |row| row[:name] == 'callback_scheduling' }.to_h.fetch(:sent, '')
+    convertible = Struct.new(:to_sym).new(:inline)
+
+    expect(options_class.new(callback_scheduling: convertible).callback_scheduling).to be(:inline)
+    ['fiber', :fiber, 5].each do |value|
+      expect { options_class.new(callback_scheduling: value) }
+        .to raise_error(ArgumentError, /callback_scheduling must be one of/)
+    end
+    expect(sent).to include('A value that does not convert (through `to_sym`) to `:thread` or `:inline` raises')
   end
 
   it 'names, for every option, the flags CommandBuilder sends for it and no other' do
