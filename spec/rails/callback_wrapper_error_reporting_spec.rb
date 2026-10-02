@@ -7,13 +7,14 @@ require_relative 'support/scripted_cli_transport'
 # Errors subscribe to — receives when SDK callbacks go through the wrapper's
 # executor branch (production: no reloading, concurrency allowed).
 #
-# `executor.wrap` reports every exception passing through it as an unhandled
-# error. Around an SDK callback that is wrong twice: the SDK handles most
-# callback failures itself (a hook or tool error becomes an error response,
-# an observer error is swallowed, a cancellation is control flow), and the one
-# that does escape was reported from a thread with none of the caller's
-# context, after which Rails skips it at the request / job layer as already
-# reported. So the wrapper enters the executor without reporting.
+# `executor.wrap` reports what passes through it as an unhandled error (a
+# StandardError on Rails 7.1, any Exception on current releases). Around an
+# SDK callback that is wrong twice: the SDK handles most callback failures
+# itself (a hook or tool error becomes an error response, an observer error
+# is swallowed, a cancellation is control flow), and the one that does escape
+# was reported from a thread with none of the caller's context, after which
+# Rails skips it at the request / job layer as already reported. So the
+# wrapper enters the executor without reporting.
 RSpec.describe 'ClaudeAgentSDK::Railtie.callback_wrapper and Rails.error' do
   let(:app) { Rails.application }
   let(:wrapper) { ClaudeAgentSDK::Railtie.callback_wrapper }
@@ -69,7 +70,7 @@ RSpec.describe 'ClaudeAgentSDK::Railtie.callback_wrapper and Rails.error' do
 
   # The caller: a job (a request likewise) runs inside the executor, sets its
   # context, and reports what escapes it under its own source.
-  def as_a_job(&)
+  def as_a_job
     executor.wrap(source: 'application.active_job') do
       Rails.error.set_context(job: 'ChatAgentJob')
       yield

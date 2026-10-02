@@ -89,12 +89,13 @@ module ClaudeAgentSDK
     end
 
     # `executor.wrap { invocation.call }` minus its error report. `wrap`
-    # rescues what passes through it (every Exception from Rails 7.2 on) and
-    # reports it to `Rails.error` as unhandled, from a callback thread that
-    # has none of the caller's context — and Rails then skips the same
-    # exception as already reported when it reaches the request or job. It
-    # reported the SDK's own cancellations and the callback failures the SDK
-    # answers or swallows, too. `run!` / `complete!` run the same hooks.
+    # rescues what passes through it (every Exception on Rails 8.1, 8.0.2+
+    # and 7.2.3+; StandardError before) and reports it to `Rails.error` as
+    # unhandled, from a callback thread that has none of the caller's
+    # context — and Rails then skips the same exception as already reported
+    # when it reaches the request or job. It reported the SDK's own
+    # cancellations and the callback failures the SDK answers or swallows,
+    # too. `run!` / `complete!` run the same hooks.
     def self.run_in_executor(executor, invocation)
       execution = executor.run!
       begin

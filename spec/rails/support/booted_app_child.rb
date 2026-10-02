@@ -193,10 +193,10 @@ module ClaudeAgentSDKRailsSpec
 
     private
 
-    def in_executor(&)
-      return Rails.application.executor.wrap(&) unless @reactor
+    def in_executor(&block)
+      return Rails.application.executor.wrap(&block) unless @reactor
 
-      Async { Rails.application.executor.wrap(&) }.wait
+      Async { Rails.application.executor.wrap(&block) }.wait
     end
 
     def in_this_executor(**state, &block)
@@ -205,11 +205,11 @@ module ClaudeAgentSDKRailsSpec
 
     # What a controller's callbacks (or a job) set before calling the SDK.
     # The executor resets Current and the error context when the request ends.
-    def with_request_state(user:, zone:, request_id:, locale:, &)
+    def with_request_state(user:, zone:, request_id:, locale:, &block)
       Current.user = user
       Rails.error.set_context(request_id: request_id)
       Rails.logger.push_tags(request_id) # as Rails::Rack::Logger tags a request
-      I18n.with_locale(locale) { Time.use_zone(zone, &) }
+      I18n.with_locale(locale) { Time.use_zone(zone, &block) }
     ensure
       Rails.logger.pop_tags
     end
