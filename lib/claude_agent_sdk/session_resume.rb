@@ -23,6 +23,13 @@ module ClaudeAgentSDK
   class MaterializedResume
     attr_reader :config_dir, :resume_session_id
 
+    MIRROR_DROPPED = 'Claude SDK: transcript mirror dropped batches; the session store copy is incomplete.'
+    SKIPPED = 'Scrubbing was skipped and nothing was deleted:'
+    # Prefix of the private directory a preserved temp dir is moved into. Not
+    # "claude-resume-": that one is for directories the SDK may still delete.
+    STAGING_PREFIX = 'claude-preserved-resume-'
+    private_constant :MIRROR_DROPPED, :SKIPPED, :STAGING_PREFIX
+
     # +root_identity+ is SessionResume.directory_identity of +config_dir+ as
     # the SDK created it; materialize_resume_session takes it right after
     # mkdtemp. Without it, it is taken here.
@@ -50,65 +57,111 @@ module ClaudeAgentSDK
     # which can hold MCP header secrets — as backups/.claude.json.backup.<ts>.
     # A list of names to delete missed that one and would miss the next.
     #
-    # Deleting "everything else" is only safe inside the directory the SDK
-    # created. Anything that knows CLAUDE_CONFIG_DIR can replace it before
-    # teardown — with a symlink, or another directory at the same path — and
-    # following that would delete files the SDK never wrote. So the root is
-    # checked before the listing and again before each deletion, and nothing
-    # is deleted once it fails; a symlink inside is unlinked, never followed.
+    # Deleting "everything else" must never reach outside the directory the
+    # SDK created, and the CLI's tools can write into that directory —
+    # sandboxed ones too — up to and during this call: they can turn the
+    # directory, or anything in it, into a symlink between two steps taken
+    # here. So a path that was checked is never resolved again:
+    #
+    # 1. The directory is moved, in one rename, into a fresh private directory
+    #    next to it. A rename moves a symlink itself, never its target, and it
+    #    takes the directory away from the path its writers know. (A read-only
+    #    directory cannot be moved; it is made writable first, through a
+    #    handle that has to be the directory the SDK created.)
+    # 2. What was moved is then examined: it has to be a real directory with
+    #    the device and inode recorded when the SDK created it. If it is not,
+    #    or it could not be moved, nothing is deleted and the warning says why.
+    # 3. Its entries are deleted by SessionResume::Scrubber, which takes each
+    #    one out of the tree before it looks at it.
+    #
+    # config_dir is the new location afterwards, the one the warning names.
     def preserve_transcripts
-      notice = scrub_all_but_projects
-      warn [preservation_warning, notice].compact.join(' ')
+      announced = false
+      warn "#{MIRROR_DROPPED} #{move_aside_and_scrub}"
+      announced = true
     rescue StandardError => e
       warn "Claude SDK: failed to scrub preserved transcript dir #{@config_dir}: #{e.message}"
+      announced = true
+    ensure
+      # Cut short by something that is not a StandardError (a cancellation, a
+      # signal): the directory may have been moved, so say where it is.
+      unless announced
+        warn "#{MIRROR_DROPPED} Scrubbing was interrupted; the session transcript is under " \
+             "#{File.join(@config_dir, 'projects')}."
+      end
     end
 
     private
 
-    # Deletes every entry of the root but projects/, then checks that nothing
-    # else is left. Returns nil, or what the preservation warning has to add.
-    def scrub_all_but_projects
-      return replaced_root_notice unless root_unchanged?
+    # Returns the rest of the preservation warning.
+    def move_aside_and_scrub
+      original = @config_dir
+      staging, failure = move_aside(original)
+      if failure
+        return "#{SKIPPED} #{original} could not be moved aside (#{failure.message}). If it is still there, the " \
+               "session transcript is under #{File.join(original, 'projects')}, next to copies of your " \
+               'credentials and settings that were not removed.'
+      end
 
+      @config_dir = File.join(staging, File.basename(original))
+      unless @root_identity && SessionResume.directory_identity(@config_dir) == @root_identity
+        return "#{SKIPPED} what was at #{original} is not the directory the SDK created (it had been replaced). " \
+               "It is now at #{@config_dir}; check what it holds before importing anything from it."
+      end
+
+      preserved = "Preserving the session transcript under #{File.join(@config_dir, 'projects')} instead of " \
+                  "deleting it — import it into your session store, then remove #{staging}."
+      [preserved, scrub_all_but_projects(staging)].compact.join(' ')
+    end
+
+    # Step 1. Returns [private directory the root now lives in, nil], or
+    # [nil, error] when it stayed where it was.
+    def move_aside(original)
+      staging = nil
+      make_root_movable(original)
+      staging = Dir.mktmpdir(STAGING_PREFIX, File.dirname(original))
+      File.rename(original, File.join(staging, File.basename(original)))
+      [staging, nil]
+    rescue SystemCallError, SessionResume::Scrubber::Changed => e
+      Dir.rmdir(staging) if staging
+      [nil, e]
+    end
+
+    # Moving a directory to another parent takes write permission on the
+    # directory itself. Skipping the scrub for a read-only one would leave the
+    # credential copies behind, so it is made accessible first — through a
+    # handle that has to be the directory the SDK created.
+    def make_root_movable(root)
+      stat = File.lstat(root)
+      return if !stat.directory? || SessionResume::Scrubber.owner_rwx?(stat)
+
+      SessionResume::Scrubber.make_accessible(root, @root_identity)
+    end
+
+    # Step 3. Deletes every entry of the moved root but projects/, then checks
+    # that nothing else is left. Returns nil, or what the warning has to add.
+    def scrub_all_but_projects(staging)
+      trash = Dir.mktmpdir('scrub-', staging)
+      scrubber = SessionResume::Scrubber.new(trash)
       errors = {}
       Dir.children(@config_dir).each do |name|
         next if name == 'projects'
-        return replaced_root_notice unless root_unchanged?
 
-        error = SessionResume.remove_entry_without_following(File.join(@config_dir, name))
-        errors[name] = error if error
+        scrubber.remove(@config_dir, name)
+      rescue SessionResume::Scrubber::Changed => e
+        errors[name] = e
+        break # something is rearranging the directory under the scrub
+      rescue SystemCallError => e
+        errors[name] = e
       end
-      return replaced_root_notice unless root_unchanged?
+      Dir.rmdir(trash) if errors.empty?
 
-      left = Dir.children(@config_dir).reject { |name| name == 'projects' }.sort
-      scrub_failed_notice(left, errors) unless left.empty?
-    end
+      left = (Dir.children(@config_dir) - ['projects'] + errors.keys).uniq.sort
+      return if left.empty?
 
-    def scrub_failed_notice(left, errors)
       reason = errors.values_at(*left).compact.first&.message
-      them, they = left.size == 1 ? %w[it it] : %w[them they]
-      "Scrubbing failed: could not remove #{left.join(', ')}#{" (#{reason})" if reason} — delete #{them} " \
-        "yourself; #{they} can hold copies of your credentials and settings."
-    end
-
-    # True while config_dir is still the directory the SDK created: a real
-    # directory (lstat: a symlink does not count) with the device and inode
-    # recorded when it was made.
-    def root_unchanged?
-      return false if @root_identity.nil?
-
-      SessionResume.directory_identity(@config_dir) == @root_identity
-    end
-
-    def preservation_warning
-      'Claude SDK: transcript mirror dropped batches; the session store copy is incomplete. ' \
-        "Preserving the session transcript under #{File.join(@config_dir, 'projects')} instead of " \
-        'deleting it — import it into your session store, then remove the directory.'
-    end
-
-    def replaced_root_notice
-      "#{@config_dir} is no longer the directory the SDK created (it was replaced or removed), so the SDK " \
-        'deleted nothing in it — check what it holds before importing from it.'
+      "Scrubbing failed: could not remove #{left.join(', ')}#{" (#{reason})" if reason}. What is left is under " \
+        "#{staging} and can hold copies of your credentials and settings."
     end
   end
 
@@ -794,38 +847,105 @@ module ClaudeAgentSDK
       nil
     end
 
-    # Remove +path+ and everything under it without following symlinks:
-    # FileUtils.remove_entry lstat's every entry, so a symlink is unlinked,
-    # not traversed, and it raises rather than skipping what it cannot
-    # remove. When it fails, the directories in the subtree that this user
-    # owns are made accessible (0700) — the CLI, or anything else running as
-    # this user, may have left one read-only — and it is tried once more.
-    # Returns nil, or the SystemCallError of that second attempt.
-    def remove_entry_without_following(path)
-      FileUtils.remove_entry(path)
-      nil
-    rescue SystemCallError
-      make_owned_directories_accessible(path)
-      begin
-        FileUtils.remove_entry(path)
-        nil
-      rescue SystemCallError => e
-        e
+    # Deletes entries of a directory tree that something else may still be
+    # writing into, without ever following a symlink — not even one that takes
+    # an entry's place while this runs.
+    #
+    # Looking at an entry and then acting on it by path leaves a gap: what
+    # lstat called a directory can be a symlink by the time it is listed,
+    # chmodded or descended into, and a path through it then leads outside the
+    # tree. So an entry is taken out first — renamed into +trash+, a private
+    # directory nothing else knows; a rename moves a symlink itself, never its
+    # target. Only then is the entry examined, and unlinked or, for a
+    # directory, emptied the same way one level at a time. Every path used is
+    # therefore an entry of the directory handed to #remove (which the caller
+    # vouches for), trash/<taken> or trash/<taken>/<child>.
+    #
+    # A directory can refuse: moving one to another parent takes write
+    # permission on the directory itself, emptying it takes read, write and
+    # search. It is then made accessible (see .make_accessible); nothing else
+    # is ever chmodded.
+    class Scrubber
+      # An entry was no longer what an earlier look at it had found.
+      class Changed < StandardError; end
+
+      OWNER_RWX = 0o700
+
+      # Passes over a directory that keeps receiving entries, before rmdir
+      # is left to report it.
+      EMPTYING_PASSES = 3
+
+      def self.owner_rwx?(stat)
+        stat.mode.allbits?(OWNER_RWX)
       end
-    end
 
-    # chmod 0700 each directory at or under +path+ that this user owns. lstat
-    # throughout, so a symlink is neither followed nor changed (File.chmod
-    # itself would follow it); each chmod comes before that directory's
-    # listing, so an unlistable one is reached too. Best effort.
-    def make_owned_directories_accessible(path)
-      stat = File.lstat(path)
-      return unless stat.directory? && stat.owned?
+      # chmod 0700 the directory at +path+ without following a symlink: the
+      # mode is set through a handle (fchmod), and only once that handle
+      # proved to be a directory this user owns whose [device, inode] is
+      # +identity+. The path is looked at again afterwards. Raises Changed
+      # when either look finds something else, and SystemCallError when the
+      # directory cannot be opened (its owner cannot read it) or chmodded.
+      def self.make_accessible(path, identity)
+        File.open(path, File::RDONLY | File::NOFOLLOW | File::NONBLOCK) do |handle|
+          stat = handle.stat
+          unless stat.directory? && [stat.dev, stat.ino] == identity
+            raise Changed, "#{path} is not the directory it was a moment ago"
+          end
+          raise Errno::EPERM, path unless stat.owned?
 
-      File.chmod(0o700, path)
-      Dir.children(path).each { |name| make_owned_directories_accessible(File.join(path, name)) }
-    rescue SystemCallError
-      nil
+          handle.chmod(OWNER_RWX)
+        end
+        return if SessionResume.directory_identity(path) == identity
+
+        raise Changed, "#{path} was replaced while it was being made writable"
+      rescue Errno::ELOOP, Errno::EMLINK
+        # What O_NOFOLLOW answers for a symlink (EMLINK on some BSDs).
+        raise Changed, "#{path} became a symlink"
+      end
+
+      def initialize(trash)
+        @trash = trash
+        @taken = 0
+      end
+
+      # Remove the entry +name+ of +dir+ and everything under it. Raises
+      # SystemCallError when something cannot be removed, and Changed when an
+      # entry was swapped while it was being made accessible.
+      def remove(dir, name)
+        path = take(dir, name)
+        stat = File.lstat(path)
+        return File.unlink(path) unless stat.directory?
+
+        self.class.make_accessible(path, [stat.dev, stat.ino]) unless self.class.owner_rwx?(stat)
+        EMPTYING_PASSES.times do
+          children = Dir.children(path)
+          break if children.empty?
+
+          children.each { |child| remove(path, child) }
+        end
+        Dir.rmdir(path)
+      end
+
+      private
+
+      # Move dir/name into the trash, whatever it is, and return its new path.
+      def take(dir, name)
+        source = File.join(dir, name)
+        target = File.join(@trash, (@taken += 1).to_s)
+        begin
+          File.rename(source, target)
+        rescue Errno::EACCES, Errno::EPERM
+          # A directory that is not writable cannot be moved to another
+          # parent. It is looked at immediately before it is repaired;
+          # whatever else refuses (the parent, a file) is left as it is.
+          stat = File.lstat(source)
+          raise if !stat.directory? || self.class.owner_rwx?(stat)
+
+          self.class.make_accessible(source, [stat.dev, stat.ino])
+          File.rename(source, target)
+        end
+        target
+      end
     end
 
     # Best-effort recursive removal with retries on transient lock errors
