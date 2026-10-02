@@ -7,6 +7,16 @@ module ClaudeAgentSDK
   # the Hash form (String or camelCase keys, e.g. `klass.new(value.to_h)`)
   # is accepted too. An unknown key raises ArgumentError. Discriminators
   # (`type`) are fixed by the class and read-only.
+  #
+  # The keyword overload documents the accepted keys and their types; no
+  # type checker enforces it. `klass.new(typo: 1)` is also a Symbol-keyed
+  # Hash, which the second overload accepts whatever its keys and values, so
+  # Steep reports neither a misspelled keyword nor a wrong value type, and
+  # the runtime checker behind `rake rbs:test` never reports a constructor
+  # mismatch (it only checks the attribute setters the constructor calls).
+  # The enforcement is the ArgumentError the constructor raises at runtime
+  # for an unknown key. This holds for every constructor in sig/ that has
+  # both overloads.
 
   # Adaptive thinking: the model decides when and how much to think.
   class ThinkingConfigAdaptive < Type
