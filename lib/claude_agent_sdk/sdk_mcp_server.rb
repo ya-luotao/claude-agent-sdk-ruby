@@ -455,16 +455,22 @@ module ClaudeAgentSDK
             end
 
             def input_schema_value
-              # Full-schema construction: the gem JSON-round-trips and
-              # validates against the draft4 metaschema. additionalProperties/
-              # enum/description survive. Empty required arrays are stripped —
-              # draft4's metaschema mandates non-empty required (Python's
-              # modern jsonschema accepts []). Schemas the draft4 metaschema
-              # rejects (numeric exclusiveMinimum, $ref/$defs — valid modern
-              # JSON Schema that Python accepts) fall back to a permissive
-              # schema with a one-time warning: the tool keeps working with
-              # argument validation disabled instead of being permanently
-              # uncallable while tools/list advertises it as healthy.
+              # Full-schema construction: the gem JSON-round-trips the schema
+              # and validates it against the JSON Schema 2020-12 metaschema
+              # (every mcp version this gem supports; older ones used draft4).
+              # additionalProperties/enum/description survive, and so do a
+              # numeric exclusiveMinimum and same-document $ref/$defs. Empty
+              # required arrays are stripped — a holdover from draft4, whose
+              # metaschema mandated a non-empty required.
+              #
+              # A schema the gem refuses (ArgumentError: a draft4-style
+              # boolean exclusiveMinimum, an unknown type, a $ref that leaves
+              # the document, an invalid pattern, ...) falls back to a
+              # permissive schema with a warning, once per tool: the tool
+              # keeps working with argument validation disabled instead of
+              # being permanently uncallable while tools/list advertises it
+              # as healthy. (The warning's "not draft4-compatible" wording
+              # dates from the draft4 days.)
               @input_schema_value ||= begin
                 schema = ClaudeAgentSDK.normalize_tool_schema(@tool_def.input_schema)
                 schema = schema.except(:required) if schema[:required].is_a?(Array) && schema[:required].empty?

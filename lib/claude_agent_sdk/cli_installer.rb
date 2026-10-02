@@ -419,7 +419,7 @@ module ClaudeAgentSDK
       # +version+ is 'stable', 'latest', or a concrete version like '2.1.220'.
       #
       # Idempotent and safe to run concurrently: an exclusive lock on
-      # dir/.install.lock covers the whole check-download-place-record
+      # dir/.install.lock covers the whole check-download-record-place
       # sequence, so parallel boots (Docker layers, `foreman start`, CI matrix
       # jobs sharing a cache) never race each other into a partially written
       # binary — the loser of the race observes a finished install.
@@ -471,8 +471,11 @@ module ClaudeAgentSDK
       rescue SystemCallError, IOError => e
         # Filesystem failures (EACCES on the install dir, ENOSPC mid-download,
         # a read-only mount) reach callers as CLIInstallError like every other
-        # install failure; `cause` keeps the original for debugging.
-        raise CLIInstallError, "Failed to install the Claude Code CLI into #{dir}: #{e.class}: #{e.message}"
+        # install failure; `cause` keeps the original for debugging. +dir+ is
+        # still nil when resolving the default directory is what failed (the
+        # working directory was deleted): name it by its relative path then.
+        raise CLIInstallError,
+              "Failed to install the Claude Code CLI into #{dir || DEFAULT_DIR}: #{e.class}: #{e.message}"
       end
 
       # Install PINNED_CLI_VERSION — the version this gem release was tested
