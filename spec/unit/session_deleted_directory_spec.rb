@@ -129,6 +129,105 @@ RSpec.describe 'sessions of a project directory that no longer exists' do
     end
   end
 
+  # The session was recorded through `current/../sibling` while the target of
+  # `current` existed. A link is followed before the `..` after it is applied,
+  # so that is the sibling of the TARGET (checkouts/sibling), not of the link
+  # — and the link, still there, says so after its target is gone.
+  #
+  # The expected directory is what Python's os.path.realpath returns for this
+  # layout once checkouts/project is removed. Obtained by hand, not by the
+  # suite (Python 3.11.13 on macOS):
+  #   python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' <path>
+  # printed <cwd>/checkouts/sibling for <cwd>/current/../sibling,
+  # <cwd>/relative/../sibling, <cwd>/via-target and
+  # <cwd>/gone/../checkouts/sibling, and for the relative current/../sibling
+  # (run in <cwd>) and ../../current/../sibling (run in <cwd>/checkouts/sibling).
+  context 'when the path goes up from a symlink whose target was removed' do
+    let(:target) { File.join(cwd, 'checkouts', 'project') }
+    let(:sibling) { File.join(cwd, 'checkouts', 'sibling') }
+    let(:link) { File.join(cwd, 'current') }
+    let(:through) { File.join(link, '..', 'sibling') }
+    let(:sibling_key) { ClaudeAgentSDK::Sessions.sanitize_path(sibling) }
+
+    # The project key of the path while the target existed. Then the target
+    # goes; checkouts/sibling, where the session was recorded, stays.
+    let!(:recorded_key) do
+      FileUtils.mkdir_p(target)
+      File.symlink(target, link)
+      record_session(through)
+      ClaudeAgentSDK.project_key_for_directory(through).tap { FileUtils.rm_rf(target) }
+    end
+
+    it 'keeps the project key it had while the target existed' do
+      expect(File.symlink?(link) && !File.exist?(link)).to be(true)
+      expect(recorded_key).to eq(sibling_key)
+      expect(ClaudeAgentSDK.project_key_for_directory(through)).to eq(sibling_key)
+    end
+
+    it 'is found by the readers' do
+      expect(ClaudeAgentSDK.list_sessions(directory: through).map(&:session_id)).to eq([session_id])
+      expect(ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: through).length).to eq(2)
+    end
+
+    it 'can be renamed' do
+      ClaudeAgentSDK.rename_session(session_id: session_id, title: 'Sibling checkout', directory: through)
+
+      expect(ClaudeAgentSDK.get_session_info(session_id: session_id, directory: through).custom_title)
+        .to eq('Sibling checkout')
+    end
+
+    it 'goes up from the target of a relative link, and of a link another link names' do
+      File.symlink(File.join('checkouts', 'project'), File.join(cwd, 'relative'))
+      File.symlink(File.join('current', '..', 'sibling'), File.join(cwd, 'via-target'))
+
+      expect(ClaudeAgentSDK.project_key_for_directory(File.join(cwd, 'relative', '..', 'sibling'))).to eq(sibling_key)
+      expect(ClaudeAgentSDK.project_key_for_directory(File.join(cwd, 'via-target'))).to eq(sibling_key)
+    end
+
+    it 'goes up from a directory that is simply missing by its name' do
+      expect(ClaudeAgentSDK.project_key_for_directory(File.join(cwd, 'gone', '..', 'checkouts', 'sibling')))
+        .to eq(sibling_key)
+    end
+
+    it 'resolves the path alike when it is given relative to the working directory' do
+      Dir.chdir(cwd) do
+        relative = File.join('current', '..', 'sibling')
+
+        expect(ClaudeAgentSDK.project_key_for_directory(relative)).to eq(sibling_key)
+        expect(ClaudeAgentSDK.list_sessions(directory: relative).map(&:session_id)).to eq([session_id])
+      end
+      Dir.chdir(sibling) do
+        expect(ClaudeAgentSDK.project_key_for_directory(File.join('..', '..', 'current', '..', 'sibling')))
+          .to eq(sibling_key)
+      end
+    end
+  end
+
+  # File.realpath does not expand a leading ~, so a directory named with one
+  # is resolved as a missing path whether it exists or not.
+  context 'when the directory is named with a leading ~' do
+    let(:home) { File.join(cwd, 'home') }
+
+    around do |example|
+      previous_home = ENV.fetch('HOME', nil) # rubocop:disable Style/EnvHome -- raw value; nil when unset
+      ENV['HOME'] = home
+      example.run
+    ensure
+      previous_home.nil? ? ENV.delete('HOME') : (ENV['HOME'] = previous_home)
+    end
+
+    it 'names the directory under the home directory, removed or not' do
+      record_session(File.join(home, 'project'))
+
+      expect(ClaudeAgentSDK.list_sessions(directory: '~/project').map(&:session_id)).to eq([session_id])
+      FileUtils.rm_rf(File.join(home, 'project'))
+      expect(ClaudeAgentSDK.list_sessions(directory: '~/project').map(&:session_id)).to eq([session_id])
+      expect(ClaudeAgentSDK.project_key_for_directory('~/gone/../project'))
+        .to eq(ClaudeAgentSDK::Sessions.sanitize_path(File.join(home, 'project')))
+      expect(ClaudeAgentSDK.project_key_for_directory('~')).to eq(ClaudeAgentSDK::Sessions.sanitize_path(home))
+    end
+  end
+
   it 'resolves a missing path under symlinks that point at each other without looping' do
     one = File.join(cwd, 'one')
     two = File.join(cwd, 'two')

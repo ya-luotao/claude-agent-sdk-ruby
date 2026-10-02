@@ -170,11 +170,34 @@ module ClaudeAgentSDK
     # (resolve_missing_path). The CLI keyed the project by the real path while
     # the directory existed, so a removed /tmp/proj on macOS must still
     # canonicalize to /private/tmp/proj for its sessions to be found; a plain
-    # expand_path (the earlier fallback) resolved no symlink at all.
+    # expand_path (the earlier fallback) resolved no symlink at all. The path
+    # goes to that walk absolute but with its `..` components still in it
+    # (absolute_path_keeping_dots).
     def canonicalize_path(dir)
       nfc_path(File.realpath(dir))
     rescue SystemCallError
-      nfc_path(resolve_missing_path(File.expand_path(dir)))
+      nfc_path(resolve_missing_path(absolute_path_keeping_dots(dir)))
+    end
+
+    # +dir+ as an absolute path with its `.` and `..` components left where
+    # they are, for resolve_missing_path. File.expand_path — what that walk
+    # was given before — removes a `..` together with the name in front of
+    # it. When that name is a symlink, the parent meant is the one of the
+    # link's TARGET: a session recorded through `current/../sibling` while
+    # `current` pointed at checkouts/project belongs to checkouts/sibling.
+    # Collapsed by name, the path was the sibling of the link — another
+    # project key as soon as the target was gone and File.realpath raised.
+    #
+    # Otherwise as File.expand_path has it: a relative path starts at the
+    # working directory, and a leading ~ or ~user is that home directory
+    # (File.realpath expands neither, so `directory: '~/project'` has always
+    # been resolved through here).
+    def absolute_path_keeping_dots(dir)
+      return dir if File.absolute_path?(dir)
+
+      first, rest = dir.split(File::SEPARATOR, 2)
+      base = first&.start_with?('~') ? File.expand_path(first) : File.join(Dir.pwd, first.to_s)
+      rest ? File.join(base, rest) : base
     end
 
     # +path+ as an NFC-normalized UTF-8 String. Paths are UTF-8 whatever the
@@ -203,6 +226,10 @@ module ClaudeAgentSDK
     # target is gone is the point: a session recorded through a symlinked
     # project directory is keyed by the target, and must still be found
     # through the link after the target was removed.
+    #
+    # A `..` drops the last component of what is resolved so far — after the
+    # links in front of it were followed, never before: the order of the
+    # kernel and of Python's os.path.realpath.
     def resolve_missing_path(path)
       root = path[%r{\A(?:[A-Za-z]:)?/+}] || File::SEPARATOR
       resolved = root
@@ -2132,8 +2159,8 @@ module ClaudeAgentSDK
       end
     end
 
-    private_class_method :resolve_missing_path, :symlink_target, :project_dir_records_cwd?, :prefix_fallback_dir?,
-                         :recorded_cwd,
+    private_class_method :absolute_path_keeping_dots, :resolve_missing_path, :symlink_target,
+                         :project_dir_records_cwd?, :prefix_fallback_dir?, :recorded_cwd,
                          :each_parsed_entry, :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions, :dedup_rank,
