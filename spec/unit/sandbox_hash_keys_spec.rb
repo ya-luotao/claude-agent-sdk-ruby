@@ -573,6 +573,26 @@ RSpec.describe 'sandbox settings written as a Hash' do
     end
   end
 
+  # JSON.generate has no way to write a typed value: left inside a Hash it
+  # went out as its #inspect text ("#<ClaudeAgentSDK::SandboxNetworkConfig
+  # ...>"), a String where the CLI wants an object, and the CLI discarded the
+  # whole --settings value over it.
+  describe 'a typed network or filesystem inside a Hash' do
+    it 'is written like a Hash with the same fields' do
+      sandbox = {
+        enabled: true,
+        network: ClaudeAgentSDK::SandboxNetworkConfig.new(denied_domains: ['evil.example']),
+        'filesystem' => ClaudeAgentSDK::SandboxFilesystemConfig.new(deny_read: ['/private/etc/ssh'])
+      }
+
+      expect(sandbox_section(sandbox)).to eq(
+        'enabled' => true,
+        'network' => { 'deniedDomains' => ['evil.example'] },
+        'filesystem' => { 'denyRead' => ['/private/etc/ssh'] }
+      )
+    end
+  end
+
   describe 'what the caller did not write' do
     it 'is not added: an enabled sandbox is sent without failIfUnavailable' do
       expect([{ enabled: true }, { 'enabled' => true }, ClaudeAgentSDK::SandboxSettings.new(enabled: true)]

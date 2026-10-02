@@ -282,18 +282,18 @@ module ClaudeAgentSDK
     }.flat_map { |kind, wire_keys| wire_keys.map { |wire| [wire, kind] } }.to_h.freeze
 
     # A Hash +sandbox:+ as the CLI reads it: its known keys under their wire
-    # keys, at the top level and inside a Hash network / filesystem. Values
-    # are not rewritten: ignore_violations and ripgrep hold structures of
-    # the CLI's own.
+    # keys, at the top level and inside its network / filesystem, which may
+    # each be a Hash or the typed config. Other values are not rewritten:
+    # ignore_violations and ripgrep hold structures of the CLI's own.
     def self.normalize(sandbox)
       normalized = rename(sandbox, TOP_LEVEL)
-      { network: NETWORK, filesystem: FILESYSTEM }.each do |section, table|
-        normalized[section] = rename(normalized[section], table) if normalized[section].is_a?(Hash)
-      end
+      normalized[:network] = network(normalized[:network]) if normalized.key?(:network)
+      normalized[:filesystem] = filesystem(normalized[:filesystem]) if normalized.key?(:filesystem)
       normalized
     end
 
-    # The network of a SandboxSettings as the CLI reads it.
+    # A network section as the CLI reads it: the typed config's #to_h, or a
+    # Hash with its known keys renamed. Any other value is returned as it is.
     def self.network(section)
       case section
       when SandboxNetworkConfig then section.to_h
@@ -302,7 +302,7 @@ module ClaudeAgentSDK
       end
     end
 
-    # The filesystem of a SandboxSettings as the CLI reads it.
+    # A filesystem section as the CLI reads it (see .network).
     def self.filesystem(section)
       case section
       when SandboxFilesystemConfig then section.to_h
