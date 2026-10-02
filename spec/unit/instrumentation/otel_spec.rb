@@ -1096,4 +1096,155 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       expect(span.finished).to be(true)
     end
   end
+
+  # The CLI sends one `assistant` frame PER CONTENT BLOCK, and every frame of
+  # one API response repeats that response's message id and usage snapshot.
+  # The hand-built messages above hold a whole response in one message with
+  # no id, a shape the CLI does not send, so these examples replay a recorded
+  # turn instead (spec/fixtures/cli_frames/README.md).
+  describe 'token usage on generation spans, from recorded CLI frames' do
+    let(:frames) do
+      path = File.expand_path('../../fixtures/cli_frames/tool_turn.jsonl', __dir__)
+      File.readlines(path).map { |line| JSON.parse(line, symbolize_names: true) }
+    end
+    let(:assistant_frames) { frames.select { |frame| frame[:type] == 'assistant' } }
+    let(:token_keys) { %i[input_tokens output_tokens cache_creation_input_tokens cache_read_input_tokens] }
+
+    # Hands frames to the observer the way a session does: Query drops the
+    # `sdk_host_only` state frames, everything else is parsed and observed.
+    def replay(frames)
+      frames.each do |frame|
+        next if frame[:subtype] == 'session_state_changed' && frame[:sdk_host_only] == true
+
+        observer.on_message(ClaudeAgentSDK::MessageParser.parse(frame))
+      end
+    end
+
+    def recorded_init
+      ClaudeAgentSDK::MessageParser.parse(frames.find { |frame| frame[:subtype] == 'init' })
+    end
+
+    def recorded_result
+      ClaudeAgentSDK::MessageParser.parse(frames.find { |frame| frame[:type] == 'result' })
+    end
+
+    # A recorded assistant frame with another message id / usage, for frame
+    # orders the recording does not contain.
+    def assistant_frame(id:, usage: assistant_frames.last.dig(:message, :usage))
+      frame = assistant_frames.last
+      ClaudeAgentSDK::MessageParser.parse(frame.merge(message: frame[:message].merge(id: id, usage: usage)))
+    end
+
+    def generation_spans
+      created_spans.select { |span| span.name == 'claude_agent.generation' }
+    end
+
+    def token_usage(span)
+      token_keys.select { |key| span.attributes.key?("gen_ai.usage.#{key}") }
+                .to_h { |key| [key, span.attributes["gen_ai.usage.#{key}"]] }
+    end
+
+    it 'replays a turn in which each API response spans two frames that repeat one usage snapshot' do
+      by_message_id = assistant_frames.group_by { |frame| frame.dig(:message, :id) }
+
+      expect(by_message_id.keys).to all(start_with('msg_'))
+      expect(by_message_id.values.map(&:length)).to eq([2, 2])
+      expect(assistant_frames.map { |frame| frame.dig(:message, :content).map { |block| block[:type] } })
+        .to eq([%w[thinking], %w[tool_use], %w[thinking], %w[text]])
+      by_message_id.each_value do |group|
+        expect(group.map { |frame| frame.dig(:message, :usage) }.uniq.length).to eq(1)
+      end
+    end
+
+    it 'still emits one generation span per assistant frame' do
+      replay(frames)
+
+      expect(generation_spans.length).to eq(4)
+      expect(generation_spans).to all(have_attributes(finished: true))
+    end
+
+    it 'attaches the usage of an API response to the first of its generation spans only' do
+      replay(frames)
+
+      first_frames = assistant_frames.uniq { |frame| frame.dig(:message, :id) }
+      expected = assistant_frames.map do |frame|
+        first_frames.any? { |first| first.equal?(frame) } ? frame.dig(:message, :usage).slice(*token_keys) : {}
+      end
+      expect(expected.map(&:empty?)).to eq([false, true, false, true])
+      expect(generation_spans.map { |span| token_usage(span) }).to eq(expected)
+    end
+
+    it 'reports the same input-side token usage on generation spans as the ResultMessage' do
+      replay(frames)
+
+      input_side = %i[input_tokens cache_read_input_tokens cache_creation_input_tokens]
+      summed = input_side.to_h { |key| [key, generation_spans.sum { |span| token_usage(span).fetch(key, 0) }] }
+
+      expect(summed).to eq(input_tokens: 18, cache_read_input_tokens: 45_028, cache_creation_input_tokens: 4928)
+      expect(summed).to eq(recorded_result.usage.slice(*input_side))
+    end
+
+    # Every frame carries the snapshot taken when the response started, so a
+    # generation span cannot know the response's final output count; the
+    # ResultMessage, and with it the session span, can.
+    it 'leaves the authoritative totals, output tokens included, to the session span' do
+      replay(frames)
+
+      session_span = created_spans.find { |span| span.name == 'claude_agent.session' }
+      expect(token_usage(session_span)).to eq(recorded_result.usage.slice(*token_keys))
+      expect(token_usage(session_span)).to include(output_tokens: 161)
+      expect(generation_spans.sum { |span| token_usage(span).fetch(:output_tokens, 0) }).to eq(4 + 2)
+    end
+
+    it 'opens the tool span on the tool_use frame and closes it on the tool result frame' do
+      replay(frames)
+
+      tool_span = created_spans.find { |span| span.name == 'claude_agent.tool.Bash' }
+      expect(tool_span).to have_attributes(finished: true)
+      expect(tool_span.attributes).to include(
+        'input.value' => '{"command":"echo placeholder","description":"placeholder"}',
+        'output.value' => 'placeholder'
+      )
+    end
+
+    # Constructed order: two subagents answering at once interleave the
+    # frames of their responses.
+    it 'tells the frames of interleaved API responses apart by message id' do
+      observer.on_message(recorded_init)
+      %w[msg_a msg_b msg_a msg_b].each { |id| observer.on_message(assistant_frame(id: id)) }
+
+      expect(generation_spans.map { |span| token_usage(span).empty? }).to eq([false, false, true, true])
+    end
+
+    it 'keeps the usage for a later frame when the first frame of a response carries none' do
+      observer.on_message(recorded_init)
+      observer.on_message(assistant_frame(id: 'msg_a', usage: nil))
+      observer.on_message(assistant_frame(id: 'msg_a'))
+      observer.on_message(assistant_frame(id: 'msg_a'))
+
+      expect(generation_spans.map { |span| token_usage(span).empty? }).to eq([true, false, true])
+    end
+
+    it 'keeps usage on every span when messages carry no id to group them by' do
+      observer.on_message(recorded_init)
+      2.times { observer.on_message(assistant_frame(id: nil)) }
+
+      expect(generation_spans.map { |span| token_usage(span).empty? }).to eq([false, false])
+    end
+
+    it 'remembers message ids for one trace only' do
+      observer.on_message(recorded_init)
+      observer.on_message(assistant_frame(id: 'msg_a'))
+      observer.on_message(recorded_result) # the trace ends
+      observer.on_message(recorded_init)
+      observer.on_message(assistant_frame(id: 'msg_a'))
+      observer.on_message(recorded_init) # superseded without a result
+      observer.on_message(assistant_frame(id: 'msg_a'))
+      observer.on_close
+      observer.on_message(recorded_init)
+      observer.on_message(assistant_frame(id: 'msg_a'))
+
+      expect(generation_spans.map { |span| token_usage(span).empty? }).to eq([false, false, false, false])
+    end
+  end
 end

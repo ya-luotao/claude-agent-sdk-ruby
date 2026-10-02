@@ -53,6 +53,7 @@ module ClaudeAgentSDK
         @first_user_input = nil # first user prompt of the current trace
         @pending_prompt = nil # prompt that belongs to the NEXT trace (see on_user_prompt)
         @last_assistant_text = nil # capture last assistant text for trace output
+        @usage_reported_message_ids = Set.new # API responses whose usage a generation span of this trace carries
         @cost_session_id = nil
         @last_total_cost_usd = nil
       end
@@ -203,7 +204,7 @@ module ClaudeAgentSDK
           'gen_ai.completion' => truncate(combined_text),
           # OpenInference: Langfuse maps output.value to the Preview Output field
           'output.value' => truncate(combined_text)
-        }.merge(usage_token_attrs(message.usage || {}))
+        }.merge(generation_usage_attrs(message))
 
         OpenTelemetry::Context.with_current(@root_context) do
           span = @tracer.start_span('claude_agent.generation', attributes: compact_attrs(attrs))
@@ -343,10 +344,12 @@ module ClaudeAgentSDK
 
       # Clear per-trace buffers so a reused observer instance (sequential
       # query() calls or multi-turn Client sessions) does not stamp stale
-      # input/output onto later traces.
+      # input/output onto later traces, and so the message ids remembered by
+      # generation_usage_attrs never outlive their trace.
       def reset_session_buffers
         @first_user_input = nil
         @last_assistant_text = nil
+        @usage_reported_message_ids.clear
       end
 
       def record_retry_event(message)
@@ -395,6 +398,20 @@ module ClaudeAgentSDK
           'gen_ai.usage.cache_creation_input_tokens' => usage_value(usage, :cache_creation_input_tokens),
           'gen_ai.usage.cache_read_input_tokens' => usage_value(usage, :cache_read_input_tokens)
         }
+      end
+
+      # gen_ai.usage.* attributes for one generation span. The CLI sends one
+      # assistant frame per content block, and every frame of an API response
+      # repeats that response's message id and usage snapshot, so putting the
+      # snapshot on every span counted the response's input, cache-read and
+      # cache-creation tokens once per block. Only the first span of a message
+      # id carries it. A message without an id cannot be grouped and keeps its
+      # usage; a frame without usage does not use up its id.
+      def generation_usage_attrs(message)
+        attrs = compact_attrs(usage_token_attrs(message.usage || {}))
+        return attrs if attrs.empty? || message.message_id.nil?
+
+        @usage_reported_message_ids.add?(message.message_id) ? attrs : {}
       end
 
       # Usage hashes arrive symbol-keyed from the live CLI (symbolize_names:
