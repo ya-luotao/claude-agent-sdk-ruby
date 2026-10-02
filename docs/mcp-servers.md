@@ -125,6 +125,8 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 An exception raised inside a handler is returned to the model as an
 `isError: true` result carrying the exception message, so it can self-correct.
+That holds for `NotImplementedError`, `LoadError`, `SystemStackError` and
+`SecurityError` as well, although they are not `StandardError`s.
 `exit`, `Interrupt` and other signal exceptions are never swallowed: the CLI
 first gets an `isError` result naming the exception class
 (`"SystemExit: exit"`), so it is not left waiting on the tool call, and then
@@ -196,7 +198,9 @@ server = ClaudeAgentSDK.create_sdk_mcp_server(
 ```
 
 An exception raised inside a resource reader or prompt generator is answered
-with a JSON-RPC internal error (`-32603`) carrying the exception message. For
+with a JSON-RPC internal error (`-32603`) carrying the exception message;
+`NotImplementedError`, `LoadError`, `SystemStackError` and `SecurityError`
+are covered here too. For
 `exit`, `Interrupt` and other signal exceptions the CLI gets that error first,
 naming the exception class, and then the exception propagates as Ruby normally
 would.

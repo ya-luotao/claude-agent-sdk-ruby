@@ -842,15 +842,31 @@ module ClaudeAgentSDK
       raise
     rescue StandardError => e
       send_control_error(request_id, e.message)
+    rescue *FiberBoundary::CALLBACK_FAILURES => e
+      # What is left of the list: a callback (or its callback_wrapper)
+      # failing outside StandardError — NotImplementedError, LoadError,
+      # SystemStackError, SecurityError. No `rescue StandardError` on the
+      # way here caught it, not even the one in #handle_sdk_mcp_request that
+      # turns a resource or prompt handler's failure into its JSON-RPC
+      # error, so the answer an ordinary failure gets is built here.
+      # Unanswered, it would also end this task with an exception Async
+      # treats as fatal for the whole reactor.
+      respond_to_callback_failure(request_id, request_data, e.message)
+    end
+
+    # Answers the request, then leaves the process-exit exception to its
+    # caller to re-raise: the response an ordinary exception from the
+    # callback would have produced, naming the exception by class.
+    def respond_to_process_exit(request_id, request_data, error)
+      respond_to_callback_failure(request_id, request_data, FiberBoundary.process_exit_message(error))
     end
 
     # The response an ordinary exception from the callback would have
-    # produced, with the process-exit exception named by class: an error
-    # control response for hooks / can_use_tool; for SDK MCP requests an
-    # in-band isError result (tools/call) or a JSON-RPC internal error
-    # (resources/read, prompts/get), inside a successful control response.
-    def respond_to_process_exit(request_id, request_data, error)
-      message = FiberBoundary.process_exit_message(error)
+    # produced, with +message+ as its text: an error control response for
+    # hooks / can_use_tool; for SDK MCP requests an in-band isError result
+    # (tools/call) or a JSON-RPC internal error (resources/read,
+    # prompts/get), inside a successful control response.
+    def respond_to_callback_failure(request_id, request_data, message)
       mcp_message = request_data[:message] if request_data.is_a?(Hash) && request_data[:subtype] == 'mcp_message'
       return send_control_error(request_id, message) unless mcp_message.is_a?(Hash)
 
