@@ -195,6 +195,8 @@ module ClaudeAgentSDK
 
       # Message stream
       @message_queue = Async::Queue.new
+      # Set once #receive_messages has consumed the read loop's end sentinel.
+      @stream_ended = false
       # Ends when the run is over, so the stdin-closing waiter can wake; see
       # #read_messages and @inflight_tasks below (Python #1088, #1190/#1279).
       # Work the CLI takes up after the run ended swaps in a fresh one
@@ -1788,16 +1790,19 @@ module ClaudeAgentSDK
       # reception — ResultMessage dropped, the query reported as complete, and
       # on_error never fired. `while` propagates it like any other error.
       while true # rubocop:disable Style/InfiniteLoop
+        # End of stream is sticky. The read loop enqueues ONE sentinel and is
+        # gone, so once a receive has consumed it, every later one must end
+        # at once rather than wait on a queue nothing writes to any more
+        # (Python closes the send side of its stream, so later iterations
+        # end at once there too). The end is remembered, not put back on the
+        # queue: a receive can be made after the reactor has finished, and
+        # async < 2.29 cannot enqueue outside a task. Anything still queued,
+        # such as a mirror error reported after the end, is delivered first.
+        break if @stream_ended && @message_queue.empty?
+
         message = @message_queue.dequeue
         if message[:type] == 'end'
-          # End of stream is sticky. The read loop enqueues ONE sentinel and
-          # is gone, so the sentinel goes back for the next caller: consumed
-          # here, every later receive would park on a queue nothing writes
-          # to any more. (Python closes the send side of its stream instead,
-          # so later iterations end at once there too.) Only from inside a
-          # task: async < 2.29 raises for an enqueue outside one, so a
-          # receive from outside a reactor consumes the sentinel as before.
-          @message_queue.enqueue(message) if Async::Task.current?
+          @stream_ended = true
           break
         end
         raise message[:error] if message[:type] == 'error'
