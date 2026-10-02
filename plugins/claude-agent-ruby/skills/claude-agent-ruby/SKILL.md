@@ -68,7 +68,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 - Include `mcp__<server>__<tool>` in `allowed_tools`
 - Use `annotations:` on `create_tool` for MCP tool annotations
 - Use `meta:` on `create_tool` for `_meta` field forwarding (e.g., `{ 'anthropic/maxResultSizeChars' => 100000 }` to prevent truncation of large results)
-- If `annotations[:maxResultSizeChars]` is set, `_meta` is auto-populated
+- If `annotations[:maxResultSizeChars]` is set, `_meta` is auto-populated with it; an explicit `meta:` is merged with that hint, and a key set in `meta:` wins
 - Both symbol-keyed and string-keyed `input_schema` hashes are accepted
 
 ## Session Management

@@ -70,9 +70,8 @@ module ClaudeAgentSDK
   # @api private
   def self.ruby_type_to_json_schema(type)
     # Class#=== matches instances, not the class object used in { id: Integer }.
-    type = { String => :string, Integer => :integer, Float => :float,
-             TrueClass => :boolean, FalseClass => :boolean,
-             Array => :array, Hash => :object }.fetch(type, type)
+    type = { String => :string, Integer => :integer, Float => :float, TrueClass => :boolean,
+             FalseClass => :boolean, Array => :array, Hash => :object }.fetch(type, type)
     case type
     when :string, String then { type: 'string' }
     when :integer, Integer then { type: 'integer' }
@@ -632,6 +631,11 @@ module ClaudeAgentSDK
   #   +String+ / +:string+, +Integer+ / +:integer+, +Float+ / +:float+ /
   #   +:number+, +TrueClass+ / +FalseClass+ / +:boolean+, +Array+ / +:array+
   #   or +Hash+ / +:object+
+  # @param annotations [Hash, nil] MCP tool annotations (+title+,
+  #   +readOnlyHint+, ...). +maxResultSizeChars+ is also forwarded as
+  #   +_meta['anthropic/maxResultSizeChars']+, the form the CLI reads
+  # @param meta [Hash, nil] The tool's +_meta+. Merged with the size hint
+  #   derived from +annotations+; a key given here wins
   # @param handler [Proc] Block that implements the tool logic. It returns a
   #   String, sent to Claude as a single text block, or a Hash with a
   #   +:content+ Array of MCP content blocks plus optional +:is_error+ /
@@ -666,11 +670,16 @@ module ClaudeAgentSDK
   def self.create_tool(name, description, input_schema, annotations: nil, meta: nil, &handler)
     raise ArgumentError, 'Block required for tool handler' unless handler
 
-    # Auto-populate _meta with maxResultSizeChars from annotations if present
+    # Auto-populate _meta with maxResultSizeChars from annotations if present.
+    # An explicit meta: is merged with that hint rather than replacing it (an
+    # unrelated key used to drop it); a size key the caller sets itself wins,
+    # in either spelling — adding the String key beside a Symbol one would
+    # put the same JSON key in the frame twice.
+    size_key = 'anthropic/maxResultSizeChars'
     resolved_meta = meta
-    if resolved_meta.nil? && annotations
+    if annotations.is_a?(Hash) && (meta.nil? || (meta.is_a?(Hash) && meta.keys.none? { |key| key.to_s == size_key }))
       max_chars = annotations[:maxResultSizeChars] || annotations['maxResultSizeChars']
-      resolved_meta = { 'anthropic/maxResultSizeChars' => max_chars } if max_chars
+      resolved_meta = { size_key => max_chars }.merge(meta || {}) if max_chars
     end
 
     # tools/call arrives from the CLI with the name as a JSON String; the mcp
