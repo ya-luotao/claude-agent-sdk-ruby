@@ -541,10 +541,10 @@ module ClaudeAgentSDK
 
       @options.plugins.each do |plugin|
         plugin_config = plugin.is_a?(SdkPluginConfig) ? plugin.to_h : plugin
-        plugin_type = plugin_config[:type] || plugin_config['type']
         plugin_path = plugin_config[:path] || plugin_config['path']
 
-        unless %w[local plugin].include?(plugin_type)
+        unless %w[local plugin].include?(hash_type(plugin_config))
+          plugin_type = plugin_config[:type] || plugin_config['type']
           raise ArgumentError, "Unsupported plugin type: #{plugin_type.inspect}"
         end
         next unless plugin_path

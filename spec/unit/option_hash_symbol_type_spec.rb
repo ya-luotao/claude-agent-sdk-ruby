@@ -149,6 +149,33 @@ RSpec.describe 'an option Hash tagged with a Symbol type' do
     end
   end
 
+  # plugins: entries carry a `type` too ('local', or 'plugin', its older
+  # name). A Symbol there was refused: "Unsupported plugin type: :local".
+  describe 'a plugin Hash' do
+    it 'builds the same command line with a Symbol type' do
+      string_typed = argv(plugins: [{ type: 'local', path: '/srv/app/plugins/review' }])
+      symbol_typed = [
+        { type: :local, path: '/srv/app/plugins/review' },
+        { 'type' => :local, 'path' => '/srv/app/plugins/review' },
+        { type: :plugin, path: '/srv/app/plugins/review' }
+      ].map { |plugin| argv(plugins: [plugin]) }
+
+      expect(flag_value(string_typed, '--plugin-dir')).to eq('/srv/app/plugins/review')
+      expect(symbol_typed).to eq([string_typed] * 3)
+    end
+
+    it 'still refuses a type that is not a plugin type, naming it as written' do
+      messages = [{ type: 'remote', path: '/x' }, { type: :remote, path: '/x' }, { path: '/x' }].map do |plugin|
+        argv(plugins: [plugin])
+      rescue ArgumentError => e
+        e.message
+      end
+
+      expect(messages).to eq(['Unsupported plugin type: "remote"', 'Unsupported plugin type: :remote',
+                              'Unsupported plugin type: nil'])
+    end
+  end
+
   describe 'a type the SDK does not know' do
     it 'still sends no system prompt flag at all' do
       [{ type: 'bogus', prompt: 'x' }, { type: :bogus, prompt: 'x' }, { prompt: 'x' }, { type: nil }].each do |system_prompt|
