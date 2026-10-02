@@ -87,6 +87,30 @@ initial handshake that was still in flight when the CLI exited. Match on
 `Resume rejected by --resume-drops-turn:` in the message and treat it as
 deterministic: clear the fork target and resume plainly rather than retrying.
 
+## Errors from Client Control Methods
+
+`Client#interrupt`, `#set_model`, `#set_permission_mode`, `#rewind_files`, `#reconnect_mcp_server`, `#toggle_mcp_server`, `#stop_task` and the other control methods (the Ruby-style `model=` and `permission_mode=` included) send a request to the CLI and wait for its answer. They can fail in three ways:
+
+| What happened | Raised |
+|---------------|--------|
+| The client is not connected, or the connection ended while the request was waiting | `CLIConnectionError` |
+| The CLI did not answer in time | `ControlRequestTimeoutError` |
+| The CLI answered with an error: an MCP server name it does not know, a rewind without `enable_file_checkpointing`, a permission mode it does not accept | a plain `StandardError` whose message is the CLI's text |
+
+The third is **not** a `ClaudeSDKError`, so `rescue ClaudeAgentSDK::ClaudeSDKError` does not catch it:
+
+```ruby
+begin
+  client.reconnect_mcp_server('my-server')
+rescue ClaudeAgentSDK::ClaudeSDKError => e
+  puts "Connection lost or timed out: #{e.message}"
+rescue StandardError => e
+  puts "The CLI refused: #{e.message}" # e.g. "Server not found: my-server"
+end
+```
+
+Rescue `StandardError` for it, and do not test for the exact class.
+
 ## Configuring Timeout
 
 The control request timeout defaults to **1200 seconds** (20 minutes) to accommodate long-running agent sessions. Override it via environment variable:
@@ -98,7 +122,7 @@ export CLAUDE_AGENT_SDK_CONTROL_REQUEST_TIMEOUT_SECONDS=300  # 5 minutes
 ## Error Type Reference
 
 ```ruby
-# Base exception class for all SDK errors
+# Base class of the SDK's error classes (all the ones below)
 class ClaudeSDKError < StandardError; end
 
 # Raised when connection to Claude Code fails
@@ -112,6 +136,11 @@ class CLINotFoundError < CLIConnectionError
   # @param message [String] Error message (default: "Claude Code not found")
   # @param cli_path [String, nil] Optional path to the CLI that was not found
 end
+
+# Raised by CLIInstaller.install / .install_pinned (and the
+# claude_agent_sdk:install_cli rake task) when the CLI cannot be installed.
+# Never raised by query, ask or Client
+class CLIInstallError < ClaudeSDKError; end
 
 # Raised by the local-disk session APIs when CLAUDE_CONFIG_DIR is unset and
 # no usable home directory exists for the default ~/.claude
@@ -155,10 +184,11 @@ end
 
 | Error | Description |
 |-------|-------------|
-| `ClaudeSDKError` | Base error for all SDK errors |
+| `ClaudeSDKError` | Base class of every error class in this table. One failure is not a `ClaudeSDKError`: a control request the CLI rejects, see [Errors from Client Control Methods](#errors-from-client-control-methods) |
 | `CLIConnectionError` | Connection issues — including every write after a stdin write was cancelled mid-frame (the connection is unusable from then on — reconnect), and `ClaudeAgentSDK.ask` when the stream ends without a `ResultMessage` |
 | `ControlRequestTimeoutError` | Control protocol timeout (configurable via env var) |
 | `CLINotFoundError` | Claude Code not installed |
+| `CLIInstallError` | `CLIInstaller.install` / `install_pinned` (or the `claude_agent_sdk:install_cli` rake task) could not install the CLI: unsupported platform, invalid version, HTTP error, a response or download over its size limit, checksum mismatch, or a filesystem error. A wrapped failure keeps the original exception in `#cause`. This is the error a deploy or `bin/setup` script rescues; a failed install leaves a previously installed binary in place. See [CLI installer](cli-installer.md) |
 | `ConfigDirError` | A local-disk session API (`list_sessions`, `get_session_*`, `rename_session`, ...) could not locate the Claude config directory: `CLAUDE_CONFIG_DIR` is unset and there is no usable home directory (`HOME` unset with no passwd entry, as under `docker --user` in a minimal image, or an empty/relative `HOME`). Set `CLAUDE_CONFIG_DIR` |
 | `SessionStoreError` | Resuming from `session_store:` failed: a store call (`#load`, `#list_sessions`, `#list_subkeys`) raised or exceeded `load_timeout_ms` while the SDK materialized the transcript, before the CLI started. The message names the call; `#cause` is the adapter's exception. Before 1.0 this was a bare `RuntimeError` — see [Sessions](sessions.md#mirroring-to-a-sessionstore) |
 | `ProcessError` | Process failed (includes `exit_code` and `stderr`) — also raised when the CLI is still running 5s after closing stdout and the SDK had to terminate it |

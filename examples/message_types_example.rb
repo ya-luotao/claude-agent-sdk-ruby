@@ -4,10 +4,11 @@
 require 'bundler/setup'
 require 'claude_agent_sdk'
 
-# Example: Handling all 24 SDK message types
+# Example: Handling all 28 SDK message types
 #
-# The Ruby SDK provides typed classes for every message the CLI emits.
-# This example shows a comprehensive message handler.
+# The Ruby SDK has a typed class for each message type it parses: the 28
+# handled below, plus the generic SystemMessage for a system subtype it has
+# no class for. This example shows a comprehensive message handler.
 
 puts "=== Message Types Example ==="
 
@@ -72,6 +73,16 @@ ClaudeAgentSDK.query(prompt: "List the files in the current directory", options:
   when ClaudeAgentSDK::TaskNotificationMessage
     puts "[task:done] #{msg.task_id} #{msg.status}: #{msg.summary}"
 
+  when ClaudeAgentSDK::TaskUpdatedMessage
+    # A task can finish here without a TaskNotificationMessage: clear your
+    # tracking when status is in ClaudeAgentSDK::TERMINAL_TASK_STATUSES.
+    puts "[task:update] #{msg.task_id}: #{msg.status}" if msg.status
+    puts "[task:update] #{msg.task_id} moved to the background" if msg.is_backgrounded == true
+
+  when ClaudeAgentSDK::BackgroundTasksChangedMessage
+    # The full set of live background tasks: replace yours with it.
+    puts "[tasks] live background tasks: #{Array(msg.tasks).map { |t| t[:task_id] }.join(', ')}"
+
   # --- Tool progress ---
   when ClaudeAgentSDK::ToolProgressMessage
     puts "[tool:progress] #{msg.tool_name} running (#{msg.elapsed_time_seconds}s)"
@@ -110,6 +121,15 @@ ClaudeAgentSDK.query(prompt: "List the files in the current directory", options:
   when ClaudeAgentSDK::PromptSuggestionMessage
     puts "[suggestion] Next: #{msg.suggestion}"
 
+  # --- Auto-denied tool calls ---
+  when ClaudeAgentSDK::PermissionDeniedMessage
+    # Advisory only: ResultMessage#permission_denials is the authoritative list.
+    puts "[denied] #{msg.tool_name} (#{msg.decision_reason_type}): #{msg.message}"
+
+  # --- SessionStore mirroring (only with session_store:) ---
+  when ClaudeAgentSDK::MirrorErrorMessage
+    puts "[mirror] a transcript batch was not stored: #{msg.error}"
+
   # --- Rate limits ---
   when ClaudeAgentSDK::RateLimitEvent
     info = msg.rate_limit_info
@@ -143,5 +163,11 @@ ClaudeAgentSDK.query(prompt: "List the files in the current directory", options:
     end
 
     puts "  Errors: #{msg.errors.join(', ')}" if msg.errors&.any?
+
+  # --- A system subtype this SDK version has no class for ---
+  # Keep this branch after every typed subclass above: they are all
+  # SystemMessages, and `case` takes the first branch that matches.
+  when ClaudeAgentSDK::SystemMessage
+    puts "[system] #{msg.subtype}"
   end
 end

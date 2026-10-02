@@ -26,4 +26,4 @@ If you aren't sure which side an issue is on, report it here and we'll help rout
 
 ## Supported versions
 
-The gem is pre-1.0. Security fixes go into the latest minor release only; upgrade to receive them.
+Security fixes are released as a patch on the latest 1.x minor release only. Earlier minors and the 0.x line get no backports, so upgrade to the latest release to receive a fix. The gem follows [Semantic Versioning](https://semver.org/): an upgrade within 1.x does not break the public API.

@@ -938,16 +938,13 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   # The Client class always uses streaming mode for bidirectional communication.
   #
   # @example Basic usage
-  #   Async do
-  #     client = ClaudeAgentSDK::Client.new
-  #     client.connect  # No arguments needed - automatically uses streaming mode
-  #
+  #   # Client.open connects, yields the client and always disconnects,
+  #   # also when the block raises.
+  #   ClaudeAgentSDK::Client.open do |client|
   #     client.query("What is the capital of France?")
   #     client.receive_response do |msg|
   #       puts msg if msg.is_a?(ClaudeAgentSDK::AssistantMessage)
   #     end
-  #
-  #     client.disconnect
   #   end
   #
   # @example With hooks

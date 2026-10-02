@@ -21,7 +21,6 @@ ClaudeAgentSDK.configure do |config|
   config.default_options = {
     model: 'claude-sonnet-5',
     permission_mode: 'bypassPermissions',
-    env: { 'ANTHROPIC_API_KEY' => ENV.fetch('ANTHROPIC_API_KEY') },
     # AR connections go back to the pool after each callback. Never a bare
     # `->(inv) { Rails.application.executor.wrap { inv.call } }`: that deadlocks
     # with development code reloading in the default :thread scheduling.
@@ -29,6 +28,8 @@ ClaudeAgentSDK.configure do |config|
   }
 end
 ```
+
+The API key needs no entry here: the CLI process inherits the app's environment, so `ANTHROPIC_API_KEY` set for the app already reaches it. An `ENV.fetch('ANTHROPIC_API_KEY')` in the initializer would make every boot without the key (asset precompilation, `db:migrate` in CI) raise `KeyError`.
 
 ## Stream chunks to the frontend (ActionCable)
 

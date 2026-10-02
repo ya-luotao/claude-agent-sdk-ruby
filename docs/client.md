@@ -1,6 +1,8 @@
 # Client & Custom Transport
 
-`ClaudeAgentSDK::Client` supports bidirectional, interactive conversations with Claude Code. Unlike `query()`, `Client` enables **custom tools**, **hooks**, and **permission callbacks**, all of which can be defined as Ruby procs/lambdas. The Client class automatically uses streaming mode for bidirectional communication, allowing you to send multiple queries dynamically during a single session without closing the connection.
+`ClaudeAgentSDK::Client` keeps one Claude Code session open for a conversation you drive. What it adds over `query()` is lifecycle: you can send follow-up queries in the same session, and you can call the CLI while the session runs (`interrupt`, switch the model or the permission mode, inspect and reconnect MCP servers, rewind files, stop or background a task).
+
+**Custom tools**, **hooks** and **permission callbacks** are not part of that difference. `query()` and `ask` speak the same control protocol as `Client`, so all three run them; each is a Ruby proc or lambda you pass in `ClaudeAgentOptions`.
 
 For a single question you don't need a session: `ClaudeAgentSDK.ask(prompt, options:)` runs `query()` to completion and returns the final `ResultMessage` (`#result` is the answer text), optionally yielding each message to a block on the way. See the README's [Quick Start](../README.md#quick-start).
 
@@ -27,6 +29,8 @@ end
 
 Called outside a reactor, `break` inside the `Client.open` block raises `LocalJumpError` (the client still disconnects), so return a value from the block instead. `break` inside `receive_response` / `receive_messages` is fine. It stops the iteration.
 
+Every `client.query` on one client continues the same conversation. The `session_id:` keyword of `Client#query` does not change that: it is a label on the message the SDK sends, and the CLI keeps a single session per client. Every `ResultMessage#session_id` is the CLI's own id, whatever you passed, and all the turns land in one transcript. For separate contexts, one per user for instance, use one `Client` (or one `query()`) each.
+
 If your code already runs inside an `Async` reactor and you want to manage the connection yourself, call `connect` and `disconnect` directly:
 
 ```ruby
@@ -43,10 +47,7 @@ end
 ## Advanced Features
 
 ```ruby
-Async do
-  client = ClaudeAgentSDK::Client.new
-  client.connect
-
+ClaudeAgentSDK::Client.open do |client|
   client.interrupt                              # Send interrupt signal
   client.permission_mode = 'acceptEdits'        # Change permission mode mid-conversation
   client.model = 'claude-sonnet-5'              # Switch model mid-conversation (nil = default)
@@ -60,9 +61,7 @@ Async do
   client.background_tasks(tool_use_id: 'toolu_01') # Only the task spawned by that tool_use block
                                                 # => { backgrounded: true } | { backgrounded: false } (definitive miss)
                                                 # '' or a non-String raises ArgumentError; nil is the all-tasks form
-
-  client.disconnect
-end.wait
+end
 ```
 
 The Ruby-style names above sit next to the Python SDK's spellings, and both work, so code ported from the Python docs runs unchanged:
@@ -106,7 +105,7 @@ end
 
 By default, `Client` uses `SubprocessCLITransport` to spawn the Claude Code CLI locally. You can provide a custom transport class to connect via other channels (e.g., remote SSH, WebSocket, or a sandbox VM).
 
-A transport must implement six methods:
+A transport must implement five methods. It can subclass `ClaudeAgentSDK::Transport`, whose methods raise `NotImplementedError` until you override them, or be any object that has them:
 
 | Method | Purpose |
 |---|---|
@@ -114,8 +113,9 @@ A transport must implement six methods:
 | `write(data)` | Send raw JSON-line bytes to stdin |
 | `read_messages { \|hash\| ... }` | Yield each stdout line as a Hash parsed with `JSON.parse(line, symbolize_names: true)` (the SDK reads Symbol keys; see [Hash keys](types.md#hash-keys)); block until the stream closes |
 | `end_input` | Signal EOF on stdin |
-| `close` | Terminate and clean up |
-| `ready?` | Report whether the transport can accept I/O |
+| `close` | Terminate and clean up. Must be safe to call more than once |
+
+`ready?` (report whether the transport can accept I/O) is on the `Transport` base class as well, but the SDK never calls it, so it is optional. `end_input` is not: a one-shot `query()` calls it when the run is over, and `Client` calls it when a streamed prompt is exhausted.
 
 **Environment your transport should give the CLI.** `SubprocessCLITransport`
 sets a few variables that a custom transport has to set itself. The one that
@@ -137,6 +137,24 @@ client = ClaudeAgentSDK::Client.new(
   transport_args: { foo: 'bar' } # forwarded to MyTransport.new(options, **transport_args)
 )
 ```
+
+### One-shot queries over a custom transport
+
+`ClaudeAgentSDK.query` and `ClaudeAgentSDK.ask` take a transport as well: a ready-made instance in `transport:`, not a class.
+
+```ruby
+transport = MyTransport.new(options, foo: 'bar')
+ClaudeAgentSDK.query(prompt: 'Hello', options: options, transport: transport) { |message| puts message }
+
+result = ClaudeAgentSDK.ask('Hello', options: options, transport: MyTransport.new(options, foo: 'bar'))
+```
+
+- The SDK connects the transport, runs the query over it and closes it, so one instance serves one query. `close` is called even when `connect` raised, and it must be idempotent.
+- `options` still drives everything the SDK does on its own side: hooks, SDK MCP servers, agents, observers, callback scheduling. The command line and the environment are whatever your transport gives the CLI. `query` does not rebuild them from `options`, so build the transport from the same options.
+- `can_use_tool` needs one more step. The CLI asks the callback only when it is started with `--permission-prompt-tool stdio`. The SDK adds that to the options of a transport it builds (a `transport_class:` transport receives options with `permission_prompt_tool_name: 'stdio'`), but `query` cannot add it to a transport you built. Build that transport from `options.dup_with(permission_prompt_tool_name: 'stdio')` and still pass the original `options` to `query`; passing the copy raises `ArgumentError`, because `can_use_tool` and `permission_prompt_tool_name` cannot be combined there.
+- Anything that does not respond to `connect` raises `ArgumentError`.
+
+Resuming from a `session_store` is not available over a custom transport, through `query(transport:)` or `transport_class:`: the SDK prepares the transcript only for a CLI it starts with `SubprocessCLITransport` (or a subclass of it).
 
 ### Reference: running `claude` inside an E2B sandbox
 
