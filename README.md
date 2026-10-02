@@ -224,18 +224,18 @@ All three SDKs drive the same CLI over the same protocol, so capabilities line u
 | Bidirectional `Client` | ✅ | ✅ | ✅ |
 | Streaming input | `AsyncIterable` | `AsyncIterable` | `Enumerator` |
 | Custom tools (SDK MCP servers) | `tool()` | `@tool` decorator | `create_tool` block |
-| Hooks (all 27 events) | ✅ | ✅ | ✅ |
+| Hooks (all 27 events) | ✅ | 10 typed, the rest by name | ✅ |
 | Permission callbacks | ✅ | ✅ | ✅ |
 | Structured output | ✅ | ✅ | ✅ |
 | All 28 message types | ✅ | partial | ✅ |
 | [Sandbox](https://github.com/anthropic-experimental/sandbox-runtime) settings | ✅ | partial | ✅ |
-| Bare mode (`--bare`) | ✅ | ✅ | ✅ |
+| Bare mode (`--bare`) | ✅ | via `extra_args` | ✅ |
 | File checkpointing & rewind | ✅ | ✅ | ✅ |
 | Session browsing & mutations | ✅ | ✅ | ✅ |
 | Programmatic subagents | ✅ | ✅ | ✅ |
 | CLI binary | bundled | bundled | vendored on demand (`CLIInstaller`) |
 | Observability (OTel / Langfuse) | via [Arize](https://github.com/Arize-ai/openinference) | — | ✅ built-in |
-| Custom transport (pluggable I/O) | — | — | ✅ |
+| Custom transport (pluggable I/O) | — | ✅ | ✅ |
 | Rails integration | — | — | ✅ |
 
 Types are plain Ruby classes with `attr_accessor` and keyword arguments, mirroring the field names of the TypeScript Zod schemas and Python dataclasses; there is no runtime type checking.
