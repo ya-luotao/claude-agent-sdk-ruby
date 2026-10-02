@@ -373,9 +373,15 @@ end
 - `bare: true` turns auto-memory off as well, but bare mode never reads an
   OAuth login or the keychain: it authenticates with `ANTHROPIC_API_KEY` (or
   an `apiKeyHelper` setting) only. See [Bare Mode](#bare-mode).
-- With a [custom transport](client.md#custom-transport), `env` reaches the CLI
-  only if the transport passes it on. `settings` travels in the `--settings`
-  argument that `CommandBuilder` builds.
+- Both switches reach the CLI that `query()` and `Client` start themselves,
+  through the default `SubprocessCLITransport`: it puts `env` into the CLI's
+  environment and `settings` on its command line (`--settings`).
+- A [custom transport](client.md#custom-transport) starts the CLI its own way,
+  so neither switch reaches that CLI unless the transport passes it through:
+  `env` into the environment it gives the CLI, `settings` onto the command
+  line (a transport that builds its command line with `CommandBuilder` gets
+  `--settings` from it; one that does not, has to add it). Until then the
+  session is not isolated.
 
 ### What does not isolate sessions
 
