@@ -71,4 +71,37 @@ RSpec.describe 'session API boundaries' do
         .to eq(exact)
     end
   end
+
+  # list_subkeys is documented to return Strings. Resume already skips
+  # anything else an adapter hands back; the readers called String methods
+  # on it.
+  describe 'a store whose list_subkeys returns values that are not Strings' do
+    let(:agent_id) { 'a1b2c3d4e5f60718' }
+    let(:store) do
+      Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+        def list_subkeys(key) = [:'subagents/agent-symbol', nil, 7] + super
+      end.new
+    end
+
+    before do
+      key = { 'project_key' => ClaudeAgentSDK.project_key_for_directory(cwd), 'session_id' => session_id }
+      store.append(key, conversation.store_entries)
+      subagent = CLITranscript.new(session_id: session_id, cwd: cwd, agent_id: agent_id)
+      subagent.prompt(:task, 'Read a.rb')
+      subagent.assistant(:report, subagent.text('It defines Foo.'), parent: :task)
+      store.append(key.merge('subpath' => "subagents/agent-#{agent_id}"), subagent.store_entries)
+    end
+
+    it 'lists the subagents it can name' do
+      expect(ClaudeAgentSDK.list_subagents(session_id: session_id, directory: cwd, session_store: store))
+        .to eq([agent_id])
+    end
+
+    it 'reads a subagent it can name' do
+      messages = ClaudeAgentSDK.get_subagent_messages(session_id: session_id, agent_id: agent_id, directory: cwd,
+                                                      session_store: store)
+
+      expect(messages.map(&:text)).to eq(['Read a.rb', 'It defines Foo.'])
+    end
+  end
 end

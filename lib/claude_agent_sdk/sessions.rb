@@ -1024,7 +1024,10 @@ module ClaudeAgentSDK
       subkeys = Array(session_store.list_subkeys('project_key' => project_key, 'session_id' => session_id))
       seen = {}
       subkeys.filter_map do |subpath|
-        next unless subpath.start_with?('subagents/')
+        # A non-String subkey (Symbol, nil, Integer) is an adapter contract
+        # violation; skip it like resume does instead of calling String
+        # methods on it.
+        next unless subpath.is_a?(String) && subpath.start_with?('subagents/')
 
         last = subpath.rpartition('/').last
         next unless last.start_with?('agent-')
@@ -1300,7 +1303,7 @@ module ClaudeAgentSDK
 
       target = "agent-#{agent_id}"
       matches = Array(store.list_subkeys('project_key' => project_key, 'session_id' => session_id))
-                .select { |sk| sk.start_with?('subagents/') && sk.rpartition('/').last == target }
+                .select { |sk| sk.is_a?(String) && sk.start_with?('subagents/') && sk.rpartition('/').last == target }
       # Several subpaths can share a trailing agent-<id> (a top-level agent and a
       # nested subagents/workflows/<run>/agent-<id>). Prefer the canonical
       # top-level path, else pick deterministically (shortest, then lexical) so
