@@ -13,9 +13,21 @@ ClaudeAgentSDK.query(prompt: 'Hello', options: options) { |message| puts message
 
 ## Reading the tables
 
-- **Type** is the option's type in the gem's RBS signatures (`sig/claude_agent_sdk/types/options.rbs`). Every option also accepts `nil` in `.new`, which means "not set": the default applies. `bool` is `true` or `false`. A name that starts with an underscore is an interface, so any object with the right method fits: `call` for the callbacks, `puts` for `_Puts`, `append` and `load` for `_SessionStore`.
-- **Default** is the value of a fresh `ClaudeAgentOptions.new` with no configured defaults.
+- **Type** is what `.new` accepts for the option: the type of the constructor's keyword in the gem's RBS signatures (`sig/claude_agent_sdk/types/options.rbs`). Every option also accepts `nil`. `bool` is `true` or `false`. A name that starts with an underscore is an interface, so any object with the right method fits: `call` for the callbacks, `puts` for `_Puts`, `append` and `load` for `_SessionStore`.
+- **Default** is what the option reads after a `ClaudeAgentOptions.new` that leaves it out, with no configured defaults. [Leaving an option out, and passing `nil`](#leaving-an-option-out-and-passing-nil) has the other cases.
 - **Sent to the CLI as** names the flag, the `initialize` field (`initialize.hooks` is the `hooks` field of that request) or the environment variable. "Nothing (SDK only)" marks an option that changes only what the SDK does in your process.
+
+### Leaving an option out, and passing `nil`
+
+What an option reads after `.new` depends on what you pass for it, and on whether `ClaudeAgentSDK.configure` has set a default for it:
+
+| You pass | No default is configured for the option | A default is configured for it |
+|----------|------------------------------------------|--------------------------------|
+| nothing | the Default column | the configured value |
+| `nil` | the Default column, except where it says "explicit `nil` stays `nil`" | the configured value |
+| another value | that value | that value; a Hash is merged into a configured Hash |
+
+The exception is every option whose default is `false`. With no default configured for it, `ClaudeAgentOptions.new(fork_session: nil).fork_session` is `nil`, not `false`. The option still acts as `false`: it adds nothing to what the SDK sends to the CLI, and its predicate (`fork_session?`) returns `false`. Only code that compares the reader's value with `false` sees the difference.
 
 Three types in the tables are aliases:
 
@@ -31,7 +43,7 @@ Guides: [Structured Output](configuration.md#structured-output), [Thinking Confi
 
 | Option | Type | Default | Sent to the CLI as |
 |--------|------|---------|--------------------|
-| `system_prompt` | `system_prompt_config` | `nil` | `--system-prompt`, `--system-prompt-file` or `--append-system-prompt`, and two `initialize` fields. See [System prompt forms](#system-prompt-forms) |
+| `system_prompt` | `system_prompt_config` | `nil` | `--system-prompt`, `--system-prompt-file` or `--append-system-prompt`, and the fields `initialize.excludeDynamicSections` and `initialize.systemPromptSnapshot`. See [System prompt forms](#system-prompt-forms) |
 | `model` | `String` | `nil` | `--model` |
 | `fallback_model` | `String` | `nil` | `--fallback-model` |
 | `advisor_model` | `String` | `nil` | `--advisor` |
@@ -86,7 +98,7 @@ Guides: [Custom Tools (SDK MCP Servers)](mcp-servers.md), [Subagent capabilities
 | Option | Type | Default | Sent to the CLI as |
 |--------|------|---------|--------------------|
 | `mcp_servers` | `Hash[String \| Symbol, mcp_server_config] \| String` | `{}` | `--mcp-config`: a Hash as `{"mcpServers": {...}}` JSON, a String (a file path or JSON) as given. An SDK server contributes only its `type` and `name`; its tools are served in your process over the control protocol |
-| `strict_mcp_config` | `bool` | `false` | `--strict-mcp-config`. See [`strict_mcp_config`](#strict_mcp_config) |
+| `strict_mcp_config` | `bool` | `false`; explicit `nil` stays `nil` | `--strict-mcp-config`. See [`strict_mcp_config`](#strict_mcp_config) |
 | `agents` | `Hash[String \| Symbol, AgentDefinition \| Hash[Symbol \| String, untyped]]` | `nil` | `initialize.agents` |
 | `plugins` | `Array[SdkPluginConfig \| Hash[Symbol \| String, untyped]]` | `nil` | `--plugin-dir <path>`, once per plugin |
 
@@ -106,7 +118,7 @@ Guides: [Bare Mode](configuration.md#bare-mode), [Verbatim Prompts](configuratio
 | `setting_sources` | `Array[String]` | `nil` | `--setting-sources` (comma-joined). `[]` sends `--setting-sources ""`; `nil` sends no flag |
 | `add_dirs` | `Array[String \| Pathname]` | `[]` | `--add-dir`, once per directory |
 | `bare` | `bool` | `nil` | `--bare` |
-| `verbatim_prompts` | `bool` | `false` | `client_composed: true` on every user message the SDK writes |
+| `verbatim_prompts` | `bool` | `false`; explicit `nil` stays `nil` | `client_composed: true` on every user message the SDK writes |
 
 `setting_sources` takes entries of `ClaudeAgentSDK::SETTING_SOURCES` (`user`, `project`, `local`). With `nil`, the default, the CLI decides, and it loads the user's and the project's settings and `CLAUDE.md` files. `[]` loads none of the three sources. Neither value affects the auto-memory: see [Session Isolation](configuration.md#session-isolation).
 
@@ -117,12 +129,12 @@ Guide: [Session Browsing & Mutations](sessions.md), which also covers `session_s
 | Option | Type | Default | Sent to the CLI as |
 |--------|------|---------|--------------------|
 | `resume` | `String` | `nil` | `--resume=<session id>` |
-| `continue_conversation` | `bool` | `false` | `--continue`. Combining it with `resume` raises `ArgumentError` |
-| `fork_session` | `bool` | `false` | `--fork-session` |
+| `continue_conversation` | `bool` | `false`; explicit `nil` stays `nil` | `--continue`. Combining it with `resume` raises `ArgumentError` |
+| `fork_session` | `bool` | `false`; explicit `nil` stays `nil` | `--fork-session` |
 | `session_id` | `String` | `nil` | `--session-id=<uuid>` |
 | `resume_session_at` | `String` | `nil` | `--resume-session-at=<uuid>`. Without `resume` it raises `ArgumentError` |
 | `resume_drops_turn` | `String` | `nil` | `--resume-drops-turn=<uuid>` |
-| `enable_file_checkpointing` | `bool` | `false` | `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` in the CLI's environment |
+| `enable_file_checkpointing` | `bool` | `false`; explicit `nil` stays `nil` | `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` in the CLI's environment |
 | `session_store` | `_SessionStore` | `nil` | `--session-mirror`. The SDK appends the mirrored transcript to the store and can resume from it |
 | `session_store_flush` | `String \| Symbol` | `"batched"` | Nothing (SDK only): `'batched'` or `'eager'` |
 | `load_timeout_ms` | `Numeric` | `60000` | Nothing (SDK only): the limit, in milliseconds, for each store call while a resume loads the transcript |
@@ -135,9 +147,9 @@ Guides: [Forwarding Subagent Text](configuration.md#forwarding-subagent-text), [
 
 | Option | Type | Default | Sent to the CLI as |
 |--------|------|---------|--------------------|
-| `include_partial_messages` | `bool` | `false` | `--include-partial-messages`. See [`include_partial_messages`](#include_partial_messages) |
-| `include_hook_events` | `bool` | `false` | `--include-hook-events`. See [`include_hook_events`](#include_hook_events) |
-| `forward_subagent_text` | `bool` | `false` | `initialize.forwardSubagentText`, sent only when `true` |
+| `include_partial_messages` | `bool` | `false`; explicit `nil` stays `nil` | `--include-partial-messages`. See [`include_partial_messages`](#include_partial_messages) |
+| `include_hook_events` | `bool` | `false`; explicit `nil` stays `nil` | `--include-hook-events`. See [`include_hook_events`](#include_hook_events) |
+| `forward_subagent_text` | `bool` | `false`; explicit `nil` stays `nil` | `initialize.forwardSubagentText`, sent only when `true` |
 | `agent_progress_summaries` | `bool` | `nil` | `initialize.agentProgressSummaries`, left out when `nil` |
 
 ### `include_partial_messages`
@@ -190,7 +202,7 @@ Guides: [Observability](observability.md), [Rails Integration](rails.md).
 | Option | Type | Default | Sent to the CLI as |
 |--------|------|---------|--------------------|
 | `observers` | `Array[untyped]` | `[]` | Nothing (SDK only): observer instances, or callables that return a fresh one per query or session |
-| `callback_scheduling` | `:thread \| :inline` | `:thread` | Nothing (SDK only): `:thread` runs each callback on a plain thread, `:inline` on the reactor fiber |
+| `callback_scheduling` | `:thread \| :inline \| "thread" \| "inline"` | `:thread` | Nothing (SDK only): `:thread` runs each callback on a plain thread, `:inline` on the reactor fiber. A String is stored as its Symbol (`callback_scheduling: 'inline'` reads back as `:inline`); anything else but `nil` raises `ArgumentError` |
 | `callback_wrapper` | `_CallbackWrapper` | `nil` | Nothing (SDK only): a callable wrapped around every callback dispatch |
 
 ## Environment variables
