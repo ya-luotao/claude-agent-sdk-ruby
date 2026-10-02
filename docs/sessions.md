@@ -40,7 +40,7 @@ messages.each { |msg| puts "[#{msg.type}] #{msg.message}" }
 ClaudeAgentSDK.get_session_messages(session_id: 'abc-123-...', offset: 10, limit: 20)
 ```
 
-Each `SessionMessage` includes `type` (`"user"` or `"assistant"`), `uuid`, `session_id`, and `message` (the raw API message Hash, read from the transcript, so its keys are Strings: `msg.message['content']`; see [Hash keys](types.md#hash-keys)).
+Each `SessionMessage` includes `type` (`"user"` or `"assistant"`), `uuid`, `session_id`, and `message` (the raw API message Hash, read from the transcript, so its keys are Strings: `msg.message['content']`; see [Hash keys](types.md#hash-keys)). Messages come back in conversation order. The CLI writes one entry per content block, so an assistant turn with several tool calls comes back as several `assistant` messages and one `user` message per `tool_result`; every result follows the `tool_use` it answers and precedes the next assistant turn.
 
 ## Reading Subagent Transcripts
 

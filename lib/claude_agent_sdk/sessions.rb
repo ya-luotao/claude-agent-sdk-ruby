@@ -1159,14 +1159,19 @@ module ClaudeAgentSDK
     end
 
     # Find the last user/assistant entry and walk parentUuid links back to the
-    # root (subagent transcripts are linear). Mirrors Python's
-    # _build_subagent_chain.
+    # root, as Python's _build_subagent_chain does. Subagent transcripts are
+    # not linear either (Python's comment says they are): parallel tool calls
+    # fan out exactly as in a main transcript, so the results the walk passes
+    # by are put back. No flag rejection there — every subagent entry is a
+    # sidechain entry.
     def build_subagent_chain(entries)
       return [] if entries.empty?
 
       by_uuid = entries.to_h { |e| [e['uuid'], e] }
       leaf = entries.reverse_each.find { |e| %w[user assistant].include?(e['type']) }
-      leaf ? walk_to_root(by_uuid, leaf) : []
+      return [] unless leaf
+
+      reattach_parallel_tool_results(walk_to_root(by_uuid, leaf), entries, skip_flagged: false)
     end
 
     # Find the subpath for a subagent, scanning subkeys (subagents may be nested
@@ -1571,14 +1576,100 @@ module ClaudeAgentSDK
       end
 
       # Keep only main-chain candidates (not sidechain, team, or meta)
-      main_leaves = leaf_candidates.reject do |e|
-        e['isSidechain'] || e['teamName'] || e['isMeta']
-      end
+      main_leaves = leaf_candidates.reject { |e| off_main_conversation?(e) }
       return [] if main_leaves.empty?
 
       # Pick the leaf with highest file position, walk to root
       best_leaf = main_leaves.max_by { |e| by_position[e['uuid']] || 0 }
-      walk_to_root(by_uuid, best_leaf)
+      reattach_parallel_tool_results(walk_to_root(by_uuid, best_leaf), entries, skip_flagged: true)
+    end
+
+    # An entry that is not part of the user's own conversation: written by a
+    # subagent (sidechain) or a teammate, or a meta injection.
+    def off_main_conversation?(entry)
+      entry['isSidechain'] || entry['teamName'] || entry['isMeta']
+    end
+
+    # Put the results of parallel tool calls back on a leaf-to-root chain.
+    #
+    # The CLI writes one assistant entry per tool_use block (chained through
+    # parentUuid) and parents every tool_result on the entry that holds ITS
+    # tool_use. With two or more calls in one API message, only the result
+    # the conversation continued from is an ancestor of the leaf; the others
+    # are siblings of the next tool_use entry, and a single-path walk returns
+    # their tool_use without them.
+    #
+    # For each assistant entry on the chain, take its user children that are
+    # not on the chain and carry a tool_result for a tool_use on the chain,
+    # and insert them — in file order — before the next user entry of the
+    # chain (the batch's own on-chain result), or at the end when the chain
+    # has none. The anchor, not the raw file position, decides the place: a
+    # result that arrived after the conversation had already moved on to a
+    # further tool_use of the same message still lands with its batch, so
+    # every result follows the assistant turn that asked for it.
+    #
+    # The tool_use_id match is what keeps other user siblings out: a prompt
+    # abandoned by a rewind is a second child of a chain entry too, and
+    # starts a branch that was dropped. +skip_flagged+ additionally rejects
+    # sidechain / meta / team entries (main transcripts; a subagent
+    # transcript is sidechain throughout).
+    def reattach_parallel_tool_results(chain, entries, skip_flagged:)
+      off_chain = off_chain_tool_results(chain, entries, skip_flagged)
+      return chain if off_chain.empty?
+
+      placed = []
+      pending = []
+      chain.each do |entry|
+        if entry['type'] == 'user' && !pending.empty?
+          placed.concat(pending.sort_by(&:first).map(&:last))
+          pending = []
+        end
+        placed << entry
+        pending.concat(off_chain.fetch(entry['uuid'], []))
+      end
+      placed.concat(pending.sort_by(&:first).map(&:last))
+    end
+
+    # { uuid of an assistant entry on the chain => [[file position, entry], ...] }
+    # for the off-chain user children reattach_parallel_tool_results places.
+    def off_chain_tool_results(chain, entries, skip_flagged) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- one filter per condition of the re-attachment rule
+      on_chain = Set.new
+      assistants = Set.new
+      tool_use_ids = Set.new
+      chain.each do |entry|
+        on_chain << entry['uuid']
+        next unless entry['type'] == 'assistant'
+
+        assistants << entry['uuid']
+        tool_use_ids.merge(content_block_values(entry, 'tool_use', 'id'))
+      end
+      return {} if tool_use_ids.empty?
+
+      # A store may hold an entry twice (a retried mirror batch overlaps the
+      # write it retries); the first copy counts, as each uuid counts once on
+      # the chain.
+      seen = Set.new
+      found = {}
+      entries.each_with_index do |entry, position|
+        next unless entry['type'] == 'user' && assistants.include?(entry['parentUuid'])
+        next if on_chain.include?(entry['uuid'])
+        next if skip_flagged && off_main_conversation?(entry)
+        next unless content_block_values(entry, 'tool_result', 'tool_use_id').any? { |id| tool_use_ids.include?(id) }
+        next unless seen.add?(entry['uuid'])
+
+        (found[entry['parentUuid']] ||= []) << [position, entry]
+      end
+      found
+    end
+
+    # Values of +key+ over the +type+ content blocks of an entry's message
+    # ([] for a message without array content — entries are opaque blobs).
+    def content_block_values(entry, type, key)
+      message = entry['message']
+      content = message.is_a?(Hash) ? message['content'] : nil
+      return [] unless content.is_a?(Array)
+
+      content.filter_map { |block| block[key] if block.is_a?(Hash) && block['type'] == type }
     end
 
     def walk_to_leaf(by_uuid, uuid)
@@ -1634,6 +1725,8 @@ module ClaudeAgentSDK
                          :find_session_file, :stat_candidate, :resolve_subagents_dir,
                          :collect_agent_files, :parse_jsonl_entries,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
+                         :off_main_conversation?, :reattach_parallel_tool_results, :off_chain_tool_results,
+                         :content_block_values,
                          :filter_visible_messages, :read_head_tail, :build_session_info, :user_entry_texts,
                          :valid_agent_id?, :sidechain_head?,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
