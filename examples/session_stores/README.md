@@ -131,7 +131,11 @@ through the relevant items below.
 
 - Pass a connection backed by a pool sized ≥ expected concurrent sessions for
   heavy use; don't share one connection with request-handler code that holds it.
-- `jsonb` reorders keys — contract-safe, but don't byte-compare entries.
+- Keep `entry` a `json` column. `jsonb` rejects the `\u0000` escape, so one
+  entry with a NUL character (binary tool output) fails the whole `INSERT` and
+  the mirror drops that batch. A table created by an earlier copy of this
+  adapter still has `jsonb`, and `create_schema` does not alter an existing
+  table: run the migration under [`json`, not `jsonb`](#json-not-jsonb).
 - Add a retention job (`DELETE WHERE mtime < ...`) — the table grows unbounded.
 
 ---
@@ -250,7 +254,7 @@ CREATE TABLE IF NOT EXISTS claude_session_store (
   session_id  text   NOT NULL,
   subpath     text   NOT NULL DEFAULT '',
   seq         bigserial,
-  entry       jsonb  NOT NULL,
+  entry       json   NOT NULL,
   mtime       bigint NOT NULL,
   PRIMARY KEY (project_key, session_id, subpath, seq)
 );
@@ -262,14 +266,30 @@ CREATE INDEX IF NOT EXISTS claude_session_store_list_idx
 `#load` is `SELECT entry ... ORDER BY seq`. The empty string is the `subpath`
 sentinel for the main transcript so the composite primary key is total.
 
-### JSONB key ordering
+### `json`, not `jsonb`
 
-Entries are stored as `jsonb`, which **reorders object keys** on read-back. This
-is explicitly allowed by the SessionStore contract — `#load` requires
-*deep-equal*, not *byte-equal*, returns. The Ruby SDK reads entry fields by key
-from the parsed Hash (it never does a byte/prefix scan over stored entries), so
-reordering is transparent. Use a `json` or `text` column if you need byte-stable
-storage.
+Entries are stored in a `json` column. `jsonb` rejects the `\u0000` escape, and
+transcripts do carry it: a NUL character in binary tool output is serialized
+that way. One such entry fails the whole multi-row `INSERT`, so the mirror
+drops every entry of that batch (surfaced as a `MirrorErrorMessage`) and a
+later store-backed resume replays a transcript with that turn missing. `json`
+keeps the text exactly as given, key order included. The adapter only ever
+reads whole entries, so it needs none of `jsonb`'s operators or indexes. If you
+add SQL that looks inside entries, note that `->` and `->>` still fail on an
+entry that contains the escape.
+
+`create_schema` is `CREATE TABLE IF NOT EXISTS`, so it does **not** change a
+table created by an earlier copy of this adapter. That table keeps its `jsonb`
+column, and keeps rejecting those entries, until you migrate it:
+
+```sql
+ALTER TABLE claude_session_store ALTER COLUMN entry TYPE json USING entry::json;
+```
+
+The statement rewrites the table under an `ACCESS EXCLUSIVE` lock, so pick a
+quiet moment for a large one. Rows written while the column was `jsonb` come
+back with the key order `jsonb` gave them, which the SessionStore contract
+allows: `#load` requires *deep-equal*, not *byte-equal*, returns.
 
 `#delete` cascades to subpath rows; it is only invoked via
 `ClaudeAgentSDK.delete_session(session_id:, session_store: store)`.
