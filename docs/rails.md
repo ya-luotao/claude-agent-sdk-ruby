@@ -61,7 +61,7 @@ ClaudeAgentSDK.query(prompt: '...') do |message|
 end
 ```
 
-That thread is a new one, not the thread that called the SDK. The connection pool does not mind; everything Rails keeps for the current request or job does — `Current` attributes, `Time.zone`, log tags, the database role and shard are all back at their defaults inside a callback. Read [Request state does not follow into callbacks](#request-state-does-not-follow-into-callbacks) before a callback touches anything scoped to the request.
+That thread is a new one, not the thread that called the SDK. The connection pool does not mind; everything Rails keeps for the current request or job does — `Current` attributes, `Time.zone`, log tags, the database role and shard are all back at their defaults inside a callback, and the callback is outside the caller's transaction. Read [Request state does not follow into callbacks](#request-state-does-not-follow-into-callbacks) and [Transactions and the connection pool](#transactions-and-the-connection-pool) before a callback touches anything scoped to the request.
 
 The trade-off: because callbacks run on a plain thread rather than inside an `Async::Task`, fiber-specific primitives aren't available to them — `Async::Task.current` will raise "No async task available". If a callback wants cooperative concurrency it should open its own `Async { }` block. In practice, callbacks typically do some Ruby work, call external services, and return — so this rarely matters. If you wrap your own call site in an outer `Async { }` block, the scheduler is visible to your code again; you've opted in, and whatever fiber-safety rules your app uses apply there.
 
@@ -247,6 +247,43 @@ and re-enter them innermost, in place of `with_log_tags(tags) { invocation.call 
 `connected_to` on `ApplicationRecord` switches the models that inherit from it; an application with several connection classes captures and re-enters each of them.
 
 What is checked: `spec/rails/request_state_spec.rb` boots a Rails application for each combination of production / development, `:thread` / `:inline` scheduling and `ClaudeAgentSDK.query` / `Client.open`. It pins the `Current`, `Time.zone`, log tag, error context and `I18n.locale` rows of the table, and runs the `AgentContext` block exactly as printed above through all five kinds of callback. It does not cover the three `connected_to` rows or the role / shard lines — the gem's Rails test bundles carry no ActiveRecord; those were measured in a Rails 8.1 application with ActiveRecord and SQLite.
+
+## Transactions and the connection pool
+
+For the same reason — another thread — a callback is outside the caller's database transaction, on a connection of its own. Wrapping an SDK call in `transaction` or `with_lock` does not do what it looks like:
+
+```ruby
+ticket.with_lock do                                   # the job's connection holds the row lock
+  ClaudeAgentSDK.query(prompt: prompt) do |message|
+    next unless message.is_a?(ClaudeAgentSDK::ResultMessage)
+
+    ticket.update!(summary: message.result)           # another connection: waits for that lock,
+  end                                                 # while the job waits for this block
+end
+```
+
+- A callback does not see rows the caller has not committed.
+- What a callback writes is committed on its own connection. Rolling the caller's transaction back does not undo it.
+- A callback that needs a lock the caller's transaction holds waits for the caller, which is waiting for the callback. SQLite gives up after its busy timeout (`database is locked`); a server database keeps the callback waiting for as long as its lock timeout allows, which for PostgreSQL is forever by default. No database can detect the cycle, because half of it is in your process.
+
+So finish the transaction **before** you call the SDK, and hand the callbacks what they need explicitly — ids rather than records in an unsaved state:
+
+```ruby
+ticket.update!(state: 'summarizing')                  # committed before the agent starts
+ticket_id = ticket.id
+
+ClaudeAgentSDK.query(prompt: prompt) do |message|
+  next unless message.is_a?(ClaudeAgentSDK::ResultMessage)
+
+  Ticket.find(ticket_id).update!(summary: message.result, state: 'summarized')   # commits here, independently
+end
+```
+
+**Pool size.** A callback that uses the database needs a connection while the caller may still be holding one: inside a transaction, under an explicit lease, and for the whole request or job on Rails 7.1, where a connection stays with its thread until the request ends. And one session can have several callbacks in the database at the same moment — the SDK answers the CLI's hook, permission and tool requests concurrently, so two parallel tool calls mean two hooks running at once. Size the pool for the caller's connection **plus the peak number of callback invocations that use the database at the same time**, summed over the sessions a process runs concurrently — not for one extra connection per session. With a pool of one and the caller inside a transaction, the first query in a callback raises `ActiveRecord::ConnectionTimeoutError`.
+
+Under `callback_scheduling: :inline` with fiber isolation all of this applies to every callback that runs on a fiber other than the caller's: hooks, permission callbacks, tool handlers, and everything under `ClaudeAgentSDK.query`. Only a `Client`'s message block and observers share the caller's connection and transaction there.
+
+(Measured with ActiveRecord 8.1 on SQLite; the PostgreSQL and MySQL lock waits follow from how those databases wait for row locks and were not measured.)
 
 ## Fiber workers (solid_queue) and `callback_scheduling: :inline`
 
