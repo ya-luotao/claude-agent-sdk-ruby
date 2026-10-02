@@ -94,6 +94,8 @@ Guides: [Custom Tools (SDK MCP Servers)](mcp-servers.md), [Subagent capabilities
 
 `true` makes the CLI use only the servers in `mcp_servers` and ignore every other MCP configuration (the CLI's own description of `--strict-mcp-config`: "Only use MCP servers from --mcp-config, ignoring all other MCP configurations").
 
+"Every other" includes the MCP servers connected to the claude.ai account the CLI is logged in with. A session loads those by default, and `setting_sources: []` does not keep them out, because they do not come from a settings file. `client.mcp_status` shows them: their `:config` has `type: 'claudeai-proxy'`. A host that runs sessions for other people under its own login should set `strict_mcp_config: true`.
+
 ## Settings and context
 
 Guides: [Bare Mode](configuration.md#bare-mode), [Verbatim Prompts](configuration.md#verbatim-prompts), [Session Isolation](configuration.md#session-isolation).

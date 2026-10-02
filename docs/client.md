@@ -29,6 +29,8 @@ end
 
 Called outside a reactor, `break` inside the `Client.open` block raises `LocalJumpError` (the client still disconnects), so return a value from the block instead. `break` inside `receive_response` / `receive_messages` is fine. It stops the iteration.
 
+Every `client.query` on one client continues the same conversation. The `session_id:` keyword of `Client#query` does not change that: it is a label on the message the SDK sends, and the CLI keeps a single session per client. Every `ResultMessage#session_id` is the CLI's own id, whatever you passed, and all the turns land in one transcript. For separate contexts, one per user for instance, use one `Client` (or one `query()`) each.
+
 If your code already runs inside an `Async` reactor and you want to manage the connection yourself, call `connect` and `disconnect` directly:
 
 ```ruby

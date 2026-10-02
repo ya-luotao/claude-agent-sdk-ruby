@@ -195,6 +195,12 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(skills: %w[pdf docx])
 
 Semantics: `nil` (default) leaves CLI defaults untouched; `[]` hides every skill from the listing; an Array adds `Skill(name)` allow-rules per entry (use `plugin:skill` for plugin-qualified names). An explicitly set `setting_sources` (including `[]`) is never overridden. This is a context filter, not a sandbox — skill files remain readable on disk.
 
+If you also give `tools` as a list of names, put `'Skill'` in it. `skills` adds the `Skill` tool to the *allowed* tools, while `tools` decides which tools the session has at all: with `tools: ['Read'], skills: 'all'` there is no `Skill` tool, and no skill can run. Leaving `tools` unset keeps it.
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: %w[Read Skill], skills: %w[pdf docx])
+```
+
 ## Sandbox Settings
 
 Configure [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) restrictions (network policy, filesystem access) with the `sandbox` option. The SDK sends it to the CLI as the `sandbox` key of the `--settings` argument, merged into your `settings:` when you pass both; there is no separate sandbox flag. The CLI handles OS-level process isolation using `srt`.
@@ -211,6 +217,18 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   permission_mode: 'acceptEdits'
 )
 ```
+
+`enabled: true` asks for a sandbox. It does not make one a requirement. When the sandbox cannot start on the host (missing dependencies, an unsupported platform), the CLI carries on without it. Its settings schema describes the setting that decides this, `failIfUnavailable`, as follows (CLI 2.1.287):
+
+> Exit with an error at startup if sandbox.enabled is true but the sandbox cannot start (missing dependencies or unsupported platform). When false (default), a warning is shown and commands run unsandboxed.
+
+The SDK sends your sandbox settings as you wrote them and does not add this one. If commands must never run unsandboxed, set it yourself:
+
+```ruby
+sandbox = ClaudeAgentSDK::SandboxSettings.new(enabled: true, fail_if_unavailable: true)
+```
+
+Without it, the only sign is the CLI's warning on stderr ("Sandbox disabled: ... Commands will run WITHOUT sandboxing. Network and filesystem restrictions will NOT be enforced."), and stderr reaches your code only through the `stderr` (or `debug_stderr`) option. This is the CLI's own description of its behavior: the fallback has not been reproduced in this SDK's testing, where the sandbox was always available.
 
 See [examples/sandbox_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/sandbox_example.rb).
 
@@ -369,7 +387,10 @@ end
   login, so give the CLI `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`
   (in the process environment or in `env`).
 - **`setting_sources: []`** keeps the user, project and local settings and
-  `CLAUDE.md` files out of a session. The auto-memory index still loads.
+  `CLAUDE.md` files out of a session. The auto-memory index still loads. So
+  do the MCP servers connected to the claude.ai account the CLI is logged in
+  with: `strict_mcp_config: true` is what limits a session to the servers in
+  `mcp_servers` (see the [options reference](options.md#strict_mcp_config)).
 
 "One working directory per tenant" is therefore not enough on its own. Use the
 switch.
