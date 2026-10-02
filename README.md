@@ -42,11 +42,11 @@ Then `bundle install`, or install directly with `gem install claude-agent-sdk`. 
 - Claude Code CLI 2.0.0 or newer, either installed globally (`npm install -g @anthropic-ai/claude-code`) or vendored with `CLIInstaller`:
 
 ```ruby
-# bin/setup or a cached Docker layer — pin a concrete version in production
-ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')  # => "/app/vendor/claude/claude"
+# bin/setup or a cached Docker layer: the CLI version this gem release was tested with
+ClaudeAgentSDK::CLIInstaller.install_pinned  # => "/app/vendor/claude/claude"
 ```
 
-The vendored binary is found ahead of `PATH`, installs are idempotent and concurrency-safe, and a failed upgrade never breaks a working install. See [docs/cli-installer.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/cli-installer.md) for the full behaviour, supported platforms, and the CLI discovery order.
+`install_pinned` installs `CLIInstaller::PINNED_CLI_VERSION`, so upgrading the gem carries the CLI forward with it; `CLIInstaller.install(version: 'x.y.z')` pins a version of your own. The vendored binary is found ahead of `PATH`, installs are idempotent and concurrency-safe, and a failed upgrade never breaks a working install. See [docs/cli-installer.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/cli-installer.md) for the full behaviour, supported platforms, and the CLI discovery order.
 
 ### Rails in a minute
 
