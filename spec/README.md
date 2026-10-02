@@ -4,54 +4,49 @@ This directory contains the test suite for the Claude Agent SDK for Ruby.
 
 ## Running Tests
 
-### Run all tests
 ```bash
-bundle exec rspec
+bundle exec rspec                                   # the default suite (spec/, without spec/rails)
+bundle exec rspec spec/unit/message_parser_spec.rb  # one file
+bundle exec rspec spec/unit/types_spec.rb:42        # one example
+bundle exec rspec --seed 81                         # a given order (the suite runs in random order)
+COVERAGE=1 bundle exec rspec                        # with a simplecov report in coverage/
+PROFILE=1 bundle exec rspec                         # and the 10 slowest examples
 ```
 
-### Run with detailed output
-```bash
-bundle exec rspec --format documentation
-```
+The other bundles (`gemfiles/floor.gemfile`, `gemfiles/latest.gemfile`), the Rails specs, `rake rbs:test` and RuboCop are described in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-### Run specific test file
-```bash
-bundle exec rspec spec/unit/message_parser_spec.rb
-```
+## Layout
 
-### Run specific test by line number
-```bash
-bundle exec rspec spec/unit/types_spec.rb:42
-```
+### `spec/unit/`
 
-### Run with profiling (show slowest 10 tests)
-```bash
-PROFILE=1 bundle exec rspec
-```
+One file per area of `lib/`, e.g. `query_spec.rb`, `subprocess_cli_transport_spec.rb`, `sdk_mcp_server_spec.rb`, `sessions_spec.rb`, `types_spec.rb`. Most of them drive one object with doubles. A few go further on purpose:
 
-## Test Structure
+- **Through the control protocol, in process**: `query_hook_input_spec.rb` (the typed input of every hook event), `query_sdk_mcp_messages_spec.rb` (the JSON-RPC exchange with an SDK MCP server) and `query_permission_result_spec.rb` (a `can_use_tool` callback that returns something else than a `PermissionResult`) open a real `Client` on `ScriptedCLI` and assert on the frames the SDK writes back.
+- **Against a real child process**: `subprocess_cli_transport_fake_cli_spec.rb` runs `SubprocessCLITransport` and one `query()` against `FakeClaude`, with nothing stubbed.
+- **In child processes**: `callback_process_exit_spec.rb` runs every cell of `CallbackExitHarness` in its own Ruby process, because those cells end the process with `exit` or a signal.
 
-### Unit Tests (`spec/unit/`)
+### `spec/integration/`
 
-Unit tests verify individual components in isolation:
+Both files spawn the real `claude` binary and are skipped by default.
 
-- **errors_spec.rb** - Tests for error classes and their behavior
-- **types_spec.rb** - Tests for all type classes (Messages, ContentBlocks, Options, etc.)
-- **message_parser_spec.rb** - Tests for JSON message parsing and validation
-- **sdk_mcp_server_spec.rb** - Tests for SDK MCP server functionality and tool execution
-- **transport_spec.rb** - Tests for the Transport abstract base class
+- **`real_cli_integration_spec.rb`** makes live, budget-capped API calls. It is tagged `:integration` and runs only with `RUN_INTEGRATION=1` (`RUN_REAL_INTEGRATION` is accepted as a legacy alias); it then skips itself when `claude` is not on `PATH` or `ANTHROPIC_API_KEY` is unset:
 
-### Integration Tests (`spec/integration/`)
+  ```bash
+  RUN_INTEGRATION=1 ANTHROPIC_API_KEY=... bundle exec rspec spec/integration/real_cli_integration_spec.rb
+  ```
 
-- **real_cli_integration_spec.rb** - Real Claude CLI end-to-end tests (opt-in only, live API calls)
+- **`keyless_smoke_spec.rb`** needs no credentials and reaches no model: with a fresh `HOME` and `CLAUDE_CONFIG_DIR` it completes the `initialize` handshake and checks that a prompt the CLI cannot send comes back as a `ResultError`. It runs only with `RUN_KEYLESS_SMOKE=1` and, once enabled, skips nothing (a missing CLI fails). It finds the CLI the way the SDK does (`CLAUDE_CLI_PATH`, the vendored install, `PATH`):
 
-**Note:** Integration tests are tagged with `:integration` and are skipped by default. `RUN_INTEGRATION=1` is the single gate (`RUN_REAL_INTEGRATION` is accepted as a legacy alias); the suite self-skips green when the `claude` CLI is not on PATH or `ANTHROPIC_API_KEY` is not set:
+  ```bash
+  bundle exec rake claude_agent_sdk:install_cli   # the pinned CLI, into vendor/claude
+  RUN_KEYLESS_SMOKE=1 bundle exec rspec spec/integration/keyless_smoke_spec.rb
+  ```
 
-```bash
-RUN_INTEGRATION=1 ANTHROPIC_API_KEY=... bundle exec rspec spec/integration/real_cli_integration_spec.rb
-```
+  When you run it from a shell that is itself inside Claude Code, start it under `env -i` with only `HOME`, `PATH` and `LANG`: that shell exports `CLAUDE_CODE_*` variables the CLI child would inherit.
 
-### Rails Integration Tests (`spec/rails/`)
+The workflow `.github/workflows/integration.yml` runs the keyless smoke on every trigger, and the live suite only when the repository has an `ANTHROPIC_API_KEY` secret.
+
+### `spec/rails/`
 
 Railtie, `claude_agent_sdk:install_cli` rake task, install generator and `Railtie.callback_wrapper`. They load railties/ActiveSupport, which patch core classes process-wide, so the root `.rspec` excludes `spec/rails` from the default run; they run in their own process against a Rails bundle, with `spec/rails/.rspec` replacing the root options:
 
@@ -60,116 +55,33 @@ BUNDLE_GEMFILE=gemfiles/rails_8.gemfile bundle exec rspec --options spec/rails/.
 BUNDLE_GEMFILE=gemfiles/rails_7_1.gemfile bundle exec rspec --options spec/rails/.rspec  # Rails 7.1 floor
 ```
 
-### Test Helpers (`spec/support/`)
+### `spec/examples/`
 
-- **test_helpers.rb** - Shared test fixtures and helper methods used across test files
+The SessionStore reference adapters under `examples/session_stores/`. The S3 one runs against an in-process fake; the Redis and Postgres ones are live-only and filter themselves out unless their client gem is installed (the optional `examples` Bundler group) and a server is reachable (see the comment at the top of each file).
 
-## Test Configuration
+## Test Helpers (`spec/support/`)
 
-Test configuration is managed in `spec_helper.rb`:
+`spec_helper.rb` requires every file here.
 
-- **Random order** - Tests run in random order to detect order dependencies
-- **Persistence** - Test status is saved to `.rspec_status` for `--only-failures` and `--next-failure`
-- **No monkey patching** - RSpec's clean syntax without global method pollution
-- **Integration filter** - Integration tests skipped by default (enable with `RUN_INTEGRATION=1`)
+- **`test_helpers.rb`** (included in every example group): `sample_user_message`, `sample_assistant_message`, `sample_assistant_message_with_tool_use`, `sample_result_message` and `sample_system_message` return small message Hashes with Symbol keys, the key style the transport yields (they are trimmed, not copies of real frames); `mock_transport` takes no arguments and returns a double whose `connect`, `close`, `write`, `ready?` and `end_input` are stubbed. An example that needs `read_messages` stubs it on that double itself (`query_run_end_spec.rb` feeds it from a queue).
+- **`scripted_cli.rb`** — `ScriptedCLI`, the CLI's end of the control protocol in process. `ScriptedCLI.session(options) { |cli, client| ... }` opens a real `Client` on it; `cli.request(...)` sends a control request (`hook_callback`, `can_use_tool`, `mcp_message`) and returns the control response the SDK wrote; `initialize` is answered the way CLI 2.1.286 answers it.
+- **`fake_claude.rb`** — `FakeClaude`, a stand-in for the `claude` executable: a plain-Ruby child process that speaks the stream-JSON protocol. `FakeClaude.install(dir)` writes the executable and returns its absolute path for `cli_path:`; `FakeClaude.env(scenario:, log:)` selects what the child does (a conversation, a slow exit after stdin EOF, a process that ignores EOF and SIGTERM, stderr lines followed by a failure, an immediate exit); `FakeClaude.events(log)` reads back what the child received and did.
+- **`callback_exit_harness.rb`** — `CallbackExitHarness`, the child-process side of `callback_process_exit_spec.rb`.
 
-## Test Coverage
+## Conventions
 
-The test suite covers:
-
-### Error Handling
-- All error class instantiation and attributes
-- Error inheritance hierarchy
-- Error message formatting
-
-### Type System
-- Content blocks (TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock)
-- Messages (UserMessage, AssistantMessage, SystemMessage, ResultMessage, StreamEvent)
-- ClaudeAgentOptions with all configuration fields
-- Permission types (PermissionResultAllow, PermissionResultDeny, PermissionUpdate)
-- Hook matchers
-
-### Message Parser
-- Parsing all message types from JSON
-- Content block parsing
-- Validation and error handling for malformed messages
-- Missing required field detection
-
-### SDK MCP Server
-- Tool creation with schemas
-- Server configuration
-- Tool execution and error handling
-- JSON schema generation from Ruby types
-
-### Transport
-- Abstract base class interface
-- NotImplementedError for unimplemented methods
-
-### Integration
-- Component interaction verification
-- SDK MCP server integration
-- Hook configuration and execution
-- Permission callback handling
-- End-to-end workflow simulation
-
-**Total:** Run `bundle exec rspec` to see the current example count.
-
-## Writing New Tests
-
-### Test Fixtures
-
-Use the fixtures provided in `spec/support/test_helpers.rb`:
-
-```ruby
-include TestHelpers
-
-# Use sample messages
-message = sample_user_message
-result = sample_result_message
-```
-
-### Mock Transports
-
-Create mock transports for testing without CLI:
-
-```ruby
-mock = mock_transport(
-  messages: [sample_user_message, sample_result_message]
-)
-```
-
-### Testing SDK Tools
-
-```ruby
-tool = ClaudeAgentSDK.create_tool('test_tool', 'Description', { arg: :string }) do |args|
-  { content: [{ type: 'text', text: "Result: #{args[:arg]}" }] }
-end
-
-server = ClaudeAgentSDK.create_sdk_mcp_server(
-  name: 'test_server',
-  tools: [tool]
-)
-
-result = server[:instance].call_tool('test_tool', { arg: 'value' })
-```
-
-## Continuous Integration
-
-In CI environments, tests run with:
-
-- Documentation formatter for better output visibility
-- Random seed for reproducibility
-- Strict failure reporting
-
-The test suite should always pass with 0 failures before merging.
+- `expect` syntax only (`disable_monkey_patching!`), random order, and status persisted to `.rspec_status` for `--only-failures` / `--next-failure`.
+- An example must not leave anything in `SubprocessCLITransport`'s at-exit process registry: a check in `spec_helper.rb` fails the example that does, and empties the registry for the next one.
+- Synchronize on events, never on the clock: a queue, a barrier, the child's own output. `sleep` to "let things settle" makes an example pass or fail with the machine's load.
+- Bound every wait that a regression could turn into a hang (`task.with_timeout`, `Thread#join(seconds)`, `Queue#pop(timeout:)`), and stop or kill whatever is left waiting, so a hang fails the example instead of the run. CI jobs also have a time limit.
+- Fixtures should look like what the real CLI sends: same keys, same nesting. Several bugs hid behind hand-simplified frames.
+- Examples that pass values outside the RBS signatures on purpose carry `rbs_incompatible: '<reason>'` metadata, which `rake rbs:test` skips (see CONTRIBUTING.md).
 
 ## Troubleshooting
 
-### Tests hanging or timing out
+### A test hangs
 
-If tests hang, it may be due to:
-- Process not terminating properly in transport tests
-- Async operations not completing
+Run it alone with `--format documentation` to see which example it is. A hang usually means something waits without a bound: a process that does not exit, a task left parked on a condition, a queue that is never fed.
 
 ### LoadError or require failures
 
@@ -179,27 +91,13 @@ Ensure dependencies are installed:
 bundle install
 ```
 
-### Integration tests failing
+If `bundle exec` cannot find gems that `bundle install` just installed, see the note on version managers in CONTRIBUTING.md.
 
-Integration tests require Claude Code CLI to be installed:
+### Integration tests are skipped
 
-```bash
-npm install -g @anthropic-ai/claude-code
-```
-
-Check installation:
+`real_cli_integration_spec.rb` needs `RUN_INTEGRATION=1`, `ANTHROPIC_API_KEY` and `claude` on `PATH`; `keyless_smoke_spec.rb` needs `RUN_KEYLESS_SMOKE=1` and a CLI (see above). Check the CLI with:
 
 ```bash
 which claude
 claude -v
 ```
-
-## Contributing
-
-When adding new features:
-
-1. Write unit tests for new classes/methods
-2. Add integration tests for feature workflows
-3. Update this README if adding new test categories
-4. Ensure all tests pass: `bundle exec rspec`
-5. Aim for comprehensive coverage of error cases and edge conditions

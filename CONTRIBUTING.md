@@ -47,11 +47,11 @@ bundle exec rake claude_agent_sdk:install_cli   # optional: the pinned CLI, into
 PATH="$PWD/vendor/claude:$PATH" RUN_INTEGRATION=1 ANTHROPIC_API_KEY=... bundle exec rspec spec/integration
 ```
 
-Run them when you change anything on the CLI wire protocol (the transport, `Query`, the control protocol, `CommandBuilder`). CI also runs them weekly, and on PRs that touch `cli_installer.rb`, against the pinned CLI version.
+Run them when you change anything on the CLI wire protocol (the transport, `Query`, the control protocol, `CommandBuilder`). CI also runs them weekly, and on PRs that touch the installer, the transport, `Query` or the message parser, against the pinned CLI version, when the repository has an `ANTHROPIC_API_KEY` secret; without it that job shows as skipped. On the same triggers CI runs a keyless smoke that needs no secret (`spec/integration/keyless_smoke_spec.rb`): it installs the pinned CLI, completes the `initialize` handshake and checks that a prompt without credentials fails with a `ResultError`.
 
 **TLA+ models** (`formal/tla/`) model-check the CLI installer's publish/lock ordering and the outbound control-request protocol. They need Java 11+; `run.sh` fetches the pinned TLA+ tools itself. Run `formal/tla/run.sh` when you change `CLIInstaller.install` / `#publish` or `Query#send_control_request` / `#await_control_response`, and update the model if the design changed. `formal/tla/README.md` explains what each model covers.
 
-CI runs the unit suite and RuboCop on Ruby 3.2, 3.3 and 3.4 (Linux), the unit suite on macOS, the dependency floor and latest legs, and the Rails specs on Rails 7.1 and 8. The Ruby 3.4 Linux leg also runs `rake rbs:validate`, and a separate job runs `rake rbs:test`. See [`.github/workflows/`](.github/workflows/).
+CI runs the unit suite and RuboCop on Ruby 3.2, 3.3, 3.4 and 4.0 (Linux), the unit suite on macOS, the dependency floor and latest legs (the latest one on Ruby 3.4 and on Ruby 4.0), and the Rails specs on Rails 7.1 and 8. The Ruby 3.4 Linux leg also runs `rake rbs:validate`, and a separate job runs `rake rbs:test`. See [`.github/workflows/`](.github/workflows/).
 
 ## Pull requests
 
