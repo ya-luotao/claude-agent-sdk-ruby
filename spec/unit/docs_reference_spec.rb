@@ -7,9 +7,10 @@ require 'spec_helper'
 # defines. The checks run from the code to the page: a class the SDK can hand
 # to a consumer must be in the reference. Prose is not scanned for names; the
 # only page-to-code check is on table rows that start with a constant name.
-RSpec.describe 'docs/types.md' do
+RSpec.describe 'docs/types.md and docs/errors.md' do
   let(:root) { File.expand_path('../..', __dir__) }
   let(:types_doc) { File.read(File.join(root, 'docs/types.md')) }
+  let(:errors_doc) { File.read(File.join(root, 'docs/errors.md')) }
 
   def short_name(klass)
     klass.name.split('::').last
@@ -69,5 +70,15 @@ RSpec.describe 'docs/types.md' do
 
     expect(names).not_to be_empty
     expect(unknown).to be_empty, "docs/types.md lists names ClaudeAgentSDK does not define: #{unknown.join(', ')}"
+  end
+
+  it 'has a reference entry and a table row for every error class' do
+    errors = sdk_classes.select { |klass| klass <= ClaudeAgentSDK::ClaudeSDKError }.map { |klass| short_name(klass) }
+    without_entry = errors.reject { |name| errors_doc.match?(/^class #{name}\b/) }
+    without_row = errors.reject { |name| errors_doc.match?(/^\| `#{name}` \|/) }
+
+    expect(errors).to include('ClaudeSDKError', 'ProcessError', 'ResultError')
+    expect(without_entry).to be_empty, "docs/errors.md has no reference entry for: #{without_entry.join(', ')}"
+    expect(without_row).to be_empty, "docs/errors.md has no table row for: #{without_row.join(', ')}"
   end
 end

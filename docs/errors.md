@@ -113,6 +113,11 @@ class CLINotFoundError < CLIConnectionError
   # @param cli_path [String, nil] Optional path to the CLI that was not found
 end
 
+# Raised by CLIInstaller.install / .install_pinned (and the
+# claude_agent_sdk:install_cli rake task) when the CLI cannot be installed.
+# Never raised by query, ask or Client
+class CLIInstallError < ClaudeSDKError; end
+
 # Raised by the local-disk session APIs when CLAUDE_CONFIG_DIR is unset and
 # no usable home directory exists for the default ~/.claude
 class ConfigDirError < ClaudeSDKError; end
@@ -159,6 +164,7 @@ end
 | `CLIConnectionError` | Connection issues — including every write after a stdin write was cancelled mid-frame (the connection is unusable from then on — reconnect), and `ClaudeAgentSDK.ask` when the stream ends without a `ResultMessage` |
 | `ControlRequestTimeoutError` | Control protocol timeout (configurable via env var) |
 | `CLINotFoundError` | Claude Code not installed |
+| `CLIInstallError` | `CLIInstaller.install` / `install_pinned` (or the `claude_agent_sdk:install_cli` rake task) could not install the CLI: unsupported platform, invalid version, HTTP error, a response or download over its size limit, checksum mismatch, or a filesystem error. A wrapped failure keeps the original exception in `#cause`. This is the error a deploy or `bin/setup` script rescues; a failed install leaves a previously installed binary in place. See [CLI installer](cli-installer.md) |
 | `ConfigDirError` | A local-disk session API (`list_sessions`, `get_session_*`, `rename_session`, ...) could not locate the Claude config directory: `CLAUDE_CONFIG_DIR` is unset and there is no usable home directory (`HOME` unset with no passwd entry, as under `docker --user` in a minimal image, or an empty/relative `HOME`). Set `CLAUDE_CONFIG_DIR` |
 | `SessionStoreError` | Resuming from `session_store:` failed: a store call (`#load`, `#list_sessions`, `#list_subkeys`) raised or exceeded `load_timeout_ms` while the SDK materialized the transcript, before the CLI started. The message names the call; `#cause` is the adapter's exception. Before 1.0 this was a bare `RuntimeError` — see [Sessions](sessions.md#mirroring-to-a-sessionstore) |
 | `ProcessError` | Process failed (includes `exit_code` and `stderr`) — also raised when the CLI is still running 5s after closing stdout and the SDK had to terminate it |

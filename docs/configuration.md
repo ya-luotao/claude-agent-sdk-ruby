@@ -197,7 +197,7 @@ Semantics: `nil` (default) leaves CLI defaults untouched; `[]` hides every skill
 
 ## Sandbox Settings
 
-Configure [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) restrictions (network policy, filesystem access) via the CLI's `--sandbox` flag. The CLI handles OS-level process isolation using `srt`.
+Configure [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) restrictions (network policy, filesystem access) with the `sandbox` option. The SDK sends it to the CLI as the `sandbox` key of the `--settings` argument, merged into your `settings:` when you pass both; there is no separate sandbox flag. The CLI handles OS-level process isolation using `srt`.
 
 ```ruby
 sandbox = ClaudeAgentSDK::SandboxSettings.new(
