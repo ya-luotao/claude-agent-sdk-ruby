@@ -138,7 +138,8 @@ module ClaudeAgentSDK
     attr_accessor :command, :args, :env
     attr_reader :type
 
-    inspect_filtered :env
+    # `args` carries flags such as `--api-key <key>`.
+    inspect_filtered :env, :args
 
     def initialize(attributes = {})
       super
@@ -173,6 +174,14 @@ module ClaudeAgentSDK
       result[:headers] = @headers if @headers
       result
     end
+
+    private
+
+    # The url can carry a token (userinfo, path or query): #inspect shows
+    # its scheme and host.
+    def inspect_attributes
+      super.map { |name, value| [name, name == 'url' ? inspect_filter_url(value) : value] }
+    end
   end
 
   class McpHttpServerConfig < Type
@@ -194,6 +203,14 @@ module ClaudeAgentSDK
       result = { type: @type, url: @url }
       result[:headers] = @headers if @headers
       result
+    end
+
+    private
+
+    # The url can carry a token (userinfo, path or query): #inspect shows
+    # its scheme and host.
+    def inspect_attributes
+      super.map { |name, value| [name, name == 'url' ? inspect_filter_url(value) : value] }
     end
   end
 

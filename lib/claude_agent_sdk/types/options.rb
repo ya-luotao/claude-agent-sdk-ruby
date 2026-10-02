@@ -18,8 +18,10 @@ module ClaudeAgentSDK
 
   # Claude Agent Options for configuring queries
   class ClaudeAgentOptions < Type
-    # `env` routinely carries credentials (ANTHROPIC_API_KEY, ...).
-    inspect_filtered :env
+    # `env` routinely carries credentials (ANTHROPIC_API_KEY, ...). So does
+    # `settings` (its own `env`, `apiKeyHelper`), as a Hash or a JSON String,
+    # and an `extra_args` value can be one.
+    inspect_filtered :env, :settings, :extra_args
 
     attr_accessor :allowed_tools, :system_prompt, :mcp_servers, :permission_mode,
                   :resume, :resume_session_at, :session_id, :max_turns, :disallowed_tools,
@@ -343,6 +345,37 @@ module ClaudeAgentSDK
       # 0 is a valid (immediate) timeout, so only fill in the default for nil.
       self.load_timeout_ms = 60_000 if load_timeout_ms.nil?
       self.callback_scheduling = :thread if callback_scheduling.nil?
+    end
+
+    # Keys of a raw Hash server config whose values #inspect shows as they are.
+    INSPECT_MCP_CONFIG_KEYS = %w[type command name instance].freeze
+    private_constant :INSPECT_MCP_CONFIG_KEYS
+
+    # `mcp_servers` holds typed configs, which filter themselves, next to raw
+    # Hash configs carrying the same credentials (env, headers, args, a token
+    # in the url). A raw config keeps its keys and shows what identifies the
+    # server: its type, its command (or the SDK server's name and instance)
+    # and the scheme and host of its url. Every other value is filtered
+    # here rather than left to the nesting limit of #inspect.
+    def inspect_attributes
+      super.map { |name, value| [name, name == 'mcp_servers' ? inspect_mcp_servers(value) : value] }
+    end
+
+    def inspect_mcp_servers(servers)
+      return servers unless servers.is_a?(Hash)
+
+      servers.to_h { |name, config| [name, config.is_a?(Hash) ? inspect_mcp_server_config(config) : config] }
+    rescue StandardError
+      '[FILTERED]'
+    end
+
+    def inspect_mcp_server_config(config)
+      config.to_h do |key, value|
+        name = key.to_s
+        next [key, value] if INSPECT_MCP_CONFIG_KEYS.include?(name)
+
+        [key, name == 'url' ? inspect_filter_url(value) : '[FILTERED]']
+      end
     end
 
     # Strict key validation: unlike other Type subclasses (which silently drop

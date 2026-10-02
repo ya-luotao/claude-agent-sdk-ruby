@@ -134,9 +134,10 @@ module ClaudeAgentSDK
       inspect
     end
 
-    # Declares attributes that carry credentials (env vars, auth headers).
-    # Objects get logged, so #inspect shows them filtered; #to_h and
-    # everything sent to the CLI are unaffected. Inherited by subclasses.
+    # Declares attributes that carry credentials (env vars, auth headers,
+    # settings, extra CLI arguments, an MCP server's args). Objects get
+    # logged, so #inspect shows them filtered; #to_h and everything sent to
+    # the CLI are unaffected. Inherited by subclasses.
     #
     # @api private
     def self.inspect_filtered(*names)
@@ -194,6 +195,27 @@ module ClaudeAgentSDK
     # outright. Builds a new Hash; the object itself is never touched.
     def inspect_filter(value)
       value.respond_to?(:each_key) ? value.each_key.to_h { |key| [key, '[FILTERED]'] } : '[FILTERED]'
+    end
+
+    INSPECT_URL_ORIGIN = %r{
+      \A(https?|wss?)://                 # scheme
+      (?:[^/?\#\\]*@)?                   # userinfo, up to the last @ before the path
+      (\[[0-9a-f:.]+\]|[[:alnum:]._-]+)  # host: an IPv6 literal or a name
+      (:\d{1,5})?                        # port
+      (?=[/?\#]|\z)                      # then the path, the query, the fragment or the end
+    }ix
+    private_constant :INSPECT_URL_ORIGIN
+
+    # A URL can carry a credential in its userinfo, path, query or fragment,
+    # so only where it points is shown: `https://mcp.example.com/[FILTERED]`
+    # (scheme, host and port). Anything else is replaced outright: a value
+    # that is not a String, another scheme, a host or port with a character
+    # that does not belong there.
+    def inspect_filter_url(value)
+      origin = value.is_a?(String) && INSPECT_URL_ORIGIN.match(value)
+      origin ? "#{origin[1]}://#{origin[2]}#{origin[3]}/[FILTERED]" : '[FILTERED]'
+    rescue StandardError
+      '[FILTERED]'
     end
 
     def inspect_class_name

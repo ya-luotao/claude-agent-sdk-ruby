@@ -3027,7 +3027,7 @@ RSpec.describe ClaudeAgentSDK do
       end
 
       it 'keeps filtered attributes per class (subclasses inherit, siblings do not)' do
-        expect(ClaudeAgentSDK::ClaudeAgentOptions.inspect_filtered_attributes).to eq(['env'])
+        expect(ClaudeAgentSDK::ClaudeAgentOptions.inspect_filtered_attributes).to eq(%w[env settings extra_args])
         expect(ClaudeAgentSDK::McpHttpServerConfig.inspect_filtered_attributes).to eq(['headers'])
         expect(ClaudeAgentSDK::ResultMessage.inspect_filtered_attributes).to eq([])
       end
