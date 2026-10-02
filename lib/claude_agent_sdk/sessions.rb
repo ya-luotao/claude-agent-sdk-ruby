@@ -722,7 +722,10 @@ module ClaudeAgentSDK
       return nil unless timestamp_str.is_a?(String)
 
       require 'time'
-      (Time.iso8601(timestamp_str).to_f * 1000).to_i
+      # Integer arithmetic: through a Float (to_f * 1000, truncated) about one
+      # millisecond value in eight came out 1 ms low — ...30.933Z as ...932.
+      time = Time.iso8601(timestamp_str)
+      (time.to_i * 1000) + (time.nsec / 1_000_000)
     rescue ArgumentError
       nil
     end
