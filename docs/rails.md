@@ -85,6 +85,8 @@ It runs each callback inside the Rails executor — except where that would dead
 
 Everywhere else — production, with no reloading — the callback runs inside the executor: its run hooks before the callback and its complete hooks after it, also when the callback raises. The configuration is read per call, so one initializer is correct in every environment.
 
+**Development: an agent run still holds the reload lock.** The helper removes the deadlock, not the wait. A request or in-process job that runs an agent stays inside the executor, with its share of the interlock, until the run returns. Once a file changes — an agent editing your app does that — the next request asks to reload, the reloader waits for that share, and every other request waits behind the reloader. Rails treats any long request this way; it is not specific to the SDK. In development, run agent jobs in a separate process (`bin/jobs`, Sidekiq) rather than in a controller action or the in-process `:async` adapter, and point an agent that edits code at a different checkout than the one the server runs from. To see who is waiting for whom, add `config.middleware.insert_before Rack::Sendfile, ActionDispatch::DebugLocks` and open `/rails/locks`.
+
 **Errors and `Rails.error`.** The wrapper reports nothing to `Rails.error` itself, which is the one difference from `executor.wrap` (that reports whatever passes through it as an unhandled error). What your error tracker sees is therefore decided by where an exception ends up:
 
 - An exception that escapes a callback — one raised in a message block, say — comes out of `query` / `receive_response` on the thread that called the SDK. The request middleware or ActiveJob reports it there, once, with the controller or job context that thread has.
