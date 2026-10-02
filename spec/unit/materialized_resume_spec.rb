@@ -99,6 +99,49 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
       expect { preserve }.to output(/transcript mirror dropped batches/).to_stderr
     end
 
+    # An entry that cannot be removed must not pass for scrubbed: backups/ can
+    # hold the seeded .claude.json, MCP header secrets included.
+    context 'when an entry resists deletion' do
+      let(:backups) { File.join(config_dir, 'backups') }
+
+      it 'makes a read-only directory of its own writable and removes it' do
+        File.chmod(0o500, backups) # listable, not writable: its file cannot be unlinked
+
+        warning = stderr_of { preserve }
+
+        expect(Dir.children(config_dir)).to eq(['projects'])
+        expect(warning).to match(/Preserving the session transcript/)
+        expect(warning).not_to match(/Scrubbing failed/)
+      ensure
+        File.chmod(0o700, backups) if File.directory?(backups)
+      end
+
+      it 'neither follows nor changes a symlink while it makes a directory writable' do
+        File.symlink(outside, File.join(backups, 'elsewhere'))
+        File.chmod(0o555, outside)
+        File.chmod(0o500, backups)
+
+        stderr_of { preserve }
+
+        expect(Dir.children(config_dir)).to eq(['projects'])
+        expect(format('%o', File.stat(outside).mode & 0o777)).to eq('555')
+        expect(File.read(File.join(outside, 'not-ours.txt'))).to eq('keep me')
+      ensure
+        File.chmod(0o700, backups) if File.directory?(backups)
+        File.chmod(0o700, outside)
+      end
+
+      it 'says scrubbing failed, and names what is left, when it still cannot remove it' do
+        allow(FileUtils).to receive(:remove_entry).and_call_original
+        allow(FileUtils).to receive(:remove_entry).with(backups).and_raise(Errno::EACCES, backups)
+
+        warning = stderr_of { preserve }
+
+        expect(Dir.children(config_dir).sort).to eq(%w[backups projects])
+        expect(warning).to match(/Preserving the session transcript.* Scrubbing failed: could not remove backups \(Permission denied/)
+      end
+    end
+
     # Anything that knows CLAUDE_CONFIG_DIR can replace the temp dir before
     # teardown. "Delete every entry but projects/" must then delete nothing,
     # rather than the entries of whatever the path leads to now.

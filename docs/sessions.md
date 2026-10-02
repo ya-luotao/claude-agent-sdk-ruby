@@ -296,7 +296,8 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 > `.claude.json` — and warns with the preserved path so you can import them
 > into the store. If the path no longer leads to the directory the SDK created
 > (it was replaced, for instance by a symlink), the SDK deletes nothing there
-> and the warning says so.
+> and the warning says so; if an entry cannot be removed, the warning says the
+> scrub failed and names what is left.
 
 ### Implementing an adapter
 

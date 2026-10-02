@@ -65,18 +65,30 @@ module ClaudeAgentSDK
 
     private
 
-    # Deletes every entry of the root but projects/. Returns nil, or what the
-    # preservation warning has to add.
+    # Deletes every entry of the root but projects/, then checks that nothing
+    # else is left. Returns nil, or what the preservation warning has to add.
     def scrub_all_but_projects
       return replaced_root_notice unless root_unchanged?
 
+      errors = {}
       Dir.children(@config_dir).each do |name|
         next if name == 'projects'
         return replaced_root_notice unless root_unchanged?
 
-        FileUtils.rm_rf(File.join(@config_dir, name))
+        error = SessionResume.remove_entry_without_following(File.join(@config_dir, name))
+        errors[name] = error if error
       end
-      nil
+      return replaced_root_notice unless root_unchanged?
+
+      left = Dir.children(@config_dir).reject { |name| name == 'projects' }.sort
+      scrub_failed_notice(left, errors) unless left.empty?
+    end
+
+    def scrub_failed_notice(left, errors)
+      reason = errors.values_at(*left).compact.first&.message
+      them, they = left.size == 1 ? %w[it it] : %w[them they]
+      "Scrubbing failed: could not remove #{left.join(', ')}#{" (#{reason})" if reason} — delete #{them} " \
+        "yourself; #{they} can hold copies of your credentials and settings."
     end
 
     # True while config_dir is still the directory the SDK created: a real
@@ -779,6 +791,40 @@ module ClaudeAgentSDK
       stat = File.lstat(path)
       stat.directory? ? [stat.dev, stat.ino] : nil
     rescue SystemCallError, TypeError
+      nil
+    end
+
+    # Remove +path+ and everything under it without following symlinks:
+    # FileUtils.remove_entry lstat's every entry, so a symlink is unlinked,
+    # not traversed, and it raises rather than skipping what it cannot
+    # remove. When it fails, the directories in the subtree that this user
+    # owns are made accessible (0700) — the CLI, or anything else running as
+    # this user, may have left one read-only — and it is tried once more.
+    # Returns nil, or the SystemCallError of that second attempt.
+    def remove_entry_without_following(path)
+      FileUtils.remove_entry(path)
+      nil
+    rescue SystemCallError
+      make_owned_directories_accessible(path)
+      begin
+        FileUtils.remove_entry(path)
+        nil
+      rescue SystemCallError => e
+        e
+      end
+    end
+
+    # chmod 0700 each directory at or under +path+ that this user owns. lstat
+    # throughout, so a symlink is neither followed nor changed (File.chmod
+    # itself would follow it); each chmod comes before that directory's
+    # listing, so an unlistable one is reached too. Best effort.
+    def make_owned_directories_accessible(path)
+      stat = File.lstat(path)
+      return unless stat.directory? && stat.owned?
+
+      File.chmod(0o700, path)
+      Dir.children(path).each { |name| make_owned_directories_accessible(File.join(path, name)) }
+    rescue SystemCallError
       nil
     end
 
