@@ -260,16 +260,20 @@ module ClaudeAgentSDK
     #   :boolean        true or false
     #   :strings        an Array of Strings
     #   :mach_services  an Array of Strings; a "*" only as the last character
-    #   :integer        a number (the CLI takes any; an Integer is asked for)
+    #   :port           an Integer from 0 to 65535
     #   :string_lists   a Hash whose values are Arrays of Strings
     #
     # One value outside its kind makes the CLI discard the whole --settings
-    # value, the sandbox and the permissions next to it, without a word. A
-    # key in snake_case is one the CLI does not know and ignores, so it is
-    # renamed only when its value is of the kind listed here (see #rename).
-    # A kind that is too strict leaves a key without effect, as it was before
-    # the renaming existed; one that is too loose can cost a session its
-    # sandbox.
+    # value, the sandbox and the permissions next to it. It lists the error
+    # in its get_settings response only, so the SDK is not told. A key in
+    # snake_case is one the CLI does not know and ignores, so it is renamed
+    # only when its value is of the kind listed here (see #rename). A kind
+    # that is too strict leaves a key without effect, as it was before the
+    # renaming existed; one that is too loose can cost a session its sandbox.
+    #
+    # :port is the strict side of what the CLI does. It takes any number it
+    # can read as a port, but an Integer too large for that (2**1024 and up,
+    # say 10**400) reaches it as a non-finite value and fails its schema.
     SHAPES = {
       boolean: %i[failIfUnavailable autoAllowBashIfSandboxed allowUnsandboxedCommands enableWeakerNestedSandbox
                   enableWeakerNetworkIsolation allowManagedDomainsOnly allowAllUnixSockets allowLocalBinding
@@ -277,7 +281,7 @@ module ClaudeAgentSDK
       strings: %i[excludedCommands allowedDomains deniedDomains allowUnixSockets
                   allowWrite denyWrite denyRead allowRead],
       mach_services: %i[allowMachLookup],
-      integer: %i[httpProxyPort socksProxyPort],
+      port: %i[httpProxyPort socksProxyPort],
       string_lists: %i[ignoreViolations]
     }.flat_map { |kind, wire_keys| wire_keys.map { |wire| [wire, kind] } }.to_h.freeze
 
@@ -354,7 +358,7 @@ module ClaudeAgentSDK
       when :boolean then [true, false].include?(value)
       when :strings then strings?(value)
       when :mach_services then strings?(value) && value.none? { |name| name.delete_suffix('*').include?('*') }
-      when :integer then value.is_a?(Integer)
+      when :port then value.is_a?(Integer) && value.between?(0, 65_535)
       when :string_lists then value.is_a?(Hash) && value.each_value.all? { |list| strings?(list) }
       else false
       end

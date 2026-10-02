@@ -148,7 +148,8 @@ RSpec.describe 'sandbox settings written as a Hash' do
   #   boolean        true or false
   #   strings        an Array of Strings
   #   mach_services  an Array of Strings; a "*" only as the last character
-  #   integer        a number (the CLI takes any; the SDK asks for an Integer)
+  #   port           a number (the CLI takes any it can read; the SDK asks for
+  #                  what a port is, an Integer from 0 to 65535)
   #   string_lists   a Hash whose values are Arrays of Strings
   #
   # Spelled out here, not derived from the SDK. enabled, network, filesystem
@@ -162,7 +163,7 @@ RSpec.describe 'sandbox settings written as a Hash' do
     'SandboxNetworkConfig' => {
       allowed_domains: :strings, denied_domains: :strings, allow_managed_domains_only: :boolean,
       allow_unix_sockets: :strings, allow_all_unix_sockets: :boolean, allow_local_binding: :boolean,
-      allow_mach_lookup: :mach_services, http_proxy_port: :integer, socks_proxy_port: :integer
+      allow_mach_lookup: :mach_services, http_proxy_port: :port, socks_proxy_port: :port
     },
     'SandboxFilesystemConfig' => {
       allow_write: :strings, deny_write: :strings, deny_read: :strings, allow_read: :strings,
@@ -170,13 +171,18 @@ RSpec.describe 'sandbox settings written as a Hash' do
     }
   }.freeze
 
-  # For each kind, values the CLI rejects under such a key. Each of them makes
-  # it discard the whole --settings value, sandbox and permissions included.
-  rejected = {
+  # For each kind, values outside it: a snake_case key holding one is not
+  # renamed. The CLI rejects them under the wire key, and one rejected value
+  # makes it discard the whole --settings value, sandbox and permissions
+  # included. That goes for 10**400 too: it is an Integer, and a number the
+  # CLI cannot read (it fails the schema as a non-finite value). 65_536 and -1
+  # are the exception, numbers the CLI takes: they are outside the kind
+  # because a port is 0..65535, and a bound that is too tight costs nothing.
+  ill_shaped = {
     boolean: ['true', 0, []],
     strings: ['docker', ['docker', 1], [nil], true, { 'docker' => true }],
     mach_services: ['com.apple.audio', ['com.*.helper'], ['*.helper'], ['com.apple.**'], [1]],
-    integer: ['8080', true, [8080]],
+    port: ['8080', true, [8080], 10**400, 65_536, -1],
     string_lists: [{ 'file' => '/tmp/*' }, { 'file' => [1] }, { 'file' => { 'read' => [] } }, ['/tmp/*'], 'file']
   }.freeze
 
@@ -282,8 +288,8 @@ RSpec.describe 'sandbox settings written as a Hash' do
         expect(ClaudeAgentSDK::SandboxKeys::SHAPES).to eq(spelled_out.to_h)
       end
 
-      it 'has values the CLI rejects for every kind it uses' do
-        expect(rejected.keys).to match_array(kinds.values.flat_map(&:values).uniq)
+      it 'has values outside every kind it uses' do
+        expect(ill_shaped.keys).to match_array(kinds.values.flat_map(&:values).uniq)
       end
     end
   end
@@ -496,7 +502,7 @@ RSpec.describe 'sandbox settings written as a Hash' do
   # A snake_case key is one the CLI does not know: it ignores it, value and
   # all. Under its wire name the same value is validated, and one value that
   # fails the CLI's schema makes it discard the whole --settings value (the
-  # sandbox, and the permissions passed next to it) without a word. So a
+  # sandbox, and the permissions passed next to it); the SDK is not told. So a
   # snake_case key is renamed only when its value has the shape the CLI
   # accepts for that key. Otherwise it goes out as written and stays inert,
   # as it always was: renaming must never cost a session its sandbox.
@@ -517,7 +523,7 @@ RSpec.describe 'sandbox settings written as a Hash' do
     kinds.each do |class_name, by_attribute|
       by_attribute.each do |attribute, kind|
         it "is sent as written for #{attribute} (#{kind}), under a Symbol or a String key" do
-          sandboxes = rejected.fetch(kind).flat_map do |value|
+          sandboxes = ill_shaped.fetch(kind).flat_map do |value|
             [attribute, attribute.to_s].map { |key| at_level_of.fetch(class_name).call(key => value) }
           end
 
@@ -552,22 +558,40 @@ RSpec.describe 'sandbox settings written as a Hash' do
       sandbox = {
         excluded_commands: [], ignore_violations: {},
         network: { allowed_domains: ['*.example.com', ''], allow_mach_lookup: ['*', 'com.apple.coresimulator.*'],
-                   http_proxy_port: 0 },
+                   http_proxy_port: 0, socks_proxy_port: 65_535 },
         filesystem: { deny_read: ['/work/**/*.pem'] }
       }
 
       expect(sandbox_section(sandbox)).to eq(
         'excludedCommands' => [], 'ignoreViolations' => {},
         'network' => { 'allowedDomains' => ['*.example.com', ''], 'allowMachLookup' => ['*', 'com.apple.coresimulator.*'],
-                       'httpProxyPort' => 0 },
+                       'httpProxyPort' => 0, 'socksProxyPort' => 65_535 },
         'filesystem' => { 'denyRead' => ['/work/**/*.pem'] }
       )
+    end
+
+    # A proxy port is renamed for what a port can be, whichever of the two
+    # attributes it is and whichever class its key has. Beyond that range the
+    # CLI still takes a number it can read, but not one it cannot: an Integer
+    # such as 10**400 reaches it as a non-finite value, and it discards the
+    # whole --settings value over that (the examples for the port kind above).
+    %i[http_proxy_port socks_proxy_port].each do |attribute|
+      it "is renamed for #{attribute} at 0 and at 65535, under a Symbol or a String key" do
+        wire_key = network_fields.fetch(attribute).first
+        sections = [0, 65_535].flat_map do |port|
+          [attribute, attribute.to_s].map { |key| sandbox_section({ enabled: true, network: { key => port } }) }
+        end
+
+        expect(sections)
+          .to eq([0, 0, 65_535, 65_535].map { |port| { 'enabled' => true, 'network' => { wire_key => port } } })
+      end
     end
 
     # The check is only about renaming. A key the caller wrote in the CLI's
     # own spelling reaches the CLI as before, whatever its value.
     it 'does not concern a key already in wire spelling' do
-      sandbox = { enabled: true, excludedCommands: 'docker', 'failIfUnavailable' => 'yes', network: { allowUnixSockets: true } }
+      sandbox = { enabled: true, excludedCommands: 'docker', 'failIfUnavailable' => 'yes',
+                  network: { allowUnixSockets: true, httpProxyPort: 10**400, 'socksProxyPort' => -1 } }
 
       expect(sandbox_section(sandbox)).to eq(on_the_wire(sandbox))
     end
