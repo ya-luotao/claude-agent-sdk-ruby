@@ -144,7 +144,7 @@ System message with metadata. Task lifecycle events are typed subclasses.
 ```ruby
 class SystemMessage
   attr_accessor :subtype,  # String ('init', 'task_started', 'task_progress', 'task_notification', 'task_updated', etc.)
-                :data      # Hash - the whole frame, or the frame's own `data` value when it has one (see below)
+                :data      # Hash - the frame's own `data` value when that is neither nil nor false, otherwise the whole frame (see below)
 end
 
 # Typed subclasses (all inherit from SystemMessage, so is_a?(SystemMessage) still works)
@@ -206,9 +206,11 @@ with two exceptions on `RateLimitEvent`: `rate_limit_info` is then an empty
 `RateLimitInfo`, and `RateLimitEvent#data` is always the whole event as a
 Symbol-keyed Hash. The first twelve are `SystemMessage` subclasses (wire
 `type` is `system`), so they also have `subtype` and `data`. Their `data` is
-the whole frame as a Symbol-keyed Hash, unless the frame has a `data` key of
-its own: then `data` is that key's value, and the frame is not kept. The last
-six are message types of their own.
+the whole frame as a Symbol-keyed Hash, unless the frame carries a `data`
+value of its own that is neither `nil` nor `false`: then `data` is that
+value, and the frame is not kept. A frame whose `data` is `nil` or `false`
+reads like one without the key: `data` is the whole frame. The last six are
+message types of their own.
 
 | Class | Wire type | Attributes | Notes |
 |-------|-----------|------------|-------|

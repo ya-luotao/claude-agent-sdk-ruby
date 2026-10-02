@@ -82,20 +82,40 @@ RSpec.describe 'the type and error references' do
     expect(without_row).to be_empty, "docs/errors.md has no table row for: #{without_row.join(', ')}"
   end
 
-  # docs/types.md: SystemMessage#data is the whole frame unless the frame has
-  # a `data` key of its own; RateLimitEvent#data is always the whole event.
-  it 'parses #data of system and rate-limit frames the way docs/types.md describes it' do
-    own_data = ClaudeAgentSDK::MessageParser.parse(type: 'system', subtype: 'status', status: 'compacting',
-                                                   data: { marker: 1 })
-    plain = ClaudeAgentSDK::MessageParser.parse(type: 'system', subtype: 'status', status: 'compacting')
-    rate_limit = ClaudeAgentSDK::MessageParser.parse(type: 'rate_limit_event', data: { marker: 1 })
+  # docs/types.md: SystemMessage#data is the whole frame, unless the frame
+  # carries a `data` value of its own that is neither nil nor false (the class
+  # assigns it with `||=`, so key presence alone does not decide).
+  it 'parses #data of a system frame the way docs/types.md describes it' do
+    frame = { type: 'system', subtype: 'status', uuid: 'u1', session_id: 's1', status: 'compacting' }
+    data_of = ->(extra) { ClaudeAgentSDK::MessageParser.parse(frame.merge(extra)).data }
 
-    expect(own_data.data).to eq(marker: 1)
-    expect(plain.data).to eq(type: 'system', subtype: 'status', status: 'compacting')
-    expect(rate_limit.data).to eq(type: 'rate_limit_event', data: { marker: 1 })
+    expect(data_of.call({})).to eq(frame)
+    expect(data_of.call(data: { marker: 1 })).to eq(marker: 1)
+    expect(data_of.call(data: {})).to eq({})
+    expect(data_of.call(data: nil)).to eq(frame.merge(data: nil))
     prose = types_doc.gsub(/\s+/, ' ') # the sentences may wrap anywhere
-    expect(prose).to include('unless the frame has a `data` key of its own')
-    expect(prose).to include('`RateLimitEvent#data` is always the whole event')
+    expect(prose).to include('unless the frame carries a `data` value of its own that is neither `nil` nor `false`')
+    expect(prose).to include('A frame whose `data` is `nil` or `false` reads like one without the key')
+    expect(types_doc).to include("the frame's own `data` value when that is neither nil nor false, otherwise the whole frame")
+  end
+
+  it 'parses a system frame whose data is false like one without the key, as docs/types.md says',
+     rbs_incompatible: 'parses a frame whose data is false, outside the signature of SystemMessage#data=' do
+    frame = { type: 'system', subtype: 'status', uuid: 'u1', session_id: 's1', status: 'compacting', data: false }
+
+    expect(ClaudeAgentSDK::MessageParser.parse(frame).data).to eq(frame)
+  end
+
+  # docs/types.md: RateLimitEvent#data is always the whole event, whether or
+  # not the event has a `data` key.
+  it 'parses #data of a rate-limit event the way docs/types.md describes it' do
+    event = { type: 'rate_limit_event', uuid: 'rl_123', session_id: 'sess_456',
+              rate_limit_info: { status: 'allowed_warning', resetsAt: 1_700_000_000, rateLimitType: 'five_hour' } }
+    with_data = event.merge(data: { marker: 1 })
+
+    expect(ClaudeAgentSDK::MessageParser.parse(event).data).to eq(event)
+    expect(ClaudeAgentSDK::MessageParser.parse(with_data).data).to eq(with_data)
+    expect(types_doc.gsub(/\s+/, ' ')).to include('`RateLimitEvent#data` is always the whole event')
   end
 
   # The example announces how many message types it handles; both the number
