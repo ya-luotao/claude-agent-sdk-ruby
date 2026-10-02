@@ -139,9 +139,18 @@ module ClaudeAgentSDK
       out.join
     end
 
-    # Sanitize a filesystem path to a project directory name
+    # Sanitize a filesystem path to a project directory name.
+    #
+    # The CLI does this with JavaScript's replace(/[^a-zA-Z0-9]/g, "-"),
+    # without the `u` flag: the replacement runs per UTF-16 code unit, so a
+    # character outside the BMP (an emoji, a CJK Extension B ideograph) is a
+    # surrogate pair and becomes TWO hyphens. One hyphen per code point named
+    # a directory the CLI never created — every directory-scoped session API
+    # came back empty for such a path, and the store key computed here did
+    # not match the one the transcript mirror derives from the CLI's own
+    # path. (The hash below already works on code units, see simple_hash.)
     def sanitize_path(name)
-      sanitized = name.gsub(SANITIZE_RE, '-')
+      sanitized = name.gsub(SANITIZE_RE) { |char| char.ord > 0xFFFF ? '--' : '-' }
       return sanitized if sanitized.length <= MAX_SANITIZED_LENGTH
 
       "#{sanitized[0, MAX_SANITIZED_LENGTH]}-#{simple_hash(name)}"
