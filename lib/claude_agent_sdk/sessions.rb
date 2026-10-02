@@ -1546,8 +1546,8 @@ module ClaudeAgentSDK
     def parse_jsonl_entries(file_path)
       entries = []
 
-      File.foreach(file_path) do |line|
-        entry = JSON.parse(line.strip, symbolize_names: false)
+      File.foreach(file_path, mode: 'rb') do |line|
+        entry = JSON.parse(utf8_transcript_line(line).strip, symbolize_names: false)
         next unless entry.is_a?(Hash)
         next unless TRANSCRIPT_ENTRY_TYPES.include?(entry['type'])
         next unless entry['uuid'].is_a?(String)
@@ -1557,6 +1557,20 @@ module ClaudeAgentSDK
         next
       end
       entries
+    end
+
+    # One transcript line, read in binary mode, as UTF-8 text. Transcripts are
+    # UTF-8 whatever the process locale says: a line tagged with the locale's
+    # encoding (File.foreach's default) raised from String#strip on the first
+    # non-ASCII character under LANG=C. Bytes that are not valid UTF-8 — a
+    # final line the CLI was killed in the middle of, raw binary in a tool
+    # result — become U+FFFD, the policy
+    # SessionMutations.parse_fork_transcript already has: a torn line then
+    # fails JSON.parse and is skipped like any other bad line instead of
+    # raising, and a complete line keeps its entry.
+    def utf8_transcript_line(line)
+      line.force_encoding(Encoding::UTF_8)
+      line.valid_encoding? ? line : line.scrub
     end
 
     # Build the conversation chain by finding the leaf and walking parentUuid.
@@ -1735,7 +1749,7 @@ module ClaudeAgentSDK
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions, :dedup_rank,
                          :find_session_file, :stat_candidate, :resolve_subagents_dir,
-                         :collect_agent_files, :parse_jsonl_entries,
+                         :collect_agent_files, :parse_jsonl_entries, :utf8_transcript_line,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :off_main_conversation?, :reattach_parallel_tool_results, :off_chain_tool_results,
                          :content_block_values,
