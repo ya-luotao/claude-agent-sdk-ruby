@@ -1075,17 +1075,22 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         # (The enumerator branch streams in the background and cannot raise
         # out of connect.) No on_close follows for pre-handshake failures
         # (disconnect gates it on @connected): the session never opened.
-        notify_error(e) if e.is_a?(StandardError) && !@connected
-        # Tear down the partial connect, but never let a cleanup failure (e.g. a
-        # custom transport whose #close raises) mask the original connect error.
-        # Rescue Exception (not StandardError) so reactor cancellation
-        # (Async::Stop < Exception) after materialize_resume set @materialized
-        # still runs disconnect -> @materialized.cleanup, never leaking the temp
-        # CLAUDE_CONFIG_DIR that holds the redacted .credentials.json copy.
         begin
-          disconnect
-        rescue StandardError => cleanup_error
-          warn "Claude SDK: cleanup after failed connect raised: #{cleanup_error.message}"
+          notify_error(e) if e.is_a?(StandardError) && !@connected
+        ensure
+          # Tear down the partial connect, but never let a cleanup failure (e.g. a
+          # custom transport whose #close raises) mask the original connect error.
+          # Rescue Exception (not StandardError) so reactor cancellation
+          # (Async::Stop < Exception) after materialize_resume set @materialized
+          # still runs disconnect -> @materialized.cleanup, never leaking the temp
+          # CLAUDE_CONFIG_DIR that holds the redacted .credentials.json copy.
+          # In an ensure: an exception raised into this fiber while it waits
+          # for the on_error observer (a caller's deadline) must not skip it.
+          begin
+            disconnect
+          rescue StandardError => cleanup_error
+            warn "Claude SDK: cleanup after failed connect raised: #{cleanup_error.message}"
+          end
         end
         raise
       end
@@ -1346,11 +1351,11 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # holds, in every scheduling mode, for a streaming-input enumerator that
     # calls disconnect: it is iterated on the reactor inside a task the close
     # stops, so it unwinds with Async::Stop once the teardown has completed.
+    #
+    # Interrupted while an observer's on_close runs — the caller's deadline
+    # expires, or its task is stopped — disconnect still completes the
+    # teardown, then lets the interruption propagate.
     def disconnect
-      if @connected
-        ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close,
-                                        scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-      end
       # Tear down whatever exists — robust to a partial/failed connect, where
       # @connected is still false but a transport and/or materialized temp dir
       # were already created. #close on the query handler also closes the
@@ -1367,26 +1372,36 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       # and the materialized-dir decision at the bottom needs to ask it.
       query_handler = @query_handler
       begin
-        @query_handler&.close
+        # Notified inside the begin: an exception raised into this fiber while
+        # it waits for an observer (a caller's deadline) propagates, and must
+        # not skip the teardown below.
+        if @connected
+          ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close,
+                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+        end
       ensure
-        @query_handler = nil
         begin
-          @transport&.close
+          @query_handler&.close
         ensure
-          @transport = nil
-          @connected = false
-          # Remove the materialized resume temp dir AFTER the subprocess
-          # exited — unless the mirror dropped batches: the store copy is then
-          # incomplete and the temp dir holds the only copy of the dropped
-          # turns, so it is preserved (scrubbed of credentials) with a warning
-          # instead of deleted.
-          if @materialized
-            if query_handler&.mirror_batches_dropped?
-              @materialized.preserve_transcripts
-            else
-              @materialized.cleanup
+          @query_handler = nil
+          begin
+            @transport&.close
+          ensure
+            @transport = nil
+            @connected = false
+            # Remove the materialized resume temp dir AFTER the subprocess
+            # exited — unless the mirror dropped batches: the store copy is then
+            # incomplete and the temp dir holds the only copy of the dropped
+            # turns, so it is preserved (scrubbed of credentials) with a warning
+            # instead of deleted.
+            if @materialized
+              if query_handler&.mirror_batches_dropped?
+                @materialized.preserve_transcripts
+              else
+                @materialized.cleanup
+              end
+              @materialized = nil
             end
-            @materialized = nil
           end
         end
       end
