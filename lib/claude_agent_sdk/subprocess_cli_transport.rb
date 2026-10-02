@@ -29,6 +29,12 @@ module ClaudeAgentSDK
     SKIP_VERSION_CHECK_ENV_VAR = 'CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'
     # @api private
     CLI_PATH_ENV_VAR = 'CLAUDE_CLI_PATH'
+    # What Ruby's own spawn searches for a bare command name when PATH is
+    # unset (dln_find_exe_r). #executable_on_path uses it for the same case,
+    # so a bare `cli_path` keeps resolving where it did.
+    #
+    # @api private
+    DEFAULT_EXEC_SEARCH_PATH = '/usr/local/bin:/usr/ucb:/usr/bin:/bin:.'
     # @api private
     VERSION_CHECK_TIMEOUT_SECONDS = 2 # mirrors Python's anyio.fail_after(2)
     # @api private
@@ -126,7 +132,7 @@ module ClaudeAgentSDK
       super() # Transport defines no state today; keep the chain intact if it ever does
       # Support both new single-arg form and legacy two-arg form
       @options = options.nil? ? options_or_prompt : options
-      @cli_path = @options.cli_path || find_cli
+      @cli_path = resolve_cli_path(@options.cli_path)
       @cwd = @options.cwd
       @process = nil
       @stdin = nil
@@ -165,6 +171,8 @@ module ClaudeAgentSDK
     #   3. `which claude`.
     #   4. Well-known install locations.
     #
+    # Every hit is returned as an absolute path — see #resolve_cli_path.
+    #
     # @api private
     def find_cli # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- ordered discovery probes (env, vendored, PATH, known locations)
       env_path = ENV.fetch(CLI_PATH_ENV_VAR, nil).to_s
@@ -193,11 +201,15 @@ module ClaudeAgentSDK
       cli = nil
       begin
         stdout, _status = Open3.capture2('which', 'claude')
-        cli = stdout.strip
+        hit = stdout.strip
+        # A relative PATH entry (`bin`, `.`, the empty entry) makes most
+        # `which` implementations print a relative hit. Absolutize it against
+        # the cwd `which` ran in, for the same reason as CLAUDE_CLI_PATH.
+        cli = File.expand_path(hit) unless hit.empty?
       rescue StandardError
         # which command failed, try common locations
       end
-      return cli if cli && !cli.empty? && File.executable?(cli)
+      return cli if cli && File.executable?(cli)
 
       # Try common locations. The home-relative ones are skipped when no
       # usable home exists (see #home_dir), so a HOME-less container still
@@ -313,6 +325,12 @@ module ClaudeAgentSDK
       should_pipe_stderr = @options.stderr || @options.debug_stderr || @options.extra_args.key?('debug-to-stderr')
 
       begin
+        # A path #resolve_cli_path could not settle is never handed to spawn:
+        # spawn searches PATH on its own, in this process's cwd, and then
+        # executes a relative hit inside options.cwd. Reported like any
+        # missing CLI, by the Errno::ENOENT branch below.
+        raise Errno::ENOENT, @cli_path unless cli_path_settled?
+
         # Start process using Open3
         # :uid mirrors Python's anyio.open_process(user=...): String username
         # or Integer uid (Unix; requires privileges — typically root). The
@@ -920,6 +938,8 @@ module ClaudeAgentSDK
       # including '0'/'false'/' '; unset or empty string runs the check.
       skip = ENV.fetch(SKIP_VERSION_CHECK_ENV_VAR, nil)
       return if skip && !skip.empty?
+      # Nothing to probe: #connect reports the unsettled path right after.
+      return unless cli_path_settled?
 
       begin
         output = capture_cli_version_output
@@ -960,6 +980,68 @@ module ClaudeAgentSDK
 
     private
 
+    # Settle the CLI on ONE absolute path, used for the version probe and for
+    # the spawn alike. The probe runs in this process's working directory,
+    # the CLI is spawned with `chdir: options.cwd`: a path still relative at
+    # the spawn names a different file there — whatever sits at that path
+    # inside the directory the agent was pointed at — while the probe vouched
+    # for the one here.
+    #
+    #   - nil: discovery (#find_cli), which returns absolute paths only.
+    #   - a path with a separator: expanded against the process cwd, like
+    #     CLAUDE_CLI_PATH.
+    #   - a bare name: searched on PATH here (#executable_on_path) rather
+    #     than left to spawn.
+    #
+    # Never raises for an explicit path. One that cannot be settled (not on
+    # PATH, `~user` naming nobody, a relative path when the cwd is gone) is
+    # kept as given, and #connect reports it as CLINotFoundError.
+    def resolve_cli_path(cli_path)
+      return find_cli if cli_path.nil?
+
+      path = cli_path.to_s # the option may be a Pathname
+      return executable_on_path(path) || path unless path.include?(File::SEPARATOR)
+
+      begin
+        File.expand_path(path)
+      rescue ArgumentError, SystemCallError
+        path
+      end
+    end
+
+    # The lookup spawn used to do for a bare command name, done here so that
+    # the result is absolute: same PATH (the one the child is given through
+    # options.env when it sets one, else this process's, else Ruby's built-in
+    # default), same test (an executable regular file), first hit wins. The
+    # difference is the point of doing it here: a relative entry — `bin`,
+    # `.`, the empty entry — is expanded against the process cwd, where spawn
+    # found the file here and then executed that relative path inside
+    # options.cwd. (`~` entries expand to the home directory, as spawn's own
+    # lookup did.) Returns nil when nothing matches.
+    def executable_on_path(name)
+      return nil if name.empty?
+
+      env = @options.env
+      search_path = env.transform_keys(&:to_s)['PATH'] if env.is_a?(Hash)
+      search_path ||= ENV.fetch('PATH', DEFAULT_EXEC_SEARCH_PATH)
+      # -1 keeps a trailing empty entry; PATH="" is one empty entry.
+      entries = search_path.to_s.split(File::PATH_SEPARATOR, -1)
+      entries = [''] if entries.empty?
+
+      entries.each do |dir|
+        candidate = File.join(File.expand_path(dir), name)
+        return candidate if File.file?(candidate) && File.executable?(candidate)
+      rescue ArgumentError, SystemCallError
+        next # `~user` naming nobody, or a relative entry when the cwd is gone
+      end
+      nil
+    end
+
+    # False when #resolve_cli_path had to keep an explicit path as given.
+    def cli_path_settled?
+      File.absolute_path?(@cli_path)
+    end
+
     # Run `claude -v` with a hard deadline. Arg-vector popen3 — no shell, same
     # injection-safety as capture3. Raises Timeout::Error past
     # VERSION_CHECK_TIMEOUT_SECONDS (swallowed by check_claude_version's
@@ -972,7 +1054,7 @@ module ClaudeAgentSDK
     # also bounds CLI exit. ensure always reaps the probe (mirrors Python's
     # finally: terminate(); wait()).
     def capture_cli_version_output # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- bounded subprocess probe: drained pipes, reaping
-      stdin, stdout, stderr, wait_thr = Open3.popen3(@cli_path.to_s, '-v')
+      stdin, stdout, stderr, wait_thr = Open3.popen3(@cli_path, '-v')
       stdin.close
       drainer = Thread.new { [stdout.read, stderr.read] }
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + VERSION_CHECK_TIMEOUT_SECONDS
