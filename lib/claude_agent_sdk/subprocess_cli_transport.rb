@@ -413,9 +413,14 @@ module ClaudeAgentSDK
         # Without this, the first exception terminates the each_line loop and
         # the SDK silently stops capturing stderr for the lifetime of the
         # process. Matches Python SDK v0.2.82 (PR #932).
+        # ScriptError and SystemStackError as well: a callback raising
+        # NotImplementedError or LoadError (both ScriptErrors), or recursing
+        # too deep, used to end this thread, and with nothing reading the
+        # pipe a CLI that wrote one more pipe buffer of stderr (64 KiB)
+        # blocked in write(2) for good.
         begin
           @options.stderr&.call(line_str)
-        rescue StandardError
+        rescue StandardError, ScriptError, SystemStackError
           # Drop the callback error; the line is already in the recent-stderr
           # ring buffer, which is what ProcessError surfaces on non-zero exit.
         end
