@@ -82,6 +82,21 @@ RSpec.describe 'the type and error references' do
     expect(without_row).to be_empty, "docs/errors.md has no table row for: #{without_row.join(', ')}"
   end
 
+  # docs/types.md: SystemMessage#data is the whole frame unless the frame has
+  # a `data` key of its own; RateLimitEvent#data is always the whole event.
+  it 'parses #data of system and rate-limit frames the way docs/types.md describes it' do
+    own_data = ClaudeAgentSDK::MessageParser.parse(type: 'system', subtype: 'status', status: 'compacting',
+                                                   data: { marker: 1 })
+    plain = ClaudeAgentSDK::MessageParser.parse(type: 'system', subtype: 'status', status: 'compacting')
+    rate_limit = ClaudeAgentSDK::MessageParser.parse(type: 'rate_limit_event', data: { marker: 1 })
+
+    expect(own_data.data).to eq(marker: 1)
+    expect(plain.data).to eq(type: 'system', subtype: 'status', status: 'compacting')
+    expect(rate_limit.data).to eq(type: 'rate_limit_event', data: { marker: 1 })
+    expect(types_doc).to include('unless the frame has a `data` key of its own')
+    expect(types_doc).to include('`RateLimitEvent#data` is always the whole event')
+  end
+
   # The example announces how many message types it handles; both the number
   # and the `when` branches are checked against the classes.
   it 'handles every typed message class in examples/message_types_example.rb, and counts them' do
