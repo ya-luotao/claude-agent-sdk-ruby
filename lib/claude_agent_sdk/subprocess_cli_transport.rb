@@ -138,9 +138,11 @@ module ClaudeAgentSDK
       super() # Transport defines no state today; keep the chain intact if it ever does
       # Support both new single-arg form and legacy two-arg form
       @options = options.nil? ? options_or_prompt : options
-      # Any falsy cli_path means discovery, as it always did. `.to_s`: the
-      # option may be a Pathname.
-      @cli_path = settle_cli_path((@options.cli_path || find_cli).to_s)
+      # What the caller named (any falsy cli_path means discovery, as it
+      # always did), as a String: the option may be a Pathname. Settled
+      # here, and again by #connect.
+      @given_cli_path = (@options.cli_path || find_cli).to_s
+      @cli_path = settle_cli_path(@given_cli_path)
       @cwd = @options.cwd
       @process = nil
       @stdin = nil
@@ -295,6 +297,10 @@ module ClaudeAgentSDK
     def connect # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- spawn sequence kept in order
       return if @process
 
+      # Settled again where spawn used to look the CLI up: a CLI installed
+      # after this transport was built is found, and a relative path
+      # follows the process cwd of this connect, where the probe runs.
+      @cli_path = settle_cli_path(@given_cli_path)
       check_claude_version
 
       cmd = build_command

@@ -206,18 +206,41 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
 
     # A name the SDK could not settle must not reach spawn: spawn searches
     # PATH on its own, in the parent, and then runs a relative hit after
-    # chdir-ing into options.cwd.
+    # chdir-ing into options.cwd. Here the SDK's lookup is made to miss the
+    # process-cwd file (File.file? is its test); spawn's own lookup, done in
+    # C, would still find it and run target/bin/unsettled-claude.
     it 'never hands an unresolved name to spawn' do
+      install_fake_cli('app/bin/unsettled-claude')
+      install_fake_cli('target/bin/unsettled-claude')
+      allow(File).to receive(:file?).and_call_original
+      allow(File).to receive(:file?).with(File.join(app, 'bin', 'unsettled-claude')).and_return(false)
+
       with_env('PATH' => path_with('bin')) do
-        transport = Dir.chdir(app) { described_class.new(options(cli_path: 'late-claude')) }
-        install_fake_cli('app/bin/late-claude')
-        install_fake_cli('target/bin/late-claude')
+        transport = Dir.chdir(app) { described_class.new(options(cli_path: 'unsettled-claude')) }
 
         expect { Dir.chdir(app) { transport.connect } }.to raise_error(ClaudeAgentSDK::CLINotFoundError)
       ensure
         transport&.close
       end
       expect(legs).to be_empty
+    end
+
+    it 'is looked up again at connect, as spawn did: a CLI installed after construction is found' do
+      with_env('PATH' => path_with(File.join(root, 'tools'))) do
+        transport = Dir.chdir(app) { described_class.new(options(cli_path: 'claude-installed-later')) }
+        install_fake_cli('tools/claude-installed-later')
+
+        begin
+          Dir.chdir(app) do
+            transport.connect
+            transport.read_messages { |_frame| nil }
+          end
+        ensure
+          transport.close
+        end
+      end
+
+      expect(legs).to eq(%w[probe:tools/claude-installed-later spawn:tools/claude-installed-later])
     end
   end
 
