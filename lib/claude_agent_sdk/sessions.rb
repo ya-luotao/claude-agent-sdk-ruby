@@ -268,11 +268,13 @@ module ClaudeAgentSDK
       # the same prefix and another suffix may be this path's — or that of
       # ANY path sharing the prefix (a sibling in a deep per-tenant tree).
       # The name cannot tell them apart; a transcript inside can: accept a
-      # candidate only if one records the path as its cwd, and only when
-      # exactly one candidate does. Taking the first prefix match listed,
-      # read and renamed another project's sessions for a directory that had
-      # none of its own. A directory whose transcripts record no cwd is not
-      # used: no guess from the name alone.
+      # candidate only if one records the path as its cwd (recorded_cwd), and
+      # only when exactly one candidate does. Taking the first prefix match
+      # listed, read and renamed another project's sessions for a directory
+      # that had none of its own. A directory whose transcripts record no cwd
+      # is not used: no guess from the name alone. The directory returned may
+      # still hold sessions of other paths sharing the prefix: callers keep
+      # only the path's own transcripts (own_transcript?).
       prefix = sanitized[0, MAX_SANITIZED_LENGTH + 1] # includes the trailing '-'
       verified = Dir.children(projects_dir).select do |child|
         candidate = File.join(projects_dir, child)
@@ -281,20 +283,58 @@ module ClaudeAgentSDK
       verified.length == 1 ? File.join(projects_dir, verified.first) : nil
     end
 
-    # Whether a session transcript in +project_dir+ was recorded for +path+:
-    # its first non-blank top-level cwd (the one the listing reports) is the
-    # path, compared in NFC like every path the SDK derives a name from.
+    # Whether a session transcript in +project_dir+ was recorded for +path+.
     def project_dir_records_cwd?(project_dir, path)
       Dir.children(project_dir).any? do |name|
-        next false unless name.end_with?('.jsonl') && valid_session_id?(name.delete_suffix('.jsonl'))
-
-        head = File.open(File.join(project_dir, name), 'rb') { |file| file.read(LITE_READ_BUF_SIZE) || '' }
-        extract_top_level_string_field(head, 'cwd', skip_blank: true)&.unicode_normalize(:nfc) == path
-      rescue SystemCallError
-        false # unreadable, or removed between the listing and the read
+        name.end_with?('.jsonl') && valid_session_id?(name.delete_suffix('.jsonl')) &&
+          recorded_cwd(File.join(project_dir, name)) == path
       end
     rescue SystemCallError
       false
+    end
+
+    # Whether +file_path+, a transcript in +project_dir+ — the directory
+    # find_project_dir returned for +path+ — is one of +path+'s sessions. Every
+    # transcript of the directory named after the path is. In a directory the
+    # long-path prefix fallback found, only one whose own recorded cwd is the
+    # path: that directory can hold the sessions of every path sharing the
+    # prefix, and a transcript whose cwd cannot be verified is not counted.
+    def own_transcript?(project_dir, file_path, path)
+      File.basename(project_dir) == sanitize_path(path) || recorded_cwd(file_path) == path
+    end
+
+    # The directory a session transcript was recorded in: the first non-blank
+    # top-level cwd of a COMPLETE line in its first LITE_READ_BUF_SIZE bytes,
+    # NFC-normalized; nil when there is none (or the file cannot be read). A
+    # line the window cuts establishes nothing: its top-level shape cannot be
+    # checked, and a raw "cwd" match on it may sit inside a tool input.
+    def recorded_cwd(file_path)
+      File.open(file_path, 'rb') do |file|
+        head = file.read(LITE_READ_BUF_SIZE) || ''
+        each_parsed_entry(head, file.eof?) do |entry|
+          cwd = entry['cwd']
+          return cwd.unicode_normalize(:nfc) if cwd.is_a?(String) && presence(cwd)
+        end
+      end
+      nil
+    rescue SystemCallError
+      nil
+    end
+
+    # Yield each Hash entry parsed from a COMPLETE line of +text+, a window
+    # read from the start of a transcript: every line that ends in a newline,
+    # and the last one too when +to_eof+ (the window reaches the end of the
+    # file). A line that does not parse is skipped.
+    def each_parsed_entry(text, to_eof)
+      complete = to_eof ? text.bytesize : (text.byterindex("\n") || -1) + 1
+      text.byteslice(0, complete).each_line do |line|
+        entry = begin
+          JSON.parse(line)
+        rescue JSON::ParserError
+          next
+        end
+        yield entry if entry.is_a?(Hash)
+      end
     end
 
     # Extract a JSON string field value from raw text without full JSON parse
@@ -762,6 +802,9 @@ module ClaudeAgentSDK
       return [] unless File.directory?(project_dir)
 
       sessions = []
+      # Listing a directory found by the long-path prefix fallback: only the
+      # transcripts recorded for +project_path+ (own_transcript?).
+      verify = project_path && File.basename(project_dir) != sanitize_path(project_path)
       # base:, not a pattern built from the directory: a config dir path with
       # glob characters in it (`/Volumes/Data [SSD]/…`, `/srv/{tenant}/…`)
       # is a path, and as part of the pattern it matched nothing.
@@ -770,6 +813,8 @@ module ClaudeAgentSDK
         next unless stem.match?(UUID_RE)
 
         file_path = File.join(project_dir, name)
+        next if verify && recorded_cwd(file_path) != project_path
+
         session = read_session_lite(file_path, project_path)
         sessions << session if session
       end
@@ -1505,7 +1550,7 @@ module ClaudeAgentSDK
       # os.path.realpath never raises here.
       canonical = canonicalize_path(directory)
       project_dir = find_project_dir(canonical)
-      if project_dir
+      if project_dir && own_transcript?(project_dir, File.join(project_dir, file_name), canonical)
         info = read_session_lite(File.join(project_dir, file_name), canonical)
         return info if info
       end
@@ -1516,7 +1561,7 @@ module ClaudeAgentSDK
         next if wt_path == canonical
 
         wt_project_dir = find_project_dir(wt_path)
-        next unless wt_project_dir
+        next unless wt_project_dir && own_transcript?(wt_project_dir, File.join(wt_project_dir, file_name), wt_path)
 
         info = read_session_lite(File.join(wt_project_dir, file_name), wt_path)
         return info if info
@@ -1667,13 +1712,13 @@ module ClaudeAgentSDK
 
       if directory
         path = canonicalize_path(directory)
-        found = stat_candidate(find_project_dir(path), file_name)
+        found = stat_candidate(find_project_dir(path), file_name, path)
         return found if found
 
         detect_worktrees(path).each do |wt_path|
           next if wt_path == path # already tried above
 
-          found = stat_candidate(find_project_dir(wt_path), file_name)
+          found = stat_candidate(find_project_dir(wt_path), file_name, wt_path)
           return found if found
         end
 
@@ -1699,11 +1744,16 @@ module ClaudeAgentSDK
     # exists AND is non-empty — a 0-byte stub in one project dir must not
     # stop the search when the real transcript lives under another
     # worktree's project dir (same hazard SessionMutations.try_append guards).
-    def stat_candidate(project_dir, file_name)
+    # With +path+ (a directory-scoped lookup), the candidate must also be one
+    # of that path's own transcripts (own_transcript?).
+    def stat_candidate(project_dir, file_name, path = nil)
       return nil if project_dir.nil?
 
       candidate = File.join(project_dir, file_name)
-      File.size(candidate).positive? ? candidate : nil
+      return nil unless File.size(candidate).positive?
+      return nil if path && !own_transcript?(project_dir, candidate, path)
+
+      candidate
     rescue SystemCallError
       nil
     end
@@ -1984,7 +2034,7 @@ module ClaudeAgentSDK
       end
     end
 
-    private_class_method :project_dir_records_cwd?, :get_session_info_for_directory,
+    private_class_method :project_dir_records_cwd?, :recorded_cwd, :each_parsed_entry, :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions, :dedup_rank,
                          :worktree_paths, :find_session_file, :stat_candidate, :resolve_subagents_dir,
@@ -2008,6 +2058,7 @@ module ClaudeAgentSDK
     # config_dir, sanitize_path, find_project_dir, detect_worktrees,
     # valid_session_id? (mutation boundary checks), listing_sort_key
     # (--continue candidate order), read_head_tail, title_and_first_prompt
-    # and display_title (the fork title)
+    # and display_title (the fork title), own_transcript? (the mutations'
+    # lookups)
   end
 end

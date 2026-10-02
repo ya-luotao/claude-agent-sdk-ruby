@@ -312,7 +312,7 @@ module ClaudeAgentSDK
       # it before the session was even looked for — while the readers, which
       # canonicalize, still found the session through the same directory.
       path = Sessions.canonicalize_path(directory)
-      result = try_project_dir(file_name, Sessions.find_project_dir(path))
+      result = try_project_dir(file_name, Sessions.find_project_dir(path), path)
       return result if result
 
       worktree_paths = begin
@@ -323,7 +323,7 @@ module ClaudeAgentSDK
       worktree_paths.each do |wt_path|
         next if wt_path == path
 
-        result = try_project_dir(file_name, Sessions.find_project_dir(wt_path))
+        result = try_project_dir(file_name, Sessions.find_project_dir(wt_path), wt_path)
         return result if result
       end
       nil
@@ -333,11 +333,17 @@ module ClaudeAgentSDK
     # in one project dir must not stop the search when the real transcript
     # lives under another (worktree) project dir. Mirrors the read path
     # (Sessions.stat_candidate) and the append path (try_append).
-    def try_project_dir(file_name, project_dir)
+    # With +path+ (a directory-scoped lookup), the candidate must also be one
+    # of that path's own transcripts (Sessions.own_transcript?: a directory
+    # the long-path fallback found can hold other paths' sessions).
+    def try_project_dir(file_name, project_dir, path = nil)
       return nil unless project_dir
 
       candidate = File.join(project_dir, file_name)
-      File.size(candidate).positive? ? [candidate, project_dir] : nil
+      return nil unless File.size(candidate).positive?
+      return nil if path && !Sessions.own_transcript?(project_dir, candidate, path)
+
+      [candidate, project_dir]
     rescue SystemCallError
       nil
     end
@@ -579,7 +585,7 @@ module ClaudeAgentSDK
 
       # Try the exact/prefix-matched project directory first.
       project_dir = Sessions.find_project_dir(path)
-      return if project_dir && try_append(File.join(project_dir, file_name), data)
+      return if project_dir && own_append(project_dir, file_name, path, data)
 
       # Worktree fallback
       begin
@@ -592,7 +598,7 @@ module ClaudeAgentSDK
         next false if wt_path == path
 
         wt_project_dir = Sessions.find_project_dir(wt_path)
-        wt_project_dir && try_append(File.join(wt_project_dir, file_name), data)
+        wt_project_dir && own_append(wt_project_dir, file_name, wt_path, data)
       end
       return if found
 
@@ -612,6 +618,12 @@ module ClaudeAgentSDK
       return if found
 
       raise Errno::ENOENT, "Session #{session_id} not found in any project directory"
+    end
+
+    # try_append, for a transcript of +path+'s own (Sessions.own_transcript?).
+    def own_append(project_dir, file_name, path, data)
+      candidate = File.join(project_dir, file_name)
+      Sessions.own_transcript?(project_dir, candidate, path) && try_append(candidate, data)
     end
 
     # Try appending to a path.
@@ -667,7 +679,7 @@ module ClaudeAgentSDK
                          :find_in_directory, :try_project_dir, :find_in_all_projects,
                          :parse_fork_transcript, :derive_fork_title, :build_forked_entry, :resolve_parent_uuid,
                          :append_to_session, :append_to_session_in_directory,
-                         :append_to_session_global, :try_append, :sanitize_unicode, :unicode_category,
+                         :append_to_session_global, :own_append, :try_append, :sanitize_unicode, :unicode_category,
                          :iso_now, :build_fork_lines, :partition_fork_entries, :derive_title_from_entries,
                          :ensure_store_session_exists
   end

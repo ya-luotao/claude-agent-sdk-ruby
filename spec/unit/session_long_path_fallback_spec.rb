@@ -18,8 +18,8 @@ RSpec.describe 'project directory lookup for paths over 200 characters' do
 
   before { allow(ClaudeAgentSDK::Sessions).to receive(:detect_worktrees) { |path| [path] } }
 
-  def session_recorded_in(directory)
-    transcript = CLITranscript.new(session_id: session_id, cwd: directory)
+  def session_recorded_in(directory, id = session_id)
+    transcript = CLITranscript.new(session_id: id, cwd: directory)
     transcript.queue_operations('the private question of project one')
     transcript.prompt(:prompt, 'the private question of project one')
     transcript.assistant(:answer, transcript.text('Answered.'), parent: :prompt)
@@ -89,6 +89,67 @@ RSpec.describe 'project directory lookup for paths over 200 characters' do
       end
 
       expect(ClaudeAgentSDK.list_sessions(directory: project_a)).to eq([])
+    end
+  end
+
+  # Identity comes only from a parsed top-level cwd of a complete line, and
+  # it is checked per transcript: a directory found by the prefix fallback
+  # may hold sessions of several paths sharing the prefix.
+  context 'when the transcripts in an old-hash directory do not all belong to the path' do
+    let(:other_session_id) { '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d' }
+
+    # A's session opens with a tool call over 64 KiB whose input names B's
+    # directory as its cwd; A's own top-level cwd follows the input on the
+    # same line, past the window.
+    it 'does not take a cwd nested in a tool input on a line the window cuts' do
+      transcript = CLITranscript.new(session_id: session_id, cwd: project_a)
+      transcript.assistant(:call, transcript.tool_use('toolu_1', 'Bash',
+                                                      { 'cwd' => project_b, 'command' => "cat #{'x' * 70_000}" }),
+                           parent: nil)
+      transcript.prompt(:prompt, 'the private question of project one', parent: :call)
+      file = transcript.write(File.join(old_cli_project_dir(project_a), "#{session_id}.jsonl"))
+      before = File.binread(file)
+
+      expect(ClaudeAgentSDK.list_sessions(directory: project_b)).to eq([])
+      expect(ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: project_b)).to eq([])
+      expect { ClaudeAgentSDK.rename_session(session_id: session_id, title: 'Mine now', directory: project_b) }
+        .to raise_error(Errno::ENOENT)
+      expect(File.binread(file)).to eq(before)
+    end
+
+    context 'with one session of each path in it' do
+      let!(:file_a) do
+        session_recorded_in(project_a).write(File.join(old_cli_project_dir(project_a), "#{session_id}.jsonl"))
+      end
+
+      before do
+        session_recorded_in(project_b, other_session_id)
+          .write(File.join(old_cli_project_dir(project_a), "#{other_session_id}.jsonl"))
+      end
+
+      it "lists each path's own session only" do
+        expect(ClaudeAgentSDK.list_sessions(directory: project_b).map(&:session_id)).to eq([other_session_id])
+        expect(ClaudeAgentSDK.list_sessions(directory: project_a).map(&:session_id)).to eq([session_id])
+      end
+
+      it "reads and renames only the path's own session" do
+        before = File.binread(file_a)
+
+        expect(ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: project_b)).to eq([])
+        expect(ClaudeAgentSDK.get_session_messages(session_id: other_session_id, directory: project_b).length)
+          .to eq(2)
+        expect { ClaudeAgentSDK.rename_session(session_id: session_id, title: 'Mine now', directory: project_b) }
+          .to raise_error(Errno::ENOENT)
+        expect(File.binread(file_a)).to eq(before)
+      end
+
+      it 'keeps to the same rule when the path is reached as a worktree' do
+        main = File.join(cwd, 'main').tap { |dir| FileUtils.mkdir_p(dir) }
+        allow(ClaudeAgentSDK::Sessions).to receive(:detect_worktrees).and_return([main, project_b])
+
+        expect(ClaudeAgentSDK.list_sessions(directory: main).map(&:session_id)).to eq([other_session_id])
+        expect(ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: main)).to eq([])
+      end
     end
   end
 end
