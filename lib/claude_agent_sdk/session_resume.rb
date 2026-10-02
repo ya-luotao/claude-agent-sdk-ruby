@@ -160,12 +160,7 @@ module ClaudeAgentSDK
         # so it can authenticate. Missing files are fine (API-key auth, etc.).
         copy_auth_files(tmp_base, options.env)
 
-        # list_subkeys is optional: without it (or when it raises
-        # NotImplementedError, see optional_call) only the main transcript
-        # is materialized.
-        SessionStores.optional_call(store, :list_subkeys) do
-          materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper)
-        end
+        materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper)
       rescue Exception # rubocop:disable Lint/RescueException
         # Any failure after mkdtemp leaves tmp_base (which may already hold a
         # .credentials.json copy) on disk with no path for the caller to clean
@@ -606,9 +601,17 @@ module ClaudeAgentSDK
     # Load and write all subagent transcripts/metadata under session_id.
     def materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper) # rubocop:disable Metrics/ParameterLists -- store-call context (timeout, scheduling, wrapper) threaded explicitly
       session_dir = File.join(project_dir, session_id)
-      subkeys = with_timeout(timeout_s, "SessionStore#list_subkeys for session #{session_id}", scheduling, wrapper) do
-        store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+      # list_subkeys is optional: without it (or when it raises
+      # NotImplementedError, see optional_call) only the main transcript is
+      # materialized. Only this one call sits inside optional_call: the loop
+      # below calls the REQUIRED #load, and a NotImplementedError from that
+      # must surface as a failed resume, not read as "no list_subkeys".
+      listed, subkeys = SessionStores.optional_call(store, :list_subkeys) do
+        with_timeout(timeout_s, "SessionStore#list_subkeys for session #{session_id}", scheduling, wrapper) do
+          store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+        end
       end
+      return unless listed
 
       Array(subkeys).each do |subpath|
         # Subpaths come from an external store and become filesystem path

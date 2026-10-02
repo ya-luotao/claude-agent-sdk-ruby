@@ -162,6 +162,32 @@ RSpec.describe 'a session store whose optional methods raise NotImplementedError
     end
   end
 
+  # list_subkeys works; the REQUIRED load fails for the subagent it lists.
+  # That is not "list_subkeys is not implemented": the resume must fail, and
+  # leave nothing behind, rather than hand over a session without its
+  # subagent.
+  it 'lets a NotImplementedError from load surface while a resume materializes subagents' do
+    store = seed(Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+      def load(key)
+        raise NotImplementedError, 'load is not available for subpaths' if key['subpath']
+
+        super
+      end
+    end.new)
+    tmpdir = File.join(cwd, 'tmp').tap { |dir| FileUtils.mkdir_p(dir) }
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: session_id, cwd: cwd,
+                                                     env: { 'CLAUDE_CONFIG_DIR' => config_dir })
+    saved = ENV.fetch('TMPDIR', nil)
+    ENV['TMPDIR'] = tmpdir
+    begin
+      expect { ClaudeAgentSDK::SessionResume.materialize_resume_session(options) }
+        .to raise_error(NotImplementedError, 'load is not available for subpaths')
+      expect(Dir.children(tmpdir)).to eq([]) # the materialized directory was removed
+    ensure
+      saved.nil? ? ENV.delete('TMPDIR') : ENV['TMPDIR'] = saved
+    end
+  end
+
   it 'still lets a NotImplementedError from a required method through' do
     store = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
       def load(_key) = raise(NotImplementedError, 'load is not available')

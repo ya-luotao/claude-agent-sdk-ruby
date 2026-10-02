@@ -334,8 +334,9 @@ module ClaudeAgentSDK
     # included, and reached the caller raw where the documented behavior is
     # the fallback of a store without the method.
     #
-    # Only for an optional method: a NotImplementedError from #append or
-    # #load is an adapter bug and must surface.
+    # Only for an optional method, and only around the call itself: a
+    # NotImplementedError from #append or #load is an adapter bug and must
+    # surface, so nothing that calls those belongs in the block.
     def optional_call(store, method)
       return [false, nil] unless SessionStore.implements?(store, method)
 
