@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'rails_helper'
+require_relative 'support/guide_option_sets'
 require 'tmpdir'
 require 'generators/claude_agent_sdk/install/install_generator'
 
@@ -37,36 +38,16 @@ RSpec.describe 'Auto-memory isolation in the Rails guide, examples and initializ
     end
   end
 
-  # The text between `ClaudeAgentOptions.new(` and its closing parenthesis.
-  arguments_from = lambda do |code, from|
-    depth = 1
-    index = from
-    until depth.zero?
-      raise "unbalanced ClaudeAgentOptions.new( in #{guide}" if index >= code.size
-
-      depth += { '(' => 1, ')' => -1 }.fetch(code[index], 0)
-      index += 1
-    end
-    code[from...(index - 1)]
-  end
-
-  # Every ClaudeAgentOptions the guide builds, as [the heading it sits under,
-  # the arguments it is built from]. A `**name` argument is resolved to the
-  # `name = { ... }` literal in the same block, which is how the
-  # session-resumption model builds its options.
-  option_sets = []
-  heading = nil
-  File.read(File.join(root, guide)).scan(/^(\#{2,3} [^\n]+)$|^ *```ruby\n(.*?)^ *```$/m) do |title, code|
-    next heading = title.sub(/\A#+ /, '') if title
-
-    code.enum_for(:scan, /ClaudeAgentOptions\.new\(/).each do
-      arguments = arguments_from.call(code, Regexp.last_match.end(0))
-      if (name = arguments[/\A\s*\*\*(\w+)\s*\z/, 1])
-        arguments = code[/^( *)#{name} = \{\n.*?^\1\}/m] || raise("no `#{name} = { ... }` under #{heading}")
-      end
-      option_sets << [heading, arguments]
-    end
-  end
+  # Every ClaudeAgentOptions the guide builds, read from the parsed code of
+  # its Ruby blocks (support/guide_option_sets.rb) rather than from their
+  # text: a switch that is commented out, or that only appears in a string,
+  # is not there. A `**opts` argument stands for the `opts = { ... }` literal
+  # of the same block, which is how the session-resumption model builds its
+  # options.
+  reader = ClaudeAgentSDKRailsSpec::GuideOptionSets
+  guide_text = File.read(File.join(root, guide))
+  option_sets = reader.in_markdown(guide_text)
+  carries_switch = ->(set) { set.env.to_h[variable] == '1' }
 
   # An option set in the guide that must not carry the switch goes here,
   # keyed by the heading it sits under, with the reason. None does.
@@ -74,18 +55,81 @@ RSpec.describe 'Auto-memory isolation in the Rails guide, examples and initializ
 
   describe "#{guide}, every ClaudeAgentOptions it builds" do
     it 'finds an option set in every section that builds one' do
-      expect(option_sets.map(&:first)).to include(
+      expect(option_sets.map(&:heading)).to include(
         'Getting started', "Carrying the caller's state into callbacks", 'ActionCable Streaming',
         'Session Resumption', 'Background Jobs with Error Handling', 'HTTP MCP Servers'
       )
     end
 
-    option_sets.each do |section, arguments|
-      it "turns auto-memory off in the options under \"#{section}\"" do
-        skip allowed_without_switch.fetch(section) if allowed_without_switch.key?(section)
+    option_sets.each do |set|
+      it "turns auto-memory off in the options under \"#{set.heading}\"" do
+        skip allowed_without_switch.fetch(set.heading) if allowed_without_switch.key?(set.heading)
 
-        expect(arguments).to match(/env: \{[^}]*'#{variable}' => '1'[^}]*\}/)
+        expect(set.env.to_h).to include(variable => '1'),
+                                "#{guide}:#{set.line}: these options are built with env: #{set.env.inspect}"
       end
+    end
+
+    # The safeguard itself: comment out one switch at a time, in memory, and
+    # the option set it belonged to — and no other — must stop counting.
+    option_sets.each_with_index do |set, index|
+      next unless set.env_line
+
+      it "stops counting the switch under \"#{set.heading}\" once it is commented out" do
+        lines = guide_text.lines
+        lines[set.env_line - 1] = lines[set.env_line - 1].sub('env:', '# env:')
+
+        still_carrying = reader.in_markdown(lines.join).map(&carries_switch)
+
+        expected = option_sets.map(&carries_switch)
+        expected[index] = false
+        expect(carries_switch.call(set)).to be(true)
+        expect(still_carrying).to eq(expected)
+      end
+    end
+  end
+
+  describe 'reading the option sets of a guide' do
+    fence = '```'
+    in_a_guide = ->(code) { reader.in_markdown("## Section\n\n#{fence}ruby\n#{code}\n#{fence}\n") }
+
+    {
+      'commented out' => "ClaudeAgentOptions.new(\n  max_turns: 1,\n  # #{switch}\n)",
+      'in a trailing comment' => "ClaudeAgentOptions.new(max_turns: 1) # #{switch}",
+      'in a =begin / =end comment' => "ClaudeAgentOptions.new(max_turns: 1)\n=begin\nClaudeAgentOptions.new(#{switch})\n=end",
+      'inside a string' => "ClaudeAgentOptions.new(append_system_prompt: \"#{switch}\")",
+      'under another key' => "ClaudeAgentOptions.new(settings: { #{switch} })",
+      "given the value '0'" => "ClaudeAgentOptions.new(env: { '#{variable}' => '0' })",
+      'overridden by a later env:' => "ClaudeAgentOptions.new(#{switch}, env: {})",
+      'missing because there are no arguments' => 'ClaudeAgentOptions.new',
+      'behind a splat that is not a hash literal of the block' => 'ClaudeAgentOptions.new(**defaults)'
+    }.each do |shape, code|
+      it "does not count a switch that is #{shape}" do
+        expect(in_a_guide.call(code).map(&carries_switch)).to eq([false])
+      end
+    end
+
+    {
+      'among the keywords' => "ClaudeAgentSDK::ClaudeAgentOptions.new(max_turns: 1, #{switch})",
+      'next to other variables' => "ClaudeAgentOptions.new(env: { 'ANTHROPIC_API_KEY' => ENV.fetch('KEY'), '#{variable}' => '1' })",
+      'in the hash literal a **splat stands for' => "opts = {\n  #{switch} # here\n}\nClaudeAgentOptions.new(**opts)",
+      'in a call without parentheses' => "ClaudeAgentSDK::ClaudeAgentOptions.new #{switch}"
+    }.each do |shape, code|
+      it "counts a switch that is #{shape}" do
+        expect(in_a_guide.call(code).map(&carries_switch)).to eq([true])
+      end
+    end
+
+    it 'reports the heading and the lines of the call and of its env: in the guide' do
+      markdown = "# Guide\n\n## Section\n\n#{fence}ruby\nopts = {\n  #{switch}\n}\nClaudeAgentOptions.new(**opts)\n#{fence}\n"
+
+      expect(reader.in_markdown(markdown).map(&:to_h)).to eq(
+        [{ heading: 'Section', line: 9, env: { variable => '1' }, env_line: 7 }]
+      )
+    end
+
+    it 'refuses a Ruby block that does not parse, naming its section' do
+      expect { in_a_guide.call('def (') }.to raise_error(ArgumentError, /"Section" does not parse/)
     end
   end
 
