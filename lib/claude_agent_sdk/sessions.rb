@@ -732,10 +732,14 @@ module ClaudeAgentSDK
       return [] unless File.directory?(project_dir)
 
       sessions = []
-      Dir.glob(File.join(project_dir, '*.jsonl')).each do |file_path|
-        stem = File.basename(file_path, '.jsonl')
+      # base:, not a pattern built from the directory: a config dir path with
+      # glob characters in it (`/Volumes/Data [SSD]/…`, `/srv/{tenant}/…`)
+      # is a path, and as part of the pattern it matched nothing.
+      Dir.glob('*.jsonl', base: project_dir).each do |name|
+        stem = File.basename(name, '.jsonl')
         next unless stem.match?(UUID_RE)
 
+        file_path = File.join(project_dir, name)
         session = read_session_lite(file_path, project_path)
         sessions << session if session
       end
