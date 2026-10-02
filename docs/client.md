@@ -47,10 +47,7 @@ end
 ## Advanced Features
 
 ```ruby
-Async do
-  client = ClaudeAgentSDK::Client.new
-  client.connect
-
+ClaudeAgentSDK::Client.open do |client|
   client.interrupt                              # Send interrupt signal
   client.permission_mode = 'acceptEdits'        # Change permission mode mid-conversation
   client.model = 'claude-sonnet-5'              # Switch model mid-conversation (nil = default)
@@ -64,9 +61,7 @@ Async do
   client.background_tasks(tool_use_id: 'toolu_01') # Only the task spawned by that tool_use block
                                                 # => { backgrounded: true } | { backgrounded: false } (definitive miss)
                                                 # '' or a non-String raises ArgumentError; nil is the all-tasks form
-
-  client.disconnect
-end.wait
+end
 ```
 
 The Ruby-style names above sit next to the Python SDK's spellings, and both work, so code ported from the Python docs runs unchanged:

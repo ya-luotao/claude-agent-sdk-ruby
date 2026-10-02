@@ -8,7 +8,6 @@ A **custom tool** is a Ruby proc/lambda that you can offer to Claude, for Claude
 
 ```ruby
 require 'claude_agent_sdk'
-require 'async'
 
 greet_tool = ClaudeAgentSDK.create_tool(
   'greet', 'Greet a user', { name: :string },
@@ -28,13 +27,10 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   allowed_tools: ['mcp__tools__greet']
 )
 
-Async do
-  client = ClaudeAgentSDK::Client.new(options: options)
-  client.connect
+ClaudeAgentSDK::Client.open(options: options) do |client|
   client.query("Greet Alice")
   client.receive_response { |msg| puts msg }
-  client.disconnect
-end.wait
+end
 ```
 
 ## Handler Return Values
