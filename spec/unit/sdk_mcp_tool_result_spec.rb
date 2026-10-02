@@ -34,7 +34,12 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer, 'a tool result whose :content is no
     ['a String', { content: 'Order A-7 has shipped' }, 'String'],
     ['a single block Hash', { content: { type: 'text', text: 'Order A-7 has shipped' } }, 'Hash'],
     ['a String under a String key', { 'content' => 'Order A-7 has shipped' }, 'String'],
-    ['an Integer', { content: 7 }, 'Integer']
+    ['an Integer', { content: 7 }, 'Integer'],
+    # Present, but falsy: the key is there, so this is a wrong value, not a
+    # missing key.
+    ['false', { content: false }, 'FalseClass'],
+    ['a present nil', { content: nil }, 'NilClass'],
+    ['a present nil under a String key', { 'content' => nil }, 'NilClass']
   ].each do |label, handler_result, got|
     it "answers a session's tools/call with an in-band error when :content is #{label}" do
       expect_content_error(call_through_session(server_returning(handler_result)), got)
@@ -49,6 +54,33 @@ RSpec.describe ClaudeAgentSDK::SdkMcpServer, 'a tool result whose :content is no
     result = call_through_session(server_returning({ content: 'fine', is_error: false }))
 
     expect_content_error(result, 'String')
+  end
+
+  # The other diagnostic is about the KEY, and only about the key: a result
+  # that is not a Hash, or a Hash with no :content under either spelling.
+  [
+    ['nil', nil],
+    ['an Array of blocks without the Hash around it', [{ type: 'text', text: 'Order A-7 has shipped' }]],
+    ['a Hash without the key', { text: 'Order A-7 has shipped' }],
+    ['a Hash whose only key is :contents', { contents: [{ type: 'text', text: 'Order A-7 has shipped' }] }]
+  ].each do |label, handler_result|
+    it "says the :content key is missing, on both paths, when the handler returns #{label}" do
+      server = server_returning(handler_result)
+      missing = [{ type: 'text', text: "Tool 'order_status' must return a hash with :content key" }]
+
+      session = call_through_session(server)
+      expect(session[:isError]).to be true
+      expect(session[:content]).to eq(missing)
+
+      expect(server.call_tool('order_status', { id: 'A-7' })).to eq(content: missing, isError: true)
+    end
+  end
+
+  it 'reads the Array under either spelling when the other one is nil' do
+    server = server_returning({ content: nil, 'content' => [{ type: 'text', text: 'shipped' }] })
+
+    expect(call_through_session(server)).to include(isError: false, content: [{ type: 'text', text: 'shipped' }])
+    expect(server.call_tool('order_status', { id: 'A-7' })).not_to have_key(:isError)
   end
 
   # The legal shapes are untouched.

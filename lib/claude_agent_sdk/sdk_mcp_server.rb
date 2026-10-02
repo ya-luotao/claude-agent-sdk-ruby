@@ -307,9 +307,14 @@ module ClaudeAgentSDK
         ClaudeAgentSDK.normalize_tool_result(tool.handler.call(arguments))
       end
 
-      # Guard before flexible_fetch: it raises on non-Hash inputs.
-      content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, 'content', 'content') : nil
-      return error_tool_result("Tool '#{name}' must return a hash with :content key") unless content
+      # Guard before flexible_fetch: it raises on non-Hash inputs. This first
+      # diagnostic is about the KEY: a present false or nil is a wrong value
+      # and gets the Array diagnostic below, like any other non-Array.
+      unless result.is_a?(Hash) && (result.key?(:content) || result.key?('content'))
+        return error_tool_result("Tool '#{name}' must return a hash with :content key")
+      end
+
+      content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content')
       # A String or a single block here is not a result an MCP client accepts.
       unless content.is_a?(Array)
         return error_tool_result("Tool '#{name}' must return :content as an Array of content blocks " \
@@ -510,12 +515,14 @@ module ClaudeAgentSDK
 
               # Guard BEFORE flexible_fetch: on a non-Hash it raises
               # TypeError/NoMethodError, surfacing garbage instead of the
-              # friendly message.
-              raise "Tool '#{@tool_def.name}' must return a hash with :content key" unless result.is_a?(Hash)
+              # friendly message. This first diagnostic is about the KEY: a
+              # present false or nil is a wrong value and gets the Array
+              # diagnostic below, like any other non-Array.
+              unless result.is_a?(Hash) && (result.key?(:content) || result.key?('content'))
+                raise "Tool '#{@tool_def.name}' must return a hash with :content key"
+              end
 
               content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content')
-              raise "Tool '#{@tool_def.name}' must return a hash with :content key" if content.nil?
-
               # A String or a single block Hash would go out as it is, and the
               # CLI rejects that frame against its schema: the model is told
               # the SERVER returned a malformed result and never sees the text.
