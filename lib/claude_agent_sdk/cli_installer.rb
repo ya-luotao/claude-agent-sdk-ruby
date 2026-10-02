@@ -391,6 +391,12 @@ module ClaudeAgentSDK
       # touches the network: repeat boots must work offline (with a pinned
       # version — a dist-tag has to be re-resolved to be resolved at all).
       #
+      # That shortcut also holds in a directory this process cannot write (an
+      # image built as root and run as another user, a read-only root
+      # filesystem): a concrete version that is already installed and intact
+      # is returned. Anything that would need a write — a dist-tag, another
+      # version, a damaged binary — raises there.
+      #
       # An upgrade never destroys a working install: see #publish.
       def install(version: 'stable', dir: nil)
         dir = File.expand_path(dir || default_dir)
@@ -401,7 +407,19 @@ module ClaudeAgentSDK
         requested = Release.validate_version(version)
         binary = File.join(dir, BINARY_NAME)
         FileUtils.mkdir_p(dir)
-        with_install_lock(dir) do
+        begin
+          lock = open_lock_file(dir)
+        rescue Errno::EACCES, Errno::EROFS, Errno::EPERM
+          # The lock file cannot be opened for writing, so nothing can be
+          # installed here — and nothing has to be when the requested version
+          # already is (see .installed_without_lock?). This rescue covers
+          # OPENING the lock file and nothing else: a permission error raised
+          # inside the critical section must keep failing the install.
+          raise unless installed_without_lock?(dir, requested)
+
+          return binary
+        end
+        with_install_lock(lock) do
           sweep_stale_temp_files(dir)
           resolved = Release.resolve_version(requested)
           platform = Platform.detect
@@ -458,18 +476,38 @@ module ClaudeAgentSDK
       # a scheduler and is an ordinary sleep on a plain thread. Mutual
       # exclusion is the same either way; like flock itself, the order in
       # which waiters get the lock is unspecified.
-      def with_install_lock(dir)
+      #
+      # +lock+ is the open lock file (see .open_lock_file); it is closed here.
+      def with_install_lock(lock)
+        sleep(LOCK_POLL_SECONDS) until lock.flock(File::LOCK_EX | File::LOCK_NB)
+        begin
+          yield
+        ensure
+          lock.flock(File::LOCK_UN)
+        end
+      ensure
+        lock.close
+      end
+
+      # Opened read-write and created when missing. Kept apart from
+      # .with_install_lock so that .install can tell a lock file that cannot
+      # be opened from a failure inside the critical section.
+      def open_lock_file(dir)
         flags = File::RDWR | File::CREAT
         # Never follow a symlink planted at the lock path.
         flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-        File.open(File.join(dir, LOCK_FILE), flags, 0o644) do |lock|
-          sleep(LOCK_POLL_SECONDS) until lock.flock(File::LOCK_EX | File::LOCK_NB)
-          begin
-            yield
-          ensure
-            lock.flock(File::LOCK_UN)
-          end
-        end
+        File.open(File.join(dir, LOCK_FILE), flags, 0o644)
+      end
+
+      # Whether .install can answer +requested+ without the install lock: it
+      # has to be a concrete version — a dist-tag must be resolved and may
+      # have to be published, which needs the lock — whose binary is in place
+      # and re-hashes to the checksum recorded for it. This is the lock-free
+      # read .installed_path already documents (#publish only ever renames a
+      # complete, verified binary into place) plus the re-hash, and it writes
+      # nothing.
+      def installed_without_lock?(dir, requested)
+        !DIST_TAGS.include?(requested) && installed?(dir, requested, Platform.detect)
       end
 
       # Remove temp files abandoned by an earlier install that died before its
