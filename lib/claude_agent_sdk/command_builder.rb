@@ -90,9 +90,16 @@ module ClaudeAgentSDK
       end
     end
 
+    # The type tag of a Hash option, as a String: `type: :preset` is the
+    # natural Ruby spelling of `type: 'preset'`, and thinking and the MCP
+    # server configs already read it that way. A missing tag is '', which
+    # matches no branch, like any other tag the SDK does not know.
+    def hash_type(hash)
+      (hash[:type] || hash['type']).to_s
+    end
+
     def append_hash_system_prompt(cmd, prompt_hash)
-      prompt_type = prompt_hash[:type] || prompt_hash['type']
-      case prompt_type
+      case hash_type(prompt_hash)
       when 'file'
         prompt_path = prompt_hash[:path] || prompt_hash['path']
         cmd.push('--system-prompt-file', prompt_path) if prompt_path
@@ -433,7 +440,7 @@ module ClaudeAgentSDK
       when ToolsPreset
         cmd.push('--tools', 'default')
       when Hash
-        if (@options.tools[:type] || @options.tools['type']) == 'preset'
+        if hash_type(@options.tools) == 'preset'
           cmd.push('--tools', 'default')
         else
           cmd.push('--tools', JSON.generate(@options.tools))
@@ -444,13 +451,7 @@ module ClaudeAgentSDK
     def append_output_format(cmd)
       return unless @options.output_format
 
-      schema = if @options.output_format.is_a?(Hash) && @options.output_format[:type] == 'json_schema'
-                 @options.output_format[:schema]
-               elsif @options.output_format.is_a?(Hash) && @options.output_format['type'] == 'json_schema'
-                 @options.output_format['schema']
-               else
-                 @options.output_format
-               end
+      schema = output_schema(@options.output_format)
       # A json_schema output_format with a nil/absent schema must skip the
       # flag — `--json-schema null` is rejected by the CLI (Python guards
       # `schema is not None`).
@@ -458,6 +459,22 @@ module ClaudeAgentSDK
 
       schema_json = schema.is_a?(String) ? schema : JSON.generate(schema)
       cmd.push('--json-schema', schema_json)
+    end
+
+    # The schema of a { type: 'json_schema', schema: ... } output format; any
+    # other value is the schema itself. The tag may be a Symbol, and `schema`
+    # is read under the key style `type` was written in, or under the other
+    # one when that key is absent ({ 'type' => 'json_schema', schema: {...} }).
+    def output_schema(format)
+      return format unless format.is_a?(Hash)
+
+      if format[:type].to_s == 'json_schema'
+        format.fetch(:schema) { format['schema'] }
+      elsif format['type'].to_s == 'json_schema'
+        format.fetch('schema') { format[:schema] }
+      else
+        format
+      end
     end
 
     def append_additional_dirs(cmd)

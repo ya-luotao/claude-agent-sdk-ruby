@@ -142,7 +142,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       eds = system_prompt.exclude_dynamic_sections
       return eds if [true, false].include?(eds)
     elsif system_prompt.is_a?(Hash)
-      type = system_prompt[:type] || system_prompt['type']
+      # The tag may be a Symbol (type: :preset), as CommandBuilder reads it.
+      type = (system_prompt[:type] || system_prompt['type']).to_s
       if type == 'preset'
         eds = system_prompt.fetch(:exclude_dynamic_sections) { system_prompt['exclude_dynamic_sections'] }
         return eds if [true, false].include?(eds)
@@ -163,7 +164,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       snapshot = system_prompt.snapshot
       return snapshot if [true, false].include?(snapshot)
     when Hash
-      type = system_prompt[:type] || system_prompt['type']
+      type = (system_prompt[:type] || system_prompt['type']).to_s
       if %w[preset custom].include?(type)
         snapshot = system_prompt.fetch(:snapshot) { system_prompt['snapshot'] }
         return snapshot if [true, false].include?(snapshot)
