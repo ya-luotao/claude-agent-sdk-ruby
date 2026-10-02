@@ -193,12 +193,20 @@ module ClaudeAgentSDK
     # (File.realpath expands neither, so `directory: '~/project'` has always
     # been resolved through here), and a Pathname is taken as well as a
     # String (File.path).
+    #
+    # The result is a BINARY String, and resolve_missing_path works on bytes
+    # throughout. Its parts come tagged by the locale — under LANG=C the
+    # working directory BINARY and a link target US-ASCII, whatever their
+    # bytes — and as tagged Strings they did not always go together: a link
+    # with a non-ASCII target made the walk raise there ("invalid byte
+    # sequence in US-ASCII"), as did a non-ASCII relative path in a non-ASCII
+    # working directory. nfc_path tags the result.
     def absolute_path_keeping_dots(dir)
-      dir = File.path(dir)
+      dir = File.path(dir).b
       return dir if File.absolute_path?(dir)
 
       first, rest = dir.split(File::SEPARATOR, 2)
-      base = first&.start_with?('~') ? File.expand_path(first) : File.join(Dir.pwd, first.to_s)
+      base = first&.start_with?('~') ? File.expand_path(first).b : File.join(Dir.pwd.b, first.to_s)
       rest ? File.join(base, rest) : base
     end
 
@@ -256,8 +264,9 @@ module ClaudeAgentSDK
     end
 
     # The target of +path+ when it is a symlink (dangling or not), else nil.
+    # As bytes, like the path it is joined with (absolute_path_keeping_dots).
     def symlink_target(path)
-      File.symlink?(path) ? File.readlink(path) : nil
+      File.symlink?(path) ? File.readlink(path).b : nil
     rescue SystemCallError
       nil
     end

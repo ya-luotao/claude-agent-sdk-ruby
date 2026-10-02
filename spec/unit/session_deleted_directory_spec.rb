@@ -12,6 +12,7 @@ RSpec.describe 'sessions of a project directory that no longer exists' do
   include_context 'with a Claude config dir'
 
   let(:session_id) { '2b3c4d5e-6f70-4812-9a3b-4c5d6e7f8091' }
+  let(:accented) { "caf#{[0xE9].pack('U')}" } # "café", NFC
 
   before { allow(ClaudeAgentSDK::Sessions).to receive(:detect_worktrees) { |path| [path] } }
 
@@ -223,7 +224,7 @@ RSpec.describe 'sessions of a project directory that no longer exists' do
   # File.realpath does not expand a leading ~, so a directory named with one
   # is resolved as a missing path whether it exists or not.
   context 'when the directory is named with a leading ~' do
-    let(:home) { File.join(cwd, 'home') }
+    let(:home) { File.join(cwd, "#{accented}-home") }
 
     around do |example|
       previous_home = ENV.fetch('HOME', nil) # rubocop:disable Style/EnvHome -- raw value; nil when unset
@@ -241,7 +242,23 @@ RSpec.describe 'sessions of a project directory that no longer exists' do
       expect(ClaudeAgentSDK.list_sessions(directory: '~/project').map(&:session_id)).to eq([session_id])
       expect(ClaudeAgentSDK.project_key_for_directory('~/gone/../project'))
         .to eq(ClaudeAgentSDK::Sessions.sanitize_path(File.join(home, 'project')))
+      expect(ClaudeAgentSDK.project_key_for_directory("~/#{accented}-gone"))
+        .to eq(ClaudeAgentSDK::Sessions.sanitize_path(File.join(home, "#{accented}-gone")))
       expect(ClaudeAgentSDK.project_key_for_directory('~')).to eq(ClaudeAgentSDK::Sessions.sanitize_path(home))
+    end
+  end
+
+  # Non-ASCII names in every part the walk puts together: the working
+  # directory, the path, and the target of a link on the way.
+  it 'resolves non-ASCII missing paths through a link with a non-ASCII target, absolute and relative' do
+    checkout = File.join(cwd, "#{accented}-checkout")
+    project = File.join(cwd, "#{accented}-project").tap { |dir| FileUtils.mkdir_p(dir) }
+    File.symlink(checkout, File.join(project, 'current'))
+    app_key = ClaudeAgentSDK::Sessions.sanitize_path(File.join(checkout, "#{accented}-app"))
+
+    expect(ClaudeAgentSDK.project_key_for_directory(File.join(project, 'current', "#{accented}-app"))).to eq(app_key)
+    Dir.chdir(project) do
+      expect(ClaudeAgentSDK.project_key_for_directory(File.join('current', "#{accented}-app"))).to eq(app_key)
     end
   end
 
