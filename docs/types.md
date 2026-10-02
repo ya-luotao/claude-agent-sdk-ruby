@@ -82,8 +82,23 @@ currently plain classes, not `Type`s: use their snake_case accessors
 ```ruby
 # Union type of all possible messages
 Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage |
-          StreamEvent | RateLimitEvent | ConversationResetMessage
+          StreamEvent | RateLimitEvent | ConversationResetMessage |
+          ToolProgressMessage | AuthStatusMessage | ToolUseSummaryMessage |
+          PromptSuggestionMessage
 ```
+
+This is everything the block of `query()`, `ask`, `Client#receive_messages` and
+`Client#receive_response` can receive. `SystemMessage` stands for its typed
+subclasses as well (`InitMessage`, `TaskStartedMessage`, ...; see
+[System and progress messages](#system-and-progress-messages)): each of them
+`is_a?(SystemMessage)`. The other ten classes share nothing but the SDK's
+`Type` base class.
+
+A message type this SDK version does not know is skipped before it reaches
+your block, and a `system` message with an unknown `subtype` arrives as a plain
+`SystemMessage` (`subtype` and `data` set). Give a `case` over messages an
+`else` that ignores the rest: a later gem release can add a class to this
+list.
 
 ### UserMessage
 
@@ -108,10 +123,19 @@ class AssistantMessage
   attr_accessor :content,            # Array<ContentBlock>
                 :model,              # String
                 :parent_tool_use_id, # String | nil
-                :error,              # String | nil ('authentication_failed', 'billing_error', 'rate_limit', 'invalid_request', 'server_error', 'unknown')
-                :usage               # Hash | nil - Token usage info from the API response
+                :error,              # String | nil - see ASSISTANT_MESSAGE_ERRORS below
+                :usage,              # Hash | nil - Token usage info from the API response
+                :message_id,         # String | nil - the API message id
+                :stop_reason,        # String | nil
+                :session_id,         # String | nil
+                :uuid                # String | nil - UUID of this message in the transcript
 end
 ```
+
+`error` is passed through from the CLI. The values this SDK version knows are
+in `ASSISTANT_MESSAGE_ERRORS`: `authentication_failed`, `billing_error`,
+`rate_limit`, `invalid_request`, `server_error`, `max_output_tokens`,
+`unknown`. A newer CLI can send others.
 
 ### SystemMessage
 
@@ -120,7 +144,7 @@ System message with metadata. Task lifecycle events are typed subclasses.
 ```ruby
 class SystemMessage
   attr_accessor :subtype,  # String ('init', 'task_started', 'task_progress', 'task_notification', 'task_updated', etc.)
-                :data      # Hash
+                :data      # Hash - the frame's own `data` value when that is neither nil nor false, otherwise the whole frame (see below)
 end
 
 # Typed subclasses (all inherit from SystemMessage, so is_a?(SystemMessage) still works)
@@ -175,6 +199,40 @@ end
 
 See [subagent capabilities](subagents.md) for the contracts behind these fields.
 
+### System and progress messages
+
+The remaining typed messages. An attribute the CLI did not send reads `nil`,
+with two exceptions on `RateLimitEvent`: `rate_limit_info` is then an empty
+`RateLimitInfo`, and `RateLimitEvent#data` is always the whole event as a
+Symbol-keyed Hash. The first twelve are `SystemMessage` subclasses (wire
+`type` is `system`), so they also have `subtype` and `data`. Their `data` is
+the whole frame as a Symbol-keyed Hash, unless the frame carries a `data`
+value of its own that is neither `nil` nor `false`: then `data` is that
+value, and the frame is not kept. A frame whose `data` is `nil` or `false`
+reads like one without the key: `data` is the whole frame. The last six are
+message types of their own.
+
+| Class | Wire type | Attributes | Notes |
+|-------|-----------|------------|-------|
+| `InitMessage` | `system` / `init` | `uuid`, `session_id`, `model`, `cwd`, `tools`, `mcp_servers`, `agents`, `skills`, `plugins`, `slash_commands`, `permission_mode`, `claude_code_version`, `api_key_source`, `betas`, `output_style`, `fast_mode_state` | Start of every turn, with the session as the CLI sees it (so a multi-query `Client` session receives one per query) |
+| `CompactBoundaryMessage` | `system` / `compact_boundary` | `uuid`, `session_id`, `compact_metadata` (a `CompactMetadata`: `pre_tokens`, `post_tokens`, `trigger`, `preserved_segment`, `custom_instructions`) | Context compaction completed |
+| `StatusMessage` | `system` / `status` | `uuid`, `session_id`, `status`, `permission_mode` | Compacting status, permission mode changes |
+| `APIRetryMessage` | `system` / `api_retry` | `uuid`, `session_id`, `attempt`, `max_retries`, `retry_delay_ms`, `error_status`, `error` | The CLI is retrying an API request |
+| `LocalCommandOutputMessage` | `system` / `local_command_output` | `uuid`, `session_id`, `content` | Output of a local command |
+| `HookStartedMessage` | `system` / `hook_started` | `uuid`, `session_id`, `hook_id`, `hook_name`, `hook_event` | Hook lifecycle; `include_hook_events: true` asks the CLI for all of these |
+| `HookProgressMessage` | `system` / `hook_progress` | the `HookStartedMessage` attributes, `stdout`, `stderr`, `output` | |
+| `HookResponseMessage` | `system` / `hook_response` | the `HookProgressMessage` attributes, `exit_code`, `outcome` (`'success'`, `'error'`, `'cancelled'`) | |
+| `SessionStateChangedMessage` | `system` / `session_state_changed` | `uuid`, `session_id`, `state` (`'idle'`, `'running'`, `'requires_action'`) | Reaches your block only with `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` in `env` |
+| `FilesPersistedMessage` | `system` / `files_persisted` | `uuid`, `session_id`, `files`, `failed`, `processed_at` | |
+| `ElicitationCompleteMessage` | `system` / `elicitation_complete` | `uuid`, `session_id`, `mcp_server_name`, `elicitation_id` | |
+| `MirrorErrorMessage` | `system` / `mirror_error` | `uuid`, `session_id`, `error`, `key` | Produced by the SDK, not the CLI: a `session_store` mirror batch was dropped (see [Sessions](sessions.md#mirroring-to-a-sessionstore)) |
+| `ToolProgressMessage` | `tool_progress` | `uuid`, `session_id`, `tool_use_id`, `tool_name`, `parent_tool_use_id`, `elapsed_time_seconds`, `task_id` | Progress of a running tool call |
+| `ToolUseSummaryMessage` | `tool_use_summary` | `uuid`, `session_id`, `summary`, `preceding_tool_use_ids` | |
+| `AuthStatusMessage` | `auth_status` | `uuid`, `session_id`, `is_authenticating`, `output`, `error` | |
+| `PromptSuggestionMessage` | `prompt_suggestion` | `uuid`, `session_id`, `suggestion` | |
+| `StreamEvent` | `stream_event` | `uuid`, `session_id`, `event` (the raw API stream event, Symbol keys), `parent_tool_use_id` | Partial message chunks; only with `include_partial_messages: true` |
+| `RateLimitEvent` | `rate_limit_event` | `uuid`, `session_id`, `rate_limit_info` (a `RateLimitInfo`: `status`, `resets_at`, `rate_limit_type`, `utilization`, `overage_status`, `overage_resets_at`, `overage_disabled_reason`, `raw`), `data` (the whole event) | Rate limit information changed |
+
 ### ResultMessage
 
 Final result message with cost and usage information.
@@ -199,9 +257,15 @@ class ResultMessage
                 :fast_mode_state,    # String | nil ('off', 'cooldown', 'on')
                 :api_error_status,   # Integer | nil (HTTP status on api_error subtype)
                 :terminal_reason,    # String | nil (see below)
-                :origin              # Hash | nil - origin of the triggering user message (see below)
+                :origin,             # Hash | nil - origin of the triggering user message (see below)
+                :deferred_tool_use   # DeferredToolUse | nil (see below)
 end
 ```
+
+`deferred_tool_use` is set when a `PreToolUse` hook answered a tool call with
+`permissionDecision: 'defer'`: a `DeferredToolUse` with the `id`, `name` and
+`input` of the call that was put off. The session can be resumed later to run
+the deferred call.
 
 `terminal_reason` says why the query loop ended (`"completed"`, `"max_turns"`,
 `"aborted_streaming"`, ...). `"aborted_streaming"` / `"aborted_tools"` mean the
@@ -287,7 +351,8 @@ cached session title). Read the new session id from the next message.
 
 ```ruby
 # Union type of all content blocks
-ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | UnknownBlock
+ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock |
+               ServerToolUseBlock | ServerToolResultBlock | UnknownBlock
 ```
 
 ### TextBlock
@@ -333,6 +398,30 @@ class ToolResultBlock
 end
 ```
 
+### ServerToolUseBlock and ServerToolResultBlock
+
+`ServerToolUseBlock` is a call to a tool that runs server-side (wire type
+`server_tool_use`), and `ServerToolResultBlock` is the advisor tool's result
+(wire type `advisor_tool_result`). An
+[advisor](configuration.md#advisor-model) consultation shows up as a
+`ServerToolUseBlock` named `'advisor'` and a `ServerToolResultBlock`. Any
+other block type, a different server-side result included, arrives as an
+`UnknownBlock`.
+
+```ruby
+class ServerToolUseBlock
+  attr_accessor :id,    # String
+                :name,  # String ('advisor', ...)
+                :input  # Hash
+end
+
+class ServerToolResultBlock
+  attr_accessor :tool_use_id,  # String
+                :content,      # the result payload, as the CLI sent it
+                :is_error      # Boolean | nil
+end
+```
+
 ### UnknownBlock
 
 Generic content block for types the SDK doesn't explicitly handle (e.g., `document` for PDFs, `image` for inline images). Preserves the raw data for forward compatibility with newer CLI versions.
@@ -349,7 +438,7 @@ end
 | Type | Description |
 |------|-------------|
 | `Configuration` | Global defaults via `ClaudeAgentSDK.configure` block |
-| `ClaudeAgentOptions` | Main configuration for queries and clients |
+| `ClaudeAgentOptions` | Main configuration for queries and clients. Every option is listed in the [options reference](options.md) |
 | `HookMatcher` | Hook configuration with matcher pattern and timeout |
 | `PermissionResultAllow` | Permission callback result to allow tool use |
 | `PermissionResultDeny` | Permission callback result to deny tool use |
@@ -368,11 +457,11 @@ end
 | `McpToolInfo` | MCP tool name, description, and annotations |
 | `McpToolAnnotations` | MCP tool annotation hints (`read_only`, `destructive`, `open_world`) |
 | `TaskUsage` | Typed usage data (`total_tokens`, `tool_uses`, `duration_ms`) with `from_hash` factory |
-| `SDKSessionInfo` | Session metadata from `list_sessions` |
+| `SDKSessionInfo` | Session metadata from `list_sessions` and `get_session_info` |
 | `SessionMessage` | Single message from `get_session_messages` |
-| `SandboxSettings` | Sandbox settings for isolated command execution |
+| `SandboxSettings` | Sandbox settings for isolated command execution. `ignore_violations` (which violations to ignore) is a plain Hash |
 | `SandboxNetworkConfig` | Network configuration for sandbox |
-| `SandboxIgnoreViolations` | Configure which sandbox violations to ignore |
+| `SandboxFilesystemConfig` | Filesystem configuration for sandbox (`allow_write`, `deny_write`, `deny_read`, `allow_read`, `allow_managed_read_paths_only`) |
 | `SystemPromptPreset` | System prompt preset configuration (`preset`, `append`, `exclude_dynamic_sections`, `snapshot`) |
 | `SystemPromptCustom` | Custom system prompt configuration — the object form of a String prompt, so `snapshot` can be set alongside it |
 | `SystemPromptFile` | System prompt loaded from a file path |

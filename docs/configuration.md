@@ -195,9 +195,15 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(skills: %w[pdf docx])
 
 Semantics: `nil` (default) leaves CLI defaults untouched; `[]` hides every skill from the listing; an Array adds `Skill(name)` allow-rules per entry (use `plugin:skill` for plugin-qualified names). An explicitly set `setting_sources` (including `[]`) is never overridden. This is a context filter, not a sandbox — skill files remain readable on disk.
 
+If you also give `tools` as a list of names, put `'Skill'` in it. `skills` adds the `Skill` tool to the *allowed* tools, while `tools` decides which tools the session has at all: with `tools: ['Read'], skills: 'all'` there is no `Skill` tool, and no skill can run. Leaving `tools` unset keeps it.
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: %w[Read Skill], skills: %w[pdf docx])
+```
+
 ## Sandbox Settings
 
-Configure [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) restrictions (network policy, filesystem access) via the CLI's `--sandbox` flag. The CLI handles OS-level process isolation using `srt`.
+Configure [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) restrictions (network policy, filesystem access) with the `sandbox` option. The SDK sends it to the CLI as the `sandbox` key of the `--settings` argument, merged into your `settings:` when you pass both; there is no separate sandbox flag. The CLI handles OS-level process isolation using `srt`.
 
 ```ruby
 sandbox = ClaudeAgentSDK::SandboxSettings.new(
@@ -211,6 +217,18 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   permission_mode: 'acceptEdits'
 )
 ```
+
+`enabled: true` asks for a sandbox. It does not make one a requirement. When the sandbox cannot start on the host (missing dependencies, an unsupported platform), the CLI carries on without it. Its settings schema describes the setting that decides this, `failIfUnavailable`, as follows (CLI 2.1.287):
+
+> Exit with an error at startup if sandbox.enabled is true but the sandbox cannot start (missing dependencies or unsupported platform). When false (default), a warning is shown and commands run unsandboxed.
+
+The SDK sends your sandbox settings as you wrote them and does not add this one. If commands must never run unsandboxed, set it yourself:
+
+```ruby
+sandbox = ClaudeAgentSDK::SandboxSettings.new(enabled: true, fail_if_unavailable: true)
+```
+
+Without it, the sign is the CLI's warning on stderr ("Sandbox disabled: ... Commands will run WITHOUT sandboxing. Network and filesystem restrictions will NOT be enforced."), and stderr reaches your code only through the `stderr` (or `debug_stderr`) option. This is the CLI's own description of its behavior: the fallback has not been reproduced in this SDK's testing, where the sandbox was always available.
 
 See [examples/sandbox_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/sandbox_example.rb).
 
@@ -286,6 +304,119 @@ and `Client#query`.
   with the option on.
 
 Matches the Python SDK's `verbatim_prompts`.
+
+## Session Isolation
+
+Claude Code keeps an **auto-memory** for each project: Markdown notes and an
+index file, `<config dir>/projects/<project key>/memory/MEMORY.md`. It is a
+CLI feature, it is on by default, and SDK sessions take part in it. If one
+process runs sessions for more than one user or tenant, three things follow:
+
+- **Every session reads the index.** The CLI puts `MEMORY.md` into the context
+  of every session of that project, under the same heading as `CLAUDE.md` (in
+  CLI 2.1.287: "IMPORTANT: These instructions OVERRIDE any default behavior
+  and you MUST follow them exactly as written"). That holds with the SDK's
+  default (empty) system prompt and with `tools: []`. `setting_sources: []`
+  does not change it either: that option selects the user, project and local
+  sources (their settings files and their `CLAUDE.md` files), and the
+  auto-memory is not one of them.
+- **A session on the `claude_code` preset also writes it.** The preset system
+  prompt includes instructions for keeping memories, so a message such as
+  "remember that ..." makes the model save a note and update the index with
+  its file tools. The CLI allows those writes by itself: in testing (CLI
+  2.1.286) they succeeded in the default permission mode with no
+  `can_use_tool` callback, no hook and no allow rule. Do not count on your
+  permission setup to stop them. With the SDK's default system prompt the
+  sessions tested only read the index: asked to remember something, they
+  wrote nothing (an observation, not a guarantee).
+- **The memory belongs to the project, not to the session.** The project key
+  is the root of the git repository that contains the working directory, so
+  every subdirectory and every git worktree of one repository shares one
+  memory directory. Outside a repository the key is the working directory
+  itself.
+
+So on a server that runs every user's session from one checkout and one config
+directory with the `claude_code` preset, what one user asks the agent to
+remember can be saved without a permission check and then reach every later
+session as an instruction. With the default system prompt the exposure is the
+read side: whatever memory already exists for that project and config
+directory, a developer's own for instance, is in every session's context.
+
+### Turning auto-memory off
+
+Servers and multi-tenant hosts should switch it off. Both forms work with
+`query()` and `Client`:
+
+```ruby
+# An environment variable for the CLI process
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }
+)
+
+# Or the CLI setting
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  settings: { autoMemoryEnabled: false }
+)
+```
+
+To apply it to every session, set it as a default (a per-call `env` Hash is
+merged into the configured one):
+
+```ruby
+ClaudeAgentSDK.configure do |config|
+  config.default_options = { env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' } }
+end
+```
+
+- The variable must be `'1'`. `'0'` and `'false'` do not mean "the default":
+  they force auto-memory **on** and override `autoMemoryEnabled: false`.
+- `bare: true` turns auto-memory off as well, but bare mode never reads an
+  OAuth login or the keychain: it authenticates with `ANTHROPIC_API_KEY` (or
+  an `apiKeyHelper` setting) only. See [Bare Mode](#bare-mode).
+- Both switches reach the CLI that `query()` and `Client` start themselves,
+  through the default `SubprocessCLITransport`: it puts `env` into the CLI's
+  environment and `settings` on its command line (`--settings`).
+- A [custom transport](client.md#custom-transport) starts the CLI its own way,
+  so neither switch reaches that CLI unless the transport passes it through:
+  `env` into the environment it gives the CLI, `settings` onto the command
+  line (a transport that builds its command line with `CommandBuilder` gets
+  `--settings` from it; one that does not, has to add it). Until then the
+  session is not isolated.
+
+### What does not isolate sessions
+
+- **A different `cwd`** separates the memory only when the two directories
+  are not in the same git repository.
+- **A different `CLAUDE_CONFIG_DIR`** separates it only when the two config
+  directories do not share `projects/` (a `projects/` that is a symlink to
+  another config directory's is shared). A new config directory also has no
+  login, so give the CLI `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`
+  (in the process environment or in `env`).
+- **`setting_sources: []`** keeps the user, project and local settings and
+  `CLAUDE.md` files out of a session. The auto-memory index still loads. So
+  do the MCP servers connected to the claude.ai account the CLI is logged in
+  with: `strict_mcp_config: true` is what limits a session to the servers in
+  `mcp_servers` (see the [options reference](options.md#strict_mcp_config)).
+
+"One working directory per tenant" is therefore not enough on its own. Use the
+switch.
+
+### Checking what a session loaded
+
+`Client#context_usage` reports the files in a session's context without a
+model call. The auto-memory index is the entry whose `:type` is `"AutoMem"`:
+
+```ruby
+ClaudeAgentSDK::Client.open(options: options) do |client|
+  client.context_usage.fetch(:memoryFiles, []).each do |file|
+    puts "#{file[:type]} #{file[:path]} (#{file[:tokens]} tokens)"
+  end
+end
+# AutoMem /home/app/.claude/projects/-srv-app/memory/MEMORY.md (27 tokens)
+```
+
+With auto-memory off the list has no `AutoMem` entry. `query()` has no
+equivalent; run the check through a `Client` with the same options.
 
 ## Forwarding Subagent Text
 
