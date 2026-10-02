@@ -72,6 +72,25 @@ class CLITranscript
         { 'permissionMode' => 'default' }.merge(extra.transform_keys(&:to_s)))
   end
 
+  # A meta injection: a user entry the CLI writes itself (the body of a slash
+  # command or skill, a stop-hook message, a system reminder). +content+ is a
+  # String or an Array of content blocks.
+  def meta(label, content, parent:, **extra)
+    add(label, parent,
+        { 'promptId' => id('prompt-id-turn'), 'type' => 'user',
+          'message' => { 'role' => 'user', 'content' => content }, 'isMeta' => true },
+        extra.transform_keys(&:to_s))
+  end
+
+  # A system entry, e.g. the stop-hook summary that closes a turn.
+  def system(label, parent:, subtype: 'stop_hook_summary', **extra)
+    add(label, parent,
+        { 'type' => 'system', 'subtype' => subtype, 'hookCount' => 1,
+          'hookInfos' => [{ 'command' => 'true', 'durationMs' => 3 }], 'hookErrors' => [],
+          'preventedContinuation' => false, 'stopReason' => '', 'hasOutput' => false, 'level' => 'suggestion' },
+        extra.transform_keys(&:to_s))
+  end
+
   # One content block of an assistant API message (see the header).
   def assistant(label, block, parent:, message: 'msg_01', **extra)
     add(label, parent,

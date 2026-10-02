@@ -1605,19 +1605,64 @@ module ClaudeAgentSDK
         walk_to_leaf(by_uuid, uuid)
       end
 
-      # Keep only main-chain candidates (not sidechain, team, or meta)
-      main_leaves = leaf_candidates.reject { |e| off_main_conversation?(e) }
-      return [] if main_leaves.empty?
+      best_leaf = pick_leaf(leaf_candidates, by_uuid, by_position)
+      return [] unless best_leaf
 
-      # Pick the leaf with highest file position, walk to root
-      best_leaf = main_leaves.max_by { |e| by_position[e['uuid']] || 0 }
       reattach_parallel_tool_results(walk_to_root(by_uuid, best_leaf), entries, skip_flagged: true)
+    end
+
+    # The leaf a conversation is read back from: the main-chain candidate
+    # (not sidechain, team or meta) with the highest file position.
+    #
+    # Without one, fall back to the other candidates instead of reading the
+    # conversation as empty, as Python does (`_pick_best(main_leaves) if
+    # main_leaves else _pick_best(leaves)`): a session can end on a meta
+    # entry nobody answered (a slash-command or skill body, a stop-hook
+    # message, a system reminder — the user closed the session first), and
+    # filter_visible_messages drops the flagged entries of the chain anyway.
+    # Among those candidates one whose path to the root passes a visible
+    # message comes first, then file position: the latest of them may be a
+    # sidechain or teammate leaf with nothing visible above it, and taking
+    # it would still read the conversation as empty.
+    def pick_leaf(candidates, by_uuid, by_position)
+      latest = ->(leaves) { leaves.max_by { |e| by_position[e['uuid']] || 0 } }
+      main_leaves = candidates.reject { |e| off_main_conversation?(e) }
+      return latest.call(main_leaves) unless main_leaves.empty?
+
+      known = {}
+      with_visible = candidates.select { |e| visible_ancestor?(by_uuid, e, known) }
+      latest.call(with_visible.empty? ? candidates : with_visible)
+    end
+
+    # Whether the path from +leaf+ to its root passes an entry
+    # filter_visible_messages returns. +known+ carries the answer for every
+    # uuid already walked, so all the candidates of one transcript cost one
+    # pass over it.
+    def visible_ancestor?(by_uuid, leaf, known)
+      walked = []
+      current = leaf
+      found = false
+      while current && !known.key?(current['uuid'])
+        known[current['uuid']] = false # a parentUuid cycle ends here
+        walked << current['uuid']
+        break if (found = visible_message?(current))
+
+        current = by_uuid[current['parentUuid']]
+      end
+      found ||= current ? known[current['uuid']] : false
+      walked.each { |uuid| known[uuid] = found }
+      found
     end
 
     # An entry that is not part of the user's own conversation: written by a
     # subagent (sidechain) or a teammate, or a meta injection.
     def off_main_conversation?(entry)
       entry['isSidechain'] || entry['teamName'] || entry['isMeta']
+    end
+
+    # A user/assistant entry of the user's own conversation.
+    def visible_message?(entry)
+      %w[user assistant].include?(entry['type']) && !off_main_conversation?(entry)
     end
 
     # Put the results of parallel tool calls back on a leaf-to-root chain.
@@ -1730,10 +1775,7 @@ module ClaudeAgentSDK
 
     def filter_visible_messages(chain)
       chain.filter_map do |entry|
-        next unless %w[user assistant].include?(entry['type'])
-        next if entry['isMeta']
-        next if entry['isSidechain']
-        next if entry['teamName']
+        next unless visible_message?(entry)
 
         # NOTE: isCompactSummary messages are intentionally included. They contain
         # the summarized content from compacted conversations and are the only
@@ -1755,7 +1797,8 @@ module ClaudeAgentSDK
                          :find_session_file, :stat_candidate, :resolve_subagents_dir,
                          :collect_agent_files, :parse_jsonl_entries, :utf8_transcript_line,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
-                         :off_main_conversation?, :reattach_parallel_tool_results, :off_chain_tool_results,
+                         :pick_leaf, :visible_ancestor?, :off_main_conversation?, :visible_message?,
+                         :reattach_parallel_tool_results, :off_chain_tool_results,
                          :content_block_values,
                          :filter_visible_messages, :read_head_tail, :build_session_info, :user_entry_texts,
                          :valid_agent_id?, :sidechain_head?,
