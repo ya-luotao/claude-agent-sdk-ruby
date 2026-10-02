@@ -75,13 +75,18 @@ ClaudeAgentSDK.configure do |config|
 end
 ```
 
-It runs each callback inside `Rails.application.executor.wrap` — except where that would deadlock, which is why it replaces the bare `->(invocation) { Rails.application.executor.wrap { invocation.call } }` this guide used to recommend:
+It runs each callback inside the Rails executor — except where that would deadlock, which is why it replaces the bare `->(invocation) { Rails.application.executor.wrap { invocation.call } }` this guide used to recommend:
 
 - **Development (code reloading enabled).** Every executor then holds a share of the code-reload interlock. The request or job calling the SDK is already inside the executor, and in `:thread` mode it waits for the callback's thread. If a reload is requested meanwhile (say, another request arrives after the agent edited an app file), the reloader queues for the exclusive unload lock, and a callback thread entering `executor.wrap` queues behind it for a fresh share — which the reloader can never let through while the waiting caller holds its own. Everything hangs. The helper instead runs the callback without entering the executor (the caller's share still keeps code from being unloaded under it) and returns the thread's ActiveRecord connections to the pool when the callback finishes. The executor's other per-run hooks (query cache, `CurrentAttributes` reset) do not run for callbacks in this case.
 - **`config.allow_concurrency = false`.** The executor holds a process-wide monitor that the calling thread already owns, so a callback thread's `executor.wrap` would block every time; same treatment.
 - **Already inside the executor** (`:inline` scheduling on a job's own fiber): the callback runs straight through, leaving cleanup to the enclosing executor.
 
-Everywhere else — production, with no reloading — it is exactly `executor.wrap`. The configuration is read per call, so one initializer is correct in every environment.
+Everywhere else — production, with no reloading — the callback runs inside the executor: its run hooks before the callback and its complete hooks after it, also when the callback raises. The configuration is read per call, so one initializer is correct in every environment.
+
+**Errors and `Rails.error`.** The wrapper reports nothing to `Rails.error` itself, which is the one difference from `executor.wrap` (that reports whatever passes through it as an unhandled error). What your error tracker sees is therefore decided by where an exception ends up:
+
+- An exception that escapes a callback — one raised in a message block, say — comes out of `query` / `receive_response` on the thread that called the SDK. The request middleware or ActiveJob reports it there, once, with the controller or job context that thread has.
+- A failure the SDK handles is not reported: an exception in a hook or `can_use_tool` is answered to the CLI as an error response, one in an SDK MCP tool handler becomes an error result the model sees, one in an observer is swallowed, and a timed-out or cancelled callback is cancellation, not an error. To track these, report them where they happen: `rescue` inside the callback, call `Rails.error.report(e, handled: true)`, and re-raise.
 
 Writing your own wrapper: it is a callable receiving a zero-arg `invocation`; it must call it and return its value. It runs on the **same execution context as the callback** — inside the worker thread in `:thread` mode, which is the whole point: `executor.wrap` runs on the thread that touches ActiveRecord, so connections check back in when the callback ends. Exceptions from the callback propagate through the wrapper unchanged (don't rescue them); `ensure`-based wrappers like `executor.wrap` are safe, including around a `break` from a message block. Beyond the executor, this is a generic hook for APM span propagation, `CurrentAttributes`/logging context, etc. — to combine one with the Rails wrapper, call it from yours: `rails = ClaudeAgentSDK::Railtie.callback_wrapper` then `->(inv) { MyApm.trace { rails.call(inv) } }`.
 
