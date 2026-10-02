@@ -893,8 +893,8 @@ module ClaudeAgentSDK
 
       OWNER_RWX = 0o700
 
-      # Passes over a directory that keeps receiving entries, before rmdir
-      # is left to report it.
+      # How many times a directory that keeps receiving entries is emptied
+      # before rmdir's "not empty" is left to report it.
       EMPTYING_PASSES = 3
 
       def self.owner_rwx?(stat)
@@ -946,22 +946,31 @@ module ClaudeAgentSDK
           next File.unlink(path) unless stat.directory?
 
           self.class.make_accessible(path, [stat.dev, stat.ino]) unless self.class.owner_rwx?(stat)
-          pending.concat(take_entries_of(path))
-          Dir.rmdir(path)
+          pending.concat(empty_and_remove(path))
         end
       end
 
       private
 
-      # Empty the directory at +path+ into the trash; returns where its
-      # entries are now.
-      def take_entries_of(path)
+      # Empty the directory at +path+ into the trash and remove it; returns
+      # where its entries are now.
+      #
+      # Something that still holds the directory open can write into it
+      # meanwhile, and a listing cannot tell: the entry may arrive right after
+      # it, and the listing may well have been empty. rmdir is what notices
+      # (ENOTEMPTY; EEXIST on some systems). The directory then gets another
+      # pass, EMPTYING_PASSES in all; the last refusal is the caller's to
+      # report.
+      def empty_and_remove(path)
         taken = []
-        EMPTYING_PASSES.times do
-          children = Dir.children(path)
-          break if children.empty?
-
-          children.each { |child| taken << take(path, child) }
+        passes = 0
+        begin
+          passes += 1
+          Dir.children(path).each { |child| taken << take(path, child) }
+          Dir.rmdir(path)
+        rescue Errno::ENOTEMPTY, Errno::EEXIST
+          retry if passes < EMPTYING_PASSES
+          raise
         end
         taken
       end

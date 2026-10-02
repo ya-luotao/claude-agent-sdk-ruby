@@ -144,6 +144,28 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
 
     let(:skipped) { /transcript mirror dropped batches.*Scrubbing was skipped and nothing was deleted/ }
 
+    # Dir.children answers in the filesystem's order, and that order differs
+    # from one system to the next: an example that passed on APFS failed on
+    # ext4. Every example that wraps Dir.children runs with the names in each
+    # of these orders, so that none owes its result to the machine it runs on.
+    listing_orders = {
+      'sorted' => :sort.to_proc,
+      'in reverse order' => ->(names) { names.sort.reverse },
+      'shuffled' => ->(names) { names.sort.shuffle(random: Random.new(RSpec.configuration.seed)) }
+    }.freeze
+
+    # Makes Dir.children answer with the names in +order+. A block, if given, is
+    # called with the path and those names before they are returned.
+    def list_children(order)
+      allow(Dir).to receive(:children).and_wrap_original do |original, path|
+        order.call(original.call(path)).tap { |names| yield path, names if block_given? }
+      end
+    end
+
+    def in_trash?(path)
+      File.basename(File.dirname(path)).start_with?('scrub-')
+    end
+
     it 'moves the directory into a private one next to it, keeps projects/ and deletes every other entry' do
       warning = preserve
 
@@ -340,24 +362,81 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
     end
 
     # Something that still holds a directory open can write into it after it
-    # was moved into the trash.
-    it 'takes out what arrives in a directory while it is being emptied' do
-      arrived = false
-      allow(Dir).to receive(:children).and_wrap_original do |original, path|
-        names = original.call(path)
-        if !arrived && File.basename(File.dirname(path)).start_with?('scrub-')
-          arrived = true
-          File.write(File.join(path, 'late.json'), claude_json)
+    # was moved into the trash. A listing cannot tell: the entry may arrive
+    # right after it, and the listing may have been empty (on ext4 the empty
+    # sessions/ was the first directory listed; on APFS it never was). rmdir
+    # is what notices, and the directory is then emptied again.
+    listing_orders.each do |how, order|
+      context "when an entry arrives in a directory that is being emptied (entries listed #{how})" do
+        # Writes one file into the first directory of the trash whose listing
+        # the block accepts, right after that listing.
+        def late_arrival(order)
+          { arrived: false }.tap do |late|
+            list_children(order) do |path, names|
+              next if late[:arrived] || !in_trash?(path) || !yield(names)
+
+              late[:arrived] = true
+              File.write(File.join(path, 'late.json'), claude_json)
+            end
+          end
         end
-        names
+
+        def expect_nothing_left(warning)
+          expect(Dir.children(preserved)).to eq(['projects'])
+          expect(Dir.children(staging)).to eq(['claude-resume-under-test'])
+          expect(warning).not_to match(/Scrubbing/)
+        end
+
+        it 'takes it out too, after a listing that had entries' do
+          late = late_arrival(order, &:any?)
+
+          warning = preserve
+
+          expect(late[:arrived]).to be(true)
+          expect_nothing_left(warning)
+        end
+
+        it 'takes it out too, after a listing that was empty' do
+          late = late_arrival(order, &:empty?)
+
+          warning = preserve
+
+          expect(late[:arrived]).to be(true)
+          expect_nothing_left(warning)
+        end
+
+        it 'does the same when rmdir answers EEXIST for a directory that is not empty, as some systems do' do
+          allow(Dir).to receive(:rmdir).and_wrap_original do |original, path|
+            raise Errno::EEXIST, path unless Dir.empty?(path)
+
+            original.call(path)
+          end
+          late = late_arrival(order, &:empty?)
+
+          warning = preserve
+
+          expect(late[:arrived]).to be(true)
+          expect_nothing_left(warning)
+        end
+
+        it 'gives up after EMPTYING_PASSES passes when entries keep arriving, and says what is left' do
+          kept_busy = nil
+          arrivals = 0
+          list_children(order) do |path, _names|
+            # The ceiling is for a scrub that would never give up.
+            next unless in_trash?(path) && (kept_busy ||= path) == path && arrivals < 10
+
+            File.write(File.join(path, "late-#{arrivals += 1}.json"), claude_json)
+          end
+
+          warning = preserve
+
+          expect(arrivals).to eq(ClaudeAgentSDK::SessionResume::Scrubber::EMPTYING_PASSES)
+          expect(warning).to match(/Scrubbing failed: could not remove \S+ \(Directory not empty/)
+          expect(Dir.children(staging)).to contain_exactly('claude-resume-under-test', a_string_starting_with('scrub-'))
+          expect(tree(preserved).slice(*transcripts.keys)).to eq(transcripts)
+        end
       end
-
-      warning = preserve
-
-      expect(arrived).to be(true)
-      expect(Dir.children(preserved)).to eq(['projects'])
-      expect(Dir.children(staging)).to eq(['claude-resume-under-test'])
-      expect(warning).not_to match(/Scrubbing/)
     end
 
     # Teardown runs on the reactor, and a fiber's stack is small. A scrub that
@@ -564,17 +643,6 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
                                    .merge('.claude.json.backup.1790881328533' => 'synthetic'))
       end
 
-      # Dir.children answers in the filesystem's order. Putting backups/ first
-      # lets an example see that the scrub stopped at it, in what it never got to.
-      def scrub_backups_first
-        allow(Dir).to receive(:children).and_wrap_original do |original, path|
-          names = original.call(path)
-          next names unless File.basename(path) == 'claude-resume-under-test'
-
-          names.partition { |name| name == 'backups' }.flatten
-        end
-      end
-
       it 'deletes nothing when the directory becomes a symlink right before it is moved' do
         swapped = false
         allow(File).to receive(:rename).and_wrap_original do |original, from, to|
@@ -640,58 +708,75 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
 
       # A read-only backups/ has to be made writable. Between the look at it
       # and the chmod it is swapped for a symlink to a directory elsewhere:
-      # that directory must keep its mode and its files.
-      it 'leaves an outside directory alone when backups/ is swapped between the lstat and the chmod' do
-        File.chmod(0o500, backups)
-        File.chmod(0o555, outside)
-        scrub_backups_first
-        swapped = false
-        allow(File).to receive(:lstat).and_wrap_original do |original, path|
-          stat = original.call(path)
-          if !swapped && File.basename(path) == 'backups' && stat.directory? && stat.mode.nobits?(0o200)
-            swapped = true
-            File.rename(path, "#{path}-aside")
-            File.symlink(outside, path)
+      # that directory must keep its mode and its files, and the scrub stops.
+      listing_orders.each do |how, order|
+        context "with a read-only backups/ (entries listed #{how})" do
+          # The names the scrub got for the directory itself, in the order it
+          # walked them: that it stopped at backups/ shows in what came after.
+          let(:listed) { [] }
+
+          before do
+            File.chmod(0o500, backups)
+            File.chmod(0o555, outside)
+            list_children(order) do |path, names|
+              listed.replace(names) if listed.empty? && File.basename(path) == 'claude-resume-under-test'
+            end
           end
-          stat
-        end
 
-        warning = preserve
-
-        expect(swapped).to be(true)
-        expect(mode_of(outside)).to eq('555')
-        expect(tree(outside)).to eq('not-ours.txt' => 'keep me')
-        expect(tree(preserved).slice(*transcripts.keys)).to eq(transcripts)
-        expect(warning).to match(/Preserving the session transcript.* Scrubbing failed: could not remove .*backups/)
-        expect(warning).to match(/backups became a symlink/)
-        # It stopped there: backups/ came first, nothing after it was touched.
-        expect(Dir.children(preserved)).to include(*(secrets.keys.map { |key| key.split('/').first }.uniq - ['backups']))
-      end
-
-      it 'stops, leaving an outside directory alone, when backups/ is swapped right after the chmod' do
-        File.chmod(0o500, backups)
-        File.chmod(0o555, outside)
-        scrub_backups_first
-        swapped = false
-        allow(File).to receive(:open).and_wrap_original do |original, *args, **options, &block|
-          result = original.call(*args, **options, &block)
-          if !swapped && File.basename(args.first.to_s) == 'backups'
-            swapped = true
-            File.rename(args.first, "#{args.first}-aside")
-            File.symlink(outside, args.first)
+          # Gone: what was listed before backups/. Still there: what was listed
+          # after it, projects/, the symlink the swap put at backups and the real
+          # directory under the name the swap gave it.
+          def expect_the_scrub_stopped_at_backups
+            untouched = listed.drop(listed.index('backups') + 1)
+            expect(Dir.children(preserved)).to match_array((untouched + %w[projects backups backups-aside]).uniq)
           end
-          result
+
+          it 'leaves an outside directory alone when backups/ is swapped between the lstat and the chmod' do
+            swapped = false
+            allow(File).to receive(:lstat).and_wrap_original do |original, path|
+              stat = original.call(path)
+              if !swapped && File.basename(path) == 'backups' && stat.directory? && stat.mode.nobits?(0o200)
+                swapped = true
+                File.rename(path, "#{path}-aside")
+                File.symlink(outside, path)
+              end
+              stat
+            end
+
+            warning = preserve
+
+            expect(swapped).to be(true)
+            expect(mode_of(outside)).to eq('555')
+            expect(tree(outside)).to eq('not-ours.txt' => 'keep me')
+            expect(tree(preserved).slice(*transcripts.keys)).to eq(transcripts)
+            expect(warning).to match(/Preserving the session transcript.* Scrubbing failed: could not remove .*backups/)
+            expect(warning).to match(/backups became a symlink/)
+            expect_the_scrub_stopped_at_backups
+          end
+
+          it 'stops, leaving an outside directory alone, when backups/ is swapped right after the chmod' do
+            swapped = false
+            allow(File).to receive(:open).and_wrap_original do |original, *args, **options, &block|
+              result = original.call(*args, **options, &block)
+              if !swapped && File.basename(args.first.to_s) == 'backups'
+                swapped = true
+                File.rename(args.first, "#{args.first}-aside")
+                File.symlink(outside, args.first)
+              end
+              result
+            end
+
+            warning = preserve
+
+            expect(swapped).to be(true)
+            expect(mode_of(outside)).to eq('555')
+            expect(tree(outside)).to eq('not-ours.txt' => 'keep me')
+            expect(tree(preserved).slice(*transcripts.keys)).to eq(transcripts)
+            expect(warning).to match(/Scrubbing failed: could not remove .*backups/)
+            expect(warning).to match(/backups was replaced while it was being made writable/)
+            expect_the_scrub_stopped_at_backups
+          end
         end
-
-        warning = preserve
-
-        expect(swapped).to be(true)
-        expect(mode_of(outside)).to eq('555')
-        expect(tree(outside)).to eq('not-ours.txt' => 'keep me')
-        expect(tree(preserved).slice(*transcripts.keys)).to eq(transcripts)
-        expect(warning).to match(/Scrubbing failed: could not remove .*backups/)
-        expect(warning).to match(/backups was replaced while it was being made writable/)
-        expect(Dir.children(preserved)).to include(*(secrets.keys.map { |key| key.split('/').first }.uniq - ['backups']))
       end
     end
   end
