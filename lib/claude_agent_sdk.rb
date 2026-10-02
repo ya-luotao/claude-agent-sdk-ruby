@@ -728,7 +728,14 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)'
     end
 
-    Async(&FiberBoundary.capture_otel_context do # rubocop:disable Metrics/BlockLength -- the reactor task body of query()
+    # finished: false tells Async that a waiter handles this task's failure
+    # (the .wait at the end re-raises it), as Kernel#Sync does for its own
+    # task. Without it a task that fails before anyone waits for it — always
+    # the case outside a reactor, where Async runs the whole task before it
+    # returns — is also logged as "Task may have ended with unhandled
+    # exception", message and backtrace included, although the caller gets
+    # the same error raised and may well rescue it.
+    Async(finished: false, &FiberBoundary.capture_otel_context do # rubocop:disable Metrics/BlockLength -- the reactor task body of query()
       materialized = nil
       query_handler = nil
       begin
