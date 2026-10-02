@@ -81,7 +81,7 @@ See [examples/hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ru
 
 ### Hook output
 
-A callback returns a typed output (`SyncHookJSONOutput` or `AsyncHookJSONOutput`, holding a `*HookSpecificOutput`), a Hash, or `nil` (the same as `{}`). A Hash stands for the typed output with the same fields. Its keys may be Symbols or Strings, and each field may be spelled as the typed class's attribute (`permission_decision`) or as the CLI reads it (`permissionDecision`), at the top level and inside `hook_specific_output`. The deny in the example above can also be written as:
+A callback returns a typed output (`AsyncHookJSONOutput`, or `SyncHookJSONOutput`, which can hold a `*HookSpecificOutput`), a Hash, or `nil` (the same as `{}`). A Hash stands for the typed output with the same fields. Its keys may be Symbols or Strings, and each field may be spelled as the typed class's attribute (`permission_decision`) or as the CLI reads it (`permissionDecision`), at the top level and inside `hook_specific_output`. The deny in the example above can also be written as:
 
 ```ruby
 {

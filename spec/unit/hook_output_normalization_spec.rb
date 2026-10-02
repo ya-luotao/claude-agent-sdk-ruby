@@ -446,6 +446,22 @@ RSpec.describe 'hook output normalization' do
     end
   end
 
+  describe 'the Hash a callback returned' do
+    it 'is left untouched, so a frozen constant can be returned on every call' do
+      output = {
+        continue_: true,
+        hook_specific_output: { hook_event_name: 'PreToolUse', permission_decision: 'deny' }.freeze
+      }.freeze
+      denied = { 'continue' => true,
+                 'hookSpecificOutput' => { 'hookEventName' => 'PreToolUse', 'permissionDecision' => 'deny' } }
+
+      expect([reply(output), reply(output)]).to eq([denied, denied])
+      expect(output).to eq(
+        continue_: true, hook_specific_output: { hook_event_name: 'PreToolUse', permission_decision: 'deny' }
+      )
+    end
+  end
+
   describe 'a return value that is not a Hash' do
     it 'still answers {} for nil, true and a String' do
       expect([nil, true, 'deny'].map { |output| reply(output) }).to eq([{}, {}, {}])
