@@ -22,7 +22,8 @@ require_relative 'support/booted_app'
 RSpec.describe 'Request state inside SDK callbacks' do
   callbacks = %w[message_block observer hook can_use_tool tool]
   caller_state = { 'user' => 'alice', 'time_zone' => 'Tokyo', 'log_tags' => ['req-123'],
-                   'error_context' => { 'request_id' => 'req-123' } }
+                   'error_context' => { 'request_id' => 'req-123' }, 'locale' => 'de' }
+  # The locale is left out: what a callback gets by itself depends on i18n.
   rails_defaults = { 'user' => nil, 'time_zone' => 'UTC', 'log_tags' => [], 'error_context' => {} }
 
   # What the SDK answered the CLI with: the hook's output, the permission
@@ -51,29 +52,39 @@ RSpec.describe 'Request state inside SDK callbacks' do
           # that called the SDK, and only under :inline scheduling.
           let(:on_caller_fiber) { scheduling == :inline && api == 'client' ? %w[message_block observer] : [] }
 
-          def seen(state, kind)
-            [state.merge('locale' => 'de', 'on_caller_fiber' => on_caller_fiber.include?(kind))]
+          # The callback ran once, saw this state, on the caller's fiber or not.
+          def once_with(state, kind)
+            contain_exactly(include(state.merge('on_caller_fiber' => on_caller_fiber.include?(kind))))
           end
 
           it 'boots the application it describes' do
             expect(observed).to include('reloading' => reloading, 'isolation' => isolation.to_s,
                                         'logger' => 'ActiveSupport::BroadcastLogger')
-            expect(with_railtie_wrapper.fetch('caller')).to eq(
-              [caller_state.merge('locale' => 'de', 'on_caller_fiber' => true)]
+            expect(with_railtie_wrapper.fetch('caller')).to contain_exactly(
+              include(caller_state.merge('on_caller_fiber' => true))
             )
           end
 
           it 'shows Rails defaults to every callback off the caller fiber, with Railtie.callback_wrapper alone' do
             callbacks.each do |kind|
               state = on_caller_fiber.include?(kind) ? caller_state : rails_defaults
-              expect(with_railtie_wrapper.fetch(kind)).to eq(seen(state, kind)), "in #{kind}"
+              expect(with_railtie_wrapper.fetch(kind)).to once_with(state, kind), "in #{kind}"
+            end
+          end
+
+          it 'hands I18n.locale down to every callback by itself when i18n keeps it in fiber storage (1.15+)' do
+            i18n = observed.fetch('i18n')
+            skip "i18n #{i18n} keeps the locale per thread or fiber" if Gem::Version.new(i18n) < Gem::Version.new('1.15')
+
+            callbacks.each do |kind|
+              expect(with_railtie_wrapper.fetch(kind)).to contain_exactly(include('locale' => 'de')), "in #{kind}"
             end
           end
 
           it 'shows the caller state to every callback, once, with the documented recipe' do
             expect(with_recipe).not_to include('error')
             callbacks.each do |kind|
-              expect(with_recipe.fetch(kind)).to eq(seen(caller_state, kind)), "in #{kind}"
+              expect(with_recipe.fetch(kind)).to once_with(caller_state, kind), "in #{kind}"
             end
           end
 
@@ -95,7 +106,7 @@ RSpec.describe 'Request state inside SDK callbacks' do
     it 'shows the callbacks of the later request the state of the first one' do
       expect(later_request.fetch('caller')).to contain_exactly(
         include('user' => 'bob', 'time_zone' => 'Berlin', 'log_tags' => ['req-456'],
-                'error_context' => { 'request_id' => 'req-456' })
+                'error_context' => { 'request_id' => 'req-456' }, 'locale' => 'fr')
       )
       callbacks.each do |kind|
         expect(later_request.fetch(kind)).to contain_exactly(include(caller_state)), "in #{kind}"

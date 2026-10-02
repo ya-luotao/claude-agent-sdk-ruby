@@ -276,7 +276,7 @@ schedulings = isolation == :fiber ? %w[inline thread] : %w[thread]
 
 observed = {
   'rails' => Rails.version, 'reloading' => Rails.application.config.reloading_enabled?,
-  'isolation' => isolation.to_s, 'logger' => Rails.logger.class.name
+  'isolation' => isolation.to_s, 'logger' => Rails.logger.class.name, 'i18n' => I18n::VERSION
 }
 %w[query client].product(schedulings, %w[railtie recipe]).each do |api, scheduling, wrapper|
   observed["#{api}/#{scheduling}/#{wrapper}"] = requests.run(api: api, scheduling: scheduling, wrapper: wrapper)
