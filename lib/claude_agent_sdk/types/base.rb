@@ -123,6 +123,12 @@ module ClaudeAgentSDK
     # adapters, observers) show as `#<ClassName>`. For display only: nothing
     # sent to the CLI goes through #inspect or #to_s (wire output uses #to_h).
     #
+    # Attributes that carry credentials print as `[FILTERED]` (a Hash keeps
+    # its keys): `env`, `settings` and `extra_args` of ClaudeAgentOptions,
+    # and `env`, `args` and `headers` of the MCP server configs. An MCP
+    # server `url` prints its scheme and host only, and a Hash server config
+    # in `mcp_servers` is filtered like a typed one.
+    #
     # It does not raise: a value that fails while it is rendered shows as
     # `#<ClassName>` (`#<?>` when even its class cannot be asked).
     def inspect
