@@ -323,6 +323,10 @@ module ClaudeAgentSDK
       end
 
       if !settings_is_path && !@options.sandbox.nil?
+        # The option replaces any sandbox section the settings carry. Settings
+        # read from JSON spell that key as a String; left next to the Symbol
+        # key below it would be written twice (json 3.x raises on that).
+        settings_hash = settings_hash.reject { |key, _| key.to_s == 'sandbox' }
         settings_hash[:sandbox] = @options.sandbox.is_a?(SandboxSettings) ? @options.sandbox.to_h : @options.sandbox
       end
 
