@@ -99,6 +99,8 @@ Use `mcp_servers:` to add SDK MCP servers (in-process) or external MCP servers. 
 
 Use `sandbox:` with `ClaudeAgentSDK::SandboxSettings` to run tool execution in an isolated sandbox when supported.
 
+A Hash works too, for `sandbox:` and for its `network:` / `filesystem:`. It may spell the fields of the typed classes in snake_case or in the CLI's camelCase, with Symbol or String keys; other keys are sent as written. A snake_case key is sent under the CLI's name only when its value has the shape the CLI accepts for it (`true` / `false`, an Array of Strings, a port number from 0 to 65535); otherwise it is sent as written and ignored. The CLI discards the whole `--settings` value, sandbox and `permissions` included, when one sandbox value fails its schema. It reports that in the `errors` of its `get_settings` control response, which the SDK does not surface: `connect` succeeds and nothing appears on stderr.
+
 ## Agents
 
 Use `agents:` to configure sub-agent definitions passed to the CLI via the control protocol.

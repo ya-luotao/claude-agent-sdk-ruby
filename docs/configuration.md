@@ -35,6 +35,8 @@ ClaudeAgentSDK.query(prompt: "Create a profile for a software engineer", options
 end
 ```
 
+In the `output_format` Hash, `type` may be a String or a Symbol (`type: :json_schema`), and the keys Symbols or Strings.
+
 See [examples/structured_output_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/structured_output_example.rb).
 
 ## Thinking Configuration
@@ -95,6 +97,8 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   system_prompt: { type: 'preset', preset: 'claude_code', append: '...', snapshot: false }
 )
 ```
+
+In a Hash form, `type` may be a String or a Symbol (`type: :preset`).
 
 `snapshot` is sent on the control-protocol `initialize` request (never as a CLI flag), so it applies to both `query()` and `Client`. When omitted it acts as `true`, except in bare mode (`bare: true`), where it acts as `false`. A `SystemPromptFile` has no `snapshot`.
 
@@ -177,9 +181,17 @@ Available beta features are listed in the `SDK_BETAS` constant.
 # Array of tool names
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: ['Read', 'Edit', 'Bash'])
 
+# The same names as one String, in the comma-separated form of the CLI's --tools flag
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: 'Read,Edit,Bash')
+
 # Preset
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code'))
+
+# The preset as a Hash
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: { type: 'preset', preset: 'claude_code' })
 ```
+
+A String is passed to the CLI as written. In the Hash form, `type` may be a String or a Symbol (`type: :preset`).
 
 ## Skills
 
@@ -217,6 +229,24 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   permission_mode: 'acceptEdits'
 )
 ```
+
+`sandbox` also takes a Hash, and so do `network` and `filesystem`, inside that Hash or inside a `SandboxSettings`. A Hash may spell the fields of `SandboxSettings`, `SandboxNetworkConfig` and `SandboxFilesystemConfig` as the classes do (`denied_domains`) or as the CLI does (`deniedDomains`), with Symbol or String keys:
+
+```ruby
+options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+  sandbox: {
+    enabled: true,
+    network: { denied_domains: ['evil.example'] },
+    filesystem: { deny_read: ['~/.ssh'] }
+  }
+)
+```
+
+- Any other key is sent as written. That is how to pass a sandbox setting the classes have no attribute for (`allowAppleEvents`, `strictAllowlist` inside `network`): spell it as the CLI does.
+- A snake_case key is sent under the CLI's name only when its value has the shape the CLI accepts for that key: `true` or `false` for a switch, an Array of Strings for a list, a port number (an Integer from 0 to 65535) for a proxy port, a Hash of String Arrays for `ignore_violations`. With a value of any other shape (`denied_domains: 'evil.example'`, a String where an Array belongs) the key is sent as written, and the CLI ignores a key it does not know.
+- A field holding `nil` is left out, in either spelling, as a `nil` attribute of the typed classes is.
+
+The second rule exists because of how the CLI validates these settings (observed with CLI 2.1.287). When one sandbox value fails its settings schema, the CLI discards the **whole** `--settings` value: the sandbox, and everything you passed in `settings:` next to it, `permissions` rules included. The CLI reports the failure in the `errors` of its `get_settings` control response, and the SDK does not surface that: `connect` succeeds, nothing appears on stderr, and the session runs unsandboxed. That applies to a value written under the CLI's own name (`excludedCommands: 'docker'`) and to the typed classes, which send each value as you gave it: `SandboxSettings.new(excluded_commands: 'docker')` leaves the session without a sandbox.
 
 `enabled: true` asks for a sandbox. It does not make one a requirement. When the sandbox cannot start on the host (missing dependencies, an unsupported platform), the CLI carries on without it. Its settings schema describes the setting that decides this, `failIfUnavailable`, as follows (CLI 2.1.287):
 

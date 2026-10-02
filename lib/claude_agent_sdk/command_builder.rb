@@ -76,7 +76,7 @@ module ClaudeAgentSDK
       when String
         cmd.push('--system-prompt', @options.system_prompt)
       when SystemPromptFile
-        cmd.push('--system-prompt-file', @options.system_prompt.path)
+        cmd.push('--system-prompt-file', path_string(@options.system_prompt.path))
       when SystemPromptCustom
         # The object form of a String prompt; snapshot travels on the
         # initialize request, not as a CLI flag.
@@ -90,12 +90,25 @@ module ClaudeAgentSDK
       end
     end
 
+    # The type tag of a Hash option, as a String: `type: :preset` is the
+    # natural Ruby spelling of `type: 'preset'`, and thinking and the MCP
+    # server configs already read it that way. A missing tag is '', which
+    # matches no branch, like any other tag the SDK does not know.
+    def hash_type(hash)
+      (hash[:type] || hash['type']).to_s
+    end
+
+    # A path as the String the command line takes. A Pathname (anything that
+    # answers #to_path) is converted; every other value is returned as it is.
+    def path_string(path)
+      path.respond_to?(:to_path) ? path.to_path : path
+    end
+
     def append_hash_system_prompt(cmd, prompt_hash)
-      prompt_type = prompt_hash[:type] || prompt_hash['type']
-      case prompt_type
+      case hash_type(prompt_hash)
       when 'file'
         prompt_path = prompt_hash[:path] || prompt_hash['path']
-        cmd.push('--system-prompt-file', prompt_path) if prompt_path
+        cmd.push('--system-prompt-file', path_string(prompt_path)) if prompt_path
       when 'custom'
         prompt = prompt_hash.fetch(:prompt) { prompt_hash['prompt'] }
         cmd.push('--system-prompt', custom_prompt_text(prompt))
@@ -306,16 +319,14 @@ module ClaudeAgentSDK
       settings_is_path = false
 
       if @options.settings
-        if @options.settings.is_a?(String)
+        if @options.settings.respond_to?(:to_path)
+          # A Pathname names a settings file; it is never tried as inline JSON.
+          settings_hash, settings_is_path = settings_file(cmd, @options.settings.to_path)
+        elsif @options.settings.is_a?(String)
           begin
             settings_hash = JSON.parse(@options.settings)
           rescue JSON::ParserError
-            if @options.sandbox.nil? # rubocop:disable Metrics/BlockNesting -- settings-is-a-path fallback inside the JSON parse rescue
-              settings_is_path = true
-              cmd.push('--settings', @options.settings)
-            else
-              settings_hash = load_settings_file(@options.settings)
-            end
+            settings_hash, settings_is_path = settings_file(cmd, @options.settings)
           end
         elsif @options.settings.is_a?(Hash)
           settings_hash = @options.settings.dup
@@ -327,10 +338,34 @@ module ClaudeAgentSDK
         # read from JSON spell that key as a String; left next to the Symbol
         # key below it would be written twice (json 3.x raises on that).
         settings_hash = settings_hash.reject { |key, _| key.to_s == 'sandbox' }
-        settings_hash[:sandbox] = @options.sandbox.is_a?(SandboxSettings) ? @options.sandbox.to_h : @options.sandbox
+        settings_hash[:sandbox] = sandbox_section(@options.sandbox)
       end
 
       cmd.push('--settings', JSON.generate(settings_hash)) if !settings_is_path && !settings_hash.empty?
+    end
+
+    # --settings for a settings file, as [settings_hash, settings_is_path].
+    # Without a sandbox option the path itself is passed and the CLI reads
+    # the file. With one, the file is read here, so that the option can be
+    # folded into its content.
+    def settings_file(cmd, path)
+      return [load_settings_file(path), false] unless @options.sandbox.nil?
+
+      cmd.push('--settings', path)
+      [{}, true]
+    end
+
+    # The sandbox section as the CLI reads it. A Hash stands for the
+    # SandboxSettings with the same fields: the CLI only knows the camelCase
+    # keys that class writes, and it ignores the others without an error, so
+    # a Hash in Ruby spelling (deny_read, denied_domains) is renamed like the
+    # typed value would be (SandboxKeys). Booleans go out as they are.
+    def sandbox_section(sandbox)
+      case sandbox
+      when SandboxSettings then sandbox.to_h
+      when Hash then SandboxKeys.normalize(sandbox)
+      else sandbox
+      end
     end
 
     def append_budget(cmd)
@@ -417,10 +452,13 @@ module ClaudeAgentSDK
       when Array
         tools_value = @options.tools.empty? ? '' : @options.tools.join(',')
         cmd.push('--tools', tools_value)
+      when String
+        # The CLI's own syntax ("Read,Grep", "default", ""): passed as written.
+        cmd.push('--tools', @options.tools)
       when ToolsPreset
         cmd.push('--tools', 'default')
       when Hash
-        if (@options.tools[:type] || @options.tools['type']) == 'preset'
+        if hash_type(@options.tools) == 'preset'
           cmd.push('--tools', 'default')
         else
           cmd.push('--tools', JSON.generate(@options.tools))
@@ -431,13 +469,7 @@ module ClaudeAgentSDK
     def append_output_format(cmd)
       return unless @options.output_format
 
-      schema = if @options.output_format.is_a?(Hash) && @options.output_format[:type] == 'json_schema'
-                 @options.output_format[:schema]
-               elsif @options.output_format.is_a?(Hash) && @options.output_format['type'] == 'json_schema'
-                 @options.output_format['schema']
-               else
-                 @options.output_format
-               end
+      schema = output_schema(@options.output_format)
       # A json_schema output_format with a nil/absent schema must skip the
       # flag — `--json-schema null` is rejected by the CLI (Python guards
       # `schema is not None`).
@@ -445,6 +477,22 @@ module ClaudeAgentSDK
 
       schema_json = schema.is_a?(String) ? schema : JSON.generate(schema)
       cmd.push('--json-schema', schema_json)
+    end
+
+    # The schema of a { type: 'json_schema', schema: ... } output format; any
+    # other value is the schema itself. The tag may be a Symbol, and `schema`
+    # is read under the key style `type` was written in, or under the other
+    # one when that key is absent ({ 'type' => 'json_schema', schema: {...} }).
+    def output_schema(format)
+      return format unless format.is_a?(Hash)
+
+      if format[:type].to_s == 'json_schema'
+        format.fetch(:schema) { format['schema'] }
+      elsif format['type'].to_s == 'json_schema'
+        format.fetch('schema') { format[:schema] }
+      else
+        format
+      end
     end
 
     def append_additional_dirs(cmd)
@@ -493,15 +541,15 @@ module ClaudeAgentSDK
 
       @options.plugins.each do |plugin|
         plugin_config = plugin.is_a?(SdkPluginConfig) ? plugin.to_h : plugin
-        plugin_type = plugin_config[:type] || plugin_config['type']
         plugin_path = plugin_config[:path] || plugin_config['path']
 
-        unless %w[local plugin].include?(plugin_type)
+        unless %w[local plugin].include?(hash_type(plugin_config))
+          plugin_type = plugin_config[:type] || plugin_config['type']
           raise ArgumentError, "Unsupported plugin type: #{plugin_type.inspect}"
         end
         next unless plugin_path
 
-        cmd.push('--plugin-dir', plugin_path)
+        cmd.push('--plugin-dir', path_string(plugin_path))
       end
     end
 
