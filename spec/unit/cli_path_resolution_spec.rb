@@ -29,6 +29,11 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
   # developer machine) out of the discovery examples; `which` is real.
   before { allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_return(nil) }
 
+  # The examples assert on the marker line the probe leg writes. The fakes
+  # answer `-v` at once, but on a starved machine "at once" can exceed the
+  # probe's 2 s deadline, which would silently drop that line.
+  before { stub_const("#{described_class}::VERSION_CHECK_TIMEOUT_SECONDS", 60) }
+
   attr_reader :root
 
   def app = File.join(root, 'app')
@@ -207,21 +212,27 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
   end
 
   describe 'discovery (no cli_path)' do
-    it 'runs the `which` hit of a relative PATH entry from the process cwd, for the probe and the spawn' do
-      install_fake_cli('app/bin/claude')
-      install_fake_cli('target/bin/claude')
-
-      with_env('PATH' => path_with('bin')) do
-        expect(legs_executed).to eq(%w[probe:app/bin/claude spawn:app/bin/claude])
+    context "with the host's own `which`" do
+      before do
+        skip 'which(1) is not installed here' unless system('which', 'which', out: File::NULL, err: File::NULL)
       end
-    end
 
-    it 'runs the `which` hit of a `.` PATH entry from the process cwd' do
-      install_fake_cli('app/claude')
-      install_fake_cli('target/claude')
+      it 'runs the hit of a relative PATH entry from the process cwd, for the probe and the spawn' do
+        install_fake_cli('app/bin/claude')
+        install_fake_cli('target/bin/claude')
 
-      with_env('PATH' => path_with('.')) do
-        expect(legs_executed).to eq(%w[probe:app/claude spawn:app/claude])
+        with_env('PATH' => path_with('bin')) do
+          expect(legs_executed).to eq(%w[probe:app/bin/claude spawn:app/bin/claude])
+        end
+      end
+
+      it 'runs the hit of a `.` PATH entry from the process cwd' do
+        install_fake_cli('app/claude')
+        install_fake_cli('target/claude')
+
+        with_env('PATH' => path_with('.')) do
+          expect(legs_executed).to eq(%w[probe:app/claude spawn:app/claude])
+        end
       end
     end
 

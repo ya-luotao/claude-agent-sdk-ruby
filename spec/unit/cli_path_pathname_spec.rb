@@ -23,6 +23,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'cli_path given as a Path
     ENV['CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'] = previous if previous
   end
 
+  # The fake answers `-v` at once, but on a starved machine "at once" can
+  # exceed the probe's 2 s deadline, which would drop the probe's marker line.
+  before { stub_const("#{described_class}::VERSION_CHECK_TIMEOUT_SECONDS", 60) }
+
   attr_reader :root
 
   def marker = File.join(root, 'legs')

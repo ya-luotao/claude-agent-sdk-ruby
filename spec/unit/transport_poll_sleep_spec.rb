@@ -93,6 +93,12 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'polling sleeps' do
     end
 
     it 'does not use the deprecated Async::Task#sleep inside a task' do
+      # The loop is `until drainer.join(0)`, and under a fiber scheduler
+      # Ruby 3.2's Thread#join ignores its timeout: it returns only when the
+      # thread has finished, so the loop body — the sleep under test, and
+      # with it the gate below — is never reached there.
+      skip 'on Ruby 3.2 this poll never sleeps inside a task' if RUBY_VERSION < '3.3'
+
       transport = transport_for(gated_cli)
 
       # Opened read-write so neither end blocks in open(2).
