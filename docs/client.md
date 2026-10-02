@@ -138,6 +138,24 @@ client = ClaudeAgentSDK::Client.new(
 )
 ```
 
+### One-shot queries over a custom transport
+
+`ClaudeAgentSDK.query` and `ClaudeAgentSDK.ask` take a transport as well: a ready-made instance in `transport:`, not a class.
+
+```ruby
+transport = MyTransport.new(options, foo: 'bar')
+ClaudeAgentSDK.query(prompt: 'Hello', options: options, transport: transport) { |message| puts message }
+
+result = ClaudeAgentSDK.ask('Hello', options: options, transport: MyTransport.new(options, foo: 'bar'))
+```
+
+- The SDK connects the transport, runs the query over it and closes it, so one instance serves one query. `close` is called even when `connect` raised, and it must be idempotent.
+- `options` still drives everything the SDK does on its own side: hooks, SDK MCP servers, agents, observers, callback scheduling. The command line and the environment are whatever your transport gives the CLI. `query` does not rebuild them from `options`, so build the transport from the same options.
+- With a transport of your own, `can_use_tool` works through `Client` only. The CLI asks the callback when it is started with `--permission-prompt-tool stdio`; the options a `transport_class:` transport receives already carry that (`permission_prompt_tool_name: 'stdio'`), and a transport you built yourself does not get it from `query`.
+- Anything that does not respond to `connect` raises `ArgumentError`.
+
+Resuming from a `session_store` is not available over a custom transport, through `query(transport:)` or `transport_class:`: the SDK prepares the transcript only for a CLI it starts with `SubprocessCLITransport` (or a subclass of it).
+
 ### Reference: running `claude` inside an E2B sandbox
 
 [`examples/e2b_transport_example.rb`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/e2b_transport_example.rb) is a working transport that runs the Claude Code CLI inside an [E2B](https://e2b.dev) Firecracker microVM instead of on your host. The wire protocol stays identical — only the I/O layer changes:

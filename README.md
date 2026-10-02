@@ -189,7 +189,8 @@ See [docs/hooks-and-permissions.md](docs/hooks-and-permissions.md) for the full 
 | `Client` advanced features and custom transports | [docs/client.md](docs/client.md) |
 | SDK MCP servers: tools, resources, prompts, schema compatibility | [docs/mcp-servers.md](docs/mcp-servers.md) |
 | All hook events, typed inputs, permission callbacks | [docs/hooks-and-permissions.md](docs/hooks-and-permissions.md) |
-| Structured output, thinking, budget, fallback and advisor models, sandbox, bare mode, checkpointing | [docs/configuration.md](docs/configuration.md) |
+| Structured output, thinking, budget, fallback and advisor models, sandbox, bare mode, session isolation, checkpointing | [docs/configuration.md](docs/configuration.md) |
+| Every `ClaudeAgentOptions` attribute: type, default, and the CLI flag or protocol field it becomes; environment variables | [docs/options.md](docs/options.md) |
 | Session listing, reading, renaming, tagging, forking, resume-at-message | [docs/sessions.md](docs/sessions.md) |
 | Subagent capabilities, event contracts, and minimal example | [docs/subagents.md](docs/subagents.md) |
 | OpenTelemetry tracing, Langfuse, custom observers | [docs/observability.md](docs/observability.md) |

@@ -433,7 +433,7 @@ end
 | Type | Description |
 |------|-------------|
 | `Configuration` | Global defaults via `ClaudeAgentSDK.configure` block |
-| `ClaudeAgentOptions` | Main configuration for queries and clients |
+| `ClaudeAgentOptions` | Main configuration for queries and clients. Every option is listed in the [options reference](options.md) |
 | `HookMatcher` | Hook configuration with matcher pattern and timeout |
 | `PermissionResultAllow` | Permission callback result to allow tool use |
 | `PermissionResultDeny` | Permission callback result to deny tool use |
@@ -452,7 +452,7 @@ end
 | `McpToolInfo` | MCP tool name, description, and annotations |
 | `McpToolAnnotations` | MCP tool annotation hints (`read_only`, `destructive`, `open_world`) |
 | `TaskUsage` | Typed usage data (`total_tokens`, `tool_uses`, `duration_ms`) with `from_hash` factory |
-| `SDKSessionInfo` | Session metadata from `list_sessions` |
+| `SDKSessionInfo` | Session metadata from `list_sessions` and `get_session_info` |
 | `SessionMessage` | Single message from `get_session_messages` |
 | `SandboxSettings` | Sandbox settings for isolated command execution. `ignore_violations` (which violations to ignore) is a plain Hash |
 | `SandboxNetworkConfig` | Network configuration for sandbox |
