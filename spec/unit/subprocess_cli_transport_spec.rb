@@ -476,10 +476,17 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
     let(:tmp_dir) { @tmp_dir }
 
+    # PATH is one directory of the example's own, empty unless the example
+    # calls #claude_on_path: discovery searches PATH itself, and the host's
+    # real `claude` must never be what it finds.
     around do |example|
       Dir.mktmpdir('find-cli-spec') do |dir|
         @tmp_dir = dir
+        previous_path = ENV.fetch('PATH', nil)
+        ENV['PATH'] = File.join(dir, 'on-path').tap { |path_dir| FileUtils.mkdir_p(path_dir) }
         example.run
+      ensure
+        previous_path.nil? ? ENV.delete('PATH') : (ENV['PATH'] = previous_path)
       end
     end
 
@@ -489,8 +496,6 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(ENV).to receive(:fetch).and_call_original
       allow(ENV).to receive(:fetch).with('CLAUDE_CLI_PATH', nil).and_return(nil)
       allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_return(nil)
-      allow(Open3).to receive(:capture2).and_call_original
-      allow(Open3).to receive(:capture2).with('which', 'claude').and_return(['', nil])
     end
 
     def executable(name)
@@ -500,11 +505,16 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       path
     end
 
+    # A `claude` in the one directory PATH names.
+    def claude_on_path
+      executable(File.join('on-path', 'claude'))
+    end
+
     it 'prefers CLAUDE_CLI_PATH over everything else' do
       env_cli = executable('env-claude')
       allow(ENV).to receive(:fetch).with('CLAUDE_CLI_PATH', nil).and_return(env_cli)
       allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_return(executable('vendored-claude'))
-      allow(Open3).to receive(:capture2).with('which', 'claude').and_return([executable('which-claude'), nil])
+      claude_on_path
 
       expect(transport.find_cli).to eq(env_cli)
     end
@@ -542,27 +552,25 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       expect(transport.find_cli).to eq(vendored)
     end
 
-    it 'prefers the vendored binary over a `which`-discovered one' do
+    it 'prefers the vendored binary over one on PATH' do
       vendored = executable('vendored-claude')
       allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_return(vendored)
-      allow(Open3).to receive(:capture2).with('which', 'claude').and_return([executable('which-claude'), nil])
+      claude_on_path
 
       expect(transport.find_cli).to eq(vendored)
     end
 
-    it 'falls back to `which` when no override and no vendored binary exist' do
-      which_cli = executable('which-claude')
-      allow(Open3).to receive(:capture2).with('which', 'claude').and_return(["#{which_cli}\n", nil])
+    it 'falls back to PATH when no override and no vendored binary exist' do
+      path_cli = claude_on_path
 
-      expect(transport.find_cli).to eq(which_cli)
+      expect(transport.find_cli).to eq(path_cli)
     end
 
     it 'tolerates CLIInstaller.installed_path raising' do
-      which_cli = executable('which-claude')
+      path_cli = claude_on_path
       allow(ClaudeAgentSDK::CLIInstaller).to receive(:installed_path).and_raise(Errno::ENOENT)
-      allow(Open3).to receive(:capture2).with('which', 'claude').and_return([which_cli, nil])
 
-      expect(transport.find_cli).to eq(which_cli)
+      expect(transport.find_cli).to eq(path_cli)
     end
 
     it 'mentions the installer and CLAUDE_CLI_PATH when nothing is found' do
