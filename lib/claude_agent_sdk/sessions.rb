@@ -1603,6 +1603,7 @@ module ClaudeAgentSDK
     def detect_worktrees(path) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- bounded git subprocess: drained pipes, deadline kill
       stdin, stdout, stderr, wait_thr = Open3.popen3('git', '-C', path, 'worktree', 'list', '--porcelain')
       stdin.close
+      stdout.binmode # bytes: no transcoding to Encoding.default_internal; tagged in worktree_paths
 
       # Drain stdout/stderr concurrently — without this, a repo with enough
       # worktrees to overrun the 64 KB pipe buffer causes git to block on
@@ -1632,13 +1633,7 @@ module ClaudeAgentSDK
 
       return [path] unless wait_thr.value.success?
 
-      # NFC, like every path the SDK derives a project dir name from
-      # (canonicalize_path; Python normalizes here too): git prints a path as
-      # the filesystem stores it, and a decomposed name sanitizes to a
-      # different project dir than the one the CLI created.
-      paths = stdout_buf.lines.filter_map do |line|
-        line.strip.delete_prefix('worktree ').unicode_normalize(:nfc) if line.start_with?('worktree ')
-      end
+      paths = worktree_paths(stdout_buf)
       paths.empty? ? [path] : paths
     rescue StandardError
       [path]
@@ -1646,6 +1641,22 @@ module ClaudeAgentSDK
       stdout_reader&.kill if stdout_reader&.alive?
       stderr_reader&.kill if stderr_reader&.alive?
       [stdout, stderr].each { |io| io&.close rescue nil } # rubocop:disable Style/RescueModifier
+    end
+
+    # The paths in the output of `git worktree list --porcelain`.
+    #
+    # The output was read as bytes and is UTF-8 here, whatever the locale:
+    # under LANG=C the pipe yielded US-ASCII Strings, the first non-ASCII
+    # worktree path made String#strip raise, and detect_worktrees' rescue
+    # then dropped EVERY worktree. Each path is NFC-normalized, like every
+    # path the SDK derives a project dir name from (canonicalize_path; Python
+    # normalizes here too): git prints a path as the filesystem stores it, and
+    # a decomposed name sanitizes to a different project dir than the one the
+    # CLI created.
+    def worktree_paths(porcelain)
+      porcelain.force_encoding(Encoding::UTF_8).lines.filter_map do |line|
+        line.strip.delete_prefix('worktree ').unicode_normalize(:nfc) if line.start_with?('worktree ')
+      end
     end
 
     def find_session_file(session_id, directory)
@@ -1976,7 +1987,7 @@ module ClaudeAgentSDK
     private_class_method :project_dir_records_cwd?, :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions, :dedup_rank,
-                         :find_session_file, :stat_candidate, :resolve_subagents_dir,
+                         :worktree_paths, :find_session_file, :stat_candidate, :resolve_subagents_dir,
                          :collect_agent_files, :parse_jsonl_entries, :utf8_transcript_text,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :pick_leaf, :visible_ancestor?, :off_main_conversation?, :visible_message?,

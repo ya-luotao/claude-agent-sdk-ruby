@@ -140,4 +140,32 @@ RSpec.describe 'list_sessions over git worktrees' do
       expect(summaries(root)).to contain_exactly('asked in the repository root', 'asked in the accented worktree')
     end
   end
+
+  # LANG=C / LC_ALL=C (minimal Docker images, cron): a pipe read without an
+  # explicit encoding yields US-ASCII Strings, and git prints the UTF-8 bytes
+  # of the path.
+  it 'finds the sessions of a worktree with a non-ASCII path under a non-UTF-8 locale' do
+    worktree = File.join(cwd, 'プロジェクト-wt')
+    record_session(root, 'asked in the repository root')
+    record_session(worktree, 'asked in the Japanese worktree')
+    listing = "worktree #{root}\nHEAD 1111111\nbranch refs/heads/main\n\nworktree #{worktree}\nHEAD 2222222\ndetached\n"
+    saved = Encoding.default_external
+
+    listed = with_git_printing(listing) do
+      silence_warnings { Encoding.default_external = Encoding::US_ASCII }
+      summaries(root)
+    ensure
+      silence_warnings { Encoding.default_external = saved }
+    end
+
+    expect(listed).to contain_exactly('asked in the repository root', 'asked in the Japanese worktree')
+  end
+
+  def silence_warnings
+    verbose = $VERBOSE
+    $VERBOSE = nil # assigning Encoding.default_external warns under -w
+    yield
+  ensure
+    $VERBOSE = verbose
+  end
 end
