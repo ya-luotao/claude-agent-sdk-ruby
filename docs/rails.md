@@ -433,9 +433,9 @@ class ChatSession < ApplicationRecord
     opts = {
       permission_mode: 'bypassPermissions',
       setting_sources: [],                                  # isolates settings files, not the CLI's auto-memory:
-      env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }     # this does (see "Per-user isolation")
+      env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' },    # this does (see "Per-user isolation")
+      resume: claude_session_id.presence                    # nil for the first message: a new session
     }
-    opts[:resume] = claude_session_id if claude_session_id.present?
     ClaudeAgentSDK::ClaudeAgentOptions.new(**opts)
   end
 end
