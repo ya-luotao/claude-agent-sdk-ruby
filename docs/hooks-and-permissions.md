@@ -95,8 +95,8 @@ A callback returns a typed output (`AsyncHookJSONOutput`, or `SyncHookJSONOutput
 
 - `continue_` and `async_` stand for `continue` and `async`.
 - A key the typed classes do not have is sent as written, so a CLI field the SDK does not model has to be spelled the way the CLI spells it.
-- Values are sent as written: the keys inside `updated_input`, `updated_tool_output`, `updated_mcp_tool_output` and a `PermissionRequest` `decision` are never renamed.
-- If one Hash spells the same field both ways, the camelCase one is sent.
+- The keys inside `updated_input`, `updated_tool_output`, `updated_mcp_tool_output` and a `PermissionRequest` `decision` are not renamed: those are the tool's own payloads (for `decision`, the CLI's), so spell them as the tool or the CLI does.
+- If one Hash spells the same field both ways, the CLI's spelling is the one sent (`permissionDecision` over `permission_decision`, `continue` over `continue_`).
 
 ### Hook cancellation
 
