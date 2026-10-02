@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `docs/cli-installer.md` now says when `CLIInstaller::PINNED_CLI_VERSION` moves: pin-only changes ship with the next gem release rather than one release per CLI bump. It also covers how a gem patch can move your CLI and how to take a newer CLI before a release pins it. The pin-bump workflow keeps a single `[Unreleased]` entry for the pin.
+- `CLIInstaller::PINNED_CLI_VERSION` moves from 2.1.285 to **2.1.287**, following the CLI the Python SDK bundles. `CLIInstaller.install_pinned` installs it. See the [Claude Code changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md).
 
 ## [1.1.0] - 2026-09-30
 
