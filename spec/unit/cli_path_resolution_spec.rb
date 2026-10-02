@@ -196,6 +196,19 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
       end
     end
 
+    # As spawn's own lookup did for a bare name: a `~/` entry is the home
+    # directory (HOME is the tmp root here), not `~` under the cwd. The same
+    # rule as for discovery, pinned there too.
+    it 'expands a `~/` PATH entry against HOME, not against the process cwd' do
+      install_fake_cli('app/~/bin/fake-claude-cli')
+      install_fake_cli('bin/fake-claude-cli')
+
+      with_env('PATH' => path_with('~/bin'), 'HOME' => root) do
+        expect(legs_executed(cli_path: 'fake-claude-cli'))
+          .to eq(%w[probe:bin/fake-claude-cli spawn:bin/fake-claude-cli])
+      end
+    end
+
     # spawn searched the PATH it was about to give the child, so that is the
     # PATH which decides here too — and the probe now runs the same file.
     it 'is searched on the PATH from options.env, for the probe and the spawn' do
@@ -282,6 +295,36 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
 
       with_env('PATH' => path_with('.'), 'HOME' => root) do
         expect(legs_executed).to eq(%w[probe:app/claude spawn:app/claude])
+      end
+    end
+
+    # An empty entry is the current directory to a PATH lookup, and the easy
+    # one to lose in a lookup written by hand (a split that drops empty
+    # strings is enough). The first entry names nothing, so only the
+    # trailing empty one can find `claude` here.
+    it 'treats a trailing empty PATH entry as the process cwd' do
+      install_fake_cli('app/claude')
+      install_fake_cli('target/claude')
+      search = "#{File.join(root, 'no-such-directory')}#{File::PATH_SEPARATOR}"
+
+      with_env('PATH' => search, 'HOME' => root) do
+        expect(legs_executed).to eq(%w[probe:app/claude spawn:app/claude])
+      end
+    end
+
+    # A PATH entry that is `~` or starts with `~/` is the home directory to
+    # Ruby's own command lookup (system, spawn, Open3; sh and bash agree),
+    # not a directory called `~` under the cwd — only `which` and execvp read
+    # it literally. The SDK spawns through Open3, so it resolves the name the
+    # way Ruby would: on purpose, this is not one of the relative entries
+    # anchored to the process cwd. HOME is the tmp root here.
+    it "expands a `~/` PATH entry against HOME, as Ruby's own lookup does" do
+      install_fake_cli('app/~/bin/claude')
+      install_fake_cli('bin/claude')
+      search = ['~/bin', '/usr/bin', '/bin'].join(File::PATH_SEPARATOR)
+
+      with_env('PATH' => search, 'HOME' => root) do
+        expect(legs_executed).to eq(%w[probe:bin/claude spawn:bin/claude])
       end
     end
 
