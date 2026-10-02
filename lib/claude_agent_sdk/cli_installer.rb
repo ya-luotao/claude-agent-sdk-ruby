@@ -60,6 +60,11 @@ module ClaudeAgentSDK
     VERSION_FILE = 'VERSION'
     # @api private
     LOCK_FILE = '.install.lock'
+    # How often a waiting installer retries the install lock. See
+    # .with_install_lock for why it polls instead of blocking in flock.
+    #
+    # @api private
+    LOCK_POLL_SECONDS = 0.05
     # Relative to .root (Dir.pwd when unset), resolved at CALL time by
     # .default_dir — an absolute constant would freeze the working directory
     # as of require time, which is wrong for anything that chdirs (Rake
@@ -441,14 +446,24 @@ module ClaudeAgentSDK
       private
 
       # Cross-process mutual exclusion for the whole install. flock is
-      # advisory and per open file description, so concurrent threads in one
-      # process contend here exactly like separate processes do.
+      # advisory and per open file description, so concurrent threads — and
+      # concurrent fibers — in one process contend here exactly like separate
+      # processes do.
+      #
+      # The lock is polled (LOCK_NB + sleep), never taken with a blocking
+      # LOCK_EX. File#flock has no Fiber-scheduler hook, so a blocking call
+      # parks the whole reactor THREAD; when the holder is another fiber of
+      # that reactor, waiting inside the critical section for the network, it
+      # is never resumed and neither install returns. Kernel#sleep yields to
+      # a scheduler and is an ordinary sleep on a plain thread. Mutual
+      # exclusion is the same either way; like flock itself, the order in
+      # which waiters get the lock is unspecified.
       def with_install_lock(dir)
         flags = File::RDWR | File::CREAT
         # Never follow a symlink planted at the lock path.
         flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
         File.open(File.join(dir, LOCK_FILE), flags, 0o644) do |lock|
-          lock.flock(File::LOCK_EX)
+          sleep(LOCK_POLL_SECONDS) until lock.flock(File::LOCK_EX | File::LOCK_NB)
           begin
             yield
           ensure
