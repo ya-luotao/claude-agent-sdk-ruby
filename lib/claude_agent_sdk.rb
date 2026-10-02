@@ -173,14 +173,39 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   # Each observer is invoked through FiberBoundary so that user code runs
   # on a plain thread (no Fiber scheduler) even when called from inside
   # the SDK's Async reactor — or in place when scheduling is :inline.
+  #
+  # What the observer raises, and what its callback_wrapper raises, is
+  # contained where it happens: inside the hop, on the execution context
+  # the observer runs on. The rescue must not sit around the hop, because
+  # the calling fiber WAITS there, and an exception raised into a waiting
+  # fiber is not the observer's — a caller's `task.with_timeout` /
+  # `Timeout.timeout` deadline is delivered exactly that way. Rescued out
+  # here, an expired deadline was swallowed as if the observer had failed,
+  # and the turn carried on. So the wrapper is composed inside the rescued
+  # body rather than handed to FiberBoundary.invoke, which would run it
+  # outside that rescue.
+  #
+  # Known residue with `scheduling: :inline` (and with no scheduler at all):
+  # the observer runs on the calling fiber itself, so a deadline that lands
+  # while the observer is suspended is raised inside the observer's own
+  # frames, cannot be told from the observer's own timeout, and is still
+  # swallowed here.
   # @api private
   def self.notify_observers(observers, method, *args, scheduling: :thread, wrapper: nil)
     observers.each do |obs|
-      FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) { obs.send(method, *args) }
-    rescue StandardError, ScriptError
-      # ScriptError too: NotImplementedError < ScriptError (not
-      # StandardError), and a stubbed observer must never mask the original
-      # error being notified or abort connect/teardown cleanup.
+      FiberBoundary.invoke(scheduling: scheduling) do
+        invocation = proc { obs.send(method, *args) }
+        wrapper ? wrapper.call(invocation) : invocation.call
+      rescue StandardError, ScriptError
+        # ScriptError too: NotImplementedError < ScriptError (not
+        # StandardError), and a stubbed observer must never mask the original
+        # error being notified or abort connect/teardown cleanup.
+        nil
+      end
+    rescue ScriptError
+      # A ScriptError raised around the body rather than in it (the hop's own
+      # plumbing). No deadline is a ScriptError, so nothing a caller injects
+      # into the waiting fiber is caught here.
       nil
     end
   end
