@@ -36,6 +36,9 @@ module ClaudeAgentSDK
   # mangled into nonsense parameter lists ("additionalProperties" as a
   # required string param). A $ref-only schema without type: 'object' remains
   # indistinguishable from a params hash — declare the type alongside $ref.
+  # For the same reason { type: :object } is this prebuilt accept-any-object
+  # schema even though :object is also a shorthand type: a simple schema with
+  # an object parameter literally named type has to spell it { type: Hash }.
   # @api private
   def self.prebuilt_json_schema?(schema)
     return false unless schema.is_a?(Hash)
@@ -68,12 +71,16 @@ module ClaudeAgentSDK
   def self.ruby_type_to_json_schema(type)
     # Class#=== matches instances, not the class object used in { id: Integer }.
     type = { String => :string, Integer => :integer, Float => :float,
-             TrueClass => :boolean, FalseClass => :boolean }.fetch(type, type)
+             TrueClass => :boolean, FalseClass => :boolean,
+             Array => :array, Hash => :object }.fetch(type, type)
     case type
     when :string, String then { type: 'string' }
     when :integer, Integer then { type: 'integer' }
     when :float, Float, :number then { type: 'number' }
     when :boolean, TrueClass, FalseClass then { type: 'boolean' }
+    # The class or the Symbol only. An Array or Hash VALUE ([String], a nested
+    # schema fragment) is not a shorthand and falls through like before.
+    when :array, :object then { type: type.to_s }
     else { type: 'string' } # rubocop:disable Lint/DuplicateBranch -- default fallback; the :string arm stays explicit
     end
   end
@@ -606,7 +613,12 @@ module ClaudeAgentSDK
   #
   # @param name [String] Unique identifier for the tool
   # @param description [String] Human-readable description
-  # @param input_schema [Hash] Schema defining input parameters
+  # @param input_schema [Hash] Schema defining input parameters: a full JSON
+  #   Schema (+{ type: 'object', properties: ... }+), or the shorthand
+  #   +{ name: type }+, in which every parameter is required and each type is
+  #   +String+ / +:string+, +Integer+ / +:integer+, +Float+ / +:float+ /
+  #   +:number+, +TrueClass+ / +FalseClass+ / +:boolean+, +Array+ / +:array+
+  #   or +Hash+ / +:object+
   # @param handler [Proc] Block that implements the tool logic. It returns a
   #   String, sent to Claude as a single text block, or a Hash with a
   #   +:content+ Array of MCP content blocks plus optional +:is_error+ /
