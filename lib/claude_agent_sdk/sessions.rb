@@ -1349,13 +1349,20 @@ module ClaudeAgentSDK
         return project_dir ? read_sessions_from_dir(project_dir, path) : []
       end
 
-      # Multiple worktrees: scan all project dirs for matches
+      # Several worktrees: the caller's own directory first, unconditionally.
+      # `git worktree list` reports worktree ROOTS, so a subdirectory (a
+      # monorepo package) is none of them, and reading only the listed paths
+      # left out exactly the sessions that were asked for (Python:
+      # "Always include the user's actual directory"). Then every worktree;
+      # a project dir is read once.
       all_sessions = []
-      worktree_paths.each do |wt_path|
-        project_dir = find_project_dir(wt_path)
-        next unless project_dir
+      seen = {}
+      [path, *worktree_paths].each do |dir|
+        project_dir = find_project_dir(dir)
+        next if project_dir.nil? || seen[project_dir]
 
-        all_sessions.concat(read_sessions_from_dir(project_dir, wt_path))
+        seen[project_dir] = true
+        all_sessions.concat(read_sessions_from_dir(project_dir, dir))
       end
 
       deduplicate_sessions(all_sessions)
@@ -1381,10 +1388,11 @@ module ClaudeAgentSDK
     # One entry per session_id when the same session sits in several project
     # dirs (copied config dirs, worktrees). The newest last_modified wins; on
     # equal mtimes the larger file (the more complete copy), and then the
-    # copy scanned first — project dirs in name order for the global listing,
-    # worktrees in `git worktree list` order (main worktree first) for a
-    # directory listing. Python keeps the first copy seen in iterdir() order
-    # (sessions.py _deduplicate_by_session_id), which is arbitrary on a tie.
+    # copy scanned first — project dirs in name order for the global listing;
+    # for a directory listing the directory itself, then its worktrees in
+    # `git worktree list` order (main worktree first). Python keeps the first
+    # copy seen in iterdir() order (sessions.py _deduplicate_by_session_id),
+    # which is arbitrary on a tie.
     def deduplicate_sessions(sessions)
       by_id = {}
       sessions.each do |s|

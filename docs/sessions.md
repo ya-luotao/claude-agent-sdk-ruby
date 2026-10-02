@@ -27,7 +27,7 @@ Each `SDKSessionInfo` includes: `session_id`, `summary`, `last_modified`, `file_
 
 Listings are newest first; sessions with the same `last_modified` are ordered by `session_id`, so `offset:`/`limit:` pages are stable across calls and the disk and store listings order identically. Blank (empty or whitespace-only) custom/AI titles, last-prompt and summary entries, `git_branch`, `cwd`, and `tag` values read as absent on both paths. `cwd` is the first non-blank top-level `cwd` in the transcript (a key nested in a tool input doesn't count), falling back to the project path; `first_prompt` is `nil` when the session has no usable prompt. `last_modified` is always Integer epoch milliseconds — the file mtime on disk, the adapter's `mtime` coerced as described under [Implementing an adapter](#implementing-an-adapter) on the store paths.
 
-When `list_sessions` finds the same session in several project directories (copied config dirs, worktrees), it keeps one copy: the newest `last_modified`; on equal mtimes the larger file (the more complete copy); then the copy in the project directory whose name sorts first (worktree listings: the worktree `git worktree list` reports first, i.e. the main worktree).
+When `list_sessions` finds the same session in several project directories (copied config dirs, worktrees), it keeps one copy: the newest `last_modified`; on equal mtimes the larger file (the more complete copy); then the copy in the project directory whose name sorts first (`directory:` listings: the directory's own copy, then the worktrees in the order `git worktree list` reports them, main worktree first).
 
 ## Reading Session Messages
 
