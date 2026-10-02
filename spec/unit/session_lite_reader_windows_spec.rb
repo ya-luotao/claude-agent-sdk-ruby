@@ -1,0 +1,104 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+require_relative '../fixtures/cli_transcript'
+require_relative '../fixtures/claude_config_dir'
+
+# The disk listing scans the first and the last 64 KiB of a transcript for a
+# handful of fields. The scan steps through the window by offset; Ruby keeps
+# no character index for a UTF-8 String that is not ASCII-only, so on such a
+# window every offset step walks the bytes from the start. The windows are
+# therefore scanned as bytes, and only what is returned is UTF-8.
+RSpec.describe 'the 64 KiB windows of the disk session reader' do
+  include_context 'with a Claude config dir'
+
+  let(:session_id) { 'a9b8c7d6-e5f4-4a3b-8c2d-1e0f9a8b7c6d' }
+  let(:prompt) { '请总结这个仓库的结构' }
+  let(:title) { '仓库结构总结' }
+  let(:branch) { '功能/会话读取' }
+
+  # A session of about 350 KB of CJK text: neither window is ASCII-only.
+  # +head_pad+ / +tail_pad+ ASCII bytes shift where the two windows are cut.
+  def transcript_bytes(head_pad, tail_pad)
+    transcript = CLITranscript.new(session_id: session_id, cwd: cwd, git_branch: branch)
+    transcript.queue_operations(prompt)
+    transcript.prompt(:prompt, prompt)
+    parent = :prompt
+    60.times do |turn|
+      answer = transcript.text("#{'x' * head_pad if turn.zero?}#{'好的。' * 500}")
+      transcript.assistant(:"answer_#{turn}", answer, parent: parent, message: "msg_#{turn}")
+      transcript.prompt(:"next_#{turn}", "继续 #{turn} #{'请继续说明' * 100}", parent: :"answer_#{turn}")
+      parent = :"next_#{turn}"
+    end
+    transcript.custom_title(title)
+    transcript.tag('重要')
+    transcript.last_prompt("最后一个问题#{'x' * tail_pad}", leaf: parent)
+    transcript.to_jsonl
+  end
+
+  def cut_inside_a_character?(bytes)
+    window = ClaudeAgentSDK::Sessions::LITE_READ_BUF_SIZE
+    [bytes.byteslice(0, window), bytes.byteslice(-window, window)].none? do |part|
+      part.force_encoding('UTF-8').valid_encoding?
+    end
+  end
+
+  # The fixture with both of its windows cut inside a 3-byte character.
+  def write_transcript
+    candidates = [0, 1, 2].product([0, 1, 2]).lazy.map { |pads| transcript_bytes(*pads) }
+    bytes = candidates.find { |candidate| cut_inside_a_character?(candidate) }
+    raise 'no padding cuts both windows inside a character' unless bytes
+
+    path = transcript_path(session_id)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.binwrite(path, bytes)
+    path
+  end
+
+  def utf8_strings(info)
+    %i[summary custom_title first_prompt git_branch cwd tag].to_h { |field| [field, info.public_send(field)] }
+  end
+
+  it 'scans the windows as bytes' do
+    path = write_transcript
+
+    windows = ClaudeAgentSDK::Sessions.read_head_tail(path, File.size(path))
+
+    expect(windows.map(&:encoding)).to eq([Encoding::BINARY, Encoding::BINARY])
+  end
+
+  it 'returns every field as a valid UTF-8 String with its value' do
+    write_transcript
+
+    info = ClaudeAgentSDK.get_session_info(session_id: session_id, directory: cwd)
+
+    expect(File.size(transcript_path(session_id))).to be > 2 * ClaudeAgentSDK::Sessions::LITE_READ_BUF_SIZE
+    expect(utf8_strings(info)).to eq(summary: title, custom_title: title, first_prompt: prompt, git_branch: branch,
+                                     cwd: cwd, tag: '重要')
+    expect(utf8_strings(info).values.map(&:encoding).uniq).to eq([Encoding::UTF_8])
+    expect(utf8_strings(info).values).to all(be_valid_encoding)
+  end
+
+  # The value of a field on a line the window cut off, and a value that is
+  # not a well-formed JSON string (a raw tab), come back as slices of the
+  # window rather than from a JSON parse.
+  describe 'values returned as slices of the window' do
+    let(:window) { "{\"type\":\"custom-title\",\"customTitle\":\"#{title}\",\"sessionId\":\"x\"}\n".b }
+
+    it 'returns a value from a line cut by the window as UTF-8' do
+      cut = window[0, window.index('sessionId'.b)]
+
+      value = ClaudeAgentSDK::Sessions.extract_top_level_string_field(cut, 'customTitle', last: true)
+
+      expect([value, value.encoding, value.valid_encoding?]).to eq([title, Encoding::UTF_8, true])
+    end
+
+    it 'returns a value that does not parse as a JSON string as UTF-8' do
+      raw = window.sub(title.b, "#{title}\t原文".b)
+
+      value = ClaudeAgentSDK::Sessions.extract_json_string_field(raw, 'customTitle', last: true)
+
+      expect([value, value.encoding, value.valid_encoding?]).to eq(["#{title}\t原文", Encoding::UTF_8, true])
+    end
+  end
+end

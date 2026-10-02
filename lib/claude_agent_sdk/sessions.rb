@@ -288,9 +288,7 @@ module ClaudeAgentSDK
       Dir.children(project_dir).any? do |name|
         next false unless name.end_with?('.jsonl') && valid_session_id?(name.delete_suffix('.jsonl'))
 
-        head = File.open(File.join(project_dir, name), 'rb') do |file|
-          (file.read(LITE_READ_BUF_SIZE) || '').force_encoding('UTF-8')
-        end
+        head = File.open(File.join(project_dir, name), 'rb') { |file| file.read(LITE_READ_BUF_SIZE) || '' }
         extract_top_level_string_field(head, 'cwd', skip_blank: true)&.unicode_normalize(:nfc) == path
       rescue SystemCallError
         false # unreadable, or removed between the listing and the read
@@ -404,11 +402,13 @@ module ClaudeAgentSDK
       nil
     end
 
-    # Unescape a JSON string value
+    # Unescape a JSON string value. A slice that does not parse as a JSON
+    # string (a raw control character in it) is returned as it is — tagged
+    # UTF-8: the windows it is cut from are binary (read_head_tail).
     def unescape_json_string(str)
       JSON.parse("\"#{str}\"")
     rescue JSON::ParserError
-      str
+      str.encoding == Encoding::UTF_8 ? str : str.dup.force_encoding(Encoding::UTF_8)
     end
 
     # Python's `x or None` for the summary/title fallback chains: Ruby's ||
@@ -503,7 +503,9 @@ module ClaudeAgentSDK
         next if line.include?('"isMeta":true') || line.include?('"isMeta": true')
         next if line.include?('"isCompactSummary":true') || line.include?('"isCompactSummary": true')
 
-        entry = JSON.parse(line, symbolize_names: false)
+        # +text+ may be a binary window or chunk: the line becomes UTF-8 here,
+        # scrubbed, so the text handling below never meets a stray byte.
+        entry = JSON.parse(utf8_transcript_text(line), symbolize_names: false)
         texts = user_entry_texts(entry)
         next unless texts
 
@@ -536,11 +538,7 @@ module ClaudeAgentSDK
     # with no other summary source was not listed at all — while the store
     # fold, which sees every entry, reported the prompt.
     def first_prompt_from_file(file_path, head, size)
-      # Scrubbed for parsing (the offsets below are those of +head+ itself):
-      # a stray non-UTF-8 byte inside a prompt made the text handling raise,
-      # which the listing turned into "no such session" and which a fork must
-      # not die of.
-      prompt, command_fallback = first_prompt_in(head.valid_encoding? ? head : head.scrub)
+      prompt, command_fallback = first_prompt_in(head)
       if prompt.nil? && size > head.bytesize
         limit = [size, FIRST_PROMPT_SCAN_LIMIT].min
         prompt, command_fallback = first_prompt_past_head(file_path, head, limit, command_fallback)
@@ -567,11 +565,10 @@ module ClaudeAgentSDK
           newline = open_line.rindex("\n")
           next unless newline
 
-          complete = utf8_transcript_text(open_line.slice!(0, newline + 1))
-          prompt, command_fallback = first_prompt_in(complete, command_fallback)
+          prompt, command_fallback = first_prompt_in(open_line.slice!(0, newline + 1), command_fallback)
           return [prompt, command_fallback] if prompt
         end
-        first_prompt_in(utf8_transcript_text(open_line), command_fallback)
+        first_prompt_in(open_line, command_fallback)
       end
     rescue SystemCallError
       [nil, command_fallback]
@@ -642,13 +639,24 @@ module ClaudeAgentSDK
       false
     end
 
+    # The first and the last LITE_READ_BUF_SIZE bytes of a transcript, as
+    # BINARY Strings — on purpose. The field scanners step through a window
+    # by offset (String#index with a position, text[pos], #length), and Ruby
+    # keeps no character index for a UTF-8 String that is not ASCII-only:
+    # there every one of those steps walks the bytes from the start, so a
+    # scan with many matches is quadratic in the window, and one multibyte
+    # character anywhere in it is enough (nearly every real transcript has
+    # one). On bytes each step is O(1). The patterns are ASCII, JSON.parse
+    # reads a binary source as UTF-8, and the two places that return a raw
+    # slice of the window tag it UTF-8 (unescape_json_string), so every value
+    # that leaves the scanners is a UTF-8 String as before.
     def read_head_tail(file_path, size)
       head = tail = nil
       File.open(file_path, 'rb') do |f|
-        head = (f.read(LITE_READ_BUF_SIZE) || '').force_encoding('UTF-8')
+        head = f.read(LITE_READ_BUF_SIZE) || String.new(encoding: Encoding::BINARY)
         tail = if size > LITE_READ_BUF_SIZE
                  f.seek([0, size - LITE_READ_BUF_SIZE].max)
-                 (f.read(LITE_READ_BUF_SIZE) || '').force_encoding('UTF-8')
+                 f.read(LITE_READ_BUF_SIZE) || String.new(encoding: Encoding::BINARY)
                else
                  head
                end
