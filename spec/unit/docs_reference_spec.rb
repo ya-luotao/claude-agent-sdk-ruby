@@ -7,7 +7,7 @@ require 'spec_helper'
 # defines. The checks run from the code to the page: a class the SDK can hand
 # to a consumer must be in the reference. Prose is not scanned for names; the
 # only page-to-code check is on table rows that start with a constant name.
-RSpec.describe 'docs/types.md and docs/errors.md' do
+RSpec.describe 'the type and error references' do
   let(:root) { File.expand_path('../..', __dir__) }
   let(:types_doc) { File.read(File.join(root, 'docs/types.md')) }
   let(:errors_doc) { File.read(File.join(root, 'docs/errors.md')) }
@@ -47,24 +47,24 @@ RSpec.describe 'docs/types.md and docs/errors.md' do
     types_doc[/^#{name} = (.*?)^```/m, 1].to_s.scan(/[A-Z]\w+/)
   end
 
-  it 'names every message and content-block class the parser can produce' do
+  it 'names every message and content-block class the parser can produce in docs/types.md' do
     missing = produced_classes.map { |klass| short_name(klass) }.reject { |name| types_doc.match?(/\b#{name}\b/) }
 
     expect(produced_classes.size).to be >= 36
     expect(missing).to be_empty, "docs/types.md does not mention: #{missing.sort.join(', ')}"
   end
 
-  it 'lists every top-level message class in the Message union' do
+  it 'lists every top-level message class in the Message union of docs/types.md' do
     top_level = message_classes.reject { |klass| klass < ClaudeAgentSDK::SystemMessage }
 
     expect(documented_union('Message')).to match_array(top_level.map { |klass| short_name(klass) })
   end
 
-  it 'lists every content-block class in the ContentBlock union' do
+  it 'lists every content-block class in the ContentBlock union of docs/types.md' do
     expect(documented_union('ContentBlock')).to match_array(block_classes.map { |klass| short_name(klass) })
   end
 
-  it 'starts its table rows only with classes and constants that exist' do
+  it 'starts the table rows of docs/types.md only with classes and constants that exist' do
     names = types_doc.scan(/^\| `([A-Z]\w+)` \|/).flatten
     unknown = names.reject { |name| ClaudeAgentSDK.const_defined?(name) }
 
@@ -72,7 +72,7 @@ RSpec.describe 'docs/types.md and docs/errors.md' do
     expect(unknown).to be_empty, "docs/types.md lists names ClaudeAgentSDK does not define: #{unknown.join(', ')}"
   end
 
-  it 'has a reference entry and a table row for every error class' do
+  it 'has a reference entry and a table row in docs/errors.md for every error class' do
     errors = sdk_classes.select { |klass| klass <= ClaudeAgentSDK::ClaudeSDKError }.map { |klass| short_name(klass) }
     without_entry = errors.reject { |name| errors_doc.match?(/^class #{name}\b/) }
     without_row = errors.reject { |name| errors_doc.match?(/^\| `#{name}` \|/) }
@@ -80,5 +80,16 @@ RSpec.describe 'docs/types.md and docs/errors.md' do
     expect(errors).to include('ClaudeSDKError', 'ProcessError', 'ResultError')
     expect(without_entry).to be_empty, "docs/errors.md has no reference entry for: #{without_entry.join(', ')}"
     expect(without_row).to be_empty, "docs/errors.md has no table row for: #{without_row.join(', ')}"
+  end
+
+  # The example announces how many message types it handles; both the number
+  # and the `when` branches are checked against the classes.
+  it 'handles every typed message class in examples/message_types_example.rb, and counts them' do
+    example = File.read(File.join(root, 'examples/message_types_example.rb'))
+    typed = message_classes.map { |klass| short_name(klass) } - ['SystemMessage']
+    handled = example.scan(/^\s*when ClaudeAgentSDK::(\w+)\s*$/).flatten
+
+    expect(typed - handled).to eq([])
+    expect(example[/Handling all (\d+) SDK message types/, 1]).to eq(typed.size.to_s)
   end
 end
