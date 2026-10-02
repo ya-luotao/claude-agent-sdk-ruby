@@ -121,7 +121,7 @@ end
 
 ### `Client` — bidirectional sessions
 
-`Client` keeps a session open so you can send follow-up queries, interrupt, switch models, and use hooks, permission callbacks, and custom tools. `Client.open` connects, yields the client, and always disconnects when the block exits, even on an exception. It returns the block's value.
+`Client` keeps a session open so you can send follow-up queries, interrupt, and switch the model or the permission mode mid-session. (Hooks, permission callbacks and custom tools are not a reason to choose it: they work with `query()` and `ask` too.) `Client.open` connects, yields the client, and always disconnects when the block exits, even on an exception. It returns the block's value.
 
 ```ruby
 require 'claude_agent_sdk'

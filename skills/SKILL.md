@@ -10,8 +10,8 @@ Use this skill to build or refactor Ruby integrations with Claude Code via `clau
 
 ## Decision Guide
 - Choose `ClaudeAgentSDK.ask(prompt, options:)` when only the final answer matters: it runs `query` to completion and returns the `ResultMessage` (`#result` is the text); an optional block still sees every message.
-- Choose `ClaudeAgentSDK.query` for one-shot queries or streaming input. Internally uses the control protocol (streaming mode).
-- Choose `ClaudeAgentSDK::Client` for multi-turn sessions, hooks, permission callbacks, MCP server control, or dynamic model switching. Prefer `ClaudeAgentSDK::Client.open(options: ...) { |client| ... }` — it creates its own reactor and always disconnects (return a value instead of `break` outside a reactor); use `Client.new` + `connect` / `ensure disconnect` only inside an existing `Async` block.
+- Choose `ClaudeAgentSDK.query` for one-shot queries or streaming input. It runs the same control protocol as `Client`, so hooks, `can_use_tool` and SDK MCP tools work with it (and with `ask`).
+- Choose `ClaudeAgentSDK::Client` for multi-turn sessions and for control calls while a session runs: interrupt, model or permission-mode switching, MCP server control, file rewind. Prefer `ClaudeAgentSDK::Client.open(options: ...) { |client| ... }` — it creates its own reactor and always disconnects (return a value instead of `break` outside a reactor); use `Client.new` + `connect` / `ensure disconnect` only inside an existing `Async` block.
 - Choose SDK MCP servers (`create_tool`, `create_sdk_mcp_server`) for in-process tools; choose external MCP configs for subprocess/HTTP servers.
 - Choose `ClaudeAgentSDK.list_sessions` / `ClaudeAgentSDK.get_session_messages` for browsing previous session transcripts (pure filesystem, no CLI needed).
 

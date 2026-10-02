@@ -1,6 +1,8 @@
 # Client & Custom Transport
 
-`ClaudeAgentSDK::Client` supports bidirectional, interactive conversations with Claude Code. Unlike `query()`, `Client` enables **custom tools**, **hooks**, and **permission callbacks**, all of which can be defined as Ruby procs/lambdas. The Client class automatically uses streaming mode for bidirectional communication, allowing you to send multiple queries dynamically during a single session without closing the connection.
+`ClaudeAgentSDK::Client` keeps one Claude Code session open for a conversation you drive. What it adds over `query()` is lifecycle: you can send follow-up queries in the same session, and you can call the CLI while the session runs (`interrupt`, switch the model or the permission mode, inspect and reconnect MCP servers, rewind files, stop or background a task).
+
+**Custom tools**, **hooks** and **permission callbacks** are not part of that difference. `query()` and `ask` speak the same control protocol as `Client`, so all three run them; each is a Ruby proc or lambda you pass in `ClaudeAgentOptions`.
 
 For a single question you don't need a session: `ClaudeAgentSDK.ask(prompt, options:)` runs `query()` to completion and returns the final `ResultMessage` (`#result` is the answer text), optionally yielding each message to a block on the way. See the README's [Quick Start](../README.md#quick-start).
 
