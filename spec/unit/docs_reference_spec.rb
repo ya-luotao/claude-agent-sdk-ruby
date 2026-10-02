@@ -93,8 +93,9 @@ RSpec.describe 'the type and error references' do
     expect(own_data.data).to eq(marker: 1)
     expect(plain.data).to eq(type: 'system', subtype: 'status', status: 'compacting')
     expect(rate_limit.data).to eq(type: 'rate_limit_event', data: { marker: 1 })
-    expect(types_doc).to include('unless the frame has a `data` key of its own')
-    expect(types_doc).to include('`RateLimitEvent#data` is always the whole event')
+    prose = types_doc.gsub(/\s+/, ' ') # the sentences may wrap anywhere
+    expect(prose).to include('unless the frame has a `data` key of its own')
+    expect(prose).to include('`RateLimitEvent#data` is always the whole event')
   end
 
   # The example announces how many message types it handles; both the number
