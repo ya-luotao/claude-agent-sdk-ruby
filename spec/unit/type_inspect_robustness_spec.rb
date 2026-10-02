@@ -51,6 +51,17 @@ RSpec.describe 'Type#inspect on a value it cannot render',
 
       expect(rendered).to all(eq(' mcp_servers="[FILTERED]"'))
     end
+
+    it 'prints the config of an McpServerStatus as filtered when it cannot be read' do
+      oddly_keyed = {}.compare_by_identity
+      oddly_keyed[BasicObject.new] = 'x'
+      status = ClaudeAgentSDK::McpServerStatus.new(name: 'api', config: oddly_keyed)
+      opaque = ClaudeAgentSDK::McpServerStatus.new(name: 'api')
+      opaque.instance_variable_set(:@config, BasicObject.new)
+
+      expect(status.inspect).to eq('#<ClaudeAgentSDK::McpServerStatus name="api" config="[FILTERED]">')
+      expect(opaque.inspect).to eq('#<ClaudeAgentSDK::McpServerStatus name="api" config=#<?>>')
+    end
   end
 
   describe 'a String whose own methods raise' do

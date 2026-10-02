@@ -8,10 +8,40 @@ require 'uri'
 # Options objects and MCP server configs end up in logs, so Type#inspect
 # filters every attribute that can carry a credential: env and headers, and
 # also settings, extra_args, a stdio server's args, the URL of an HTTP / SSE
-# server, and the raw Hash server configs inside mcp_servers. Filtering is
-# for display only: nothing sent to the CLI changes.
+# server, the raw Hash server configs inside mcp_servers, and the server
+# configs the CLI echoes back in mcp_status. Filtering is for display only:
+# nothing sent to the CLI changes.
 RSpec.describe 'Type#inspect credential filtering' do
   let(:secret) { 'sk-ant-api03-SECRET0123' }
+
+  # The mcp_status frame CLI 2.1.287 sends for an http, an sse and a stdio
+  # server that failed to connect (a handshake without a model turn). Each
+  # config comes back with its headers, full url and args; the stdio env is
+  # left out. The CLI redacts the url in its own error text only.
+  let(:status_frame) do
+    {
+      mcpServers: [
+        {
+          name: 'api', status: 'failed',
+          error: 'SdkHttpError dialing http://127.0.0.1:9[redacted]?key=REDACTED (CLIENT_HTTP_NOT_IMPLEMENTED)',
+          config: {
+            type: 'http', url: "http://127.0.0.1:9/mcp?key=#{secret}", headers: { Authorization: "Bearer #{secret}" }
+          },
+          scope: 'dynamic', source: 'dynamic'
+        },
+        {
+          name: 'events', status: 'failed', error: 'Error dialing http://127.0.0.1:9[redacted]?key=REDACTED',
+          config: { type: 'sse', url: "http://127.0.0.1:9/sse?key=#{secret}", headers: { 'X-Api-Key': secret } },
+          scope: 'dynamic', source: 'dynamic'
+        },
+        {
+          name: 'fs', status: 'failed', error: 'Connection closed',
+          config: { type: 'stdio', command: '/usr/bin/true', args: ['--token', secret] },
+          scope: 'dynamic', source: 'dynamic'
+        }
+      ]
+    }
+  end
 
   # url template (%s is the secret) => what #inspect shows for it
   url_rows = {
@@ -234,6 +264,51 @@ RSpec.describe 'Type#inspect credential filtering' do
     end
   end
 
+  # McpStatusResponse.parse(client.mcp_status) is the typed view of that
+  # frame: printing one of its servers must not print what its config holds.
+  describe ClaudeAgentSDK::McpServerStatus do
+    let(:servers) { ClaudeAgentSDK::McpStatusResponse.parse(status_frame).mcp_servers }
+
+    it 'shows type and host of an echoed http config and filters headers' do
+      expect(servers[0].inspect).to eq(
+        '#<ClaudeAgentSDK::McpServerStatus name="api" status="failed" ' \
+        'error="SdkHttpError dialing http://127.0.0.1:9[redacted]?key=REDACTED (CLIENT_HTTP_NOT_"…(+12 chars) ' \
+        'config={type: "http", url: "http://127.0.0.1:9/[FILTERED]", headers: "[FILTERED]"} scope="dynamic">'
+      )
+    end
+
+    it 'shows type and host of an echoed sse config and filters headers' do
+      expect(servers[1].inspect).to eq(
+        '#<ClaudeAgentSDK::McpServerStatus name="events" status="failed" ' \
+        'error="Error dialing http://127.0.0.1:9[redacted]?key=REDACTED" ' \
+        'config={type: "sse", url: "http://127.0.0.1:9/[FILTERED]", headers: "[FILTERED]"} scope="dynamic">'
+      )
+    end
+
+    it 'shows type and command of an echoed stdio config and filters args' do
+      expect(servers[2].inspect).to eq(
+        '#<ClaudeAgentSDK::McpServerStatus name="fs" status="failed" error="Connection closed" ' \
+        'config={type: "stdio", command: "/usr/bin/true", args: "[FILTERED]"} scope="dynamic">'
+      )
+    end
+
+    it 'filters the same way through #to_s, interpolation and pp' do
+      servers.each do |server|
+        [server.to_s, "#{server}", PP.pp(server, +'')].each do |rendered| # rubocop:disable Style/RedundantInterpolation
+          expect(rendered).to include('[FILTERED]')
+          expect(rendered).not_to include('SECRET')
+        end
+      end
+    end
+
+    it 'still collapses the configs inside a McpStatusResponse' do
+      rendered = ClaudeAgentSDK::McpStatusResponse.parse(status_frame).inspect
+
+      expect(rendered.scan('config={…(3)}').size).to eq(3)
+      expect(rendered).not_to include('SECRET')
+    end
+  end
+
   # What the CLI receives is built from the attributes and #to_h, never from
   # #inspect: the filters above change no byte of it.
   describe 'the wire form' do
@@ -315,6 +390,23 @@ RSpec.describe 'Type#inspect credential filtering' do
       expect(options.mcp_servers[:api]).to eq(type: 'http', url: "https://mcp.example.com/v1/mcp?api_key=#{secret}",
                                               headers: { 'Authorization' => "Bearer #{secret}" })
       expect(options.mcp_servers[:github][:env]).to eq('GITHUB_PERSONAL_ACCESS_TOKEN' => secret)
+    end
+
+    # A parsed mcp_status frame is never sent anywhere; what must not change
+    # is what the application reads from it.
+    it 'leaves the configs of a parsed mcp_status frame as the CLI sent them' do
+      response = ClaudeAgentSDK::McpStatusResponse.parse(status_frame)
+      response.inspect
+      response.mcp_servers.each(&:inspect)
+
+      expect(response.mcp_servers.map(&:config)).to eq(
+        [
+          { type: 'http', url: "http://127.0.0.1:9/mcp?key=#{secret}", headers: { Authorization: "Bearer #{secret}" } },
+          { type: 'sse', url: "http://127.0.0.1:9/sse?key=#{secret}", headers: { 'X-Api-Key': secret } },
+          { type: 'stdio', command: '/usr/bin/true', args: ['--token', secret] }
+        ]
+      )
+      expect(response.mcp_servers.first.config).to equal(status_frame[:mcpServers].first[:config])
     end
   end
 end

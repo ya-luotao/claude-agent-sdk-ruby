@@ -347,16 +347,9 @@ module ClaudeAgentSDK
       self.callback_scheduling = :thread if callback_scheduling.nil?
     end
 
-    # Keys of a raw Hash server config whose values #inspect shows as they are.
-    INSPECT_MCP_CONFIG_KEYS = %w[type command name instance].freeze
-    private_constant :INSPECT_MCP_CONFIG_KEYS
-
     # `mcp_servers` holds typed configs, which filter themselves, next to raw
-    # Hash configs carrying the same credentials (env, headers, args, a token
-    # in the url). A raw config keeps its keys and shows what identifies the
-    # server: its type, its command (or the SDK server's name and instance)
-    # and the scheme and host of its url. Every other value is filtered
-    # here rather than left to the nesting limit of #inspect.
+    # Hash configs carrying the same credentials: those are rendered by
+    # Type#inspect_mcp_server_config.
     def inspect_attributes
       super.map { |name, value| [name, name == 'mcp_servers' ? inspect_mcp_servers(value) : value] }
     end
@@ -367,15 +360,6 @@ module ClaudeAgentSDK
       servers.to_h { |name, config| [name, config.is_a?(Hash) ? inspect_mcp_server_config(config) : config] }
     rescue StandardError
       '[FILTERED]'
-    end
-
-    def inspect_mcp_server_config(config)
-      config.to_h do |key, value|
-        name = key.to_s
-        next [key, value] if INSPECT_MCP_CONFIG_KEYS.include?(name)
-
-        [key, name == 'url' ? inspect_filter_url(value) : '[FILTERED]']
-      end
     end
 
     # Strict key validation: unlike other Type subclasses (which silently drop

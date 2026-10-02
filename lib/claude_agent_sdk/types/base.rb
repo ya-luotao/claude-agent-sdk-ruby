@@ -127,7 +127,8 @@ module ClaudeAgentSDK
     # its keys): `env`, `settings` and `extra_args` of ClaudeAgentOptions,
     # and `env`, `args` and `headers` of the MCP server configs. An MCP
     # server `url` prints its scheme and host only, and a Hash server config
-    # in `mcp_servers` is filtered like a typed one.
+    # (in `mcp_servers`, or echoed by the CLI in McpServerStatus#config) is
+    # filtered like a typed one.
     #
     # It does not raise: a value that fails while it is rendered shows as
     # `#<ClassName>` (`#<?>` when even its class cannot be asked).
@@ -228,6 +229,26 @@ module ClaudeAgentSDK
       origin ? "#{origin[1]}://#{origin[2]}#{origin[3]}/[FILTERED]" : '[FILTERED]'
     rescue StandardError
       '[FILTERED]'
+    end
+
+    # Keys of a raw Hash MCP server config whose values #inspect shows as they are.
+    INSPECT_MCP_CONFIG_KEYS = %w[type command name instance].freeze
+    private_constant :INSPECT_MCP_CONFIG_KEYS
+
+    # An MCP server config held as a raw Hash (in ClaudeAgentOptions#mcp_servers,
+    # or echoed by the CLI in McpServerStatus#config) carries the same
+    # credentials as a typed one: env, headers, args, a token in the url. It
+    # keeps its keys and shows what identifies the server: its type, its
+    # command (or the SDK server's name and instance) and the scheme and host
+    # of its url. Every other value is filtered here rather than left to the
+    # nesting limit of #inspect.
+    def inspect_mcp_server_config(config)
+      config.to_h do |key, value|
+        name = key.to_s
+        next [key, value] if INSPECT_MCP_CONFIG_KEYS.include?(name)
+
+        [key, name == 'url' ? inspect_filter_url(value) : '[FILTERED]']
+      end
     end
 
     def inspect_class_name

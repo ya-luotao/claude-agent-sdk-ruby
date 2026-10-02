@@ -109,6 +109,25 @@ module ClaudeAgentSDK
         config
       end
     end
+
+    private
+
+    # The CLI echoes a server's config back with its credentials (headers, a
+    # token in the url, args). A Hash config prints like a raw Hash config in
+    # ClaudeAgentOptions#mcp_servers; the typed proxy and SDK configs print
+    # as they are.
+    def inspect_attributes
+      super.map { |name, value| [name, name == 'config' ? inspect_config(value) : value] }
+    end
+
+    def inspect_config(config)
+      case config # not config.is_a?: a BasicObject has no such method
+      when Hash then inspect_mcp_server_config(config)
+      else config
+      end
+    rescue StandardError
+      '[FILTERED]'
+    end
   end
 
   # Response from get_mcp_status containing all server statuses
