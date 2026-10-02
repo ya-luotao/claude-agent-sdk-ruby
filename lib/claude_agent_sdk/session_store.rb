@@ -318,6 +318,32 @@ module ClaudeAgentSDK
       mode
     end
 
+    # Run a block that calls the OPTIONAL adapter method +method+
+    # (list_sessions, list_session_summaries, delete, list_subkeys) and report
+    # whether the adapter implements it: [true, the block's value], or
+    # [false, nil] when the method is missing, is the stub inherited from
+    # SessionStore, or raises NotImplementedError when called.
+    #
+    # The last case is the one SessionStore.implements? cannot see. Behind a
+    # delegating wrapper (a SimpleDelegator around a SessionStore subclass:
+    # a metrics or tenancy decorator) every inherited stub answers
+    # respond_to? with the wrapper as its owner, so each optional method
+    # reads as implemented; and an adapter may decline one at run time by
+    # raising the marker itself. NotImplementedError is a ScriptError: it
+    # passed every `rescue StandardError`, the SessionStoreError wrapping
+    # included, and reached the caller raw where the documented behavior is
+    # the fallback of a store without the method.
+    #
+    # Only for an optional method: a NotImplementedError from #append or
+    # #load is an adapter bug and must surface.
+    def optional_call(store, method)
+      return [false, nil] unless SessionStore.implements?(store, method)
+
+      [true, yield]
+    rescue NotImplementedError
+      [false, nil]
+    end
+
     # Derive a SessionKey from an absolute transcript file path.
     #
     #   Main:     <projects_dir>/<project_key>/<session_id>.jsonl

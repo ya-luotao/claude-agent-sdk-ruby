@@ -959,17 +959,18 @@ module ClaudeAgentSDK
       project_path = canonicalize_path(directory.nil? ? '.' : directory.to_s)
       project_key = sanitize_path(project_path)
 
-      if SessionStore.implements?(session_store, :list_session_summaries)
-        via = list_sessions_via_summaries(session_store, project_key, project_path, limit, offset)
-        return via unless via.nil?
-      end
+      via = list_sessions_via_summaries(session_store, project_key, project_path, limit, offset)
+      return via unless via.nil?
 
-      unless SessionStore.implements?(session_store, :list_sessions)
+      listed, listing = SessionStores.optional_call(session_store, :list_sessions) do
+        session_store.list_sessions(project_key)
+      end
+      unless listed
         raise ArgumentError,
               'session_store implements neither list_session_summaries nor list_sessions -- cannot list sessions'
       end
 
-      listing = Array(session_store.list_sessions(project_key))
+      listing = Array(listing)
       # Build all-placeholder slots (the shape the summaries fast path uses) and
       # reuse its bounded pagination: sessions are loaded newest-first only
       # until the page fills (~offset + limit + dropped), instead of one full
@@ -1017,15 +1018,17 @@ module ClaudeAgentSDK
     def list_subagents_from_store(session_store:, session_id:, directory: nil)
       return [] unless valid_session_id?(session_id)
 
-      unless SessionStore.implements?(session_store, :list_subkeys)
+      project_key = project_key_for_directory(directory)
+      implemented, subkeys = SessionStores.optional_call(session_store, :list_subkeys) do
+        session_store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+      end
+      unless implemented
         raise ArgumentError,
               'session_store does not implement list_subkeys -- cannot list subagents'
       end
 
-      project_key = project_key_for_directory(directory)
-      subkeys = Array(session_store.list_subkeys('project_key' => project_key, 'session_id' => session_id))
       seen = {}
-      subkeys.filter_map do |subpath|
+      Array(subkeys).filter_map do |subpath|
         # A non-String subkey (Symbol, nil, Integer) is an adapter contract
         # violation; skip it like resume does instead of calling String
         # methods on it.
@@ -1119,22 +1122,25 @@ module ClaudeAgentSDK
     # -- Private helpers --
 
     # Summary fast-path for list_sessions_from_store. Returns the paginated
-    # result, or nil if the store's list_session_summaries raises
-    # NotImplementedError (caller falls back to the slow path). Sessions missing
+    # result, or nil if the store does not implement list_session_summaries
+    # (see SessionStores.optional_call; the caller falls back to the slow
+    # path). Sessions missing
     # a sidecar or whose sidecar is stale (summary.mtime < the session's current
     # mtime) are routed through gap-fill so the fold is recomputed from source.
-    def list_sessions_via_summaries(store, project_key, project_path, limit, offset) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- fast path plus stale/missing-sidecar gap-fill
-      begin
-        # Array(): a non-conformant store returning nil (e.g. a NULL JSONB read)
-        # degrades to gap-fill instead of crashing on nil.each, matching the
-        # defensive Array() already applied to list_sessions / list_subkeys.
-        summaries = Array(store.list_session_summaries(project_key))
-      rescue NotImplementedError
-        return nil
+    def list_sessions_via_summaries(store, project_key, project_path, limit, offset) # rubocop:disable Metrics/AbcSize -- fast path plus stale/missing-sidecar gap-fill
+      implemented, summaries = SessionStores.optional_call(store, :list_session_summaries) do
+        store.list_session_summaries(project_key)
       end
+      return nil unless implemented
 
-      has_list_sessions = SessionStore.implements?(store, :list_sessions)
-      listing = has_list_sessions ? Array(store.list_sessions(project_key)) : []
+      # Array(): a non-conformant store returning nil (e.g. a NULL JSONB read)
+      # degrades to gap-fill instead of crashing on nil.each, matching the
+      # defensive Array() already applied to list_sessions / list_subkeys.
+      summaries = Array(summaries)
+      has_list_sessions, listing = SessionStores.optional_call(store, :list_sessions) do
+        store.list_sessions(project_key)
+      end
+      listing = Array(listing)
       known_mtimes = listing.to_h { |e| [e['session_id'], e['mtime']] }
 
       slots = []
@@ -1232,11 +1238,12 @@ module ClaudeAgentSDK
     # a session the listing showed with a real mtime. They remain the fallback
     # (mtime_from_entries) for a store with nothing but #append and #load.
     def store_session_mtime(store, project_key, session_id)
-      rows = if SessionStore.implements?(store, :list_sessions)
-               store.list_sessions(project_key)
-             elsif SessionStore.implements?(store, :list_session_summaries)
-               store.list_session_summaries(project_key)
-             end
+      listed, rows = SessionStores.optional_call(store, :list_sessions) { store.list_sessions(project_key) }
+      unless listed
+        _, rows = SessionStores.optional_call(store, :list_session_summaries) do
+          store.list_session_summaries(project_key)
+        end
+      end
       row = Array(rows).find { |candidate| candidate.is_a?(Hash) && candidate['session_id'] == session_id }
       row && row['mtime']
     end
@@ -1321,10 +1328,13 @@ module ClaudeAgentSDK
     # under subagents/workflows/<runId>/agent-<id>) when list_subkeys is
     # available, else falling back to the direct subagents/agent-<id> path.
     def resolve_subagent_subpath(store, project_key, session_id, agent_id)
-      return "subagents/agent-#{agent_id}" unless SessionStore.implements?(store, :list_subkeys)
+      implemented, subkeys = SessionStores.optional_call(store, :list_subkeys) do
+        store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+      end
+      return "subagents/agent-#{agent_id}" unless implemented
 
       target = "agent-#{agent_id}"
-      matches = Array(store.list_subkeys('project_key' => project_key, 'session_id' => session_id))
+      matches = Array(subkeys)
                 .select { |sk| sk.is_a?(String) && sk.start_with?('subagents/') && sk.rpartition('/').last == target }
       # Several subpaths can share a trailing agent-<id> (a top-level agent and a
       # nested subagents/workflows/<run>/agent-<id>). Prefer the canonical

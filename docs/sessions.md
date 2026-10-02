@@ -301,6 +301,10 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 Subclass `ClaudeAgentSDK::SessionStore` (or duck-type it). Only `#append` and
 `#load` are required; `#list_sessions`, `#delete`, `#list_subkeys`, and
 `#list_session_summaries` are optional and probed via `SessionStore.implements?`.
+An optional method that raises `NotImplementedError` when called counts as not
+implemented too (the stub a delegating wrapper inherits, or an adapter declining
+it at run time): the SDK takes the same fallback, and the conformance suite
+skips that method's contracts.
 Report `mtime` as epoch milliseconds; the SDK also accepts numeric-string,
 ISO-8601-string and `Time` mtimes (ordering them correctly and reporting them
 as Integer epoch ms in `last_modified`), but anything else sorts as oldest and

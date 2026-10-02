@@ -214,10 +214,9 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if session_id is invalid
     def delete_session_via_store(session_store:, session_id:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
-      return unless SessionStore.implements?(session_store, :delete)
 
       key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
-      session_store.delete(key)
+      SessionStores.optional_call(session_store, :delete) { session_store.delete(key) }
       nil
     end
 

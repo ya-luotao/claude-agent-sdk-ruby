@@ -42,7 +42,7 @@ module ClaudeAgentSDK
     #   returns a fresh SessionStore (or duck-typed adapter).
     # @param skip_optional [Array<String>] optional method names to skip.
     #   Contracts for an optional method are also skipped automatically when the
-    #   store does not override it.
+    #   store does not override it, or raises NotImplementedError from it.
     # @param check_uuid_dedupe [Boolean] additionally assert the ADVISORY
     #   uuid-dedupe recommendation: re-appending a batch that overlaps a prior
     #   write (exactly what the mirror batcher's retry can produce) must not
@@ -58,11 +58,22 @@ module ClaudeAgentSDK
 
       fresh = -> { make_store.call }
 
+      # Each optional method is called once on an empty store before its
+      # contracts are selected: an adapter that inherits the SessionStore stub
+      # behind a delegating wrapper, or declines the method at run time,
+      # raises NotImplementedError — "not implemented", so its contracts are
+      # skipped as for a method the adapter does not define. The calls are
+      # ones the contracts make anyway (unknown project / never-written key).
       probe = fresh.call
-      has_list_sessions = optional?(probe, 'list_sessions', skip_optional)
-      has_list_summaries = optional?(probe, 'list_session_summaries', skip_optional)
-      has_delete = optional?(probe, 'delete', skip_optional)
-      has_list_subkeys = optional?(probe, 'list_subkeys', skip_optional)
+      unwritten = { 'project_key' => 'proj', 'session_id' => 'never-written' }
+      has_list_sessions = optional?(probe, 'list_sessions', skip_optional) do
+        probe.list_sessions('never-appended-project')
+      end
+      has_list_summaries = optional?(probe, 'list_session_summaries', skip_optional) do
+        probe.list_session_summaries('never-appended-project')
+      end
+      has_delete = optional?(probe, 'delete', skip_optional) { probe.delete(unwritten) }
+      has_list_subkeys = optional?(probe, 'list_subkeys', skip_optional) { probe.list_subkeys(unwritten) }
 
       check_callback_scheduling_declaration(fresh)
       check_append_and_load(fresh, has_list_sessions)
@@ -370,10 +381,10 @@ module ClaudeAgentSDK
       rows.to_h { |s| [s['session_id'], s] }
     end
 
-    def optional?(store, method, skip_optional)
+    def optional?(store, method, skip_optional, &)
       return false if skip_optional.include?(method)
 
-      SessionStore.implements?(store, method.to_sym)
+      SessionStores.optional_call(store, method.to_sym, &).first
     end
 
     def assert(condition, message)

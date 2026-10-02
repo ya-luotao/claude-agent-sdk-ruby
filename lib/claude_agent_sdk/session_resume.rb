@@ -160,7 +160,10 @@ module ClaudeAgentSDK
         # so it can authenticate. Missing files are fine (API-key auth, etc.).
         copy_auth_files(tmp_base, options.env)
 
-        if SessionStore.implements?(store, :list_subkeys)
+        # list_subkeys is optional: without it (or when it raises
+        # NotImplementedError, see optional_call) only the main transcript
+        # is materialized.
+        SessionStores.optional_call(store, :list_subkeys) do
           materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper)
         end
       rescue Exception # rubocop:disable Lint/RescueException
@@ -276,17 +279,20 @@ module ClaudeAgentSDK
     # isSidechain check above stays even on the summary path: a missing or
     # stale sidecar row costs one extra load, never a wrong resume.
     def sidechain_flags_from_summaries(store, project_key, timeout_s, scheduling, wrapper)
-      return nil unless SessionStore.implements?(store, :list_session_summaries)
-
-      rows = with_timeout(timeout_s, 'SessionStore#list_session_summaries', scheduling, wrapper) do
-        store.list_session_summaries(project_key)
+      # optional_call: NotImplementedError is a ScriptError that with_timeout
+      # does not wrap.
+      implemented, rows = SessionStores.optional_call(store, :list_session_summaries) do
+        with_timeout(timeout_s, 'SessionStore#list_session_summaries', scheduling, wrapper) do
+          store.list_session_summaries(project_key)
+        end
       end
+      return nil unless implemented
+
       Array(rows).each_with_object({}) do |row, acc|
         sid = row.is_a?(Hash) ? row['session_id'] : nil
         acc[sid] = row.dig('data', 'is_sidechain') == true if sid
       end
-    # NotImplementedError is a ScriptError that with_timeout does not wrap.
-    rescue StandardError, NotImplementedError
+    rescue StandardError
       nil
     end
 
