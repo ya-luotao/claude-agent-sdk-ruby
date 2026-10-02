@@ -200,9 +200,9 @@ module ClaudeAgentSDK
           uri = url.is_a?(URI::Generic) ? url : URI(url.to_s)
           raise CLIInstallError, "Refusing to fetch non-HTTPS URL: #{uri}" unless uri.is_a?(URI::HTTPS)
 
-          Net::HTTP.start(uri.host, uri.port, use_ssl: true,
-                                              open_timeout: OPEN_TIMEOUT_SECONDS,
-                                              read_timeout: READ_TIMEOUT_SECONDS) do |http|
+          Net::HTTP.start(uri.host, uri.port, *proxy_args(uri), use_ssl: true,
+                                                                open_timeout: OPEN_TIMEOUT_SECONDS,
+                                                                read_timeout: READ_TIMEOUT_SECONDS) do |http|
             http.request(Net::HTTP::Get.new(uri)) do |response|
               # Branch on the status BEFORE touching the body: a redirect or an
               # error page must never be streamed into the target file.
@@ -216,6 +216,35 @@ module ClaudeAgentSDK
           raise
         rescue StandardError => e
           raise CLIInstallError, "Failed to fetch #{url}: #{e.class}: #{e.message}"
+        end
+
+        # The proxy arguments for Net::HTTP.start: address, port, user,
+        # password — or none.
+        #
+        # Left to itself, Net::HTTP looks its proxy up as if for an http://
+        # URL: it reads http_proxy even though this connection is TLS. An
+        # environment that exports only HTTPS_PROXY (what curl, RubyGems and
+        # the CLI itself read for an https URL) was therefore bypassed.
+        # URI#find_proxy on the https URL reads https_proxy / HTTPS_PROXY and
+        # applies no_proxy / NO_PROXY; the proxy it names is passed
+        # explicitly, its credentials percent-decoded the way Net::HTTP
+        # decodes the ones it finds itself.
+        #
+        # No arguments means "as before": Net::HTTP's own lookup (http_proxy)
+        # stays in charge. That is the answer when the variable is unset or
+        # no_proxy excludes the host, and also when its value is nothing
+        # Net::HTTP can use as an HTTP proxy — no scheme, socks5://, https://,
+        # not a URL at all. Such a value was ignored before and still is,
+        # rather than turning a download that works directly into a failure.
+        # ALL_PROXY is not consulted.
+        def proxy_args(uri)
+          proxy = uri.find_proxy
+          return [] unless proxy.instance_of?(URI::HTTP) && !proxy.hostname.to_s.empty?
+
+          credentials = [proxy.user, proxy.password].map { |part| part && URI.decode_www_form_component(part) }
+          [proxy.hostname, proxy.port, *credentials]
+        rescue URI::InvalidURIError
+          []
         end
 
         def follow_redirect(uri, response, redirects_left, &)

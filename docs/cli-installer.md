@@ -97,6 +97,17 @@ RUN bin/rails claude_agent_sdk:install_cli
 
 The variable is deliberately not rake's conventional `VERSION`, which Rails' `db:migrate` uses and build environments often export for an app version or git SHA. An empty `CLAUDE_CLI_VERSION` means the gem's pin.
 
+## Proxies and custom CAs
+
+The installer downloads over HTTPS with Ruby's `Net::HTTP` and reads the usual environment variables:
+
+- **`HTTPS_PROXY`** (or `https_proxy`) names the proxy to download through, as an `http://` URL: `HTTPS_PROXY=http://proxy.corp.example:3128`, with `user:password@` in front of the host for an authenticating proxy (percent-encode special characters). The download is tunnelled through it with `CONNECT`, so TLS still ends at the release endpoint.
+- **`NO_PROXY`** (or `no_proxy`) lists the hosts, domain suffixes and IP ranges to reach directly, separated by commas.
+- With neither spelling of `HTTPS_PROXY` set, `Net::HTTP`'s own default applies: it goes through `http_proxy` when that is set.
+- **`SSL_CERT_FILE`** points OpenSSL at another CA bundle, which is what a TLS-inspecting proxy needs. Set it in the environment the process starts with. The server certificate is always verified; there is no switch to turn that off.
+
+This is not everything `curl` understands. `ALL_PROXY` is not read, and only an `http://` proxy URL is used: a value without a scheme (`proxy.corp.example:3128`), a `socks5://` proxy or an `https://` one is ignored.
+
 ## Supported platforms
 
 `darwin-arm64`, `darwin-x64` (Rosetta 2 gets the arm64 build), `linux-x64`, `linux-arm64`, and the `-musl` variants. Windows is not supported.
