@@ -18,8 +18,10 @@ module ClaudeAgentSDK
 
   # Claude Agent Options for configuring queries
   class ClaudeAgentOptions < Type
-    # `env` routinely carries credentials (ANTHROPIC_API_KEY, ...).
-    inspect_filtered :env
+    # `env` routinely carries credentials (ANTHROPIC_API_KEY, ...). So does
+    # `settings` (its own `env`, `apiKeyHelper`), as a Hash or a JSON String,
+    # and an `extra_args` value can be one.
+    inspect_filtered :env, :settings, :extra_args
 
     attr_accessor :allowed_tools, :system_prompt, :mcp_servers, :permission_mode,
                   :resume, :resume_session_at, :session_id, :max_turns, :disallowed_tools,
@@ -345,14 +347,42 @@ module ClaudeAgentSDK
       self.callback_scheduling = :thread if callback_scheduling.nil?
     end
 
+    # `mcp_servers` holds typed configs, which filter themselves, next to raw
+    # Hash configs carrying the same credentials: those are rendered by
+    # Type#inspect_mcp_server_config. Anything but a Hash (the JSON of a
+    # config as a String, or the path to one) is replaced outright, like a
+    # String `settings`.
+    def inspect_attributes
+      super.map { |name, value| [name, name == 'mcp_servers' ? inspect_mcp_servers(value) : value] }
+    end
+
+    def inspect_mcp_servers(servers)
+      return '[FILTERED]' unless servers.is_a?(Hash)
+
+      servers.to_h { |name, config| [name, config.is_a?(Hash) ? inspect_mcp_server_config(config) : config] }
+    rescue StandardError
+      '[FILTERED]'
+    end
+
     # Strict key validation: unlike other Type subclasses (which silently drop
     # unknown keys for forward-compat with newer CLI output), ClaudeAgentOptions
     # is a developer-facing config object — typos should fail loudly.
     def assign_attribute(name, value)
-      setter = :"#{normalize_name(name)}="
-      raise ArgumentError, "unknown ClaudeAgentOptions option: #{name.inspect}" unless respond_to?(setter)
+      setter = option_setter(normalize_name(name))
+      raise ArgumentError, "unknown ClaudeAgentOptions option: #{name.inspect}" unless setter
 
       public_send(setter, value)
+    end
+
+    # The writer of the option with this normalized name, nil when the name
+    # is not an option. An option is a declared attribute, or a setter user
+    # code defined (on a subclass, a module it includes, or the object);
+    # respond_to? alone would also answer for '[]' (#[]=) and '=' (#==).
+    def option_setter(normalized)
+      setter = :"#{normalized}="
+      return unless respond_to?(setter)
+
+      setter if self.class.attribute?(normalized) || user_defined_method?(setter)
     end
 
     # Merge caller-provided attributes with configured defaults.
@@ -403,7 +433,7 @@ module ClaudeAgentSDK
     # reports the typo exactly as the developer wrote it.
     def option_key(name)
       normalized = normalize_name(name)
-      respond_to?(:"#{normalized}=") ? normalized.to_sym : name
+      option_setter(normalized) ? normalized.to_sym : name
     end
   end
 end

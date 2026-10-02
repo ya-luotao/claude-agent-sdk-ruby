@@ -122,8 +122,19 @@ module ClaudeAgentSDK
     # dumps every ivar recursively — those (SDK MCP server instances, store
     # adapters, observers) show as `#<ClassName>`. For display only: nothing
     # sent to the CLI goes through #inspect or #to_s (wire output uses #to_h).
+    #
+    # Attributes that carry credentials print as `[FILTERED]` (a Hash keeps
+    # its keys): `env`, `settings` and `extra_args` of ClaudeAgentOptions,
+    # and `env`, `args` and `headers` of the MCP server configs. An MCP
+    # server `url` prints its scheme and host only, and a Hash server config
+    # (in `mcp_servers`, or echoed by the CLI in McpServerStatus#config) is
+    # filtered like a typed one. `mcp_servers` given as a String prints as
+    # `[FILTERED]`.
+    #
+    # It does not raise: a value that fails while it is rendered shows as
+    # `#<ClassName>` (`#<?>` when even its class cannot be asked).
     def inspect
-      inspect_with(0, {}.compare_by_identity)
+      inspect_bounded(self, 0, {}.compare_by_identity)
     end
 
     # Object#to_s ignores instance variables, so `puts message` would print
@@ -134,9 +145,10 @@ module ClaudeAgentSDK
       inspect
     end
 
-    # Declares attributes that carry credentials (env vars, auth headers).
-    # Objects get logged, so #inspect shows them filtered; #to_h and
-    # everything sent to the CLI are unaffected. Inherited by subclasses.
+    # Declares attributes that carry credentials (env vars, auth headers,
+    # settings, extra CLI arguments, an MCP server's args). Objects get
+    # logged, so #inspect shows them filtered; #to_h and everything sent to
+    # the CLI are unaffected. Inherited by subclasses.
     #
     # @api private
     def self.inspect_filtered(*names)
@@ -182,7 +194,7 @@ module ClaudeAgentSDK
       filtered = self.class.inspect_filtered_attributes
       instance_variables.filter_map do |ivar|
         value = instance_variable_get(ivar)
-        next if value.nil?
+        next if nil.equal?(value) # not value.nil?: a BasicObject has no such method
 
         name = ivar.to_s.delete_prefix('@')
         [name, filtered.include?(name) ? inspect_filter(value) : value]
@@ -191,15 +203,65 @@ module ClaudeAgentSDK
 
     # A credential-bearing Hash keeps its keys (useful when debugging which
     # variables are set) with every value replaced; anything else is replaced
-    # outright. Builds a new Hash; the object itself is never touched.
+    # outright, and so is a value that fails while it is asked for its keys.
+    # Builds a new Hash; the object itself is never touched.
     def inspect_filter(value)
       value.respond_to?(:each_key) ? value.each_key.to_h { |key| [key, '[FILTERED]'] } : '[FILTERED]'
+    rescue StandardError
+      '[FILTERED]'
+    end
+
+    INSPECT_URL_ORIGIN = %r{
+      \A(https?|wss?)://                 # scheme
+      (?:[^/?\#\\]*@)?                   # userinfo, up to the last @ before the path
+      (\[[0-9a-f:.]+\]|[[:alnum:]._-]+)  # host: an IPv6 literal or a name
+      (:\d{1,5})?                        # port
+      (?=[/?\#]|\z)                      # then the path, the query, the fragment or the end
+    }ix
+    private_constant :INSPECT_URL_ORIGIN
+
+    # A URL can carry a credential in its userinfo, path, query or fragment,
+    # so only where it points is shown: `https://mcp.example.com/[FILTERED]`
+    # (scheme, host and port). Anything else is replaced outright: a value
+    # that is not a String, another scheme, a host or port with a character
+    # that does not belong there.
+    def inspect_filter_url(value)
+      origin = value.is_a?(String) && INSPECT_URL_ORIGIN.match(value)
+      origin ? "#{origin[1]}://#{origin[2]}#{origin[3]}/[FILTERED]" : '[FILTERED]'
+    rescue StandardError
+      '[FILTERED]'
+    end
+
+    # Keys of a raw Hash MCP server config whose values #inspect shows as they are.
+    INSPECT_MCP_CONFIG_KEYS = %w[type command name instance].freeze
+    private_constant :INSPECT_MCP_CONFIG_KEYS
+
+    # An MCP server config held as a raw Hash (in ClaudeAgentOptions#mcp_servers,
+    # or echoed by the CLI in McpServerStatus#config) carries the same
+    # credentials as a typed one: env, headers, args, a token in the url. It
+    # keeps its keys and shows what identifies the server: its type, its
+    # command (or the SDK server's name and instance) and the scheme and host
+    # of its url. Every other value is filtered here rather than left to the
+    # nesting limit of #inspect.
+    def inspect_mcp_server_config(config)
+      config.to_h do |key, value|
+        name = key.to_s
+        next [key, value] if INSPECT_MCP_CONFIG_KEYS.include?(name)
+
+        [key, name == 'url' ? inspect_filter_url(value) : '[FILTERED]']
+      end
     end
 
     def inspect_class_name
       self.class.name || self.class.inspect
     end
 
+    # Printing must never raise (it runs inside loggers and `puts`). The
+    # value's own methods run here (a String subclass's #length, a Hash
+    # subclass's #size, a Type subclass's #inspect_attributes), so a value
+    # that fails while it is rendered becomes a placeholder and the rest of
+    # the object still prints. Only StandardError is rescued: Interrupt,
+    # SystemExit and the like pass through.
     def inspect_bounded(value, depth, seen)
       case value
       when Type then value.inspect_with(depth, seen)
@@ -212,6 +274,16 @@ module ClaudeAgentSDK
       when Proc, Method, UnboundMethod then inspect_callable(value)
       else inspect_leaf(value)
       end
+    rescue StandardError
+      inspect_placeholder(value)
+    end
+
+    # `#<ClassName>` for a value that could not be rendered; a BasicObject
+    # cannot even be asked for its class.
+    def inspect_placeholder(value)
+      inspect_truncated_text("#<#{value.class}>")
+    rescue StandardError
+      '#<?>'
     end
 
     def inspect_container(value, open, close, depth, seen, &)
@@ -231,7 +303,10 @@ module ClaudeAgentSDK
     # Rendered by hand rather than via Hash#inspect, whose format differs
     # between Ruby 3.3 (`{:a=>1}`) and 3.4 (`{a: 1}`).
     def inspect_hash_key(key, depth, seen)
-      return "#{key.name}: " if key.is_a?(Symbol) && key.inspect.match?(/\A:\w+[?!]?\z/)
+      case key # not key.is_a?: a BasicObject key has no such method
+      when Symbol
+        return "#{key.name}: " if key.inspect.match?(/\A:\w+[?!]?\z/)
+      end
 
       "#{inspect_bounded(key, depth, seen)} => "
     end
@@ -265,19 +340,14 @@ module ClaudeAgentSDK
       "#{rendered[0, INSPECT_MAX_STRING]}…(+#{rendered.length - INSPECT_MAX_STRING} chars)"
     end
 
-    # Printing must never raise (it runs inside loggers and `puts`), so an
-    # object whose #inspect raises, or a BasicObject without one, falls back
-    # to a placeholder.
+    # An object whose #inspect raises, or a BasicObject without one, falls
+    # back to a placeholder.
     def inspect_leaf(value)
       return "#<#{value.class}>" if kernel_inspect_only?(value)
 
       inspect_truncated_text(value.inspect)
     rescue StandardError
-      begin
-        "#<#{value.class}>"
-      rescue StandardError
-        '#<?>'
-      end
+      inspect_placeholder(value)
     end
 
     def kernel_inspect_only?(value)
