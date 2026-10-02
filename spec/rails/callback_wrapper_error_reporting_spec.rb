@@ -68,17 +68,21 @@ RSpec.describe 'ClaudeAgentSDK::Railtie.callback_wrapper and Rails.error' do
     end.value
   end
 
-  # The caller: a job (a request likewise) runs inside the executor, sets its
-  # context, and reports what escapes it under its own source.
+  # The caller: a job as a queue worker runs it. ActiveJob wraps the
+  # execution in the executor (app.reloader.wrap, so the default source),
+  # puts the job into the error context, and the wrap reports what escapes.
+  # (A request is the same, through ActionDispatch::Executor.)
   def as_a_job
-    executor.wrap(source: 'application.active_job') do
+    executor.wrap do
       Rails.error.set_context(job: 'ChatAgentJob')
       yield
     end
   end
 
+  # Reported once, with the job in its context: by the job's executor, not
+  # from the callback thread, whose report had an empty context.
   def caller_report
-    include(error: error, handled: false, source: 'application.active_job', context: include(job: 'ChatAgentJob'))
+    include(error: error, handled: false, context: include(job: 'ChatAgentJob'))
   end
 
   describe 'an exception from a wrapped callback' do
