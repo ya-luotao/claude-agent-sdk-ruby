@@ -236,6 +236,16 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
         expect(warning).not_to match(/Scrubbing failed/)
       end
 
+      it 'makes a directory accessible that it could take out but not empty' do
+        File.chmod(0o600, backups) # writable, so it can be moved; not searchable, so nothing in it can be
+
+        warning = preserve
+
+        expect(Dir.children(preserved)).to eq(['projects'])
+        expect(Dir.children(staging)).to eq(['claude-resume-under-test'])
+        expect(warning).not_to match(/Scrubbing failed/)
+      end
+
       it 'neither follows nor changes a symlink while it makes a directory writable' do
         File.symlink(outside, File.join(backups, 'elsewhere'))
         File.chmod(0o555, outside)
@@ -292,6 +302,78 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
         expect(Dir.children(preserved)).to eq(['projects']) # it is no longer next to the transcript ...
         expect(File).to exist(taken) # ... but it is not gone either
         expect(warning).to match(/Scrubbing failed: could not remove backups \(Permission denied.*What is left is under #{Regexp.escape(staging)}/)
+      end
+    end
+
+    # Something that still holds a directory open can write into it after it
+    # was moved into the trash.
+    it 'takes out what arrives in a directory while it is being emptied' do
+      arrived = false
+      allow(Dir).to receive(:children).and_wrap_original do |original, path|
+        names = original.call(path)
+        if !arrived && File.basename(File.dirname(path)).start_with?('scrub-')
+          arrived = true
+          File.write(File.join(path, 'late.json'), claude_json)
+        end
+        names
+      end
+
+      warning = preserve
+
+      expect(arrived).to be(true)
+      expect(Dir.children(preserved)).to eq(['projects'])
+      expect(Dir.children(staging)).to eq(['claude-resume-under-test'])
+      expect(warning).not_to match(/Scrubbing/)
+    end
+
+    # Teardown runs on the reactor, and a fiber's stack is small. A scrub that
+    # recursed once per directory level ran out of it a few hundred levels
+    # down — one `mkdir -p` makes such a tree — and SystemStackError is not a
+    # StandardError: it left preserve_transcripts.
+    context 'when a tree is very deep' do
+      # A path can only be so long, so the chain is built in pieces of at most
+      # 150 levels: each new piece takes the chain so far under its deepest
+      # directory. Returns the top of the chain.
+      def deep_chain(levels)
+        chain = nil
+        levels.fdiv(150).ceil.times do |index|
+          top = File.join(scratch, "piece-#{index}")
+          deepest = File.join(top, Array.new([150, levels - (index * 150)].min - 1, 'd'))
+          FileUtils.mkdir_p(deepest)
+          chain ? File.rename(chain, File.join(deepest, 'd')) : File.write(File.join(deepest, 'secret.json'), claude_json)
+          chain = top
+        end
+        chain
+      end
+
+      # The teardown above cannot take such a tree down: unlock and FileUtils
+      # recurse, and the paths get too long. So whatever a failing example left
+      # is removed here first, without either: every entry is renamed to the
+      # top of the scratch directory before it is looked at.
+      after do
+        flattened = 0
+        pending = Dir.children(scratch).map { |name| File.join(scratch, name) }
+        until pending.empty?
+          path = pending.pop
+          next File.unlink(path) unless File.lstat(path).directory?
+
+          Dir.children(path).each do |child|
+            pending << File.join(scratch, "flat-#{flattened += 1}")
+            File.rename(File.join(path, child), pending.last)
+          end
+          Dir.rmdir(path)
+        end
+      end
+
+      it 'scrubs a chain of 1000 directories on the reactor' do
+        File.rename(deep_chain(1000), File.join(config_dir, 'deep'))
+
+        warning = Sync { preserve }
+
+        expect(Dir.children(preserved)).to eq(['projects'])
+        expect(Dir.children(staging)).to eq(['claude-resume-under-test']) # and nothing is left in the trash
+        expect(tree(preserved)).to eq(transcripts)
+        expect(warning).not_to match(/Scrubbing/)
       end
     end
 

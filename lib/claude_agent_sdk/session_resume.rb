@@ -921,22 +921,38 @@ module ClaudeAgentSDK
       # Remove the entry +name+ of +dir+ and everything under it. Raises
       # SystemCallError when something cannot be removed, and Changed when an
       # entry was swapped while it was being made accessible.
+      #
+      # Nothing here recurses: this runs on the reactor, and a tree can be
+      # deeper than a fiber's stack. Emptying a directory moves its entries
+      # into the trash, which is flat, so what is still to be removed is a
+      # list of trash paths, whatever depth they came from.
       def remove(dir, name)
-        path = take(dir, name)
-        stat = File.lstat(path)
-        return File.unlink(path) unless stat.directory?
+        pending = [take(dir, name)]
+        until pending.empty?
+          path = pending.pop
+          stat = File.lstat(path)
+          next File.unlink(path) unless stat.directory?
 
-        self.class.make_accessible(path, [stat.dev, stat.ino]) unless self.class.owner_rwx?(stat)
+          self.class.make_accessible(path, [stat.dev, stat.ino]) unless self.class.owner_rwx?(stat)
+          pending.concat(take_entries_of(path))
+          Dir.rmdir(path)
+        end
+      end
+
+      private
+
+      # Empty the directory at +path+ into the trash; returns where its
+      # entries are now.
+      def take_entries_of(path)
+        taken = []
         EMPTYING_PASSES.times do
           children = Dir.children(path)
           break if children.empty?
 
-          children.each { |child| remove(path, child) }
+          children.each { |child| taken << take(path, child) }
         end
-        Dir.rmdir(path)
+        taken
       end
-
-      private
 
       # Move dir/name into the trash, whatever it is, and return its new path.
       def take(dir, name)
