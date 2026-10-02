@@ -352,9 +352,35 @@ module ClaudeAgentSDK
         Thread.current.report_on_exception = false
         work.call
       end
-      return thread.value if timeout.nil?
-      raise JoinTimeout, "timed out after #{timeout}s" unless thread.join(timeout)
+      await_worker(thread, timeout)
+    end
 
+    # Wait for the worker thread of one hop and return its value (or re-raise
+    # what it raised); with +timeout+, raise JoinTimeout once that many
+    # seconds have passed.
+    #
+    # Only "the thread has finished" or "the deadline has really passed" ends
+    # the wait. Under a fiber scheduler Thread#join parks the fiber, and MRI
+    # reports ANY wakeup that finds the thread alive as a timeout: join
+    # returns nil, and Thread#value returns nil with it. The wakeup need not
+    # belong to this join — one queued by an earlier hop's thread stays behind
+    # when an exception (Async::Stop, a deadline) is raised into the fiber
+    # before it is consumed, and resumes this hop instead. Trusting a single
+    # join then returned nil while the callback was still running, or raised
+    # JoinTimeout with no time passed.
+    # @api private
+    def await_worker(thread, timeout)
+      if timeout.nil?
+        nil until thread.join
+        return thread.value
+      end
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+      until thread.join([deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max)
+        next if Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+
+        raise JoinTimeout, "timed out after #{timeout}s"
+      end
       thread.value
     end
 
