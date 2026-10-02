@@ -16,7 +16,7 @@ The gem ships a Railtie, an install generator and a rake task for vendoring the 
    bin/rails generate claude_agent_sdk:install
    ```
 
-   This writes `config/initializers/claude_agent_sdk.rb` — a `ClaudeAgentSDK.configure` block with commented defaults (model, permission mode, CLI path, OpenTelemetry) and the Rails callback wrapper [described below](#rails-executor-around-callbacks-callback_wrapper) switched on — and adds `/vendor/claude/` to `.gitignore`.
+   This writes `config/initializers/claude_agent_sdk.rb` — a `ClaudeAgentSDK.configure` block with commented defaults (model, permission mode, CLI path, [per-user isolation](#per-user-isolation), OpenTelemetry) and the Rails callback wrapper [described below](#rails-executor-around-callbacks-callback_wrapper) switched on — and adds `/vendor/claude/` to `.gitignore`.
 
 3. Vendor the Claude Code CLI:
 
@@ -348,7 +348,8 @@ class ChatAgentJob < ApplicationJob
   def perform(chat_id, message_content)
     options = ClaudeAgentSDK::ClaudeAgentOptions.new(
       system_prompt: { type: 'preset', preset: 'claude_code' },
-      permission_mode: 'bypassPermissions'
+      permission_mode: 'bypassPermissions',
+      env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }   # one job class serves every chat: see "Per-user isolation"
     )
 
     ClaudeAgentSDK::Client.open(options: options) do |client|
@@ -373,6 +374,18 @@ end
 
 `Client.open` connects, yields the client, and always disconnects — also when the block raises, so the job's error handling sees the original exception. It runs inside an existing reactor or starts its own, so a job needs no `Async { }.wait` wrapper. Its return value is the block's; to leave the block early use `next`, not `break` (outside an `Async` block, `break` raises `LocalJumpError`, though the session is still torn down). `break` inside `receive_response` itself is fine.
 
+### Per-user isolation
+
+One job class serves every chat here, from one working directory — and the CLI keeps an auto-memory per *project directory*, not per session or per user:
+
+- Every SDK session reads that project's memory index. The CLI injects it next to the `CLAUDE.md` instructions, under the same "these instructions override default behavior" header.
+- A session on the `claude_code` preset also **writes** it when a user asks it to remember something, and that write passes no permission check: no `permission_mode`, `can_use_tool` callback or hook is consulted.
+- `setting_sources: []` isolates settings files. It does not turn this off.
+
+So in a multi-user app one user's "remember that…" becomes part of every other user's context. `env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }` turns auto-memory off for the session; the examples on this page set it, and the generated initializer carries the line, commented out, to make it a process-wide default. The value has to be `'1'`: the CLI reads `'0'` or `'false'` as "force auto-memory on", which overrides even `autoMemoryEnabled: false` in settings. To see what a session loaded, call `client.context_usage[:memoryFiles]` (an entry with `type: "AutoMem"` is the memory index); it costs no model call.
+
+What else isolates sessions, and what only appears to, is covered in [Session isolation](configuration.md#session-isolation).
+
 ## Session Resumption
 
 Persist Claude sessions for multi-turn conversations:
@@ -395,7 +408,11 @@ class ChatSession < ApplicationRecord
   private
 
   def build_options
-    opts = { permission_mode: 'bypassPermissions', setting_sources: [] }
+    opts = {
+      permission_mode: 'bypassPermissions',
+      setting_sources: [],                                  # isolates settings files, not the CLI's auto-memory:
+      env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }     # this does (see "Per-user isolation")
+    }
     opts[:resume] = claude_session_id if claude_session_id.present?
     ClaudeAgentSDK::ClaudeAgentOptions.new(**opts)
   end

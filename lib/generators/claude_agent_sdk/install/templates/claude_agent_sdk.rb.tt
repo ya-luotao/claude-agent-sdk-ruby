@@ -22,6 +22,12 @@ ClaudeAgentSDK.configure do |config|
     # whatever the process cwd. To run a binary from somewhere else instead:
     # cli_path: '/usr/local/bin/claude',
 
+    # Multi-user apps: turn off the CLI's auto-memory — kept per project
+    # directory, read by every session and written by claude_code-preset
+    # sessions, so one user's "remember ..." reaches all others (the value
+    # must stay '1'; '0' forces it on). See docs/rails.md ("Per-user isolation").
+    # env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' },
+
     # OpenTelemetry tracing (Langfuse, Honeycomb, ...). A factory lambda gives
     # every query/session its own observer — safe under Puma and job threads.
     # observers: [-> { ClaudeAgentSDK::Instrumentation::OTelObserver.new }],

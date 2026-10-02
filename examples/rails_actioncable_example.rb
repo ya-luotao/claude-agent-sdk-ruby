@@ -94,6 +94,13 @@ class ChatExecutor
       },
       permission_mode: 'bypassPermissions',
       setting_sources: [],
+      # One executor serves every chat from one working directory, and the
+      # CLI's auto-memory is per project directory: every session reads it,
+      # and a claude_code-preset session writes it without a permission check
+      # (setting_sources: [] does not turn it off). Without this line, what
+      # one user asks the agent to remember reaches every other user's
+      # session. Use exactly '1' — the CLI reads '0' / 'false' as "force on".
+      env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' },
       resume: resume_session_id # Resume existing session if provided
     )
 
