@@ -165,28 +165,58 @@ module ClaudeAgentSDK
     # CLI's project-directory naming.
     #
     # A path that cannot be resolved as a whole (the directory was removed, or
-    # does not exist yet) is resolved as far as it exists: symlinks in the
-    # nearest existing ancestor are followed and the missing rest is appended
-    # as written — what Python's os.path.realpath does, where Ruby's
-    # File.realpath raises. The CLI keyed the project by the real path while
+    # does not exist yet) is resolved as far as it exists, the way Python's
+    # os.path.realpath does where Ruby's File.realpath raises
+    # (resolve_missing_path). The CLI keyed the project by the real path while
     # the directory existed, so a removed /tmp/proj on macOS must still
     # canonicalize to /private/tmp/proj for its sessions to be found; a plain
     # expand_path (the earlier fallback) resolved no symlink at all.
     def canonicalize_path(dir)
       File.realpath(dir).unicode_normalize(:nfc)
     rescue SystemCallError
-      existing = File.expand_path(dir)
-      missing = []
-      until File.exist?(existing) || existing == File.dirname(existing)
-        missing.unshift(File.basename(existing))
-        existing = File.dirname(existing)
+      resolve_missing_path(File.expand_path(dir)).unicode_normalize(:nfc)
+    end
+
+    # How many symlinks resolve_missing_path follows before it keeps a link as
+    # written: the guard against links that point at each other.
+    MAX_SYMLINK_HOPS = 40
+
+    # Resolve an absolute +path+ that does not exist as a whole, component by
+    # component: a component that is a symlink is followed (lstat/readlink)
+    # whether or not its target exists, any other one — existing or missing —
+    # is kept as written. So is everything after the first missing
+    # component, and a link past MAX_SYMLINK_HOPS. Following a link whose
+    # target is gone is the point: a session recorded through a symlinked
+    # project directory is keyed by the target, and must still be found
+    # through the link after the target was removed.
+    def resolve_missing_path(path)
+      root = path[%r{\A(?:[A-Za-z]:)?/+}] || File::SEPARATOR
+      resolved = root
+      pending = path.delete_prefix(root).split(File::SEPARATOR).reject(&:empty?)
+      hops = 0
+      until pending.empty?
+        name = pending.shift
+        next if name == '.'
+
+        candidate = name == '..' ? File.dirname(resolved) : File.join(resolved, name)
+        target = name == '..' || hops >= MAX_SYMLINK_HOPS ? nil : symlink_target(candidate)
+        if target.nil?
+          resolved = candidate
+          next
+        end
+
+        hops += 1
+        resolved = root if target.start_with?(File::SEPARATOR)
+        pending.unshift(*target.split(File::SEPARATOR).reject(&:empty?))
       end
-      resolved = begin
-        File.realpath(existing)
-      rescue SystemCallError
-        existing
-      end
-      File.join(resolved, *missing).unicode_normalize(:nfc)
+      resolved
+    end
+
+    # The target of +path+ when it is a symlink (dangling or not), else nil.
+    def symlink_target(path)
+      File.symlink?(path) ? File.readlink(path) : nil
+    rescue SystemCallError
+      nil
     end
 
     # Derive the SessionStore +project_key+ for a directory (default: cwd).
@@ -2072,7 +2102,8 @@ module ClaudeAgentSDK
       end
     end
 
-    private_class_method :project_dir_records_cwd?, :recorded_cwd, :each_parsed_entry, :get_session_info_for_directory,
+    private_class_method :resolve_missing_path, :symlink_target, :project_dir_records_cwd?, :recorded_cwd,
+                         :each_parsed_entry, :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions, :dedup_rank,
                          :worktree_paths, :find_session_file, :stat_candidate, :resolve_subagents_dir,

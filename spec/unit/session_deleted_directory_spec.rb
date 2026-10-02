@@ -92,6 +92,52 @@ RSpec.describe 'sessions of a project directory that no longer exists' do
     end
   end
 
+  # The session was recorded through a symlinked project directory, so the CLI
+  # keyed it by the link's target. The target is gone; the link is still
+  # there, pointing at nothing.
+  context 'when the directory is a symlink whose target was removed' do
+    let(:target) { File.join(cwd, 'checkouts', 'project') }
+    let(:link) { File.join(cwd, 'current') }
+
+    before do
+      FileUtils.mkdir_p(target)
+      File.symlink(target, link)
+      record_session(link)
+      FileUtils.rm_rf(target)
+    end
+
+    it 'is found by the readers through the link' do
+      expect(File.symlink?(link) && !File.exist?(link)).to be(true)
+      expect(ClaudeAgentSDK.list_sessions(directory: link).map(&:session_id)).to eq([session_id])
+      expect(ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: link).length).to eq(2)
+    end
+
+    it 'can be renamed through the link' do
+      ClaudeAgentSDK.rename_session(session_id: session_id, title: 'Old checkout', directory: link)
+
+      expect(ClaudeAgentSDK.get_session_info(session_id: session_id, directory: link).custom_title)
+        .to eq('Old checkout')
+    end
+
+    it 'has the project key of the former target, also through a relative link' do
+      relative = File.join(cwd, 'relative')
+      File.symlink(File.join('checkouts', 'project'), relative)
+
+      expect(ClaudeAgentSDK.project_key_for_directory(link)).to eq(ClaudeAgentSDK::Sessions.sanitize_path(target))
+      expect(ClaudeAgentSDK.project_key_for_directory(File.join(relative, 'packages', 'app')))
+        .to eq(ClaudeAgentSDK::Sessions.sanitize_path(File.join(target, 'packages', 'app')))
+    end
+  end
+
+  it 'resolves a missing path under symlinks that point at each other without looping' do
+    one = File.join(cwd, 'one')
+    two = File.join(cwd, 'two')
+    File.symlink(two, one)
+    File.symlink(one, two)
+
+    expect(ClaudeAgentSDK.list_sessions(directory: File.join(one, 'project'))).to eq([])
+  end
+
   it 'reports a directory that never held the session as a missing session' do
     typo = File.join(cwd, 'no-such-project')
 
