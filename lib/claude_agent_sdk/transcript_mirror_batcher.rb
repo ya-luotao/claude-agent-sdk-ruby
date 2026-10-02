@@ -357,10 +357,10 @@ module ClaudeAgentSDK
       [:error, e]
     end
 
-    # Sleep that yields the reactor when one is active, else a plain sleep.
+    # Kernel#sleep is scheduler-aware: it parks only this fiber when a reactor
+    # is active and blocks the thread otherwise.
     def sleep_backoff(seconds)
-      task = Async::Task.current?
-      task ? task.sleep(seconds) : sleep(seconds)
+      sleep(seconds)
     end
 
     def deep_stringify(obj)
