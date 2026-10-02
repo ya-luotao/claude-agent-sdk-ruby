@@ -46,7 +46,7 @@ The gem ships a Railtie, an install generator and a rake task for vendoring the 
    end
    ```
 
-   The block runs on a plain thread (see the next section), so ActiveRecord calls inside it are safe. It is a thread of its own, though: the job's `Current` attributes, time zone, log tags and database role or shard are not set there — see [Request state does not follow into callbacks](#request-state-does-not-follow-into-callbacks). For multi-turn sessions, hooks, custom tools and interrupts use `ClaudeAgentSDK::Client.open` — see [ActionCable streaming](#actioncable-streaming) below.
+   The block runs on a plain thread (see the next section), so ActiveRecord calls inside it are safe. It is a thread of its own, though: the job's `Current` attributes, time zone, log tags and database role or shard are not set there — see [Request state does not follow into callbacks](#request-state-does-not-follow-into-callbacks). For multi-turn sessions and mid-session control (interrupt, model switching) use `ClaudeAgentSDK::Client.open` — see [ActionCable streaming](#actioncable-streaming) below. Hooks and custom tools work with `ClaudeAgentSDK.query` too.
 
 ## Thread-keyed libraries are safe inside SDK callbacks
 
@@ -496,7 +496,7 @@ Add OpenTelemetry tracing to your Rails app with a single initializer:
 
 ```ruby
 # config/initializers/opentelemetry.rb
-require 'base64'
+require 'base64'   # a bundled gem since Ruby 3.4 — no Gemfile entry needed: Active Support 7.1+ depends on it
 require 'opentelemetry/sdk'
 require 'opentelemetry/exporter/otlp'
 
