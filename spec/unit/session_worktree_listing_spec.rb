@@ -94,6 +94,20 @@ RSpec.describe 'list_sessions over git worktrees' do
     expect(summaries(main)).to eq(['copy kept for repo-a'])
   end
 
+  # `repo.one` and `repo-one` have one sanitized name, hence one project dir
+  # (for the CLI too). It holds the sessions of both and is read once.
+  it 'reads a project dir that two worktree paths share by name once' do
+    dotted = File.join(cwd, 'repo.one').tap { |dir| FileUtils.mkdir_p(dir) }
+    dashed = File.join(cwd, 'repo-one').tap { |dir| FileUtils.mkdir_p(dir) }
+    allow(ClaudeAgentSDK::Sessions).to receive(:detect_worktrees).and_return([dotted, dashed])
+    record_session(dotted, 'asked in repo.one')
+    record_session(dashed, 'asked in repo-one')
+    allow(ClaudeAgentSDK::Sessions).to receive(:read_sessions_from_dir).and_call_original
+
+    expect(summaries(dotted)).to contain_exactly('asked in repo.one', 'asked in repo-one')
+    expect(ClaudeAgentSDK::Sessions).to have_received(:read_sessions_from_dir).once
+  end
+
   # No stub: a real `git worktree list --porcelain` over a real repository.
   context 'with a real repository' do
     # git takes GIT_DIR and friends from the environment (they are set while

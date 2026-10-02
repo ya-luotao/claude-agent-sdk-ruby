@@ -150,6 +150,40 @@ RSpec.describe 'project directory lookup for paths over 200 characters' do
         expect(ClaudeAgentSDK.list_sessions(directory: main).map(&:session_id)).to eq([other_session_id])
         expect(ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: main)).to eq([])
       end
+
+      # Both paths are worktrees of one repository. The old-hash directory is
+      # the project dir of each of them, so it is read for each: once, it
+      # gave the sessions of the first path and none of the second.
+      context 'when both paths are worktrees of one repository' do
+        before { allow(ClaudeAgentSDK::Sessions).to receive(:detect_worktrees).and_return([project_a, project_b]) }
+
+        it 'lists the session of each worktree once, from either of them' do
+          [project_a, project_b].each do |directory|
+            listed = ClaudeAgentSDK.list_sessions(directory: directory)
+
+            expect(listed.map { |session| [session.session_id, session.cwd] })
+              .to contain_exactly([session_id, project_a], [other_session_id, project_b])
+          end
+        end
+
+        it "still lists only a path's own session with include_worktrees: false" do
+          expect(ClaudeAgentSDK.list_sessions(directory: project_a, include_worktrees: false).map(&:session_id))
+            .to eq([session_id])
+          expect(ClaudeAgentSDK.list_sessions(directory: project_b, include_worktrees: false).map(&:session_id))
+            .to eq([other_session_id])
+        end
+
+        it 'reads the shared directory once for each path' do
+          shared = old_cli_project_dir(project_a)
+          allow(ClaudeAgentSDK::Sessions).to receive(:read_sessions_from_dir).and_call_original
+
+          ClaudeAgentSDK.list_sessions(directory: project_a)
+
+          expect(ClaudeAgentSDK::Sessions).to have_received(:read_sessions_from_dir).with(shared, project_a).once
+          expect(ClaudeAgentSDK::Sessions).to have_received(:read_sessions_from_dir).with(shared, project_b).once
+          expect(ClaudeAgentSDK::Sessions).to have_received(:read_sessions_from_dir).twice
+        end
+      end
     end
   end
 end

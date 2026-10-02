@@ -345,7 +345,14 @@ module ClaudeAgentSDK
     # path: that directory can hold the sessions of every path sharing the
     # prefix, and a transcript whose cwd cannot be verified is not counted.
     def own_transcript?(project_dir, file_path, path)
-      File.basename(project_dir) == sanitize_path(path) || recorded_cwd(file_path) == path
+      !prefix_fallback_dir?(project_dir, path) || recorded_cwd(file_path) == path
+    end
+
+    # Whether +project_dir+, the directory find_project_dir returned for
+    # +path+, is one the long-path prefix fallback found rather than the one
+    # named after the path.
+    def prefix_fallback_dir?(project_dir, path)
+      File.basename(project_dir) != sanitize_path(path)
     end
 
     # The directory a session transcript was recorded in: the first non-blank
@@ -879,7 +886,7 @@ module ClaudeAgentSDK
       sessions = []
       # Listing a directory found by the long-path prefix fallback: only the
       # transcripts recorded for +project_path+ (own_transcript?).
-      verify = project_path && File.basename(project_dir) != sanitize_path(project_path)
+      verify = project_path && prefix_fallback_dir?(project_dir, project_path)
       # base:, not a pattern built from the directory: a config dir path with
       # glob characters in it (`/Volumes/Data [SSD]/…`, `/srv/{tenant}/…`)
       # is a path, and as part of the pattern it matched nothing.
@@ -1659,15 +1666,24 @@ module ClaudeAgentSDK
       # `git worktree list` reports worktree ROOTS, so a subdirectory (a
       # monorepo package) is none of them, and reading only the listed paths
       # left out exactly the sessions that were asked for (Python:
-      # "Always include the user's actual directory"). Then every worktree;
-      # a project dir is read once.
+      # "Always include the user's actual directory"). Then every worktree.
+      #
+      # A project dir named after its path is read once. One found by the
+      # long-path prefix fallback is read once per path: reading it keeps
+      # that path's own transcripts only (read_sessions_from_dir), and
+      # worktrees whose paths share the first 200 characters share the
+      # directory. Marked as read after the first of them, it never gave the
+      # sessions of the others.
       all_sessions = []
       seen = {}
       [path, *worktree_paths].each do |dir|
         project_dir = find_project_dir(dir)
-        next if project_dir.nil? || seen[project_dir]
+        next if project_dir.nil?
 
-        seen[project_dir] = true
+        scan = prefix_fallback_dir?(project_dir, dir) ? [project_dir, dir] : project_dir
+        next if seen[scan]
+
+        seen[scan] = true
         all_sessions.concat(read_sessions_from_dir(project_dir, dir))
       end
 
@@ -2116,7 +2132,8 @@ module ClaudeAgentSDK
       end
     end
 
-    private_class_method :resolve_missing_path, :symlink_target, :project_dir_records_cwd?, :recorded_cwd,
+    private_class_method :resolve_missing_path, :symlink_target, :project_dir_records_cwd?, :prefix_fallback_dir?,
+                         :recorded_cwd,
                          :each_parsed_entry, :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions, :dedup_rank,
