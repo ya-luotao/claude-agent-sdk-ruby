@@ -166,6 +166,11 @@ module ClaudeAgentSDK
   # (+deniedDomains+), with Symbol or String keys; any other key is sent as
   # written. The same holds for a Hash given as +sandbox:+ in place of a
   # SandboxSettings.
+  #
+  # A snake_case key in such a Hash is sent under the CLI's name only when
+  # its value has the shape the CLI accepts there (an Array of Strings for
+  # +denied_domains+, +true+ or +false+ for +allow_local_binding+, ...).
+  # With any other value it is sent as written, and the CLI ignores it.
   class SandboxSettings < Type
     include Type::OptionValue
 
@@ -248,6 +253,34 @@ module ClaudeAgentSDK
       'allow_managed_read_paths_only' => :allowManagedReadPathsOnly
     }.freeze
 
+    # Wire key => the kind of value CLI 2.1.287's sandbox schema accepts
+    # under it, for every wire key an attribute spells differently (read from
+    # the schema in the CLI binary and checked against the running CLI):
+    #
+    #   :boolean        true or false
+    #   :strings        an Array of Strings
+    #   :mach_services  an Array of Strings; a "*" only as the last character
+    #   :integer        a number (the CLI takes any; an Integer is asked for)
+    #   :string_lists   a Hash whose values are Arrays of Strings
+    #
+    # One value outside its kind makes the CLI discard the whole --settings
+    # value, the sandbox and the permissions next to it, without a word. A
+    # key in snake_case is one the CLI does not know and ignores, so it is
+    # renamed only when its value is of the kind listed here (see #rename).
+    # A kind that is too strict leaves a key without effect, as it was before
+    # the renaming existed; one that is too loose can cost a session its
+    # sandbox.
+    SHAPES = {
+      boolean: %i[failIfUnavailable autoAllowBashIfSandboxed allowUnsandboxedCommands enableWeakerNestedSandbox
+                  enableWeakerNetworkIsolation allowManagedDomainsOnly allowAllUnixSockets allowLocalBinding
+                  allowManagedReadPathsOnly],
+      strings: %i[excludedCommands allowedDomains deniedDomains allowUnixSockets
+                  allowWrite denyWrite denyRead allowRead],
+      mach_services: %i[allowMachLookup],
+      integer: %i[httpProxyPort socksProxyPort],
+      string_lists: %i[ignoreViolations]
+    }.flat_map { |kind, wire_keys| wire_keys.map { |wire| [wire, kind] } }.to_h.freeze
+
     # A Hash +sandbox:+ as the CLI reads it: its known keys under their wire
     # keys, at the top level and inside a Hash network / filesystem. Values
     # are not rewritten: ignore_violations and ripgrep hold structures of
@@ -288,26 +321,49 @@ module ClaudeAgentSDK
     # A known key holding nil is left out, as #to_h leaves out a nil
     # attribute. The CLI rejects null under every one of these keys, and
     # when it does it drops the whole --settings value, sandbox included.
+    #
+    # A key in snake_case is renamed only when the CLI accepts its value
+    # under the wire key (SHAPES). Otherwise it is sent as written, which
+    # the CLI ignores, as it ignored every snake_case key before: renaming
+    # must not be what makes the CLI drop the settings. A key the caller
+    # wrote in wire spelling is not looked at; it goes out as it always did.
     def self.rename(hash, table)
       renamed = {}
       wire_spelled = {}
       hash.each do |key, value|
         name = key.to_s
         wire = table[name] || table.each_value.find { |candidate| candidate.name == name }
-        if wire.nil?
-          renamed[key] = value
-        elsif value.nil?
-          next
-        elsif wire.name == name
+        next if wire && value.nil?
+
+        if wire && wire.name == name
           wire_spelled[wire] = true
           renamed[wire] = value
-        elsif !wire_spelled.key?(wire)
-          renamed[wire] = value
+        elsif wire && well_shaped?(wire, value)
+          renamed[wire] = value unless wire_spelled.key?(wire)
+        else
+          renamed[key] = value
         end
       end
       renamed
     end
-    private_class_method :rename
+
+    # Whether the CLI accepts +value+ under +wire+. A key without a kind is
+    # answered false, the side that cannot cost the sandbox.
+    def self.well_shaped?(wire, value)
+      case SHAPES[wire]
+      when :boolean then [true, false].include?(value)
+      when :strings then strings?(value)
+      when :mach_services then strings?(value) && value.none? { |name| name.delete_suffix('*').include?('*') }
+      when :integer then value.is_a?(Integer)
+      when :string_lists then value.is_a?(Hash) && value.each_value.all? { |list| strings?(list) }
+      else false
+      end
+    end
+
+    def self.strings?(value)
+      value.is_a?(Array) && value.all?(String)
+    end
+    private_class_method :rename, :well_shaped?, :strings?
   end
 
   # API-side task budget in tokens.

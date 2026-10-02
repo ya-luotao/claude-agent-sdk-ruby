@@ -135,6 +135,59 @@ RSpec.describe 'sandbox settings written as a Hash' do
     top_level_fields.merge(network: ['network', network], filesystem: ['filesystem', filesystem])
   end
 
+  fields_of = {
+    'SandboxSettings' => top_level_fields,
+    'SandboxNetworkConfig' => network_fields,
+    'SandboxFilesystemConfig' => filesystem_fields
+  }.freeze
+
+  # What CLI 2.1.287's sandbox schema accepts under each key that has a
+  # snake_case spelling: attribute => kind. Read from the schema in the CLI
+  # binary and checked against the running CLI, key by key, with get_settings:
+  #
+  #   boolean        true or false
+  #   strings        an Array of Strings
+  #   mach_services  an Array of Strings; a "*" only as the last character
+  #   integer        a number (the CLI takes any; the SDK asks for an Integer)
+  #   string_lists   a Hash whose values are Arrays of Strings
+  #
+  # Spelled out here, not derived from the SDK. enabled, network, filesystem
+  # and ripgrep are missing on purpose: their name is their wire key.
+  kinds = {
+    'SandboxSettings' => {
+      fail_if_unavailable: :boolean, auto_allow_bash_if_sandboxed: :boolean, excluded_commands: :strings,
+      allow_unsandboxed_commands: :boolean, ignore_violations: :string_lists,
+      enable_weaker_nested_sandbox: :boolean, enable_weaker_network_isolation: :boolean
+    },
+    'SandboxNetworkConfig' => {
+      allowed_domains: :strings, denied_domains: :strings, allow_managed_domains_only: :boolean,
+      allow_unix_sockets: :strings, allow_all_unix_sockets: :boolean, allow_local_binding: :boolean,
+      allow_mach_lookup: :mach_services, http_proxy_port: :integer, socks_proxy_port: :integer
+    },
+    'SandboxFilesystemConfig' => {
+      allow_write: :strings, deny_write: :strings, deny_read: :strings, allow_read: :strings,
+      allow_managed_read_paths_only: :boolean
+    }
+  }.freeze
+
+  # For each kind, values the CLI rejects under such a key. Each of them makes
+  # it discard the whole --settings value, sandbox and permissions included.
+  rejected = {
+    boolean: ['true', 0, []],
+    strings: ['docker', ['docker', 1], [nil], true, { 'docker' => true }],
+    mach_services: ['com.apple.audio', ['com.*.helper'], ['*.helper'], ['com.apple.**'], [1]],
+    integer: ['8080', true, [8080]],
+    string_lists: [{ 'file' => '/tmp/*' }, { 'file' => [1] }, { 'file' => { 'read' => [] } }, ['/tmp/*'], 'file']
+  }.freeze
+
+  # A sandbox Hash with +fields+ at the level of the class: the top, or inside
+  # the section the class stands for.
+  at_level_of = {
+    'SandboxSettings' => ->(fields) { { enabled: true }.merge(fields) },
+    'SandboxNetworkConfig' => ->(fields) { { enabled: true, network: fields } },
+    'SandboxFilesystemConfig' => ->(fields) { { enabled: true, filesystem: fields } }
+  }.freeze
+
   describe 'every field of every sandbox class' do
     # The section the CLI must receive, whichever way it was written.
     wire = wire_form_of.call(
@@ -211,6 +264,28 @@ RSpec.describe 'sandbox settings written as a Hash' do
         end
       end
     end
+
+    describe 'SHAPES' do
+      it 'has a kind for every attribute whose name is not its wire key, and for nothing else' do
+        with_a_spelling_of_their_own = fields_of.transform_values do |fields|
+          fields.reject { |name, (wire_key, _value)| name.to_s == wire_key }.keys
+        end
+
+        expect(kinds.transform_values(&:keys)).to eq(with_a_spelling_of_their_own)
+      end
+
+      it 'agrees with the kinds this file spells out' do
+        spelled_out = kinds.flat_map do |class_name, by_attribute|
+          by_attribute.map { |attribute, kind| [fields_of.fetch(class_name).fetch(attribute).first.to_sym, kind] }
+        end
+
+        expect(ClaudeAgentSDK::SandboxKeys::SHAPES).to eq(spelled_out.to_h)
+      end
+
+      it 'has values the CLI rejects for every kind it uses' do
+        expect(rejected.keys).to match_array(kinds.values.flat_map(&:values).uniq)
+      end
+    end
   end
 
   describe 'a key the typed classes do not model' do
@@ -282,15 +357,15 @@ RSpec.describe 'sandbox settings written as a Hash' do
       sandbox = {
         enabled: true,
         ripgrep: inner,
-        ignore_violations: { 'excluded_commands' => ['/tmp/*'], network: { denied_domains: ['kept'] } },
-        network: { allow_unix_sockets: ['/var/run/docker.sock'], allow_mach_lookup: [{ deny_read: 'kept' }] }
+        ignore_violations: { 'excluded_commands' => ['/tmp/*'], denied_domains: ['kept'], network: ['localhost'] },
+        network: { allow_unix_sockets: ['/var/run/docker.sock'], allow_mach_lookup: ['com.apple.coresimulator.*'] }
       }
 
       expect(sandbox_section(sandbox)).to eq(
         'enabled' => true,
         'ripgrep' => on_the_wire(inner),
-        'ignoreViolations' => { 'excluded_commands' => ['/tmp/*'], 'network' => { 'denied_domains' => ['kept'] } },
-        'network' => { 'allowUnixSockets' => ['/var/run/docker.sock'], 'allowMachLookup' => [{ 'deny_read' => 'kept' }] }
+        'ignoreViolations' => { 'excluded_commands' => ['/tmp/*'], 'denied_domains' => ['kept'], 'network' => ['localhost'] },
+        'network' => { 'allowUnixSockets' => ['/var/run/docker.sock'], 'allowMachLookup' => ['com.apple.coresimulator.*'] }
       )
     end
   end
@@ -415,6 +490,86 @@ RSpec.describe 'sandbox settings written as a Hash' do
       expect(sandbox_section(sandbox)).to eq(
         'enabled' => false, 'autoAllowBashIfSandboxed' => false, 'network' => { 'allowLocalBinding' => false }
       )
+    end
+  end
+
+  # A snake_case key is one the CLI does not know: it ignores it, value and
+  # all. Under its wire name the same value is validated, and one value that
+  # fails the CLI's schema makes it discard the whole --settings value (the
+  # sandbox, and the permissions passed next to it) without a word. So a
+  # snake_case key is renamed only when its value has the shape the CLI
+  # accepts for that key. Otherwise it goes out as written and stays inert,
+  # as it always was: renaming must never cost a session its sandbox.
+  describe 'a snake_case key whose value the CLI would reject' do
+    # allowUnixSockets takes an Array of socket paths; the boolean switch is
+    # allow_all_unix_sockets. The shipped signature of allow_unix_sockets
+    # allows a bool all the same, which makes `true` the value most likely to
+    # be written here. Sent as allowUnixSockets: true it would leave the
+    # session with no sandbox at all.
+    it 'sends allow_unix_sockets: true as written, not as allowUnixSockets' do
+      sandbox = { enabled: true, network: { allow_unix_sockets: true, denied_domains: ['evil.example'] } }
+
+      expect(sandbox_section(sandbox)).to eq(
+        'enabled' => true, 'network' => { 'allow_unix_sockets' => true, 'deniedDomains' => ['evil.example'] }
+      )
+    end
+
+    kinds.each do |class_name, by_attribute|
+      by_attribute.each do |attribute, kind|
+        it "is sent as written for #{attribute} (#{kind}), under a Symbol or a String key" do
+          sandboxes = rejected.fetch(kind).flat_map do |value|
+            [attribute, attribute.to_s].map { |key| at_level_of.fetch(class_name).call(key => value) }
+          end
+
+          expect(sandboxes.map { |sandbox| sandbox_section(sandbox) }).to eq(sandboxes.map { |sandbox| on_the_wire(sandbox) })
+        end
+      end
+    end
+
+    it 'is left as written inside a typed SandboxSettings too' do
+      sandbox = ClaudeAgentSDK::SandboxSettings.new(
+        enabled: true, network: { allow_unix_sockets: true }, filesystem: { 'deny_read' => '~/.aws' }
+      )
+
+      expect(sandbox.to_h).to eq(
+        enabled: true, network: { allow_unix_sockets: true }, filesystem: { 'deny_read' => '~/.aws' }
+      )
+    end
+
+    it 'stays next to the same field written in a form the CLI accepts, and never replaces it' do
+      sandbox = {
+        excluded_commands: 'docker', excludedCommands: ['git'],
+        filesystem: { deny_read: ['~/.aws'], 'deny_read' => '~/.ssh' }
+      }
+
+      expect(sandbox_section(sandbox)).to eq(
+        'excluded_commands' => 'docker', 'excludedCommands' => ['git'],
+        'filesystem' => { 'denyRead' => ['~/.aws'], 'deny_read' => '~/.ssh' }
+      )
+    end
+
+    it 'is still renamed for the values the CLI accepts at the edges' do
+      sandbox = {
+        excluded_commands: [], ignore_violations: {},
+        network: { allowed_domains: ['*.example.com', ''], allow_mach_lookup: ['*', 'com.apple.coresimulator.*'],
+                   http_proxy_port: 0 },
+        filesystem: { deny_read: ['/work/**/*.pem'] }
+      }
+
+      expect(sandbox_section(sandbox)).to eq(
+        'excludedCommands' => [], 'ignoreViolations' => {},
+        'network' => { 'allowedDomains' => ['*.example.com', ''], 'allowMachLookup' => ['*', 'com.apple.coresimulator.*'],
+                       'httpProxyPort' => 0 },
+        'filesystem' => { 'denyRead' => ['/work/**/*.pem'] }
+      )
+    end
+
+    # The check is only about renaming. A key the caller wrote in the CLI's
+    # own spelling reaches the CLI as before, whatever its value.
+    it 'does not concern a key already in wire spelling' do
+      sandbox = { enabled: true, excludedCommands: 'docker', 'failIfUnavailable' => 'yes', network: { allowUnixSockets: true } }
+
+      expect(sandbox_section(sandbox)).to eq(on_the_wire(sandbox))
     end
   end
 
