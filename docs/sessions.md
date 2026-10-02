@@ -261,10 +261,11 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 > `HOME` the subprocess will see — `options.env`'s `HOME` when it sets one):
 >
 > - `.credentials.json`, with the OAuth `refreshToken` removed so the resumed
->   subprocess can't consume it. On macOS with the default config dir and no
+>   subprocess can't consume it. On macOS with no
 >   `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN`, the credentials come from
->   the Keychain entry when one exists (the redirected config dir would
->   otherwise miss it).
+>   the CLI's Keychain entry for your config dir when one exists (the
+>   redirected config dir would otherwise miss it) — with a custom
+>   `CLAUDE_CONFIG_DIR`, only when that directory has no `.credentials.json`.
 > - `.claude.json` (from `$CLAUDE_CONFIG_DIR/.claude.json` when set, else
 >   `~/.claude.json`).
 > - User `settings.json` and `cowork_settings.json` — so `apiKeyHelper`, `env`,

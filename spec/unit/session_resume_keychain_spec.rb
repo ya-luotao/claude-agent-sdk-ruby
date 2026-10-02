@@ -141,6 +141,7 @@ RSpec.describe ClaudeAgentSDK::SessionResume, keychain: true do
 
     {
       'the lookup exits non-zero (no such entry)' => ['', false],
+      'the lookup exits non-zero after printing something' => [%({"claudeAiOauth":{"accessToken":"untrusted"}}\n), false],
       'the entry is empty' => ["\n", true],
       'the lookup times out or cannot be run' => [nil, nil]
     }.each do |outcome, (stdout, exit_ok)|
@@ -180,6 +181,135 @@ RSpec.describe ClaudeAgentSDK::SessionResume, keychain: true do
       stub_security("#{keychain_payload}\n", true)
 
       materialized = materialize
+
+      expect(security_calls).to be_empty
+      expect(File).not_to exist(seeded_credentials(materialized))
+    end
+
+    it 'treats an empty CLAUDE_CONFIG_DIR as the default config dir, like the CLI' do
+      stub_security("#{keychain_payload}\n", true)
+
+      materialize('CLAUDE_CONFIG_DIR' => '')
+
+      expect(security_calls.map(&:first)).to eq([security_argv('Claude Code-credentials')])
+    end
+  end
+
+  # With a custom CLAUDE_CONFIG_DIR the CLI keeps its entry under
+  # "Claude Code-credentials-<first 8 hex of SHA-256(config dir)>", hashing the
+  # directory as the environment gives it, NFC-normalized — and writes no
+  # .credentials.json there. The expected suffixes below are literals computed
+  # outside Ruby (`printf '%s' <dir> | shasum -a 256 | cut -c1-8`), so they pin
+  # the derivation instead of restating it.
+  describe 'with a custom CLAUDE_CONFIG_DIR' do
+    # No such directory: nothing to copy from it, and no .credentials.json.
+    let(:custom_dir) { '/nonexistent/claude-profiles/work' }
+    let(:custom_service) { 'Claude Code-credentials-43da4a82' }
+
+    it 'reads the entry the CLI keeps for that directory and seeds it without the refresh token' do
+      stub_security("#{keychain_payload}\n", true)
+
+      materialized = materialize('CLAUDE_CONFIG_DIR' => custom_dir)
+
+      expect(security_calls).to eq([[security_argv(custom_service), described_class::KEYCHAIN_TIMEOUT_SECONDS]])
+      seeded = seeded_credentials(materialized)
+      expect(JSON.parse(File.read(seeded))).to eq('claudeAiOauth' => oauth.except('refreshToken'))
+      expect(format('%o', File.stat(seeded).mode & 0o777)).to eq('600')
+    end
+
+    it 'reads it for a config dir the child inherits from the parent environment' do
+      stub_security("#{keychain_payload}\n", true)
+      ENV['CLAUDE_CONFIG_DIR'] = custom_dir
+
+      materialized = materialize
+
+      expect(security_calls.map(&:first)).to eq([security_argv(custom_service)])
+      expect(File).to exist(seeded_credentials(materialized))
+    end
+
+    # "cafe" + U+0301 COMBINING ACUTE ACCENT: the decomposed spelling of the
+    # composed one-code-point form (U+00E9) that the CLI hashes. Built from
+    # the code point so no editor can quietly re-compose the literal. 0e56012f
+    # is the digest of the composed spelling; the bytes as given hash to
+    # d3d97122.
+    context 'when the directory is given in decomposed (NFD) form' do
+      let(:custom_dir) { "/nonexistent/claude-profiles/cafe#{[0x301].pack('U')}" }
+      let(:custom_service) { 'Claude Code-credentials-0e56012f' }
+
+      it 'hashes its NFC form' do
+        stub_security("#{keychain_payload}\n", true)
+
+        materialize('CLAUDE_CONFIG_DIR' => custom_dir)
+
+        expect(custom_dir.unicode_normalize(:nfc)).not_to eq(custom_dir)
+        expect(security_calls.map(&:first)).to eq([security_argv(custom_service)])
+      end
+
+      it 'hashes the same form when Ruby tagged it as binary (a non-ASCII ENV value under a C locale)' do
+        stub_security("#{keychain_payload}\n", true)
+
+        materialize('CLAUDE_CONFIG_DIR' => custom_dir.b)
+
+        expect(security_calls.map(&:first)).to eq([security_argv(custom_service)])
+      end
+    end
+
+    it 'seeds nothing when the Keychain has no entry for that directory' do
+      stub_security('', false)
+
+      materialized = materialize('CLAUDE_CONFIG_DIR' => custom_dir)
+
+      expect(security_calls.length).to eq(1)
+      expect(File).not_to exist(seeded_credentials(materialized))
+    end
+
+    # Which source the CLI prefers when a custom config dir has both is not
+    # established, so the file keeps winning there, as it always has.
+    context 'when that directory has a .credentials.json' do
+      let(:custom_dir) { Dir.mktmpdir }
+
+      after { FileUtils.remove_entry(custom_dir) if File.directory?(custom_dir) }
+
+      it 'seeds the file and leaves the Keychain alone' do
+        write_credentials_file(custom_dir, 'from-the-file')
+        stub_security("#{keychain_payload}\n", true)
+
+        materialized = materialize('CLAUDE_CONFIG_DIR' => custom_dir)
+
+        expect(security_calls).to be_empty
+        expect(JSON.parse(File.read(seeded_credentials(materialized))))
+          .to eq('claudeAiOauth' => oauth.except('refreshToken').merge('accessToken' => 'from-the-file'))
+      end
+
+      it 'leaves the Keychain alone even when what is there cannot be read as a file' do
+        Dir.mkdir(File.join(custom_dir, '.credentials.json'))
+        stub_security("#{keychain_payload}\n", true)
+
+        materialized = nil
+        expect { materialized = materialize('CLAUDE_CONFIG_DIR' => custom_dir) }
+          .to output(/skipping .*\.credentials\.json \(not a regular file/).to_stderr
+
+        expect(security_calls).to be_empty
+        expect(File).not_to exist(seeded_credentials(materialized))
+      end
+    end
+
+    %w[ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN].each do |name|
+      it "leaves the Keychain alone when options.env carries #{name}" do
+        stub_security("#{keychain_payload}\n", true)
+
+        materialized = materialize('CLAUDE_CONFIG_DIR' => custom_dir, name => 'from-the-env')
+
+        expect(security_calls).to be_empty
+        expect(File).not_to exist(seeded_credentials(materialized))
+      end
+    end
+
+    it 'leaves the Keychain alone off macOS' do
+      stub_host_os('linux-gnu')
+      stub_security("#{keychain_payload}\n", true)
+
+      materialized = materialize('CLAUDE_CONFIG_DIR' => custom_dir)
 
       expect(security_calls).to be_empty
       expect(File).not_to exist(seeded_credentials(materialized))

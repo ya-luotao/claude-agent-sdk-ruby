@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'digest'
 require 'fileutils'
 require 'tmpdir'
 require 'open3'
@@ -357,16 +358,23 @@ module ClaudeAgentSDK
       # read_if_present returns raw bytes; the credentials path parses and
       # re-serializes JSON, so hand it a UTF-8-tagged string (invalid bytes
       # simply fail to parse and get written through, as before).
-      creds_bytes = source_config_dir && read_if_present(File.join(source_config_dir, '.credentials.json'))
+      creds_path = source_config_dir && File.join(source_config_dir, '.credentials.json')
+      creds_bytes = creds_path && read_if_present(creds_path)
       creds_json = creds_bytes&.dup&.force_encoding(Encoding::UTF_8)
 
-      # macOS default keeps OAuth tokens in the Keychain, not a file. Redirecting
-      # CLAUDE_CONFIG_DIR changes the Keychain service suffix so the subprocess's
-      # lookup misses; populate the plaintext file from the parent's Keychain.
-      # Skipped when env-based auth or a custom config dir is already in play.
-      if caller_config_dir.nil? && env_value(opt_env, 'ANTHROPIC_API_KEY').nil? &&
-         env_value(opt_env, 'CLAUDE_CODE_OAUTH_TOKEN').nil?
-        keychain = read_keychain_credentials
+      # macOS keeps OAuth tokens in the Keychain, not in a file, under a
+      # service name that depends on the config dir (see
+      # keychain_service_name). Redirecting CLAUDE_CONFIG_DIR changes that
+      # name, so the subprocess's own lookup misses; populate the plaintext
+      # file from the caller's entry instead. Skipped under env-based auth.
+      #
+      # Default config dir: a Keychain hit overrides the file. Custom config
+      # dir: the Keychain is consulted only when the directory has no
+      # .credentials.json at all — which of the two the CLI prefers when both
+      # exist is not established, so a file that is there keeps winning.
+      if env_value(opt_env, 'ANTHROPIC_API_KEY').nil? && env_value(opt_env, 'CLAUDE_CODE_OAUTH_TOKEN').nil? &&
+         (caller_config_dir.nil? || !File.exist?(creds_path))
+        keychain = read_keychain_credentials(caller_config_dir)
         creds_json = keychain unless keychain.nil?
       end
 
@@ -536,9 +544,11 @@ module ClaudeAgentSDK
       creds_json
     end
 
-    # Read OAuth credentials JSON from the macOS Keychain (default service name).
-    # Best-effort — returns nil on any error or non-macOS platforms.
-    def read_keychain_credentials
+    # Read OAuth credentials JSON from the macOS Keychain entry the CLI keeps
+    # for +config_dir+ (the caller's CLAUDE_CONFIG_DIR; nil for the default
+    # config dir). Best-effort — returns nil on any error or non-macOS
+    # platforms.
+    def read_keychain_credentials(config_dir)
       return nil unless RbConfig::CONFIG['host_os'].match?(/darwin/)
 
       user = (ENV['USER'] && !ENV['USER'].empty? ? ENV['USER'] : nil) || begin
@@ -549,7 +559,7 @@ module ClaudeAgentSDK
       end
 
       stdout, status = capture_with_timeout(
-        ['security', 'find-generic-password', '-a', user, '-w', '-s', KEYCHAIN_SERVICE_NAME],
+        ['security', 'find-generic-password', '-a', user, '-w', '-s', keychain_service_name(config_dir)],
         KEYCHAIN_TIMEOUT_SECONDS
       )
       return nil if status.nil? || !status.success?
@@ -558,6 +568,21 @@ module ClaudeAgentSDK
       out.empty? ? nil : out
     rescue StandardError
       nil
+    end
+
+    # The Keychain service the CLI stores its credentials under. With the
+    # default config dir that is KEYCHAIN_SERVICE_NAME; with a custom
+    # CLAUDE_CONFIG_DIR the CLI appends the first 8 hex digits of the SHA-256
+    # of that directory — the string the environment carries (no realpath),
+    # NFC-normalized. The bytes are tagged UTF-8 first, which is how the CLI
+    # reads them: under a C locale Ruby tags a non-ASCII ENV value as binary,
+    # and unicode_normalize rejects that.
+    def keychain_service_name(config_dir)
+      return KEYCHAIN_SERVICE_NAME if config_dir.nil?
+
+      dir = config_dir.to_s.dup.force_encoding(Encoding::UTF_8)
+      dir = dir.unicode_normalize(:nfc) if dir.valid_encoding?
+      "#{KEYCHAIN_SERVICE_NAME}-#{Digest::SHA256.hexdigest(dir)[0, 8]}"
     end
 
     # Run a command with a hard timeout, draining stdout on a side thread and
@@ -782,7 +807,7 @@ module ClaudeAgentSDK
 
     private_class_method :load_candidate, :resolve_continue_candidate, :with_timeout, :write_jsonl,
                          :copy_auth_files, :write_redacted_credentials, :read_keychain_credentials,
-                         :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
+                         :keychain_service_name, :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
                          :resolve_dir, :read_if_present, :chmod_owner_only, :copy_if_present, :env_value,
                          :strip_settings_for_resume, :parse_settings_bytes, :mask_surrogate_escapes,
                          :redacted_credentials, :encode_candidate, :encode_jsonl_lines, :encode_entry,
