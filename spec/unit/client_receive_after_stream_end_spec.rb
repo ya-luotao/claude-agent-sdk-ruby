@@ -107,7 +107,7 @@ RSpec.describe ClaudeAgentSDK::Client, 'receiving after the CLI stream has ended
 
   # What one receive call did: the message classes it yielded, or :parked
   # when it was still waiting at the bound.
-  def receive(task, client, method)
+  def receive_within_deadline(task, client, method)
     seen = []
     task.with_timeout(5) { client.public_send(method) { |message| seen << message.class } }
     seen
@@ -134,7 +134,7 @@ RSpec.describe ClaudeAgentSDK::Client, 'receiving after the CLI stream has ended
     describe "##{method}" do
       it 'ends at once on every call after a clean end of stream' do
         with_session(cli_exits_after_the_turn) do |client, task|
-          calls = Array.new(3) { receive(task, client, method) }
+          calls = Array.new(3) { receive_within_deadline(task, client, method) }
 
           expect(calls).to eq([[ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage], [], []])
         end
@@ -148,7 +148,7 @@ RSpec.describe ClaudeAgentSDK::Client, 'receiving after the CLI stream has ended
           end.to raise_error(ClaudeAgentSDK::ProcessError, /exit code 1/)
           expect(seen_before_the_crash).to eq([ClaudeAgentSDK::AssistantMessage])
 
-          expect(Array.new(2) { receive(task, client, method) }).to eq([[], []])
+          expect(Array.new(2) { receive_within_deadline(task, client, method) }).to eq([[], []])
         end
       end
     end
