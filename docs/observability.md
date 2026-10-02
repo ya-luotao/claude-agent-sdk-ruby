@@ -1,6 +1,6 @@
 # Observability (OpenTelemetry / Langfuse)
 
-The SDK includes a built-in **observer interface** and an **OpenTelemetry observer** for tracing agent sessions. Traces are emitted using standard `gen_ai.*` semantic conventions, compatible with Langfuse, Jaeger, Datadog, and any OTel backend.
+The SDK includes a built-in **observer interface** and an **OpenTelemetry observer** for tracing agent sessions. Span attributes follow the Langfuse and OpenInference conventions, plus a subset of the OTel `gen_ai.*` attributes. Any OTel backend (Jaeger, Datadog, ...) can store and display the spans; one that interprets attributes by the OTel GenAI semantic conventions reads only part of them, as [Span Attributes](#span-attributes) explains.
 
 ## Distributed Trace Context (W3C)
 
@@ -112,13 +112,53 @@ See [docs/rails.md](rails.md) for the Rails-specific pattern.
 
 ## Span Attributes
 
-The OTel observer sets attributes using both `gen_ai.*` (OTel GenAI) and OpenInference conventions for maximum backend compatibility:
+Attribute names follow the Langfuse and OpenInference conventions, plus a subset of the OTel `gen_ai.*` attributes. The tables below list every attribute the observer sets. An attribute whose value the CLI did not report is left out, and `input.value`, `output.value` and `gen_ai.completion` are cut at 4,096 characters.
 
-| Span | Type | Key Attributes |
-|------|------|----------------|
-| `claude_agent.session` | `agent` | `gen_ai.system`, `gen_ai.request.model`, `session.id`, `input.value`, `output.value`, `gen_ai.usage.cost`, `llm.cost.total`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens`, `llm.token_count.prompt_details.cache_read`, `llm.token_count.prompt_details.cache_write` |
-| `claude_agent.generation` | `generation` | `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens`, `output.value` |
-| `claude_agent.tool.*` | `tool` | `tool.name`, `input.value`, `output.value` |
+**`claude_agent.session`**
+
+| Attribute | Value |
+|-----------|-------|
+| `gen_ai.system` | `anthropic` |
+| `gen_ai.request.model`, `llm.model_name` | The model named by the `InitMessage` |
+| `session.id` | The CLI session ID |
+| `openinference.span.kind` | `AGENT` |
+| `langfuse.observation.type` | `agent` |
+| `input.mime_type`, `output.mime_type` | `text/plain` |
+| `claude_code.version`, `claude_code.cwd`, `claude_code.permission_mode` | From the `InitMessage` |
+| Your default attributes | Whatever you passed to `OTelObserver.new`. They are set on this span only |
+| `input.value` | The prompt of the trace |
+| `output.value` | `ResultMessage#result`, or the last assistant text when the result has none |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens` | The four counts of `ResultMessage#usage` as the API reports them, so `input_tokens` leaves cache tokens out |
+| `llm.token_count.prompt` | Input, cache-creation and cache-read tokens added up |
+| `llm.token_count.completion` | Output tokens |
+| `llm.token_count.total` | `llm.token_count.prompt` plus `llm.token_count.completion` |
+| `llm.token_count.prompt_details.cache_read`, `llm.token_count.prompt_details.cache_write` | Cache-read and cache-creation tokens |
+| `gen_ai.usage.cost`, `llm.cost.total` | The cost increase since the previous result (see below) |
+| `claude_agent.duration_ms`, `claude_agent.duration_api_ms`, `claude_agent.num_turns`, `claude_agent.stop_reason` | From the `ResultMessage` |
+
+The span status is error when the `ResultMessage` has `is_error` (the description is its stop reason) or when `on_error` recorded an exception, which also adds an `exception` event. Three more events are recorded on this span: `api_retry` (`attempt`, `max_retries`, `retry_delay_ms`, `error_status`, `error`), `rate_limit` (`status`, `rate_limit_type`) and `tool_progress` (`tool_name`, `tool_use_id`, `elapsed_time_seconds`).
+
+**`claude_agent.generation`**
+
+| Attribute | Value |
+|-----------|-------|
+| `openinference.span.kind` | `LLM` |
+| `langfuse.observation.type` | `generation` |
+| `gen_ai.response.model`, `llm.model_name` | The model named by the `AssistantMessage` |
+| `gen_ai.completion`, `output.value` | The text blocks of the message joined by newlines; an empty string when it has none (a thinking or tool-call message) |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens` | The usage of the API response, on the first span of each `message_id` only (see below) |
+
+**`claude_agent.tool.<tool name>`**
+
+| Attribute | Value |
+|-----------|-------|
+| `openinference.span.kind` | `TOOL` |
+| `langfuse.observation.type` | `tool` |
+| `tool.name` | The name of the tool |
+| `input.value`, `input.mime_type` | The tool input as JSON, and `application/json` |
+| `output.value`, `output.mime_type` | The tool result: a String as it is (`text/plain`), structured content as JSON (`application/json`). Both are left out when the result has no content |
+
+The span status is error when the tool result has `is_error`.
 
 **Token usage on generation spans.** The CLI sends one `AssistantMessage` per content block, so an API response with a thinking block and a tool call produces two `claude_agent.generation` spans, and both messages repeat the response's `message_id` and `usage`. The observer sets the four `gen_ai.usage.*` token attributes on the first generation span of each `message_id` and on none of that response's other spans, so a sum over generation spans counts every response once. A message without a `message_id` keeps its usage. That usage is the snapshot taken when the response started: the input, cache-read and cache-creation counts are final, but `gen_ai.usage.output_tokens` holds only the few tokens generated by then, and the response's final output count never reaches the message stream. For authoritative totals, output tokens included, read the session span, which takes them from `ResultMessage#usage`.
 
@@ -126,7 +166,13 @@ The OTel observer sets attributes using both `gen_ai.*` (OTel GenAI) and OpenInf
 
 Missing costs omit both attributes without discarding the last known total; the next reported increment can therefore include an unreported or interrupted turn. The first observation uses the CLI's reported total. If a newer CLI restores historical spend on resume, that first span also includes it: a fresh observer cannot separate spend it never observed. These are CLI cost estimates, not billing records.
 
-Events (`api_retry`, `rate_limit`, `tool_progress`) are recorded on the root span.
+**How this compares with the OTel GenAI semantic conventions.** Nine of the attributes above are `gen_ai.*` names. Three are used as the conventions define them: `gen_ai.request.model`, `gen_ai.response.model`, and `gen_ai.usage.output_tokens` on the session span. The other six are deprecated, removed, not defined or defined differently there, and the observer keeps them for the Langfuse mappings they were added for:
+
+- `gen_ai.system` is deprecated in favor of `gen_ai.provider.name`, and `gen_ai.completion` has been removed.
+- `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens` and `gen_ai.usage.cost` are not names the conventions define. The two cache names are the Anthropic API's field names.
+- `gen_ai.usage.input_tokens` is the API's `input_tokens`, which leaves cache tokens out, while the conventions say the value should include them. A backend that follows the conventions therefore sees only part of the input of a cached turn: 18 tokens for a recorded turn that consumed 49,974. The inclusive count is `llm.token_count.prompt` on the session span.
+
+The observer sets neither `gen_ai.operation.name` nor `gen_ai.provider.name`. This comparison was made against `opentelemetry-semantic_conventions` 1.43.0; the GenAI conventions are still marked as in development.
 
 The `langfuse.observation.type` attribute is set on each span (`agent`/`generation`/`tool`) to enable Langfuse's **trace flow diagram** (DAG graph visualization).
 

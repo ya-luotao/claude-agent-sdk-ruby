@@ -7,8 +7,10 @@ module ClaudeAgentSDK
   module Instrumentation
     # OpenTelemetry observer that emits spans for Claude Agent SDK messages.
     #
-    # Uses standard gen_ai.* semantic conventions recognized by Langfuse, Datadog,
-    # Jaeger, and other OTel-compatible backends.
+    # Span attributes follow the Langfuse and OpenInference conventions, plus a
+    # subset of the OTel gen_ai.* attributes. docs/observability.md lists every
+    # attribute and says where they differ from the OTel GenAI semantic
+    # conventions.
     #
     # Requires the `opentelemetry-api` gem at runtime. Users must configure
     # `opentelemetry-sdk` and an exporter (e.g., `opentelemetry-exporter-otlp`)
