@@ -20,9 +20,9 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller, 'durability of the publish step' do
   let(:metadata) { ClaudeAgentSDK::CLIInstaller::Metadata }
   let(:dir) { @dir }
   let(:binary_path) { File.join(dir, 'claude') }
-  # [:fsync, name, size at that moment], [:fsync_failed, name] and
-  # [:rename, from, to], in order; the random part of a temp name is replaced
-  # by <hex>.
+  # [:fsync, name, size at that moment], [:fsync_failed, name],
+  # [:rename, from, to] and [:rename_failed, from, to], in order; the random
+  # part of a temp name is replaced by <hex>.
   let(:events) { [] }
 
   around do |example|
@@ -39,15 +39,24 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller, 'durability of the publish step' do
   end
 
   # Records every fsync and every rename, then lets the real one run.
-  # +failing+ maps a label to the error its fsync raises instead.
+  # +failing+ maps a label to the error raised instead: by the fsync of that
+  # file, or by the rename onto that name.
   def spy_on_syncs_and_renames(failing: {})
     spy_on_fsync(failing)
+    spy_on_rename(failing)
+  end
+
+  def spy_on_rename(failing)
     log = events
     labeller = method(:label)
     allow(File).to receive(:rename).and_wrap_original do |original, from, to|
-      original.call(from, to)
-      log << [:rename, labeller.call(from), labeller.call(to)]
-      0
+      names = [labeller.call(from), labeller.call(to)]
+      if failing.key?(names.last)
+        log << [:rename_failed, *names]
+        raise failing[names.last]
+      end
+
+      original.call(from, to).tap { log << [:rename, *names] }
     end
   end
 
@@ -133,6 +142,55 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller, 'durability of the publish step' do
     expect(described_class.install(version: '2.1.220', dir: dir)).to eq(binary_path)
     expect(File).to have_received(:open).with(dir, File::RDONLY)
     expect(events.last).to eq([:rename, 'claude.download.<hex>', 'claude'])
+  end
+
+  # What a FIRST install that fails can leave behind, as docs/cli-installer.md
+  # states it. VERSION is recorded before the binary is renamed into place
+  # (that order is what protects a working install during an upgrade), so a
+  # failure at that last step leaves a VERSION with nothing beside it.
+  context 'when a first install fails' do
+    let(:body) { 'not-really-280MB-of-claude' }
+
+    before { stub_release(version: '2.1.220', body: body) }
+
+    it 'publishes no binary but leaves a recorded VERSION when the last step, the rename, fails' do
+      spy_on_syncs_and_renames(failing: { 'claude' => Errno::EIO })
+
+      expect { described_class.install(version: '2.1.220', dir: dir) }
+        .to raise_error(ClaudeAgentSDK::CLIInstallError, /Errno::EIO/)
+
+      expect(events.last(2)).to eq([[:rename, 'VERSION.<hex>.tmp', 'VERSION'],
+                                    [:rename_failed, 'claude.download.<hex>', 'claude']])
+      expect(Dir.children(dir)).to contain_exactly('.install.lock', 'VERSION')
+      expect(metadata.read(dir))
+        .to eq(version: '2.1.220', checksum: Digest::SHA256.hexdigest(body), platform: 'linux-x64')
+      # Lock-free discovery finds no binary there and moves on.
+      expect(described_class.installed_path(dir: dir)).to be_nil
+    end
+
+    it 'is redone cleanly by the next install, which does not trust the leftover VERSION' do
+      spy_on_syncs_and_renames(failing: { 'claude' => Errno::EIO })
+      expect { described_class.install(version: '2.1.220', dir: dir) }.to raise_error(ClaudeAgentSDK::CLIInstallError)
+      events.clear
+      spy_on_syncs_and_renames
+
+      expect(described_class.install(version: '2.1.220', dir: dir)).to eq(binary_path)
+
+      expect(events.map(&:first)).to eq(%i[fsync fsync rename rename fsync])
+      expect(File.binread(binary_path)).to eq(body)
+      expect(Dir.children(dir)).to contain_exactly('.install.lock', 'VERSION', 'claude')
+    end
+
+    it 'leaves only the directory and its lock file when an earlier step fails' do
+      spy_on_syncs_and_renames(failing: { 'claude.download.<hex>' => Errno::EIO })
+
+      expect { described_class.install(version: '2.1.220', dir: dir) }
+        .to raise_error(ClaudeAgentSDK::CLIInstallError, /Errno::EIO/)
+
+      expect(events).to eq([[:fsync_failed, 'claude.download.<hex>']])
+      expect(Dir.children(dir)).to contain_exactly('.install.lock')
+      expect(described_class.installed_path(dir: dir)).to be_nil
+    end
   end
 
   context 'with a working install in place' do
