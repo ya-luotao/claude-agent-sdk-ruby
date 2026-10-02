@@ -136,14 +136,16 @@ module ClaudeAgentSDK
     end
     private_class_method :parse_streamed_message
 
-    # Waiter for control responses awaited OFF the reactor — i.e. a control
-    # method called from inside a hook/can_use_tool/SDK-MCP callback, which
-    # runs on a FiberBoundary worker thread (Python supports this reentrancy
-    # natively: callbacks are event-loop tasks and anyio.Event is
-    # level-triggered). Duck-types Async::Condition#signal for the read
-    # loop's signal sites; the unconditional token push makes it
-    # level-triggered, closing the check-then-wait gap that an
-    # edge-triggered Condition would lose across threads.
+    # Waiter for control responses awaited OFF the reactor that owns the
+    # Query — a control method called from inside a hook/can_use_tool/SDK-MCP
+    # callback, which runs on a FiberBoundary worker thread (Python supports
+    # this reentrancy natively: callbacks are event-loop tasks and
+    # anyio.Event is level-triggered), from any other plain thread, or from a
+    # fiber on another thread's reactor (see #send_control_request for the
+    # choice). Duck-types Async::Condition#signal for the read loop's signal
+    # sites; the unconditional token push makes it level-triggered, closing
+    # the check-then-wait gap that an edge-triggered Condition would lose
+    # across threads.
     class ThreadWaiter
       def initialize
         @queue = ::Queue.new
@@ -1323,10 +1325,25 @@ module ClaudeAgentSDK
       # RuntimeError; the eventual response dropped by the key? guard).
       task = Async::Task.current?
 
-      # Reactor callers wait on an Async::Condition; worker-thread callers
-      # on a ThreadWaiter. Register atomically with the terminal-state check
-      # so EOF cannot strand a sender that missed the final broadcast.
-      waiter = task ? Async::Condition.new : ThreadWaiter.new
+      # The waiter is chosen by reactor OWNERSHIP, not by "has a task". Only
+      # a fiber of the reactor that owns this Query (the one #start ran on,
+      # whose read loop does the signaling) checks its result slot and parks
+      # with no chance for the read loop to run in between, so only there is
+      # the edge-triggered Async::Condition safe. Every other caller races
+      # the read loop between its check and its park and gets the
+      # level-triggered ThreadWaiter: a FiberBoundary worker thread, a plain
+      # thread, and also a fiber on ANOTHER thread's reactor (`Sync {
+      # client.interrupt }` on a request thread while the session lives on a
+      # background reactor; a Sync block inside a :thread-mode callback).
+      # Given a Condition, such a fiber could lose its wakeup on async >=
+      # 2.29, and on async 2.10-2.28 the cross-thread signal raised
+      # FiberError in the read loop, ending the whole session. The deadline
+      # mechanism (#await_control_response) is still chosen by "has a task".
+      #
+      # Register atomically with the terminal-state check so EOF cannot
+      # strand a sender that missed the final broadcast.
+      on_owning_reactor = task && Fiber.scheduler.equal?(@owning_scheduler)
+      waiter = on_owning_reactor ? Async::Condition.new : ThreadWaiter.new
       request_id = @request_counter_mutex.synchronize do
         raise @control_stream_error if @control_stream_error
 
@@ -1376,7 +1393,12 @@ module ClaudeAgentSDK
         # only this deadline is translated, not an outer task's cancellation.
         FiberBoundary.with_cooperative_timeout(task, timeout_seconds, on_timeout: expired) do
           yield
-          waiter.wait until @pending_control_results.key?(request_id)
+          # A ThreadWaiter here belongs to a fiber on a reactor that does not
+          # own this Query: Thread::Queue#pop parks that fiber through its
+          # own scheduler, and the deadline cancels it like any suspension.
+          until @pending_control_results.key?(request_id)
+            waiter.is_a?(ThreadWaiter) ? waiter.wait(nil) : waiter.wait
+          end
         end
       else
         # Only schedulerless callers use stdlib Timeout. A fresh, private
