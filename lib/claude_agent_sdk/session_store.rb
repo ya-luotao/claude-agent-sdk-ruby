@@ -454,10 +454,12 @@ module ClaudeAgentSDK
       # NFC like Python's _get_projects_dir(env_override) — a decomposed
       # Unicode override would otherwise mismatch the NFC paths used for
       # the mirror's projects-dir prefix comparison and drop every frame.
-      return File.join(override.unicode_normalize(:nfc), 'projects') if override
+      # Sessions.nfc_path: under LANG=C the ENV value arrives tagged BINARY,
+      # which unicode_normalize alone raises on.
+      return File.join(Sessions.nfc_path(override), 'projects') if override
 
       home = Sessions.home_dir(env_override)
-      home && File.join(home, '.claude', 'projects').unicode_normalize(:nfc)
+      home && Sessions.nfc_path(File.join(home, '.claude', 'projects'))
     end
   end
 end

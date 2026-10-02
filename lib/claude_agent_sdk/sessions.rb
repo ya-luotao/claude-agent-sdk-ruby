@@ -172,9 +172,23 @@ module ClaudeAgentSDK
     # canonicalize to /private/tmp/proj for its sessions to be found; a plain
     # expand_path (the earlier fallback) resolved no symlink at all.
     def canonicalize_path(dir)
-      File.realpath(dir).unicode_normalize(:nfc)
+      nfc_path(File.realpath(dir))
     rescue SystemCallError
-      resolve_missing_path(File.expand_path(dir)).unicode_normalize(:nfc)
+      nfc_path(resolve_missing_path(File.expand_path(dir)))
+    end
+
+    # +path+ as an NFC-normalized UTF-8 String. Paths are UTF-8 whatever the
+    # locale says, but under LANG=C Ruby hands out what it gets from the
+    # system — ENV values, Dir.pwd, File.realpath — tagged BINARY or US-ASCII.
+    # String#unicode_normalize raises on the first ("Unicode Normalization
+    # not appropriate for ASCII-8BIT": `directory: Dir.pwd` and a non-ASCII
+    # CLAUDE_CONFIG_DIR failed every disk session API there) and leaves the
+    # second as it is, non-ASCII bytes included. So the bytes are tagged
+    # UTF-8 first, and scrubbed when they are not valid UTF-8.
+    def nfc_path(path)
+      utf8 = path.encoding == Encoding::UTF_8 ? path : path.dup.force_encoding(Encoding::UTF_8)
+      utf8 = utf8.scrub unless utf8.valid_encoding?
+      utf8.unicode_normalize(:nfc)
     end
 
     # How many symlinks resolve_missing_path follows before it keeps a link as
@@ -242,7 +256,7 @@ module ClaudeAgentSDK
     #   raised a bare ArgumentError from deep inside every disk session API.
     def config_dir
       dir = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
-      return dir.unicode_normalize(:nfc) if dir && !dir.empty?
+      return nfc_path(dir) if dir && !dir.empty?
 
       home = home_dir
       unless home
@@ -252,7 +266,7 @@ module ClaudeAgentSDK
               'Set CLAUDE_CONFIG_DIR to the directory holding your Claude Code data (normally ~/.claude).'
       end
 
-      File.join(home, '.claude').unicode_normalize(:nfc)
+      nfc_path(File.join(home, '.claude'))
     end
 
     # A usable home directory, or nil when there is none. The ONE definition
@@ -2127,7 +2141,8 @@ module ClaudeAgentSDK
     # These remain accessible for SessionMutations / SessionResume:
     # config_dir, sanitize_path, find_project_dir, detect_worktrees,
     # valid_session_id? (mutation boundary checks), listing_sort_key
-    # (--continue candidate order), read_head_tail, title_and_first_prompt
+    # (--continue candidate order), nfc_path (SessionStores.projects_dir),
+    # read_head_tail, title_and_first_prompt
     # and display_title (the fork title), own_transcript? (the mutations'
     # lookups)
   end
