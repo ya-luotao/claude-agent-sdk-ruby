@@ -56,7 +56,28 @@ ClaudeAgentSDK.create_tool('lookup_order', 'Look up an order', { id: :string }) 
 end
 ```
 
-Any other return value (`nil`, an Integer, an Array, ...) is reported to Claude as an `isError: true` result saying the tool must return a hash with a `:content` key.
+Any other return value (`nil`, an Integer, an Array, ...) is reported to Claude as an `isError: true` result saying the tool must return a hash with a `:content` key. So is a Hash whose `:content` is not an Array — `{ content: 'text' }`, or a single block Hash — with a message saying `:content` must be an Array of content blocks; return the String itself, or wrap the block in an Array.
+
+## Shorthand Input Schemas
+
+`{ name: :string }` is shorthand for a JSON Schema object in which every listed parameter is required. Each value names a type, as a Ruby class or as a Symbol:
+
+| Shorthand | JSON Schema type | The handler receives |
+| --- | --- | --- |
+| `String`, `:string` | `string` | a String |
+| `Integer`, `:integer` | `integer` | an Integer |
+| `Float`, `:float`, `:number` | `number` | an Integer or a Float |
+| `TrueClass`, `FalseClass`, `:boolean` | `boolean` | `true` or `false` |
+| `Array`, `:array` | `array` | an Array, with elements of any type |
+| `Hash`, `:object` | `object` | a Hash with Symbol keys |
+
+```ruby
+ClaudeAgentSDK.create_tool('tag_order', 'Tag an order', { order_id: Integer, tags: Array }) do |args|
+  "Tagged order #{args[:order_id]} with #{args[:tags].join(', ')}"
+end
+```
+
+Arguments are validated against these types before the handler runs. For an optional parameter, the type of an Array's elements, an enum or a per-parameter description, pass a full JSON Schema instead (next section).
 
 ## Pre-built JSON Schemas
 

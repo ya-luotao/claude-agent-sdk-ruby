@@ -36,6 +36,9 @@ module ClaudeAgentSDK
   # mangled into nonsense parameter lists ("additionalProperties" as a
   # required string param). A $ref-only schema without type: 'object' remains
   # indistinguishable from a params hash — declare the type alongside $ref.
+  # For the same reason { type: :object } is this prebuilt accept-any-object
+  # schema even though :object is also a shorthand type: a simple schema with
+  # an object parameter literally named type has to spell it { type: Hash }.
   # @api private
   def self.prebuilt_json_schema?(schema)
     return false unless schema.is_a?(Hash)
@@ -67,13 +70,16 @@ module ClaudeAgentSDK
   # @api private
   def self.ruby_type_to_json_schema(type)
     # Class#=== matches instances, not the class object used in { id: Integer }.
-    type = { String => :string, Integer => :integer, Float => :float,
-             TrueClass => :boolean, FalseClass => :boolean }.fetch(type, type)
+    type = { String => :string, Integer => :integer, Float => :float, TrueClass => :boolean,
+             FalseClass => :boolean, Array => :array, Hash => :object }.fetch(type, type)
     case type
     when :string, String then { type: 'string' }
     when :integer, Integer then { type: 'integer' }
     when :float, Float, :number then { type: 'number' }
     when :boolean, TrueClass, FalseClass then { type: 'boolean' }
+    # The class or the Symbol only. An Array or Hash VALUE ([String], a nested
+    # schema fragment) is not a shorthand and falls through like before.
+    when :array, :object then { type: type.to_s }
     else { type: 'string' } # rubocop:disable Lint/DuplicateBranch -- default fallback; the :string arm stays explicit
     end
   end
@@ -301,9 +307,19 @@ module ClaudeAgentSDK
         ClaudeAgentSDK.normalize_tool_result(tool.handler.call(arguments))
       end
 
-      # Guard before flexible_fetch: it raises on non-Hash inputs.
-      content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, 'content', 'content') : nil
-      return error_tool_result("Tool '#{name}' must return a hash with :content key") unless content
+      # Guard before flexible_fetch: it raises on non-Hash inputs. This first
+      # diagnostic is about the KEY: a present false or nil is a wrong value
+      # and gets the Array diagnostic below, like any other non-Array.
+      unless result.is_a?(Hash) && (result.key?(:content) || result.key?('content'))
+        return error_tool_result("Tool '#{name}' must return a hash with :content key")
+      end
+
+      content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content')
+      # A String or a single block here is not a result an MCP client accepts.
+      unless content.is_a?(Array)
+        return error_tool_result("Tool '#{name}' must return :content as an Array of content blocks " \
+                                 "(got #{content.class})")
+      end
 
       result
     rescue *FiberBoundary::CALLBACK_FAILURES => e
@@ -414,7 +430,7 @@ module ClaudeAgentSDK
     end
 
     # Create dynamic Tool classes from tool definitions
-    def create_tool_classes(tools) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- builds each dynamic MCP::Tool subclass inline
+    def create_tool_classes(tools) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- builds each dynamic MCP::Tool subclass inline
       # Captured so the dynamic class can resolve the effective scheduling
       # mode at call time — same pattern as prompt classes.
       sdk_server = self
@@ -446,16 +462,22 @@ module ClaudeAgentSDK
             end
 
             def input_schema_value
-              # Full-schema construction: the gem JSON-round-trips and
-              # validates against the draft4 metaschema. additionalProperties/
-              # enum/description survive. Empty required arrays are stripped —
-              # draft4's metaschema mandates non-empty required (Python's
-              # modern jsonschema accepts []). Schemas the draft4 metaschema
-              # rejects (numeric exclusiveMinimum, $ref/$defs — valid modern
-              # JSON Schema that Python accepts) fall back to a permissive
-              # schema with a one-time warning: the tool keeps working with
-              # argument validation disabled instead of being permanently
-              # uncallable while tools/list advertises it as healthy.
+              # Full-schema construction: the gem JSON-round-trips the schema
+              # and validates it against the JSON Schema 2020-12 metaschema
+              # (every mcp version this gem supports; older ones used draft4).
+              # additionalProperties/enum/description survive, and so do a
+              # numeric exclusiveMinimum and same-document $ref/$defs. Empty
+              # required arrays are stripped — a holdover from draft4, whose
+              # metaschema mandated a non-empty required.
+              #
+              # A schema the gem refuses (ArgumentError: a draft4-style
+              # boolean exclusiveMinimum, an unknown type, a $ref that leaves
+              # the document, an invalid pattern, ...) falls back to a
+              # permissive schema with a warning, once per tool: the tool
+              # keeps working with argument validation disabled instead of
+              # being permanently uncallable while tools/list advertises it
+              # as healthy. (The warning's "not draft4-compatible" wording
+              # dates from the draft4 days.)
               @input_schema_value ||= begin
                 schema = ClaudeAgentSDK.normalize_tool_schema(@tool_def.input_schema)
                 schema = schema.except(:required) if schema[:required].is_a?(Array) && schema[:required].empty?
@@ -495,11 +517,21 @@ module ClaudeAgentSDK
 
               # Guard BEFORE flexible_fetch: on a non-Hash it raises
               # TypeError/NoMethodError, surfacing garbage instead of the
-              # friendly message.
-              raise "Tool '#{@tool_def.name}' must return a hash with :content key" unless result.is_a?(Hash)
+              # friendly message. This first diagnostic is about the KEY: a
+              # present false or nil is a wrong value and gets the Array
+              # diagnostic below, like any other non-Array.
+              unless result.is_a?(Hash) && (result.key?(:content) || result.key?('content'))
+                raise "Tool '#{@tool_def.name}' must return a hash with :content key"
+              end
 
               content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content')
-              raise "Tool '#{@tool_def.name}' must return a hash with :content key" if content.nil?
+              # A String or a single block Hash would go out as it is, and the
+              # CLI rejects that frame against its schema: the model is told
+              # the SERVER returned a malformed result and never sees the text.
+              unless content.is_a?(Array)
+                raise "Tool '#{@tool_def.name}' must return :content as an Array of content blocks " \
+                      "(got #{content.class})"
+              end
 
               is_error = ClaudeAgentSDK.flexible_fetch(result, 'isError', 'is_error')
               structured_content = ClaudeAgentSDK.flexible_fetch(result, 'structuredContent', 'structured_content')
@@ -611,7 +643,17 @@ module ClaudeAgentSDK
   #
   # @param name [String] Unique identifier for the tool
   # @param description [String] Human-readable description
-  # @param input_schema [Hash] Schema defining input parameters
+  # @param input_schema [Hash] Schema defining input parameters: a full JSON
+  #   Schema (+{ type: 'object', properties: ... }+), or the shorthand
+  #   +{ name: type }+, in which every parameter is required and each type is
+  #   +String+ / +:string+, +Integer+ / +:integer+, +Float+ / +:float+ /
+  #   +:number+, +TrueClass+ / +FalseClass+ / +:boolean+, +Array+ / +:array+
+  #   or +Hash+ / +:object+
+  # @param annotations [Hash, nil] MCP tool annotations (+title+,
+  #   +readOnlyHint+, ...). +maxResultSizeChars+ is also forwarded as
+  #   +_meta['anthropic/maxResultSizeChars']+, the form the CLI reads
+  # @param meta [Hash, nil] The tool's +_meta+. Merged with the size hint
+  #   derived from +annotations+; a key given here wins
   # @param handler [Proc] Block that implements the tool logic. It returns a
   #   String, sent to Claude as a single text block, or a Hash with a
   #   +:content+ Array of MCP content blocks plus optional +:is_error+ /
@@ -646,11 +688,16 @@ module ClaudeAgentSDK
   def self.create_tool(name, description, input_schema, annotations: nil, meta: nil, &handler)
     raise ArgumentError, 'Block required for tool handler' unless handler
 
-    # Auto-populate _meta with maxResultSizeChars from annotations if present
+    # Auto-populate _meta with maxResultSizeChars from annotations if present.
+    # An explicit meta: is merged with that hint rather than replacing it (an
+    # unrelated key used to drop it); a size key the caller sets itself wins,
+    # in either spelling — adding the String key beside a Symbol one would
+    # put the same JSON key in the frame twice.
+    size_key = 'anthropic/maxResultSizeChars'
     resolved_meta = meta
-    if resolved_meta.nil? && annotations
+    if annotations.is_a?(Hash) && (meta.nil? || (meta.is_a?(Hash) && meta.keys.none? { |key| key.to_s == size_key }))
       max_chars = annotations[:maxResultSizeChars] || annotations['maxResultSizeChars']
-      resolved_meta = { 'anthropic/maxResultSizeChars' => max_chars } if max_chars
+      resolved_meta = { size_key => max_chars }.merge(meta || {}) if max_chars
     end
 
     # tools/call arrives from the CLI with the name as a JSON String; the mcp
