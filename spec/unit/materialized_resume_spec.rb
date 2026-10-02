@@ -4,6 +4,7 @@ require 'spec_helper'
 require 'json'
 require 'tmpdir'
 require 'fileutils'
+require 'stringio'
 
 RSpec.describe ClaudeAgentSDK::MaterializedResume do
   # When the mirror dropped batches the materialized config dir is kept, since
@@ -64,6 +65,15 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
       described_class.new(config_dir: config_dir, resume_session_id: sid).preserve_transcripts
     end
 
+    def stderr_of
+      original = $stderr
+      $stderr = StringIO.new
+      yield
+      $stderr.string
+    ensure
+      $stderr = original
+    end
+
     def files_under(dir)
       Dir.glob('**/*', File::FNM_DOTMATCH, base: dir).select { |relative| File.file?(File.join(dir, relative)) }
     end
@@ -87,6 +97,106 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
       FileUtils.remove_entry(config_dir)
 
       expect { preserve }.to output(/transcript mirror dropped batches/).to_stderr
+    end
+
+    # Anything that knows CLAUDE_CONFIG_DIR can replace the temp dir before
+    # teardown. "Delete every entry but projects/" must then delete nothing,
+    # rather than the entries of whatever the path leads to now.
+    #
+    # The original directory is always renamed aside, never deleted, before
+    # its replacement appears: a freshly created directory may otherwise reuse
+    # its inode number and look like the same directory.
+    context 'when the directory is no longer the one the SDK created' do
+      let(:unrelated) { Dir.mktmpdir }
+      let(:aside) { "#{config_dir}-aside" }
+      let(:refusal) { /no longer the directory the SDK created.*deleted nothing in it/ }
+
+      before do
+        { 'projects/-elsewhere/x.jsonl' => "{}\n", 'innocent/keep.txt' => 'synthetic', '.claude.json' => '{}' }
+          .each do |relative, content|
+            path = File.join(unrelated, relative)
+            FileUtils.mkdir_p(File.dirname(path))
+            File.write(path, content)
+          end
+      end
+
+      after do
+        [unrelated, aside].each { |dir| FileUtils.remove_entry(dir) if File.directory?(dir) }
+      end
+
+      it 'deletes nothing through a root that has become a symlink' do
+        materialized = described_class.new(config_dir: config_dir, resume_session_id: sid)
+        File.rename(config_dir, aside)
+        File.symlink(unrelated, config_dir)
+        before_scrub = files_under(unrelated).sort
+
+        warning = stderr_of { materialized.preserve_transcripts }
+
+        expect(files_under(unrelated).sort).to eq(before_scrub)
+        expect(File.symlink?(config_dir)).to be(true)
+        expect(warning).to match(refusal)
+      end
+
+      it 'deletes nothing in a different directory at the same path' do
+        materialized = described_class.new(config_dir: config_dir, resume_session_id: sid)
+        File.rename(config_dir, aside)
+        FileUtils.cp_r(unrelated, config_dir)
+        before_scrub = files_under(config_dir).sort
+
+        warning = stderr_of { materialized.preserve_transcripts }
+
+        expect(files_under(config_dir).sort).to eq(before_scrub)
+        expect(warning).to match(refusal)
+      end
+
+      it 'refuses a symlink it is handed as the directory' do
+        link = File.join(outside, 'replaced-config')
+        File.symlink(unrelated, link)
+        before_scrub = files_under(unrelated).sort
+
+        warning = stderr_of { described_class.new(config_dir: link, resume_session_id: sid).preserve_transcripts }
+
+        expect(files_under(unrelated).sort).to eq(before_scrub)
+        expect(warning).to match(refusal)
+      end
+
+      # What counts is the directory materialize_resume_session created, not
+      # whatever is at the path by the time the MaterializedResume is built.
+      it 'compares with the directory as created, even if it was replaced during materialization' do
+        created = []
+        allow(Dir).to receive(:mktmpdir).and_wrap_original do |original, *args, &block|
+          original.call(*args, &block).tap { |dir| created << dir if File.basename(dir).start_with?('claude-resume-') }
+        end
+        replace_temp_dir = lambda do
+          File.rename(created.last, "#{created.last}-aside")
+          FileUtils.cp_r(unrelated, created.last)
+        end
+        store = Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+          define_method(:list_subkeys) do |_key|
+            replace_temp_dir.call # runs after the transcript and the seed files are written
+            []
+          end
+        end.new
+        project_dir = File.join(outside, 'project')
+        FileUtils.mkdir_p(project_dir)
+        store.append({ 'project_key' => ClaudeAgentSDK.project_key_for_directory(project_dir), 'session_id' => sid },
+                     [{ 'type' => 'user', 'uuid' => 'u1', 'sessionId' => sid, 'message' => { 'role' => 'user', 'content' => 'hi' } }])
+        caller_config_dir = File.join(outside, 'caller-config') # empty: nothing seeded from the developer's own
+        FileUtils.mkdir_p(caller_config_dir)
+
+        materialized = ClaudeAgentSDK::SessionResume.materialize_resume_session(
+          ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: sid, cwd: project_dir,
+                                                 env: { 'CLAUDE_CONFIG_DIR' => caller_config_dir })
+        )
+        before_scrub = files_under(materialized.config_dir).sort
+
+        warning = stderr_of { materialized.preserve_transcripts }
+
+        expect(files_under(materialized.config_dir).sort).to eq(before_scrub)
+        expect(warning).to match(refusal)
+      ensure
+        created&.each { |dir| [dir, "#{dir}-aside"].each { |path| FileUtils.rm_rf(path) } }
+      end
     end
   end
 end

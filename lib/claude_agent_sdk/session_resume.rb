@@ -23,9 +23,13 @@ module ClaudeAgentSDK
   class MaterializedResume
     attr_reader :config_dir, :resume_session_id
 
-    def initialize(config_dir:, resume_session_id:)
+    # +root_identity+ is SessionResume.directory_identity of +config_dir+ as
+    # the SDK created it; materialize_resume_session takes it right after
+    # mkdtemp. Without it, it is taken here.
+    def initialize(config_dir:, resume_session_id:, root_identity: nil)
       @config_dir = config_dir
       @resume_session_id = resume_session_id
+      @root_identity = root_identity || SessionResume.directory_identity(config_dir)
     end
 
     # Best-effort removal of the temp config dir (never raises).
@@ -45,16 +49,54 @@ module ClaudeAgentSDK
     # the CLI writes its own: at startup it saves the seeded .claude.json —
     # which can hold MCP header secrets — as backups/.claude.json.backup.<ts>.
     # A list of names to delete missed that one and would miss the next.
+    #
+    # Deleting "everything else" is only safe inside the directory the SDK
+    # created. Anything that knows CLAUDE_CONFIG_DIR can replace it before
+    # teardown — with a symlink, or another directory at the same path — and
+    # following that would delete files the SDK never wrote. So the root is
+    # checked before the listing and again before each deletion, and nothing
+    # is deleted once it fails; a symlink inside is unlinked, never followed.
     def preserve_transcripts
-      entries = File.directory?(@config_dir) ? Dir.children(@config_dir) : []
-      entries.each do |name|
-        FileUtils.rm_rf(File.join(@config_dir, name)) unless name == 'projects'
-      end
-      warn 'Claude SDK: transcript mirror dropped batches; the session store copy is incomplete. ' \
-           "Preserving the session transcript under #{File.join(@config_dir, 'projects')} instead of " \
-           'deleting it — import it into your session store, then remove the directory.'
+      notice = scrub_all_but_projects
+      warn [preservation_warning, notice].compact.join(' ')
     rescue StandardError => e
       warn "Claude SDK: failed to scrub preserved transcript dir #{@config_dir}: #{e.message}"
+    end
+
+    private
+
+    # Deletes every entry of the root but projects/. Returns nil, or what the
+    # preservation warning has to add.
+    def scrub_all_but_projects
+      return replaced_root_notice unless root_unchanged?
+
+      Dir.children(@config_dir).each do |name|
+        next if name == 'projects'
+        return replaced_root_notice unless root_unchanged?
+
+        FileUtils.rm_rf(File.join(@config_dir, name))
+      end
+      nil
+    end
+
+    # True while config_dir is still the directory the SDK created: a real
+    # directory (lstat: a symlink does not count) with the device and inode
+    # recorded when it was made.
+    def root_unchanged?
+      return false if @root_identity.nil?
+
+      SessionResume.directory_identity(@config_dir) == @root_identity
+    end
+
+    def preservation_warning
+      'Claude SDK: transcript mirror dropped batches; the session store copy is incomplete. ' \
+        "Preserving the session transcript under #{File.join(@config_dir, 'projects')} instead of " \
+        'deleting it — import it into your session store, then remove the directory.'
+    end
+
+    def replaced_root_notice
+      "#{@config_dir} is no longer the directory the SDK created (it was replaced or removed), so the SDK " \
+        'deleted nothing in it — check what it holds before importing from it.'
     end
   end
 
@@ -135,7 +177,7 @@ module ClaudeAgentSDK
     # session id is not a valid UUID) — the caller then falls through to the
     # normal spawn path. Raises SessionStoreError (#cause: the adapter's own
     # exception or the timeout) if a store call fails or times out.
-    def materialize_resume_session(options) # rubocop:disable Metrics/AbcSize -- materialization sequence kept in order
+    def materialize_resume_session(options) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- materialization sequence kept in order
       store = options.session_store
       return nil if store.nil?
       return nil if options.resume.nil? && !options.continue_conversation
@@ -167,6 +209,9 @@ module ClaudeAgentSDK
 
       session_id, lines = resolved
       tmp_base = Dir.mktmpdir('claude-resume-')
+      # Taken now: a teardown that deletes inside the directory checks that
+      # the path still leads to this one (MaterializedResume#preserve_transcripts).
+      root_identity = directory_identity(tmp_base)
       begin
         project_dir = File.join(tmp_base, 'projects', project_key)
         FileUtils.mkdir_p(project_dir)
@@ -188,7 +233,7 @@ module ClaudeAgentSDK
         raise
       end
 
-      MaterializedResume.new(config_dir: tmp_base, resume_session_id: session_id)
+      MaterializedResume.new(config_dir: tmp_base, resume_session_id: session_id, root_identity: root_identity)
     end
 
     # -- Helpers --
@@ -724,6 +769,17 @@ module ClaudeAgentSDK
       File.realpath(dir)
     rescue SystemCallError
       File.expand_path(dir)
+    end
+
+    # [device, inode] of +path+ itself when it is a real directory — lstat, so
+    # a symlink is not followed and does not count — else nil. Taken when the
+    # temp config dir is created; MaterializedResume compares it before it
+    # deletes anything inside.
+    def directory_identity(path)
+      stat = File.lstat(path)
+      stat.directory? ? [stat.dev, stat.ino] : nil
+    rescue SystemCallError, TypeError
+      nil
     end
 
     # Best-effort recursive removal with retries on transient lock errors

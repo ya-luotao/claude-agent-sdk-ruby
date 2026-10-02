@@ -294,7 +294,9 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 > everything else in the temp dir — the seeded credential and settings copies
 > and whatever the CLI wrote beside them, such as its `backups/` copy of
 > `.claude.json` — and warns with the preserved path so you can import them
-> into the store.
+> into the store. If the path no longer leads to the directory the SDK created
+> (it was replaced, for instance by a symlink), the SDK deletes nothing there
+> and the warning says so.
 
 ### Implementing an adapter
 
