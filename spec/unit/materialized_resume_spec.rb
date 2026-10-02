@@ -184,14 +184,42 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
       expect(warning).to include("#{config_dir} could not be moved aside (Permission denied")
     end
 
-    # The transcript was moved: if the scrub is cut short by something that is
-    # not a StandardError (a cancellation, a signal), the new location must
-    # still be said.
-    it 'says where the transcript is when the scrub is interrupted' do
-      warning = preserve_interrupted_at(File, :unlink)
+    # Cut short by something that is not a StandardError (a cancellation, a
+    # signal), it still has to say what to do: #cleanup leaves the directory
+    # alone from then on. Where the transcript is, that copies which were not
+    # removed yet may be left, and which directory to remove once the
+    # transcript is imported — the private one if the directory was moved
+    # there, the temp dir itself if it was not. (Its parent would be $TMPDIR.)
+    context 'when it is interrupted' do
+      # The whole interrupted notice, for a transcript under +transcript_dir+
+      # and +to_remove+ as the directory the user is told to remove.
+      def interrupted(transcript_dir, to_remove)
+        to_remove = Regexp.escape(to_remove)
+        Regexp.new(
+          'transcript mirror dropped batches.* Scrubbing was interrupted; the session transcript is under ' \
+          "#{Regexp.escape(File.join(transcript_dir, 'projects'))}\\. " \
+          "Copies of your credentials and settings .* may be left under #{to_remove} — " \
+          "import the transcript into your session store, then remove #{to_remove}\\.$"
+        )
+      end
 
-      expect(tree(preserved).slice(*transcripts.keys)).to eq(transcripts)
-      expect(warning).to match(/transcript mirror dropped batches.*#{Regexp.escape(File.join(preserved, 'projects'))}/)
+      it 'names the private directory to remove once the directory was moved there' do
+        warning = preserve_interrupted_at(File, :unlink)
+
+        expect(tree(preserved).slice(*transcripts.keys)).to eq(transcripts)
+        expect(File.basename(staging)).to start_with('claude-preserved-resume-')
+        expect(warning).to match(interrupted(preserved, staging))
+        expect(warning).not_to match(/remove #{Regexp.escape(preserved)}\./)
+      end
+
+      it 'names the temp dir itself when the directory had not been moved yet' do
+        warning = preserve_interrupted_at(File, :lstat)
+
+        expect(preserved).to eq(config_dir)
+        expect(Dir.children(scratch)).to contain_exactly('claude-resume-under-test', 'outside')
+        expect(warning).to match(interrupted(config_dir, config_dir))
+        expect(warning).not_to match(/remove #{Regexp.escape(scratch)}\./)
+      end
     end
 
     # A teardown can run twice. Client#disconnect lets go of its

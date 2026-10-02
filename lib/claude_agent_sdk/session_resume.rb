@@ -86,26 +86,38 @@ module ClaudeAgentSDK
     # config_dir is the new location afterwards, the one the warning names.
     def preserve_transcripts
       @kept = true # first: whatever happens below, #cleanup must not delete it
+      original = @config_dir
       announced = false
-      warn "#{MIRROR_DROPPED} #{move_aside_and_scrub}"
+      warn "#{MIRROR_DROPPED} #{move_aside_and_scrub(original)}"
       announced = true
     rescue StandardError => e
       warn "Claude SDK: failed to scrub preserved transcript dir #{@config_dir}: #{e.message}"
       announced = true
     ensure
       # Cut short by something that is not a StandardError (a cancellation, a
-      # signal): the directory may have been moved, so say where it is.
-      unless announced
-        warn "#{MIRROR_DROPPED} Scrubbing was interrupted; the session transcript is under " \
-             "#{File.join(@config_dir, 'projects')}."
-      end
+      # signal). #cleanup leaves the directory alone from now on, so say what
+      # is left to do with it.
+      warn "#{MIRROR_DROPPED} #{interrupted_notice(original)}" unless announced
     end
 
     private
 
-    # Returns the rest of the preservation warning.
-    def move_aside_and_scrub
-      original = @config_dir
+    # What is left to say when the scrub was cut short: where the transcript
+    # is, that copies which were not removed yet may be left, and which
+    # directory to remove once the transcript is imported. That is the private
+    # directory once the move happened (config_dir changed with it; the trash
+    # is in there too) and the temp dir itself before — never its parent,
+    # which would be the system's temp directory.
+    def interrupted_notice(original)
+      holding = @config_dir == original ? @config_dir : File.dirname(@config_dir)
+      "Scrubbing was interrupted; the session transcript is under #{File.join(@config_dir, 'projects')}. Copies of " \
+        "your credentials and settings that were not removed yet may be left under #{holding} — import the " \
+        "transcript into your session store, then remove #{holding}."
+    end
+
+    # Returns the rest of the preservation warning. +original+ is config_dir
+    # as it is when preserve_transcripts starts.
+    def move_aside_and_scrub(original)
       staging, failure = move_aside(original)
       if failure
         return "#{SKIPPED} #{original} could not be moved aside (#{failure.message}). If it is still there, the " \
