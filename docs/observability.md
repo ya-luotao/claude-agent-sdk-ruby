@@ -40,6 +40,7 @@ Or add to your Gemfile:
 ```ruby
 gem 'opentelemetry-sdk', '~> 1.4'
 gem 'opentelemetry-exporter-otlp', '~> 0.28'
+gem 'base64' # the snippet below requires it; under Bundler, Ruby 3.4+ needs it listed
 ```
 
 **2. Configure the OTel SDK** to export to your Langfuse instance:
