@@ -35,6 +35,9 @@ class CLITranscript
 
   attr_reader :session_id, :cwd, :entries
 
+  # The branch stamped on the entries built from here on.
+  attr_writer :git_branch
+
   # @param agent_id [String, nil] build a SUBAGENT transcript (agent-<id>.jsonl)
   def initialize(session_id:, cwd: '/work/app', agent_id: nil, git_branch: 'main',
                  start: Time.utc(2026, 9, 8, 5, 19, 30))
@@ -147,6 +150,11 @@ class CLITranscript
     raw({ 'type' => 'queue-operation', 'operation' => 'enqueue', 'timestamp' => tick,
           'sessionId' => @session_id, 'content' => text })
     raw({ 'type' => 'queue-operation', 'operation' => 'dequeue', 'timestamp' => tick, 'sessionId' => @session_id })
+  end
+
+  # The first line of an interactive session.
+  def mode(mode = 'default')
+    raw({ 'type' => 'mode', 'mode' => mode, 'sessionId' => @session_id })
   end
 
   def permission_mode(mode = 'default')

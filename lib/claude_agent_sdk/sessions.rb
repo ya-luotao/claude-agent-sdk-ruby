@@ -628,8 +628,11 @@ module ClaudeAgentSDK
       # filesystems. Scans the whole head rather than only the first line
       # because the first record may be a metadata-only entry (e.g.
       # permission-mode) with no timestamp field; the first user/assistant
-      # record that follows does carry one (Python #907).
-      first_timestamp = extract_json_string_field(head, 'timestamp', last: false)
+      # record that follows does carry one (Python #907). TOP-LEVEL only, as
+      # the store fold reads it: a file-history-snapshot entry, common near
+      # the start of an interactive session, has no timestamp of its own but
+      # nests one (snapshot.timestamp), and the raw scan reported that one.
+      first_timestamp = extract_top_level_string_field(head, 'timestamp')
       created_at = parse_iso_timestamp_ms(first_timestamp) if first_timestamp
 
       SDKSessionInfo.new(
