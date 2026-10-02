@@ -160,9 +160,7 @@ module ClaudeAgentSDK
         # so it can authenticate. Missing files are fine (API-key auth, etc.).
         copy_auth_files(tmp_base, options.env)
 
-        if SessionStore.implements?(store, :list_subkeys)
-          materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper)
-        end
+        materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper)
       rescue Exception # rubocop:disable Lint/RescueException
         # Any failure after mkdtemp leaves tmp_base (which may already hold a
         # .credentials.json copy) on disk with no path for the caller to clean
@@ -276,17 +274,20 @@ module ClaudeAgentSDK
     # isSidechain check above stays even on the summary path: a missing or
     # stale sidecar row costs one extra load, never a wrong resume.
     def sidechain_flags_from_summaries(store, project_key, timeout_s, scheduling, wrapper)
-      return nil unless SessionStore.implements?(store, :list_session_summaries)
-
-      rows = with_timeout(timeout_s, 'SessionStore#list_session_summaries', scheduling, wrapper) do
-        store.list_session_summaries(project_key)
+      # optional_call: NotImplementedError is a ScriptError that with_timeout
+      # does not wrap.
+      implemented, rows = SessionStores.optional_call(store, :list_session_summaries) do
+        with_timeout(timeout_s, 'SessionStore#list_session_summaries', scheduling, wrapper) do
+          store.list_session_summaries(project_key)
+        end
       end
+      return nil unless implemented
+
       Array(rows).each_with_object({}) do |row, acc|
         sid = row.is_a?(Hash) ? row['session_id'] : nil
         acc[sid] = row.dig('data', 'is_sidechain') == true if sid
       end
-    # NotImplementedError is a ScriptError that with_timeout does not wrap.
-    rescue StandardError, NotImplementedError
+    rescue StandardError
       nil
     end
 
@@ -600,9 +601,17 @@ module ClaudeAgentSDK
     # Load and write all subagent transcripts/metadata under session_id.
     def materialize_subkeys(store, project_dir, project_key, session_id, timeout_s, scheduling, wrapper) # rubocop:disable Metrics/ParameterLists -- store-call context (timeout, scheduling, wrapper) threaded explicitly
       session_dir = File.join(project_dir, session_id)
-      subkeys = with_timeout(timeout_s, "SessionStore#list_subkeys for session #{session_id}", scheduling, wrapper) do
-        store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+      # list_subkeys is optional: without it (or when it raises
+      # NotImplementedError, see optional_call) only the main transcript is
+      # materialized. Only this one call sits inside optional_call: the loop
+      # below calls the REQUIRED #load, and a NotImplementedError from that
+      # must surface as a failed resume, not read as "no list_subkeys".
+      listed, subkeys = SessionStores.optional_call(store, :list_subkeys) do
+        with_timeout(timeout_s, "SessionStore#list_subkeys for session #{session_id}", scheduling, wrapper) do
+          store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+        end
       end
+      return unless listed
 
       Array(subkeys).each do |subpath|
         # Subpaths come from an external store and become filesystem path

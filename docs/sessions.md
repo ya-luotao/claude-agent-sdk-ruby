@@ -2,7 +2,7 @@
 
 Browse, read, mutate, fork, and resume Claude Code sessions directly from Ruby — no CLI subprocess required. By default these APIs read and write `~/.claude/projects/` JSONL files directly, respecting the `CLAUDE_CONFIG_DIR` environment variable (an empty value is treated as unset, falling back to `~/.claude`) and auto-detecting git worktrees. On a host with no usable home directory (`HOME` unset with no passwd entry — e.g. `docker --user` in a minimal image — or an empty/relative `HOME`) and no `CLAUDE_CONFIG_DIR`, the local-disk path raises `ClaudeAgentSDK::ConfigDirError`; set `CLAUDE_CONFIG_DIR` there. Every one of them also takes an optional `session_store:` to operate on a [`SessionStore`](#mirroring-to-a-sessionstore) instead (see [Store-backed sessions](#store-backed-sessions)).
 
-Not-found semantics: the read APIs return `[]`/`nil` for unknown sessions and for directories that do not exist or have no recorded sessions. An explicit `directory:` strictly scopes the search to that project and its git worktrees — there is no cross-project fallback (pass `directory: nil` to search all projects). 0-byte transcript stubs are skipped during session-file resolution. Ids are validated at the boundary: a `session_id` that is not a UUID String, or an `agent_id` that is not a String of `[A-Za-z0-9._-]` characters (or is `.`/`..`), gets the same `[]`/`nil` as an unknown session (`import_session_to_store` raises `ArgumentError`), on the disk and store readers alike. The mutations (`rename_session`, `tag_session`, `delete_session`, `fork_session`, with or without `session_store:`) apply the same check to `session_id` and `up_to_message_id` and raise `ArgumentError` (`Invalid session_id: ...`) for anything that is not a UUID String.
+Not-found semantics: the read APIs return `[]`/`nil` for unknown sessions and for directories that do not exist or have no recorded sessions. A `directory:` that was removed after its sessions were recorded (a deleted worktree) still names its project: the path is resolved as far as it exists, so those sessions can be listed, read, renamed, tagged, forked and deleted through it. An explicit `directory:` strictly scopes the search to that project and its git worktrees — there is no cross-project fallback (pass `directory: nil` to search all projects). 0-byte transcript stubs are skipped during session-file resolution. Ids are validated at the boundary: a `session_id` that is not a UUID String, or an `agent_id` that is not a String of `[A-Za-z0-9._-]` characters (or is `.`/`..`), gets the same `[]`/`nil` as an unknown session (`import_session_to_store` raises `ArgumentError`), on the disk and store readers alike. The mutations (`rename_session`, `tag_session`, `delete_session`, `fork_session`, with or without `session_store:`) apply the same check to `session_id` and `up_to_message_id` and raise `ArgumentError` (`Invalid session_id: ...`) for anything that is not a UUID String. `rename_session` raises `ArgumentError` for a `title:` that is blank or not a usable String (`nil`, another type, invalidly encoded), and `tag_session` for such a `tag:` — except `nil`, which clears the tag.
 
 ## Listing Sessions
 
@@ -25,9 +25,16 @@ ClaudeAgentSDK.list_sessions(directory: '.', include_worktrees: true)
 
 Each `SDKSessionInfo` includes: `session_id`, `summary`, `last_modified`, `file_size`, `custom_title`, `first_prompt`, `git_branch`, `cwd`, `tag`, `created_at`.
 
-Listings are newest first; sessions with the same `last_modified` are ordered by `session_id`, so `offset:`/`limit:` pages are stable across calls and the disk and store listings order identically. Blank (empty or whitespace-only) custom/AI titles, last-prompt and summary entries, `git_branch`, `cwd`, and `tag` values read as absent on both paths. `cwd` is the first non-blank top-level `cwd` in the transcript (a key nested in a tool input doesn't count), falling back to the project path; `first_prompt` is `nil` when the session has no usable prompt. `last_modified` is always Integer epoch milliseconds — the file mtime on disk, the adapter's `mtime` coerced as described under [Implementing an adapter](#implementing-an-adapter) on the store paths.
+Listings are newest first; sessions with the same `last_modified` are ordered by `session_id`, so `offset:`/`limit:` pages are stable across calls and the disk and store listings order identically. Blank (empty or whitespace-only) custom/AI titles, last-prompt and summary entries, `git_branch`, `cwd`, and `tag` values read as absent on both paths. `cwd` is the first non-blank top-level `cwd` in the transcript (a key nested in a tool input doesn't count), falling back to the project path; `first_prompt` is `nil` when the session has no usable prompt; `created_at` is the first top-level `timestamp`. `last_modified` is always Integer epoch milliseconds — the file mtime on disk, the adapter's `mtime` coerced as described under [Implementing an adapter](#implementing-an-adapter) on the store paths (`get_session_info` takes it from the store's `list_sessions`, or else `list_session_summaries`, row for the session — one extra adapter call; a store that implements neither reports the timestamp of the session's last entry instead, `0` when no entry has one).
 
-When `list_sessions` finds the same session in several project directories (copied config dirs, worktrees), it keeps one copy: the newest `last_modified`; on equal mtimes the larger file (the more complete copy); then the copy in the project directory whose name sorts first (worktree listings: the worktree `git worktree list` reports first, i.e. the main worktree).
+The disk path does not read whole transcripts to list them: it looks at the first and the last 64 KiB of each file, and for `first_prompt` and `created_at` at up to the first 1 MiB when those first 64 KiB hold none (a large hook attachment, or a long prompt, often comes first). The store paths fold every entry. The two report the same values unless the entry that decides a field lies outside what the disk path reads:
+
+- a custom title or tag appended while the session was still running stops being seen once more than 64 KiB of transcript follows it (`custom_title` falls back to the AI title or `nil`, `summary` to the next source, `tag` to `nil`) until the CLI resumes the session, which re-appends them at the end;
+- a last-prompt entry that is only at the start of the file is not used for `summary`;
+- `cwd` comes from the first 64 KiB: a first entry larger than that leaves it at the project path;
+- a first prompt whose transcript line ends beyond the first 1 MiB is not found: `first_prompt` is the name of a slash command seen before it, or `nil` — and a session with neither that nor a title or last-prompt entry in its last 64 KiB is not listed from disk at all. Likewise `created_at` is `nil` when no line ending within the first 1 MiB carries a timestamp of its own.
+
+When `list_sessions` finds the same session in several project directories (copied config dirs, worktrees), it keeps one copy: the newest `last_modified`; on equal mtimes the larger file (the more complete copy); then the copy in the project directory whose name sorts first (`directory:` listings: the directory's own copy, then the worktrees in the order `git worktree list` reports them, main worktree first).
 
 ## Reading Session Messages
 
@@ -40,7 +47,7 @@ messages.each { |msg| puts "[#{msg.type}] #{msg.message}" }
 ClaudeAgentSDK.get_session_messages(session_id: 'abc-123-...', offset: 10, limit: 20)
 ```
 
-Each `SessionMessage` includes `type` (`"user"` or `"assistant"`), `uuid`, `session_id`, and `message` (the raw API message Hash, read from the transcript, so its keys are Strings: `msg.message['content']`; see [Hash keys](types.md#hash-keys)).
+Each `SessionMessage` includes `type` (`"user"` or `"assistant"`), `uuid`, `session_id`, and `message` (the raw API message Hash, read from the transcript, so its keys are Strings: `msg.message['content']`; see [Hash keys](types.md#hash-keys)). Messages come back in conversation order. The CLI writes one entry per content block, so an assistant turn with several tool calls comes back as several `assistant` messages and one `user` message per `tool_result`; every result follows the `tool_use` it answers and precedes the next assistant turn. Transcripts are read as UTF-8 whatever the process locale is; a line that does not parse (the last line of a session whose CLI was killed mid-write) is skipped, and bytes that are not valid UTF-8 inside a line that does parse come back as U+FFFD.
 
 ## Reading Subagent Transcripts
 
@@ -112,6 +119,8 @@ ClaudeAgentSDK.delete_session(
 )
 ```
 
+Delete only sessions whose CLI process has exited. A CLI that is still running the session does not notice the deletion: its next write recreates the file with only the entries it writes from then on, so the session comes back in listings holding just the later part of the conversation.
+
 ## Forking a Session
 
 ```ruby
@@ -129,7 +138,9 @@ ClaudeAgentSDK.fork_session(
 )
 ```
 
-> Session mutations use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They are safe to call while the session is open in a CLI process. `fork_session` writes and closes a private staging file before atomically publishing it with a hard link, so partial forks are not discoverable and existing sessions are never overwritten. The project filesystem must support hard links; publication failures leave the source and any existing destination untouched.
+Without `title:` the fork is named after its source, `<title> (fork)`: the title the listing shows for the source (its custom title, else its AI title), else its first prompt, else `Forked session`. The disk and the store path use the same rule.
+
+> `rename_session` and `tag_session` use append-only JSONL writes with `O_WRONLY | O_APPEND` (no `O_CREAT`) for TOCTOU safety. They, and `fork_session`, are safe to call while the session is open in a CLI process; `delete_session` is not (see [Deleting a Session](#deleting-a-session)). `fork_session` writes and closes a private staging file before atomically publishing it with a hard link, so partial forks are not discoverable and existing sessions are never overwritten. The project filesystem must support hard links; publication failures leave the source and any existing destination untouched.
 
 ## Resuming at a Specific Message
 
@@ -294,6 +305,10 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 Subclass `ClaudeAgentSDK::SessionStore` (or duck-type it). Only `#append` and
 `#load` are required; `#list_sessions`, `#delete`, `#list_subkeys`, and
 `#list_session_summaries` are optional and probed via `SessionStore.implements?`.
+An optional method that raises `NotImplementedError` when called counts as not
+implemented too (the stub a delegating wrapper inherits, or an adapter declining
+it at run time): the SDK takes the same fallback, and the conformance suite
+skips that method's contracts.
 Report `mtime` as epoch milliseconds; the SDK also accepts numeric-string,
 ISO-8601-string and `Time` mtimes (ordering them correctly and reporting them
 as Integer epoch ms in `last_modified`), but anything else sorts as oldest and
@@ -489,7 +504,8 @@ be resumed with `session_store:` + `resume:` from the original directory.
 Re-importing appends the entries again, so adapters should dedupe by
 `entry['uuid']`. It raises `ArgumentError` for an invalid `session_id` and
 `Errno::ENOENT` when the transcript cannot be found; an unparseable line is
-skipped with a warning.
+skipped with a warning, and bytes that are not valid UTF-8 inside a line that
+does parse are stored as U+FFFD (an adapter could not serialize them).
 
 > **Deprecated:** the separate store functions (`list_sessions_from_store`,
 > `get_session_info_from_store`, `get_session_messages_from_store`,
