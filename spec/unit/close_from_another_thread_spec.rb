@@ -295,8 +295,14 @@ RSpec.describe ClaudeAgentSDK::Query, 'closed from another thread' do
       transport.wait_for_stdin_eof
       report_liveness_checks(transport.teardown_task, signals)
 
-      # Two liveness checks later — or once the caller has (wrongly) returned.
-      2.times { break if signals.pop == :returned }
+      # Until the caller has checked twice — or has (wrongly) returned.
+      checks = 0
+      while checks < 2
+        signal = signals.pop
+        break if signal == :returned
+
+        checks += 1 if signal == closer
+      end
       transport.exit_cli
       closer.join
       hold << true
