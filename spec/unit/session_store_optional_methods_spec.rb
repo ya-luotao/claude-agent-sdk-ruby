@@ -166,25 +166,44 @@ RSpec.describe 'a session store whose optional methods raise NotImplementedError
   # That is not "list_subkeys is not implemented": the resume must fail, and
   # leave nothing behind, rather than hand over a session without its
   # subagent.
-  it 'lets a NotImplementedError from load surface while a resume materializes subagents' do
-    store = seed(Class.new(ClaudeAgentSDK::InMemorySessionStore) do
-      def load(key)
-        raise NotImplementedError, 'load is not available for subpaths' if key['subpath']
+  context 'when the required load fails for a subagent that list_subkeys names' do
+    let(:store) do
+      seed(Class.new(ClaudeAgentSDK::InMemorySessionStore) do
+        def load(key)
+          raise NotImplementedError, 'load is not available for subpaths' if key['subpath']
 
-        super
-      end
-    end.new)
-    tmpdir = File.join(cwd, 'tmp').tap { |dir| FileUtils.mkdir_p(dir) }
-    options = ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: session_id, cwd: cwd,
-                                                     env: { 'CLAUDE_CONFIG_DIR' => config_dir })
-    saved = ENV.fetch('TMPDIR', nil)
-    ENV['TMPDIR'] = tmpdir
-    begin
-      expect { ClaudeAgentSDK::SessionResume.materialize_resume_session(options) }
-        .to raise_error(NotImplementedError, 'load is not available for subpaths')
-      expect(Dir.children(tmpdir)).to eq([]) # the materialized directory was removed
+          super
+        end
+      end.new)
+    end
+    # The resume materializes into Dir.tmpdir: a private one shows what is left.
+    let(:tmpdir) { File.join(cwd, 'tmp').tap { |dir| FileUtils.mkdir_p(dir) } }
+    let(:options) do
+      ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: store, resume: session_id, cwd: cwd,
+                                             cli_path: File.join(cwd, 'no-such-claude'),
+                                             env: { 'CLAUDE_CONFIG_DIR' => config_dir })
+    end
+
+    around do |example|
+      saved = ENV.fetch('TMPDIR', nil)
+      ENV['TMPDIR'] = tmpdir
+      example.run
     ensure
       saved.nil? ? ENV.delete('TMPDIR') : ENV['TMPDIR'] = saved
+    end
+
+    it 'lets the NotImplementedError surface from the resume materialization and removes its directory' do
+      expect { ClaudeAgentSDK::SessionResume.materialize_resume_session(options) }
+        .to raise_error(NotImplementedError, 'load is not available for subpaths')
+      expect(Dir.children(tmpdir)).to eq([])
+    end
+
+    # The public path: query() materializes the resume before it starts a CLI
+    # (there is none at cli_path, and it is never looked for).
+    it 'lets it surface from query() with resume: and session_store:' do
+      expect { ClaudeAgentSDK.query(prompt: 'continue', options: options) { |_message| nil } }
+        .to raise_error(NotImplementedError, 'load is not available for subpaths')
+      expect(Dir.children(tmpdir)).to eq([])
     end
   end
 
