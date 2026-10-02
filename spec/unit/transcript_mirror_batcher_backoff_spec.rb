@@ -46,5 +46,32 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
 
       expect(attempts).to eq(2) # the backoff ran: one failure, one retry
     end
+
+    # With [0, 0] intervals the example above cannot tell a backoff from no
+    # backoff at all. Here the configured intervals have to reach
+    # Kernel#sleep — intercepted on the batcher, so nothing actually waits.
+    it 'sleeps the configured interval before each retry' do
+      stub_const("#{described_class}::MIRROR_APPEND_BACKOFF_S", [0.25, 0.5].freeze)
+      attempts = 0
+      store = Class.new(ClaudeAgentSDK::SessionStore) do
+        define_method(:append) do |_key, _entries|
+          attempts += 1
+          raise IOError, 'connection reset' if attempts < 3
+        end
+
+        def load(_key) = nil
+      end.new
+      batcher = described_class.new(store: store, projects_dir: projects, on_error: ->(_key, _message) {})
+      sleeps = []
+      allow(batcher).to receive(:sleep) { |seconds| sleeps << seconds }
+
+      Async do
+        batcher.enqueue(file_path, [{ type: 'user', uuid: 'a' }])
+        batcher.flush
+      end.wait
+
+      expect(attempts).to eq(3)
+      expect(sleeps).to eq([0.25, 0.5])
+    end
   end
 end
