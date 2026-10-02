@@ -128,7 +128,8 @@ module ClaudeAgentSDK
     # and `env`, `args` and `headers` of the MCP server configs. An MCP
     # server `url` prints its scheme and host only, and a Hash server config
     # (in `mcp_servers`, or echoed by the CLI in McpServerStatus#config) is
-    # filtered like a typed one.
+    # filtered like a typed one. `mcp_servers` given as a String prints as
+    # `[FILTERED]`.
     #
     # It does not raise: a value that fails while it is rendered shows as
     # `#<ClassName>` (`#<?>` when even its class cannot be asked).

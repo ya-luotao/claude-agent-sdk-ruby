@@ -349,13 +349,15 @@ module ClaudeAgentSDK
 
     # `mcp_servers` holds typed configs, which filter themselves, next to raw
     # Hash configs carrying the same credentials: those are rendered by
-    # Type#inspect_mcp_server_config.
+    # Type#inspect_mcp_server_config. Anything but a Hash (the JSON of a
+    # config as a String, or the path to one) is replaced outright, like a
+    # String `settings`.
     def inspect_attributes
       super.map { |name, value| [name, name == 'mcp_servers' ? inspect_mcp_servers(value) : value] }
     end
 
     def inspect_mcp_servers(servers)
-      return servers unless servers.is_a?(Hash)
+      return '[FILTERED]' unless servers.is_a?(Hash)
 
       servers.to_h { |name, config| [name, config.is_a?(Hash) ? inspect_mcp_server_config(config) : config] }
     rescue StandardError

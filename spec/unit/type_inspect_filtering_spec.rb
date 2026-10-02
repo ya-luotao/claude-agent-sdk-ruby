@@ -110,6 +110,18 @@ RSpec.describe 'Type#inspect credential filtering' do
       expect(rendered).not_to include('settings=')
     end
 
+    it 'filters mcp_servers given as a String: the JSON of a config, or the path to one' do
+      json = JSON.generate(mcpServers: { gh: { command: 'npx', env: { TOKEN: secret } } })
+
+      [json, '/etc/claude/mcp.json'].each do |mcp_servers|
+        rendered = described_class.new(mcp_servers: mcp_servers).inspect
+
+        expect(rendered).to include(' mcp_servers="[FILTERED]"')
+        expect(rendered).not_to include('SECRET')
+        expect(rendered).not_to include('/etc/claude')
+      end
+    end
+
     describe 'raw Hash server configs in mcp_servers' do
       it 'shows type and command of a stdio config and filters args and env' do
         options = described_class.new(
@@ -390,6 +402,19 @@ RSpec.describe 'Type#inspect credential filtering' do
       expect(options.mcp_servers[:api]).to eq(type: 'http', url: "https://mcp.example.com/v1/mcp?api_key=#{secret}",
                                               headers: { 'Authorization' => "Bearer #{secret}" })
       expect(options.mcp_servers[:github][:env]).to eq('GITHUB_PERSONAL_ACCESS_TOKEN' => secret)
+    end
+
+    it 'passes mcp_servers given as a String to --mcp-config as it is' do
+      json = JSON.generate(mcpServers: { gh: { command: 'npx', env: { TOKEN: secret } } })
+      string_options = ClaudeAgentSDK::ClaudeAgentOptions.new(mcp_servers: json)
+      before = command_line(string_options)
+      string_options.inspect
+      string_options.to_s
+
+      expect(command_line(string_options)).to eq(before)
+      expect(before.each_cons(2))
+        .to include(['--mcp-config', %({"mcpServers":{"gh":{"command":"npx","env":{"TOKEN":"#{secret}"}}}})])
+      expect(string_options.mcp_servers).to equal(json)
     end
 
     # A parsed mcp_status frame is never sent anywhere; what must not change
