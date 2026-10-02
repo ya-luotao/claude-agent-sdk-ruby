@@ -670,9 +670,33 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       expect(root_span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
     end
 
-    it 'is a no-op when no root span exists' do
+    it 'gives an error that arrives before any InitMessage a finished session span of its own' do
       fresh_observer = described_class.new
-      expect { fresh_observer.on_error(RuntimeError.new('test')) }.not_to raise_error
+      spans_before = created_spans.length
+
+      fresh_observer.on_error(RuntimeError.new('test'))
+
+      spans = created_spans[spans_before..]
+      expect(spans.map(&:name)).to eq(['claude_agent.session'])
+      expect(spans.first).to have_attributes(finished: true)
+      expect(spans.first.status).to have_attributes(code: OpenTelemetry::Trace::Status::ERROR, description: 'test')
+      expect(spans.first.events.map { |event| event[:name] }).to eq(['exception'])
+    end
+
+    # The CLI exits non-zero after an error result, so query() raises a
+    # ResultError when the trace has already ended. That trace reports the
+    # failure; a second session span for it would be a duplicate.
+    it 'adds no span for an error that follows a finished trace' do
+      observer.on_message(
+        ClaudeAgentSDK::ResultMessage.new(
+          subtype: 'error_during_execution', is_error: true, duration_ms: 1, duration_api_ms: 1,
+          num_turns: 1, session_id: 'sess-1', usage: {}
+        )
+      )
+      observer.on_error(ClaudeAgentSDK::ProcessError.new('Claude Code returned an error result: boom', exit_code: 1))
+
+      expect(created_spans.map(&:name)).to eq(['claude_agent.session'])
+      expect(created_spans.first.events).to be_empty
     end
   end
 
@@ -1245,6 +1269,193 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       observer.on_message(assistant_frame(id: 'msg_a'))
 
       expect(generation_spans.map { |span| token_usage(span).empty? }).to eq([false, false, false, false])
+    end
+  end
+
+  # A CLI that cannot be found or started, an initialize that fails or times
+  # out, a process that dies before its first frame: the session never sends
+  # an InitMessage, so there is no trace to record the error on.
+  describe 'a session that fails before its first InitMessage' do
+    let(:error) { ClaudeAgentSDK::CLINotFoundError.new('Claude Code not found at: /nonexistent/claude') }
+    let(:init_message) do
+      ClaudeAgentSDK::InitMessage.new(subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4')
+    end
+    let(:result_message) do
+      ClaudeAgentSDK::ResultMessage.new(
+        subtype: 'success', is_error: false, duration_ms: 1, duration_api_ms: 1, num_turns: 1,
+        session_id: 'sess-1', usage: {}
+      )
+    end
+
+    before do
+      # As the outer capture, and counting how often each span is finished.
+      allow_any_instance_of(OpenTelemetry::MockTracer).to receive(:start_span) do |_tracer, name, **kwargs|
+        span = OpenTelemetry::MockSpan.new(name, kwargs[:attributes] || {})
+        allow(span).to receive(:finish).and_call_original
+        created_spans << span
+        span
+      end
+    end
+
+    def error_span?(span)
+      span.status&.code == OpenTelemetry::Trace::Status::ERROR && span.events.map { |event| event[:name] } == ['exception']
+    end
+
+    it 'exports a session span with the exception, error status and the prompt, and nothing an init would add' do
+      observer.on_user_prompt('Fix the bug')
+      observer.on_error(error)
+
+      expect(created_spans.map(&:name)).to eq(['claude_agent.session'])
+      span = created_spans.first
+      expect(span.attributes).to eq(
+        'gen_ai.system' => 'anthropic', 'openinference.span.kind' => 'AGENT',
+        'langfuse.observation.type' => 'agent', 'input.mime_type' => 'text/plain',
+        'output.mime_type' => 'text/plain', 'input.value' => 'Fix the bug'
+      )
+      expect(span.status).to have_attributes(code: OpenTelemetry::Trace::Status::ERROR, description: error.message)
+      expect(span.events).to eq(
+        [{ name: 'exception', attributes: { 'exception.type' => 'ClaudeAgentSDK::CLINotFoundError',
+                                            'exception.message' => error.message } }]
+      )
+    end
+
+    # Client#connect notifies on_error and never on_close when it fails
+    # before the handshake; an unfinished span is never exported.
+    it 'finishes that span in on_error, without waiting for an on_close' do
+      observer.on_error(error)
+
+      expect(created_spans.first).to have_attributes(finished: true)
+    end
+
+    it 'does not finish it a second time when on_close follows, as it does in query()' do
+      observer.on_error(error)
+      observer.on_close
+
+      expect(created_spans.length).to eq(1)
+      expect(created_spans.first).to have_received(:finish).once
+    end
+
+    it 'adds the default attributes of the observer' do
+      tagged = described_class.new('langfuse.session.id' => 'checkout-42', 'user.id' => 'user-7')
+      tagged.on_error(error)
+
+      expect(created_spans.first.attributes).to include('langfuse.session.id' => 'checkout-42', 'user.id' => 'user-7')
+    end
+
+    it 'does not carry the prompt of the failed session into the next trace' do
+      observer.on_user_prompt('Failed prompt')
+      observer.on_error(error)
+      observer.on_message(init_message) # a retry on the same observer; no on_close came in between
+
+      expect(created_spans.map { |span| span.attributes['input.value'] }).to eq(['Failed prompt', nil])
+    end
+
+    it 'labels a retry after the failure with its own prompt' do
+      observer.on_user_prompt('Failed prompt')
+      observer.on_error(error)
+      observer.on_close
+      observer.on_user_prompt('Retry prompt')
+      observer.on_message(init_message)
+
+      expect(created_spans.map { |span| span.attributes['input.value'] }).to eq(['Failed prompt', 'Retry prompt'])
+      expect(created_spans.map { |span| error_span?(span) }).to eq([true, false])
+    end
+
+    it 'gives every error that surfaces before the first InitMessage its own finished span' do
+      observer.on_error(error)
+      observer.on_error(ClaudeAgentSDK::CLIConnectionError.new('Not connected'))
+
+      expect(created_spans.map { |span| span.status.description }).to eq([error.message, 'Not connected'])
+      expect(created_spans).to all(have_attributes(finished: true))
+    end
+
+    it 'reports a failed start again once the observer has been closed' do
+      observer.on_message(init_message)
+      observer.on_message(result_message)
+      observer.on_close
+      observer.on_error(error)
+
+      expect(created_spans.map { |span| error_span?(span) }).to eq([false, true])
+      expect(created_spans).to all(have_attributes(finished: true))
+    end
+
+    it 'stays silent for an error between two traces of one session' do
+      observer.on_message(init_message)
+      observer.on_message(result_message)
+      observer.on_error(ClaudeAgentSDK::CLIConnectionError.new('Not connected'))
+      observer.on_message(init_message)
+
+      expect(created_spans.map { |span| error_span?(span) }).to eq([false, false])
+    end
+
+    describe 'through the public entry points' do
+      # The real transport, pointed at a CLI that is not there.
+      let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer], cli_path: '/nonexistent/claude') }
+
+      it 'leaves one finished error span when query() cannot start the CLI' do
+        context = { span: Object.new }
+
+        OpenTelemetry::Context.with_current(context) do
+          expect { ClaudeAgentSDK.query(prompt: 'hello', options: options) { |_message| nil } }
+            .to raise_error(ClaudeAgentSDK::CLINotFoundError)
+        end
+
+        expect(created_spans.map(&:name)).to eq(['claude_agent.session'])
+        expect(error_span?(created_spans.first)).to be(true)
+        expect(created_spans.first).to have_attributes(finished: true, parent_context: context)
+        expect(created_spans.first).to have_received(:finish).once
+      end
+
+      it 'leaves one finished error span when Client#connect cannot start the CLI, though no on_close follows' do
+        notified = []
+        recorder = Object.new.extend(ClaudeAgentSDK::Observer)
+        recorder.define_singleton_method(:on_error) { |_error| notified << :on_error }
+        recorder.define_singleton_method(:on_close) { notified << :on_close }
+        both = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [recorder, observer], cli_path: options.cli_path)
+        context = { span: Object.new }
+
+        OpenTelemetry::Context.with_current(context) do
+          expect { ClaudeAgentSDK::Client.open(options: both) { |_client| nil } }
+            .to raise_error(ClaudeAgentSDK::CLINotFoundError)
+        end
+
+        expect(notified).to eq([:on_error])
+        expect(created_spans.map(&:name)).to eq(['claude_agent.session'])
+        expect(error_span?(created_spans.first)).to be(true)
+        expect(created_spans.first).to have_attributes(finished: true, parent_context: context)
+        expect(created_spans.first).to have_received(:finish).once
+      end
+
+      it 'records the prompt when the CLI dies after the prompt was written and before any InitMessage' do
+        incoming = Async::Queue.new
+        transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+        allow(transport).to receive(:write) do |json|
+          message = JSON.parse(json, symbolize_names: true)
+          case message[:type]
+          when 'control_request'
+            incoming.enqueue(type: 'control_response',
+                             response: { subtype: 'success', request_id: message[:request_id], response: {} })
+          when 'user'
+            incoming.enqueue(:exit)
+          end
+        end
+        allow(transport).to receive(:read_messages) do |&receive|
+          loop do
+            frame = incoming.dequeue
+            raise ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1, stderr: 'boom') if frame == :exit
+
+            receive.call(frame)
+          end
+        end
+
+        expect { ClaudeAgentSDK.query(prompt: 'hello', options: options, transport: transport) { |_message| nil } }
+          .to raise_error(ClaudeAgentSDK::ProcessError, /exit code: 1/)
+
+        expect(created_spans.map(&:name)).to eq(['claude_agent.session'])
+        expect(error_span?(created_spans.first)).to be(true)
+        expect(created_spans.first.attributes).to include('input.value' => 'hello')
+        expect(created_spans.first).to have_received(:finish).once
+      end
     end
   end
 end

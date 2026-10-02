@@ -25,6 +25,8 @@ claude_agent.session            (root span — one per query/session)
 └── ...
 ```
 
+A session that fails before its first `InitMessage` (the CLI cannot be found or started, or the `initialize` handshake fails or times out) still leaves a span. `OTelObserver` emits a `claude_agent.session` span that records the exception and has error status, and ends it at once, so it is exported even when no `on_close` follows: a `Client#connect` that fails before the handshake never calls it. The span carries the observer's default attributes and, if a prompt had already been sent, `input.value`. It has no model, `session.id` or `claude_code.*` attributes, because the CLI never reported them. Once a trace has started, an error is recorded on its session span instead, and an error that arrives after the trace ended adds no span: the usual one is the `ResultError` raised when the CLI exits non-zero after an error result, which that trace already reports.
+
 ## Setup with Langfuse
 
 **1. Install the OTel gems** (not bundled with the SDK — you choose your exporter):
