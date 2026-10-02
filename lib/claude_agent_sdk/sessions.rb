@@ -189,10 +189,12 @@ module ClaudeAgentSDK
     # project key as soon as the target was gone and File.realpath raised.
     #
     # Otherwise as File.expand_path has it: a relative path starts at the
-    # working directory, and a leading ~ or ~user is that home directory
+    # working directory, a leading ~ or ~user is that home directory
     # (File.realpath expands neither, so `directory: '~/project'` has always
-    # been resolved through here).
+    # been resolved through here), and a Pathname is taken as well as a
+    # String (File.path).
     def absolute_path_keeping_dots(dir)
+      dir = File.path(dir)
       return dir if File.absolute_path?(dir)
 
       first, rest = dir.split(File::SEPARATOR, 2)

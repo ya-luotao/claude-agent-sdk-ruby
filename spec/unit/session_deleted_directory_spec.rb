@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'pathname'
 require_relative '../fixtures/cli_transcript'
 require_relative '../fixtures/claude_config_dir'
 
@@ -59,6 +60,22 @@ RSpec.describe 'sessions of a project directory that no longer exists' do
       ClaudeAgentSDK.delete_session(session_id: session_id, directory: removed)
 
       expect(File.exist?(transcript_file)).to be(false)
+    end
+
+    # directory: is declared a String. A Pathname has always been taken as
+    # well, by File.realpath and by what resolves the path when that fails.
+    it 'is found through the directory given as a Pathname',
+       rbs_incompatible: 'passes a Pathname for directory:, which the signature declares String?' do
+      expect(ClaudeAgentSDK.list_sessions(directory: Pathname.new(removed)).map(&:session_id)).to eq([session_id])
+      expect(ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: Pathname.new(removed)).length)
+        .to eq(2)
+      Dir.chdir(cwd) do
+        expect(ClaudeAgentSDK.list_sessions(directory: Pathname.new('removed-worktree')).map(&:session_id))
+          .to eq([session_id])
+      end
+      ClaudeAgentSDK.tag_session(session_id: session_id, tag: 'stale', directory: Pathname.new(removed))
+      expect(ClaudeAgentSDK.get_session_info(session_id: session_id, directory: Pathname.new(removed)).tag)
+        .to eq('stale')
     end
   end
 
