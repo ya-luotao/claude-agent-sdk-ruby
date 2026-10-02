@@ -31,8 +31,8 @@ module ClaudeAgentSDK
   # (which surfaces them as a MirrorErrorMessage). Adapters should dedupe by
   # entry["uuid"] when present, since a retried batch may overlap a prior write.
   #
-  # The semaphore serializes appends (FIFO, and every drain detaches its batch
-  # immediately before queueing on it, so append order matches enqueue order),
+  # The semaphore serializes appends (FIFO, and every drain detaches the whole
+  # buffer once it holds the lock, so append order matches enqueue order),
   # but a #send that exceeds send_timeout is abandoned (its worker thread keeps
   # running) and the next drain proceeds, so two #append calls for the SAME
   # key can briefly overlap. SessionStore#append must be thread-safe per key
@@ -107,14 +107,16 @@ module ClaudeAgentSDK
     #
     # Frames still buffered once #close has started count too. Query#close
     # stops the read task (the background drainer's parent) right after
-    # #close returns, so a frame the read loop enqueued during the close
-    # window — or any below-threshold frame after it — is never appended.
-    # The old per-frame drain detached it into a parked task whose
-    # cancellation counted it; with coalescing it stays in @pending, so it is
-    # accounted here. Evaluated lazily: frames the drainer still manages to
-    # deliver before the check are not drops, and nothing past #close has to
-    # run for a stranded frame to be counted. (A plain ivar/Array#empty? read
-    # is safe cross-thread under the GVL, like @dropped_batches.)
+    # #close returns, so a frame the read loop enqueued after #close detached
+    # — during its final append, or any below-threshold frame after it — is
+    # never appended. (One that arrives while #close is still waiting for the
+    # lock goes out with #close's own batch.) The old per-frame drain detached
+    # such a frame into a parked task whose cancellation counted it; with
+    # coalescing it stays in @pending, so it is accounted here. Evaluated
+    # lazily: frames the drainer still manages to deliver before the check
+    # are not drops, and nothing past #close has to run for a stranded frame
+    # to be counted. (A plain ivar/Array#empty? read is safe cross-thread
+    # under the GVL, like @dropped_batches.)
     def batches_dropped?
       @dropped_batches.positive? || (@closed && !@pending.empty?)
     end
@@ -150,9 +152,10 @@ module ClaudeAgentSDK
       drain
     end
 
-    # Final flush before teardown. Never raises. Bounded: it waits behind at
-    # most the in-flight append, and frames arriving after it detached are
-    # not chased (they count as dropped unless delivered; #batches_dropped?).
+    # Final flush before teardown. Never raises. Bounded: it waits its turn on
+    # the lock, takes whatever is pending at that moment, and does not chase
+    # frames that arrive after that (they count as dropped unless delivered;
+    # #batches_dropped?).
     def close
       @closed = true
       flush
@@ -168,16 +171,16 @@ module ClaudeAgentSDK
 
     # Fire-and-forget on the reactor. The drainer loops until the buffer is
     # back under the thresholds, so while it is live every later frame is
-    # simply buffered and coalesced into its next #drain — live background
-    # tasks <= 1 and detached batches <= 1 + one per #flush / #close caller
-    # parked on @lock, independent of frame rate and store latency.
+    # simply buffered and coalesced into the next #drain — live background
+    # tasks <= 1 and detached batches <= 1 (only the holder of @lock has
+    # one), independent of frame rate and store latency.
     #
     # No lost wakeup: the loop's final over_threshold? check and the ensure
     # clearing the flag run with no suspension point between them, so an
     # #enqueue that saw the flag set is always observed by that check.
-    # Every drainer (this one, #flush, #close) keeps detach-then-acquire, so
-    # detach order == @lock FIFO order and append ordering holds. #drain
-    # never raises.
+    # Every drainer (this one, #flush, #close) detaches inside @lock and
+    # takes everything pending at that moment, so batches leave in @lock FIFO
+    # order and append ordering holds. #drain never raises.
     def schedule_background_drain(task)
       return if @background_drain_live
 
@@ -194,25 +197,29 @@ module ClaudeAgentSDK
       raise
     end
 
-    # Detach the pending buffer, await any prior flush, then send. Detaching
-    # before acquiring the lock lets #enqueue keep accumulating into a fresh
-    # buffer while a prior flush is in flight. Never raises.
+    # Await any prior flush, detach the pending buffer, then send. The buffer
+    # is detached INSIDE the lock: a drain cancelled while it waits for the
+    # lock has taken nothing, so its frames stay in @pending for the next
+    # drain. (It used to detach first, and a #flush cancelled while queued
+    # behind an in-flight append lost its batch — upstream Python PR #1289.)
+    # #enqueue never takes the lock, so it keeps accumulating while a flush
+    # is in flight. Never raises.
     def drain
-      items = @pending
-      @pending = []
-      @pending_entries = 0
-      @pending_bytes = 0
-
       errors = []
-      # Cancellation (Async::Stop — not a StandardError) delivered while
-      # waiting on the lock or inside the append's thread join loses the
-      # detached items without either rescue firing. Teardown would then read
-      # batches_dropped? as false and delete a materialized resume dir holding
-      # the only copy of these entries — count the batch as dropped unless the
-      # flush path ran to completion (do_flush counts its own failures).
-      accounted = items.empty?
+      # Cancellation (Async::Stop — not a StandardError) delivered inside the
+      # append's thread join loses the detached items without either rescue
+      # firing. Teardown would then read batches_dropped? as false and delete
+      # a materialized resume dir holding the only copy of these entries —
+      # count the batch as dropped unless the flush path ran to completion
+      # (do_flush counts its own failures). Until a batch is detached there
+      # is nothing to account for.
+      accounted = true
       begin
         @lock.acquire do
+          items = @pending
+          @pending = []
+          @pending_entries = 0
+          @pending_bytes = 0
           # Emptiness is checked INSIDE the lock (matching the Python batcher):
           # an empty #flush/#close still serializes behind any in-flight or
           # queued drain, so they are true barriers — at result-yield and at
@@ -220,6 +227,7 @@ module ClaudeAgentSDK
           # the read task while a detached batch is still being appended.
           next if items.empty?
 
+          accounted = false
           begin
             do_flush(items, errors)
           rescue StandardError => e
