@@ -89,8 +89,9 @@ module ClaudeAgentSDK
     LITE_READ_BUF_SIZE = 65_536
     MAX_SANITIZED_LENGTH = 200
 
-    # How far into a transcript the disk listing looks for the first prompt
-    # when the head window holds none (see first_prompt_from_file).
+    # How far into a transcript the disk listing looks for the first prompt,
+    # and for the first timestamp, when the head window holds none (see
+    # first_prompt_from_file, created_at_from_file).
     FIRST_PROMPT_SCAN_LIMIT = 1_048_576
 
     UUID_RE = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
@@ -586,15 +587,25 @@ module ClaudeAgentSDK
       prompt || command_fallback || ''
     end
 
-    # Continue the first-prompt scan from the end of the last complete line
-    # of +head+ up to byte +limit+ of the file. Read in fixed-size chunks,
-    # never line by line: one transcript line can be gigabytes, and the
-    # limit has to hold before the bytes are in memory. What is left open at
-    # the end is the last line of a file without a final newline — or a line
-    # cut by the limit, which does not parse and is skipped like any other
-    # bad line. An IO failure here leaves the answer the head gave: this
-    # read is an extra, and must not hide a session.
+    # Continue the first-prompt scan past +head+ (see each_line_past_head). An
+    # IO failure there leaves the answer the head gave.
     def first_prompt_past_head(file_path, head, limit, command_fallback)
+      each_line_past_head(file_path, head, limit) do |line|
+        prompt, command_fallback = first_prompt_in(line, command_fallback)
+        return [prompt, command_fallback] if prompt
+      end
+      [nil, command_fallback]
+    end
+
+    # Yield the lines of a transcript that follow the last complete line of
+    # +head+, up to byte +limit+ of the file. Read in fixed-size chunks,
+    # never line by line: one transcript line can be gigabytes, and the
+    # limit has to hold before the bytes are in memory. What is yielded last
+    # is the final line of a file without a closing newline — or a line cut
+    # by the limit, which does not parse and is skipped by its consumer like
+    # any other bad line. An IO failure ends the read quietly: this read is
+    # an extra, and must not hide a session.
+    def each_line_past_head(file_path, head, limit, &)
       offset = (head.byterindex("\n") || -1) + 1
       open_line = String.new(encoding: Encoding::BINARY)
       File.open(file_path, 'rb') do |file|
@@ -603,15 +614,12 @@ module ClaudeAgentSDK
           offset += chunk.bytesize
           open_line << chunk
           newline = open_line.rindex("\n")
-          next unless newline
-
-          prompt, command_fallback = first_prompt_in(open_line.slice!(0, newline + 1), command_fallback)
-          return [prompt, command_fallback] if prompt
+          open_line.slice!(0, newline + 1).each_line(&) if newline
         end
-        first_prompt_in(open_line, command_fallback)
+        yield open_line unless open_line.empty?
       end
     rescue SystemCallError
-      [nil, command_fallback]
+      nil
     end
 
     # Text blocks of a genuine user entry, or nil when the line should be
@@ -733,6 +741,39 @@ module ClaudeAgentSDK
       presence(custom_title) || presence(ai_title)
     end
 
+    # created_at (epoch ms) for the disk listing: the first top-level
+    # timestamp that parses — what the store fold takes. More reliable than
+    # stat().birthtime, which is unsupported on some filesystems. Every line
+    # is looked at, not only the first: the first record may be a
+    # metadata-only entry (e.g. permission-mode) with no timestamp field, and
+    # the first user/assistant record that follows carries one (Python #907).
+    #
+    # Parsed top-level fields of COMPLETE lines only, never a raw match: a
+    # file-history-snapshot entry, common near the start of an interactive
+    # session, has no timestamp of its own but nests one
+    # (snapshot.timestamp), and on a line the head window cuts a raw match
+    # cannot be told from such a nested one. When the complete head lines
+    # hold no timestamp and the file goes on, the lines past them are read
+    # to their end instead (bounded like the first-prompt scan): the cut line
+    # is usually the one that carries it — an SDK prompt of more than 64 KiB
+    # makes the very first line that long.
+    def created_at_from_file(file_path, head, size)
+      to_eof = size <= head.bytesize
+      each_parsed_entry(head, to_eof) do |entry|
+        created_at = parse_iso_timestamp_ms(entry['timestamp'])
+        return created_at if created_at
+      end
+      return nil if to_eof
+
+      each_line_past_head(file_path, head, [size, FIRST_PROMPT_SCAN_LIMIT].min) do |line|
+        each_parsed_entry(line, true) do |entry|
+          created_at = parse_iso_timestamp_ms(entry['timestamp'])
+          return created_at if created_at
+        end
+      end
+      nil
+    end
+
     def build_session_info(file_path, head, tail, stat, project_path) # rubocop:disable Metrics/AbcSize -- one optional field per SDKSessionInfo attribute
       custom_title, first_prompt = title_and_first_prompt(file_path, head, tail, stat.size)
       # lastPrompt tail entry shows what the user was most recently doing.
@@ -747,17 +788,7 @@ module ClaudeAgentSDK
       tag_line = tail.lines.reverse.find { |ln| ln.start_with?('{"type":"tag"') }
       tag_value = presence(tag_line ? extract_json_string_field(tag_line, 'tag', last: true) : nil)
 
-      # created_at from the first ISO timestamp found in the head (epoch ms).
-      # More reliable than stat().birthtime which is unsupported on some
-      # filesystems. Scans the whole head rather than only the first line
-      # because the first record may be a metadata-only entry (e.g.
-      # permission-mode) with no timestamp field; the first user/assistant
-      # record that follows does carry one (Python #907). TOP-LEVEL only, as
-      # the store fold reads it: a file-history-snapshot entry, common near
-      # the start of an interactive session, has no timestamp of its own but
-      # nests one (snapshot.timestamp), and the raw scan reported that one.
-      first_timestamp = extract_top_level_string_field(head, 'timestamp')
-      created_at = parse_iso_timestamp_ms(first_timestamp) if first_timestamp
+      created_at = created_at_from_file(file_path, head, stat.size)
 
       SDKSessionInfo.new(
         session_id: File.basename(file_path, '.jsonl'),
@@ -2050,7 +2081,8 @@ module ClaudeAgentSDK
                          :pick_leaf, :visible_ancestor?, :off_main_conversation?, :visible_message?,
                          :reattach_parallel_tool_results, :off_chain_tool_results,
                          :content_block_values,
-                         :filter_visible_messages, :build_session_info, :user_entry_texts,
+                         :filter_visible_messages, :build_session_info, :created_at_from_file, :user_entry_texts,
+                         :each_line_past_head,
                          :first_prompt_in, :first_prompt_from_file, :first_prompt_past_head,
                          :valid_agent_id?, :sidechain_head?,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,

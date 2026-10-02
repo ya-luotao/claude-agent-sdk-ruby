@@ -80,19 +80,18 @@ RSpec.describe 'session info from disk and from a store, for one transcript' do
       end
     end
 
-    # An SDK prompt that inlines a document. The prompt is found by the scan
-    # past the head; the entry's own timestamp follows its message on the
-    # same line, beyond the head window.
-    it 'agrees on the prompt of a 300 KB first line, and has no created_at for it on disk' do
+    # An SDK prompt that inlines a document. The prompt, and the entry's own
+    # timestamp after it on the same line, are found by reading that line to
+    # its end past the head window.
+    it 'agrees on the prompt and the created_at of a 300 KB first line' do
       disk, stored = read_both do |t|
         t.prompt(:prompt, "#{'Q' * 300_000} end")
         t.assistant(:answer, t.text('Read.'), parent: :prompt)
       end
 
       expect(disk.first_prompt).to eq("#{'Q' * 200}…")
-      expect([disk.first_prompt, disk.summary, disk.cwd]).to eq([stored.first_prompt, stored.summary, stored.cwd])
-      expect(disk.created_at).to be_nil
-      expect(stored.created_at).not_to be_nil
+      expect(disk.created_at).not_to be_nil
+      expect(fields.to_h { |f| [f, disk.public_send(f)] }).to eq(fields.to_h { |f| [f, stored.public_send(f)] })
     end
   end
 
@@ -108,6 +107,43 @@ RSpec.describe 'session info from disk and from a store, for one transcript' do
 
     expect(disk.created_at).to eq(stored.created_at)
     expect(Time.at(disk.created_at / 1000).utc.strftime('%F %T')).to eq('2026-09-08 05:19:30')
+  end
+
+  # The snapshot line is larger than the head window, which therefore cuts
+  # it: nothing on it can be checked there. Its nested timestamp (written
+  # before the large backup map) must not be taken for the session's; the
+  # line is read to its end, and the first entry with a timestamp of its
+  # own follows it.
+  it 'does not take created_at from the timestamp nested in a snapshot line the window cuts' do
+    disk, stored = read_both do |t|
+      t.mode
+      t.raw({ 'type' => 'file-history-snapshot', 'messageId' => t.id(:snapshot),
+              'snapshot' => { 'messageId' => t.id(:snapshot), 'timestamp' => '2001-01-01T00:00:00.000Z',
+                              'trackedFileBackups' => { 'lib/big.rb' => { 'backupFileName' => 'x' * 70_000 } } },
+              'isSnapshotUpdate' => false })
+      t.prompt(:prompt, 'after the snapshot')
+      t.assistant(:answer, t.text('Done.'), parent: :prompt)
+    end
+
+    expect(disk.first_prompt).to eq('after the snapshot')
+    expect(Time.at(disk.created_at / 1000).utc.year).to eq(2026) # the prompt's, not the snapshot's 2001
+    expect(disk.created_at).to eq(stored.created_at)
+  end
+
+  it 'has no created_at when no line within the first 1 MiB carries a timestamp of its own' do
+    disk, stored = read_both do |t|
+      t.mode
+      t.raw({ 'type' => 'file-history-snapshot', 'messageId' => t.id(:snapshot),
+              'snapshot' => { 'messageId' => t.id(:snapshot), 'timestamp' => '2001-01-01T00:00:00.000Z',
+                              'trackedFileBackups' => { 'lib/big.rb' => { 'backupFileName' => 'x' * 1_100_000 } } },
+              'isSnapshotUpdate' => false })
+      t.prompt(:prompt, 'after the snapshot')
+      t.last_prompt('after the snapshot', leaf: :prompt)
+    end
+
+    expect(disk.summary).to eq('after the snapshot')
+    expect(disk.created_at).to be_nil
+    expect(Time.at(stored.created_at / 1000).utc.year).to eq(2026)
   end
 
   # What only a full read would find. The entries below have more than 64 KiB
