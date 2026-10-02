@@ -669,9 +669,16 @@ module ClaudeAgentSDK
     end
 
     # The run is over: wake the stdin-closing waiter. Idempotent.
+    #
+    # The run is marked ended BEFORE the ceiling is cleared: stopping the
+    # sleeper task yields to whatever else is ready, and a #stream_input task
+    # that writes its next message in that gap must find the run already
+    # ended, so that #reopen_run gives the message a run of its own. Cleared
+    # first, the message joined the run that was about to end, and stdin
+    # closed before the message's own run had produced a frame.
     def end_run
-      clear_run_end_ceiling
       @run_end.end!
+      clear_run_end_ceiling
     end
 
     # Reopen an ended run for work that started after it ended. A waiter the
