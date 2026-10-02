@@ -72,7 +72,22 @@ RSpec.describe ClaudeAgentSDK::Query do
       yield query, feed, ended, task
     ensure
       query.close
+      release_parked_tasks(task)
     end.wait
+  end
+
+  # Closing the query ends the run for good, which releases every task the
+  # example left parked on it (a wait_for_result_and_end_input, a
+  # stream_input). Bounded, and what is still parked is stopped: a task that
+  # close did not release would keep this reactor alive forever, and the
+  # example would hang the suite instead of failing.
+  def release_parked_tasks(task)
+    parked = []
+    task.children&.each { |child| parked << child }
+    task.with_timeout(10) { task.yield while parked.any?(&:alive?) }
+  rescue Async::TimeoutError
+    parked.each(&:stop)
+    raise
   end
 
   describe 'stdin stays open until idle' do

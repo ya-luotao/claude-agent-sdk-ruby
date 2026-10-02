@@ -1458,6 +1458,15 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       writer
     end
 
+    # What the parked thread writer ended with. Bounded: a shutdown that
+    # never interrupts the writer leaves the queue empty forever, and that
+    # must fail the example, not hang the suite.
+    def writer_outcome(outcome)
+      result = outcome.pop(timeout: 10)
+      expect(result).not_to be_nil, 'the writer parked in IO#write was never interrupted'
+      result
+    end
+
     def expect_woken_with_connection_error(writer, caught)
       expect(writer).to be_finished
       expect(caught.size).to eq(1)
@@ -1514,7 +1523,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         expect(second).not_to be_finished
 
         task.with_timeout(5, hang) { transport.end_input }
-        second.wait
+        task.with_timeout(10) { second.wait } # bounded: a writer left parked must fail here, not hang
 
         expect(first).to be_finished
         expect(caught.size).to eq(2)
@@ -1542,7 +1551,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         task.with_timeout(5, hang) { transport.close }
       end.wait
 
-      expect(outcome.pop).to be_a(ClaudeAgentSDK::CLIConnectionError)
+      expect(writer_outcome(outcome)).to be_a(ClaudeAgentSDK::CLIConnectionError)
       expect(w).to be_closed
     ensure
       writer&.join(5)
@@ -1558,7 +1567,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         task.with_timeout(5, hang) { transport.end_input }
       end.wait
 
-      expect(outcome.pop).to be_a(ClaudeAgentSDK::CLIConnectionError)
+      expect(writer_outcome(outcome)).to be_a(ClaudeAgentSDK::CLIConnectionError)
       expect(w).to be_closed
       expect(transport.instance_variable_get(:@stdin)).to be_nil
     ensure
@@ -1621,7 +1630,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         end.wait
 
         # The detached helper's close interrupts the writer.
-        expect(outcome.pop).to be_a(ClaudeAgentSDK::CLIConnectionError)
+        expect(writer_outcome(outcome)).to be_a(ClaudeAgentSDK::CLIConnectionError)
       ensure
         writer&.join(5)
         [r, w].each { |io| io&.close unless io&.closed? }

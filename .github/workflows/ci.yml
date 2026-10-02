@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Every job has a time limit. This suite is built on subprocesses, pipes and
+# a reactor, and the regressions it guards against tend to hang rather than
+# fail; without a limit a stuck example would hold its job for GitHub's
+# default of six hours and name nothing. A healthy job finishes in about a
+# minute, so 15 leaves ample room for a cold bundle install.
 jobs:
   # Main suite + lint on every supported Ruby (Linux). The Ruby 3.4 Linux leg
   # also collects coverage (simplecov, COVERAGE=1): the total goes to the job
@@ -15,6 +20,7 @@ jobs:
   test:
     name: test (${{ matrix.os }}, Ruby ${{ matrix.ruby-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -80,6 +86,7 @@ jobs:
   rbs-test:
     name: rbs runtime type check (Ruby 3.4)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -106,6 +113,7 @@ jobs:
   deps:
     name: deps (${{ matrix.gemfile }}, Ruby ${{ matrix.ruby-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -145,6 +153,7 @@ jobs:
   rails:
     name: rails (${{ matrix.gemfile }}, Ruby ${{ matrix.ruby-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
