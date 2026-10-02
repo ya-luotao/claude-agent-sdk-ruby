@@ -311,6 +311,11 @@ module ClaudeAgentSDK
       # Guard before flexible_fetch: it raises on non-Hash inputs.
       content = result.is_a?(Hash) ? ClaudeAgentSDK.flexible_fetch(result, 'content', 'content') : nil
       return error_tool_result("Tool '#{name}' must return a hash with :content key") unless content
+      # A String or a single block here is not a result an MCP client accepts.
+      unless content.is_a?(Array)
+        return error_tool_result("Tool '#{name}' must return :content as an Array of content blocks " \
+                                 "(got #{content.class})")
+      end
 
       result
     rescue StandardError => e
@@ -419,7 +424,7 @@ module ClaudeAgentSDK
     end
 
     # Create dynamic Tool classes from tool definitions
-    def create_tool_classes(tools) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- builds each dynamic MCP::Tool subclass inline
+    def create_tool_classes(tools) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- builds each dynamic MCP::Tool subclass inline
       # Captured so the dynamic class can resolve the effective scheduling
       # mode at call time — same pattern as prompt classes.
       sdk_server = self
@@ -505,6 +510,14 @@ module ClaudeAgentSDK
 
               content = ClaudeAgentSDK.flexible_fetch(result, 'content', 'content')
               raise "Tool '#{@tool_def.name}' must return a hash with :content key" if content.nil?
+
+              # A String or a single block Hash would go out as it is, and the
+              # CLI rejects that frame against its schema: the model is told
+              # the SERVER returned a malformed result and never sees the text.
+              unless content.is_a?(Array)
+                raise "Tool '#{@tool_def.name}' must return :content as an Array of content blocks " \
+                      "(got #{content.class})"
+              end
 
               is_error = ClaudeAgentSDK.flexible_fetch(result, 'isError', 'is_error')
               structured_content = ClaudeAgentSDK.flexible_fetch(result, 'structuredContent', 'structured_content')

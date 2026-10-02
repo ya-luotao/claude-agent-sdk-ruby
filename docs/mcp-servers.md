@@ -56,7 +56,7 @@ ClaudeAgentSDK.create_tool('lookup_order', 'Look up an order', { id: :string }) 
 end
 ```
 
-Any other return value (`nil`, an Integer, an Array, ...) is reported to Claude as an `isError: true` result saying the tool must return a hash with a `:content` key.
+Any other return value (`nil`, an Integer, an Array, ...) is reported to Claude as an `isError: true` result saying the tool must return a hash with a `:content` key. So is a Hash whose `:content` is not an Array — `{ content: 'text' }`, or a single block Hash — with a message saying `:content` must be an Array of content blocks; return the String itself, or wrap the block in an Array.
 
 ## Shorthand Input Schemas
 
