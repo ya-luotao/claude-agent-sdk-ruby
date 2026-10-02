@@ -173,6 +173,11 @@ module ClaudeAgentSDK
         # +max_bytes+ (the manifest's declared size, when it has one) aborts a
         # response that runs long instead of filling the disk before the
         # checksum gets a chance to reject it.
+        #
+        # The file is fsynced before it is closed: the caller renames it into
+        # place, and a rename only orders metadata. Without the sync, a power
+        # loss shortly after an install could leave the published name
+        # pointing at an empty or partial file.
         def download_to(url, path, max_bytes: nil)
           with_response(url) do |response|
             written = 0
@@ -185,6 +190,7 @@ module ClaudeAgentSDK
 
                 file.write(chunk)
               end
+              file.fsync
             end
           end
           path
@@ -356,11 +362,14 @@ module ClaudeAgentSDK
         # Atomic: an unpredictable temp name opened O_EXCL, then renamed over
         # the old file. Without this a reader could observe a half-written
         # VERSION, or (worse) the previous version paired with a new binary.
+        # Fsynced before the rename, so that after a power loss VERSION is
+        # the old file or the new one, not an empty one.
         def write(dir, version, checksum, platform)
           tmp = File.join(dir, "#{VERSION_FILE}.#{SecureRandom.hex(8)}.tmp")
           begin
             File.open(tmp, File::WRONLY | File::CREAT | File::EXCL, 0o644) do |file|
               file.write("#{version}\n#{checksum}\n#{platform}\n")
+              file.fsync
             end
             File.rename(tmp, File.join(dir, VERSION_FILE))
           ensure
@@ -585,15 +594,34 @@ module ClaudeAgentSDK
       # (The reverse order — rename then record — briefly published a binary
       # nothing vouched for, and a metadata failure then had to delete the
       # freshly renamed file, taking the previous working install with it.)
+      #
+      # Across a power loss, a rename only orders metadata. So the downloaded
+      # bytes (Http.download_to) and the VERSION bytes (Metadata.write) are
+      # fsynced before their renames: each name then holds a complete file,
+      # the old one or the new one, never an empty or partial one. The
+      # directory is synced after the rename so that an install that returned
+      # is still there afterwards; that sync is best-effort and cannot fail
+      # the install, which keeps the rename the last step that can.
       def publish(dir, binary, version, platform, entry)
         tmp = "#{binary}.download.#{SecureRandom.hex(8)}"
         begin
           fetch_verified(version, platform, entry, tmp)
           Metadata.write(dir, version, entry[:checksum], platform)
           File.rename(tmp, binary)
+          sync_directory(dir)
         ensure
           FileUtils.rm_f(tmp)
         end
+      end
+
+      # Makes the renames in +dir+ durable (VERSION's and the binary's).
+      # Best-effort by necessity: it runs after the rename, where nothing may
+      # fail the install, and not every platform or filesystem can fsync a
+      # directory — some refuse to open one, others answer EINVAL or EBADF.
+      def sync_directory(dir)
+        File.open(dir, File::RDONLY, &:fsync)
+      rescue SystemCallError, IOError, NotImplementedError
+        nil
       end
 
       # Download to an unpredictable sibling temp name (same filesystem, so the

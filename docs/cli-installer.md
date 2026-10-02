@@ -32,7 +32,7 @@ ClaudeAgentSDK::CLIInstaller.installed_path
 
 Failures (unsupported platform, invalid version, HTTP error, response-size cap, oversized download, checksum mismatch, filesystem errors) raise `ClaudeAgentSDK::CLIInstallError`.
 
-**A failed install never breaks a working one.** The new binary is downloaded to a temp file, checksum-verified and recorded, and only then renamed into place — the rename is the last step, and nothing can fail after it. So a failed upgrade leaves the previously installed binary intact and runnable (the SDK keeps working), and the next `install` redoes it cleanly. A first install that fails leaves nothing behind at all.
+**A failed install never breaks a working one.** The new binary is downloaded to a temp file, checksum-verified and recorded, and only then renamed into place — the rename is the last step, and nothing can fail after it. So a failed upgrade leaves the previously installed binary intact and runnable (the SDK keeps working), and the next `install` redoes it cleanly. The binary and `VERSION` are also flushed to disk (`fsync`) before they are renamed into place, so a machine that loses power right after an install comes back with a complete binary or with the previous state, not with a truncated file under the published name. A first install that fails leaves nothing behind at all.
 
 ## When the pin moves
 

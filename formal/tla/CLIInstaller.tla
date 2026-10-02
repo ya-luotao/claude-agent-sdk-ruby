@@ -183,7 +183,26 @@ Fail(i) ==
   /\ Leave(i, "fail")
   /\ UNCHANGED <<tag, vfile, published, everInstalled>>
 
-\* SIGKILL / OOM / power loss: no `ensure`, the temp file stays behind.
+\* The process dies with no `ensure`: SIGKILL, OOM, or the machine losing
+\* power. The temp file stays behind and the flock is gone (released by the
+\* kernel, or lost with it).
+\*
+\* UNCHANGED is exact for a dead process: the files are what the completed
+\* steps left. For a power loss it holds for the two files the properties
+\* read, because of what the code fsyncs: the downloaded bytes before Rename
+\* and the VERSION bytes before Record's rename. A name that survives the
+\* outage therefore holds a complete file -- `binary` and `vfile` are each the
+\* old value or the new one, never an empty or partial file. (Before those
+\* fsyncs a first install could come back as an empty executable `claude`
+\* beside a VERSION naming it, which breaks ReadersSeeVerifiedBinary.)
+\* A rename that had not reached the disk is undone; on a filesystem that
+\* commits directory operations in order, that is this step at an earlier pc.
+\*
+\* Not modelled: the directory fsync after Rename, which is what keeps a
+\* FINISHED install across an outage (best-effort; skipped where a directory
+\* cannot be synced), and `tmps` after an outage -- a leftover temp file may be
+\* missing or short, which is harmless because temp files are only ever
+\* swept, never read. All of it assumes fsync(2) reaches stable storage.
 Crash(i) ==
   /\ pc[i] # "idle"
   /\ Leave(i, "crash")
