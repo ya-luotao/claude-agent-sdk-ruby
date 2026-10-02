@@ -85,7 +85,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'polling sleeps' do
       path = File.join(@dir, 'claude')
       File.write(path, <<~SH)
         #!/bin/sh
-        read _ < '#{gate_path}'
+        read go < '#{gate_path}'
         echo '2.1.286 (Claude Code)'
       SH
       File.chmod(0o755, path)
