@@ -109,6 +109,23 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
       stderr_of { materialized.preserve_transcripts }
     end
 
+    # Runs preserve_transcripts while +method+ of +receiver+ raises something
+    # that is not a StandardError — what a cancellation (Async::Stop) or a
+    # signal looks like — and returns the warning. The wrapper is disarmed
+    # afterwards: the examples and the teardown use the same methods.
+    def preserve_interrupted_at(receiver, method)
+      cancellation = Class.new(Exception) # rubocop:disable Lint/InheritException -- see above
+      interrupting = true
+      allow(receiver).to receive(method).and_wrap_original do |original, *args|
+        raise cancellation if interrupting
+
+        original.call(*args)
+      end
+      stderr_of { expect { materialized.preserve_transcripts }.to raise_error(cancellation) }
+    ensure
+      interrupting = false
+    end
+
     # Where the directory lives once it was moved, and the private directory
     # it was moved into.
     def preserved
@@ -165,19 +182,42 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
     # not a StandardError (a cancellation, a signal), the new location must
     # still be said.
     it 'says where the transcript is when the scrub is interrupted' do
-      cancellation = Class.new(Exception) # rubocop:disable Lint/InheritException -- what Async::Stop looks like
-      interrupting = true
-      allow(File).to receive(:unlink).and_wrap_original do |original, *paths|
-        raise cancellation if interrupting
-
-        original.call(*paths)
-      end
-
-      warning = stderr_of { expect { materialized.preserve_transcripts }.to raise_error(cancellation) }
-      interrupting = false
+      warning = preserve_interrupted_at(File, :unlink)
 
       expect(tree(preserved).slice(*transcripts.keys)).to eq(transcripts)
       expect(warning).to match(/transcript mirror dropped batches.*#{Regexp.escape(File.join(preserved, 'projects'))}/)
+    end
+
+    # A teardown can run twice. Client#disconnect lets go of its
+    # MaterializedResume only once preserve_transcripts returned; cut short, a
+    # later disconnect finds the query handler gone — nothing remembers that
+    # the mirror dropped batches — and calls #cleanup on the same object. What
+    # was kept is the only copy of the dropped turns.
+    context 'when #cleanup is called afterwards' do
+      it 'leaves the preserved directory alone' do
+        preserve
+
+        materialized.cleanup
+
+        expect(tree(preserved)).to eq(transcripts)
+      end
+
+      it 'leaves the transcript in place when the scrub had been interrupted' do
+        preserve_interrupted_at(File, :unlink)
+
+        materialized.cleanup
+
+        expect(tree(preserved).slice(*transcripts.keys)).to eq(transcripts)
+      end
+
+      it 'deletes nothing when it had been interrupted before the directory was moved' do
+        preserve_interrupted_at(File, :lstat)
+
+        materialized.cleanup
+
+        expect(preserved).to eq(config_dir)
+        expect(tree(config_dir)).to eq(secrets.merge(transcripts))
+      end
     end
 
     # An entry that cannot be removed must not pass for scrubbed: backups/ can

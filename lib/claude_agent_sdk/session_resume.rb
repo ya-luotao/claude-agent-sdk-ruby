@@ -37,10 +37,19 @@ module ClaudeAgentSDK
       @config_dir = config_dir
       @resume_session_id = resume_session_id
       @root_identity = root_identity || SessionResume.directory_identity(config_dir)
+      @kept = false
     end
 
     # Best-effort removal of the temp config dir (never raises).
+    #
+    # Does nothing once preserve_transcripts was called, however that went. A
+    # teardown can run twice — a disconnect after one that was cut short —
+    # and the second time nothing remembers that the mirror dropped batches:
+    # it asks for a cleanup of the directory holding the only copy of them.
+    # Leaving copies that were not scrubbed yet is the lesser harm.
     def cleanup
+      return if @kept
+
       SessionResume.rmtree_with_retry(@config_dir)
     end
 
@@ -76,6 +85,7 @@ module ClaudeAgentSDK
     #
     # config_dir is the new location afterwards, the one the warning names.
     def preserve_transcripts
+      @kept = true # first: whatever happens below, #cleanup must not delete it
       announced = false
       warn "#{MIRROR_DROPPED} #{move_aside_and_scrub}"
       announced = true
