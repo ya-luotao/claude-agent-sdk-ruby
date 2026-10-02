@@ -7,8 +7,10 @@ module ClaudeAgentSDK
   module Instrumentation
     # OpenTelemetry observer that emits spans for Claude Agent SDK messages.
     #
-    # Uses standard gen_ai.* semantic conventions recognized by Langfuse, Datadog,
-    # Jaeger, and other OTel-compatible backends.
+    # Span attributes follow the Langfuse and OpenInference conventions, plus a
+    # subset of the OTel gen_ai.* attributes. docs/observability.md lists every
+    # attribute and says where they differ from the OTel GenAI semantic
+    # conventions.
     #
     # Requires the `opentelemetry-api` gem at runtime. Users must configure
     # `opentelemetry-sdk` and an exporter (e.g., `opentelemetry-exporter-otlp`)
@@ -49,10 +51,12 @@ module ClaudeAgentSDK
         @default_attributes = default_attributes
         @root_span = nil
         @root_context = nil
+        @trace_started = false # an InitMessage opened a trace since this observer was created or last closed
         @tool_spans = {} # tool_use_id => span
         @first_user_input = nil # first user prompt of the current trace
         @pending_prompt = nil # prompt that belongs to the NEXT trace (see on_user_prompt)
         @last_assistant_text = nil # capture last assistant text for trace output
+        @usage_reported_message_ids = Set.new # API responses whose usage a generation span of this trace carries
         @cost_session_id = nil
         @last_total_cost_usd = nil
       end
@@ -99,16 +103,25 @@ module ClaudeAgentSDK
         end
       end
 
-      # Recording-only by design: a Client session can survive an error (the
-      # user may rescue one bad message and keep receiving), so finishing here
-      # would orphan later spans and break the next turn. Finish ownership
-      # stays with end_trace/on_close; start_trace also finishes any dangling
-      # span from a previous trace as the never-disconnected backstop.
+      # With a trace open this is recording-only by design: a Client session
+      # can survive an error (the user may rescue one bad message and keep
+      # receiving), so finishing here would orphan later spans and break the
+      # next turn. Finish ownership stays with end_trace/on_close; start_trace
+      # also finishes any dangling span from a previous trace as the
+      # never-disconnected backstop.
+      #
+      # With no trace open, an error that arrives before the session's first
+      # InitMessage gets a session span of its own (record_failed_start). Once
+      # a trace has run, an error between traces stays unrecorded: the usual
+      # one is the ResultError query() raises when the CLI exits non-zero
+      # after an error result, and the trace that just ended already reports
+      # that failure.
       def on_error(error)
-        return unless @root_span
-
-        @root_span.record_exception(error)
-        @root_span.status = OpenTelemetry::Trace::Status.error(error.message)
+        if @root_span
+          record_error(@root_span, error)
+        elsif !@trace_started
+          record_failed_start(error)
+        end
       end
 
       def on_close
@@ -120,11 +133,12 @@ module ClaudeAgentSDK
         @pending_prompt = nil
         @cost_session_id = nil
         @last_total_cost_usd = nil
+        @trace_started = false
       end
 
       private
 
-      def start_trace(message) # rubocop:disable Metrics/AbcSize -- flat mapping of init-message fields to root span attributes
+      def start_trace(message)
         # A new init without an intervening ResultMessage (e.g. /clear or an
         # interrupted turn) supersedes the current trace; finish it so it is
         # exported instead of leaking as a never-ended span, and reset the
@@ -141,21 +155,9 @@ module ClaudeAgentSDK
         # because it came first chronologically.
         @first_user_input = @pending_prompt if @pending_prompt
         @pending_prompt = nil
+        @trace_started = true
 
-        attrs = {
-          # gen_ai semantic conventions (recognized by Langfuse, Datadog, etc.)
-          'gen_ai.system' => 'anthropic',
-          'gen_ai.request.model' => message.model,
-          # OpenInference conventions (recognized by Langfuse, Arize)
-          'openinference.span.kind' => 'AGENT',
-          'llm.model_name' => message.model,
-          'input.mime_type' => 'text/plain',
-          'output.mime_type' => 'text/plain',
-          # Langfuse: 'agent' type triggers the trace flow diagram (DAG graph)
-          'langfuse.observation.type' => 'agent',
-          # Session tracking
-          'session.id' => message.session_id
-        }.merge(@default_attributes)
+        attrs = session_span_attrs(model: message.model, session_id: message.session_id)
 
         if message.respond_to?(:claude_code_version) && message.claude_code_version
           attrs['claude_code.version'] = message.claude_code_version
@@ -172,6 +174,50 @@ module ClaudeAgentSDK
         return unless @first_user_input && !@first_user_input.empty?
 
         @root_span.set_attribute('input.value', truncate(@first_user_input))
+      end
+
+      # The attributes every session span starts with. The model and the
+      # session id come from the InitMessage, so the span of a session that
+      # failed before sending one (record_failed_start) has neither.
+      def session_span_attrs(model: nil, session_id: nil)
+        {
+          # gen_ai semantic conventions (recognized by Langfuse, Datadog, etc.)
+          'gen_ai.system' => 'anthropic',
+          'gen_ai.request.model' => model,
+          # OpenInference conventions (recognized by Langfuse, Arize)
+          'openinference.span.kind' => 'AGENT',
+          'llm.model_name' => model,
+          'input.mime_type' => 'text/plain',
+          'output.mime_type' => 'text/plain',
+          # Langfuse: 'agent' type triggers the trace flow diagram (DAG graph)
+          'langfuse.observation.type' => 'agent',
+          # Session tracking
+          'session.id' => session_id
+        }.merge(@default_attributes)
+      end
+
+      # A session that fails before its first InitMessage (the CLI cannot be
+      # found or started, initialize fails or times out, the process dies
+      # before its first frame) has no trace to record the error on, so the
+      # error gets a session span of its own, with the prompt if one was sent.
+      #
+      # The span is finished here and never becomes @root_span. query() does
+      # call on_close next, but a Client#connect that fails before the
+      # handshake never does, and an unfinished span is never exported; with
+      # no root span set, a later on_close has nothing to finish a second
+      # time. The buffers are reset so that the failed session's prompt cannot
+      # label the next trace of a reused observer.
+      def record_failed_start(error)
+        span = @tracer.start_span('claude_agent.session', attributes: compact_attrs(session_span_attrs))
+        span.set_attribute('input.value', truncate(@first_user_input)) if @first_user_input
+        record_error(span, error)
+        span.finish
+        reset_session_buffers
+      end
+
+      def record_error(span, error)
+        span.record_exception(error)
+        span.status = OpenTelemetry::Trace::Status.error(error.message)
       end
 
       def handle_assistant(message)
@@ -203,7 +249,7 @@ module ClaudeAgentSDK
           'gen_ai.completion' => truncate(combined_text),
           # OpenInference: Langfuse maps output.value to the Preview Output field
           'output.value' => truncate(combined_text)
-        }.merge(usage_token_attrs(message.usage || {}))
+        }.merge(generation_usage_attrs(message))
 
         OpenTelemetry::Context.with_current(@root_context) do
           span = @tracer.start_span('claude_agent.generation', attributes: compact_attrs(attrs))
@@ -343,10 +389,12 @@ module ClaudeAgentSDK
 
       # Clear per-trace buffers so a reused observer instance (sequential
       # query() calls or multi-turn Client sessions) does not stamp stale
-      # input/output onto later traces.
+      # input/output onto later traces, and so the message ids remembered by
+      # generation_usage_attrs never outlive their trace.
       def reset_session_buffers
         @first_user_input = nil
         @last_assistant_text = nil
+        @usage_reported_message_ids.clear
       end
 
       def record_retry_event(message)
@@ -395,6 +443,20 @@ module ClaudeAgentSDK
           'gen_ai.usage.cache_creation_input_tokens' => usage_value(usage, :cache_creation_input_tokens),
           'gen_ai.usage.cache_read_input_tokens' => usage_value(usage, :cache_read_input_tokens)
         }
+      end
+
+      # gen_ai.usage.* attributes for one generation span. The CLI sends one
+      # assistant frame per content block, and every frame of an API response
+      # repeats that response's message id and usage snapshot, so putting the
+      # snapshot on every span counted the response's input, cache-read and
+      # cache-creation tokens once per block. Only the first span of a message
+      # id carries it. A message without an id cannot be grouped and keeps its
+      # usage; a frame without usage does not use up its id.
+      def generation_usage_attrs(message)
+        attrs = compact_attrs(usage_token_attrs(message.usage || {}))
+        return attrs if attrs.empty? || message.message_id.nil?
+
+        @usage_reported_message_ids.add?(message.message_id) ? attrs : {}
       end
 
       # Usage hashes arrive symbol-keyed from the live CLI (symbolize_names:
