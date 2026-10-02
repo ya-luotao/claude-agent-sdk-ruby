@@ -175,7 +175,10 @@ module ClaudeAgentSDK
     end
 
     # Probe order (first hit wins):
-    #   1. CLAUDE_CLI_PATH — explicit operator override, no discovery at all.
+    #   1. CLAUDE_CLI_PATH — the operator's override, when it names an
+    #      executable regular file. A value that does not (a missing file, a
+    #      directory, a file that is not executable) is skipped without a
+    #      warning, and discovery goes on with the steps below.
     #   2. A project-local vendored binary (CLIInstaller). Deliberately ahead
     #      of PATH: the point of a pinned, vendored CLI is that it beats
     #      whatever version happens to be installed globally on the host.

@@ -104,7 +104,7 @@ The variable is deliberately not rake's conventional `VERSION`, which Rails' `db
 
 With no explicit `cli_path:` in `ClaudeAgentOptions`, the transport probes in this order:
 
-1. `CLAUDE_CLI_PATH` — an explicit path to an executable, no discovery at all (a relative value is resolved against the process's working directory, not `cwd:`)
+1. `CLAUDE_CLI_PATH` — a path to the CLI, used when it names an executable regular file (a relative value is resolved against the process's working directory, not `cwd:`). A value that names anything else — a missing file, a directory, a file that is not executable — is skipped without a warning, and discovery continues with the steps below
 2. The vendored binary (`CLIInstaller.installed_path`, i.e. `vendor/claude` under `CLIInstaller.root` or the working directory — see [above](#where-vendorclaude-is)) — deliberately ahead of `PATH`, so a pinned install beats whatever is installed globally
 3. `claude` on the process's `PATH` — the first executable regular file of that name. The SDK searches `PATH` itself and does not run `which`. A `PATH` passed in `env:` belongs to the session and is not searched here
 4. Common install locations (`~/.claude/local/claude`, `/usr/local/bin/claude`, …) — only an executable regular file counts, and the `~` ones are skipped when there is no usable home directory (HOME unset with no passwd entry, or a non-absolute HOME)
