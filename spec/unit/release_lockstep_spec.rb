@@ -27,6 +27,17 @@ RSpec.describe 'release lockstep' do
     expect(plugin['version']).to eq(ClaudeAgentSDK::VERSION)
   end
 
+  # The CLI takes a plugin's version from its plugin.json; a `version` on the
+  # marketplace entry is ignored when the two differ, and `claude plugin
+  # validate --strict` rejects the mismatch. One place to bump is enough.
+  it 'declares no version on the marketplace entry' do
+    marketplace = read_json('.claude-plugin/marketplace.json')
+    entry = marketplace.fetch('plugins').find { |plugin| plugin['name'] == 'claude-agent-ruby' }
+
+    expect(entry).not_to be_nil
+    expect(entry).not_to have_key('version')
+  end
+
   # The skill is published twice: at the repository root and inside the
   # plugin. An edit to one copy only would ship two different skills.
   it 'keeps the two copies of the skill identical' do
@@ -35,7 +46,7 @@ RSpec.describe 'release lockstep' do
 
     expect(root_copy).not_to be_empty
     expect(plugin_copy.keys).to match_array(root_copy.keys)
-    expect(plugin_copy.select { |path, content| root_copy[path] != content }.keys).to eq([])
+    expect(plugin_copy.reject { |path, content| root_copy[path] == content }.keys).to eq([])
   end
 
   # The CLI version to install is CLIInstaller::PINNED_CLI_VERSION, which
