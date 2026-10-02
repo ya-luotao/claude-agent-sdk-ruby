@@ -105,7 +105,7 @@ Use `agents:` to configure sub-agent definitions passed to the CLI via the contr
 
 ## Custom transport
 
-`Client.new` accepts `transport_class:` and `transport_args:` to swap the default `SubprocessCLITransport` for a custom transport (must implement the `Transport` interface: `connect`, `write`, `read_messages`, `close`).
+`Client.new` accepts `transport_class:` and `transport_args:` to swap the default `SubprocessCLITransport` for a custom transport; `ClaudeAgentSDK.query` and `.ask` take a ready-made instance as `transport:`. A custom transport must implement `connect`, `write`, `read_messages`, `end_input` and `close` (`ready?` is optional: the SDK never calls it). A transport without `end_input` makes `query` and `ask` hang (or raise `NotImplementedError`, if it subclasses `Transport`). `read_messages` yields each stdout line parsed with `JSON.parse(line, symbolize_names: true)`, and `close` must be safe to call twice.
 
 ```ruby
 client = ClaudeAgentSDK::Client.new(

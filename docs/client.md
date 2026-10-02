@@ -108,7 +108,7 @@ end
 
 By default, `Client` uses `SubprocessCLITransport` to spawn the Claude Code CLI locally. You can provide a custom transport class to connect via other channels (e.g., remote SSH, WebSocket, or a sandbox VM).
 
-A transport must implement six methods:
+A transport must implement five methods. It can subclass `ClaudeAgentSDK::Transport`, whose methods raise `NotImplementedError` until you override them, or be any object that has them:
 
 | Method | Purpose |
 |---|---|
@@ -116,8 +116,9 @@ A transport must implement six methods:
 | `write(data)` | Send raw JSON-line bytes to stdin |
 | `read_messages { \|hash\| ... }` | Yield each stdout line as a Hash parsed with `JSON.parse(line, symbolize_names: true)` (the SDK reads Symbol keys; see [Hash keys](types.md#hash-keys)); block until the stream closes |
 | `end_input` | Signal EOF on stdin |
-| `close` | Terminate and clean up |
-| `ready?` | Report whether the transport can accept I/O |
+| `close` | Terminate and clean up. Must be safe to call more than once |
+
+`ready?` (report whether the transport can accept I/O) is on the `Transport` base class as well, but the SDK never calls it, so it is optional. `end_input` is not: a one-shot `query()` calls it when the run is over, and `Client` calls it when a streamed prompt is exhausted.
 
 **Environment your transport should give the CLI.** `SubprocessCLITransport`
 sets a few variables that a custom transport has to set itself. The one that
