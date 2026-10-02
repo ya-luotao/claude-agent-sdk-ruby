@@ -49,6 +49,14 @@ module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-co
   # The failure the SDK has always answered, to compare the above against.
   ORDINARY_FAILURE = 'ordinary failure'
 
+  # A process exit whose message is not valid UTF-8: text cut inside a
+  # multibyte character, as `byteslice` leaves it. The CLI is told the
+  # message with the stray byte replaced, and the exit still ends the
+  # process (spec/unit/control_error_encoding_spec.rb).
+  INVALID_UTF8_EXIT = {
+    text: 'no such order: 注文'.byteslice(0, 16), message: "SystemExit: no such order: \uFFFD", exitstatus: 3
+  }.freeze
+
   RESPONSE = 'RESPONSE '
   SURVIVED = 'CALLBACK_EXIT_HARNESS_SURVIVED'
 
@@ -77,6 +85,7 @@ module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-co
     when :interrupt then raise Interrupt
     when :signal then raise SignalException, 'TERM'
     when :sigint, :sigterm then busy_until_signalled(kind == :sigint ? 'INT' : 'TERM')
+    when :exit_invalid_utf8 then raise SystemExit.new(INVALID_UTF8_EXIT[:exitstatus], INVALID_UTF8_EXIT[:text])
     when :none then nil # the callback succeeds
     when :standard_error then raise ORDINARY_FAILURE
     when :not_implemented, :security_error then raise(*FAILURE_KINDS.fetch(kind))
