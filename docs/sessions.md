@@ -287,8 +287,11 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 > (terminal append failures — timeouts immediately, other failures after up to
 > three attempts — surfaced as `MirrorErrorMessage`):
 > the store copy is then incomplete and the temp dir holds the only copy of the
-> dropped turns, so the SDK scrubs the credential copies, keeps the transcripts,
-> and warns with the preserved path so you can import them into the store.
+> dropped turns, so the SDK keeps the transcripts (`projects/`), deletes
+> everything else in the temp dir — the seeded credential and settings copies
+> and whatever the CLI wrote beside them, such as its `backups/` copy of
+> `.claude.json` — and warns with the preserved path so you can import them
+> into the store.
 
 ### Implementing an adapter
 

@@ -36,12 +36,19 @@ module ClaudeAgentSDK
     # Teardown when the transcript mirror dropped batches: the CLI's
     # authoritative transcript lives in this temp dir, and the store copy is
     # missing the dropped turns — deleting the dir would permanently lose
-    # them. Keep the transcripts (projects/), remove the redacted credential
-    # copies, and tell the user where the data is so they can import it into
-    # the store manually. Never raises.
+    # them. Keep the transcripts (projects/), delete every other entry, and
+    # tell the user where the data is so they can import it into the store
+    # manually. Never raises.
+    #
+    # An allow-list on purpose. Besides the files the SDK seeds
+    # (.credentials.json, .claude.json, settings.json, cowork_settings.json)
+    # the CLI writes its own: at startup it saves the seeded .claude.json —
+    # which can hold MCP header secrets — as backups/.claude.json.backup.<ts>.
+    # A list of names to delete missed that one and would miss the next.
     def preserve_transcripts
-      ['.credentials.json', '.claude.json', 'settings.json', 'cowork_settings.json'].each do |name|
-        FileUtils.rm_f(File.join(@config_dir, name))
+      entries = File.directory?(@config_dir) ? Dir.children(@config_dir) : []
+      entries.each do |name|
+        FileUtils.rm_rf(File.join(@config_dir, name)) unless name == 'projects'
       end
       warn 'Claude SDK: transcript mirror dropped batches; the session store copy is incomplete. ' \
            "Preserving the session transcript under #{File.join(@config_dir, 'projects')} instead of " \
