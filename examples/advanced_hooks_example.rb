@@ -32,12 +32,15 @@ Async do
 
       # Check for dangerous patterns
       if original_command.match?(/rm\s+-rf|sudo\s+rm/)
-        # Create typed deny output
+        # Create typed deny output. The CLI reads the decision from
+        # hookSpecificOutput, so the hook returns it inside a
+        # SyncHookJSONOutput: output.to_h on its own would put the fields at
+        # the top level, where the CLI ignores them and the command runs.
         output = ClaudeAgentSDK::PreToolUseHookSpecificOutput.new(
           permission_decision: 'deny',
           permission_decision_reason: 'Destructive commands are not allowed'
         )
-        return output.to_h
+        return ClaudeAgentSDK::SyncHookJSONOutput.new(hook_specific_output: output)
       end
 
       # Modify command to be safer (example: add echo prefix for demo)
@@ -46,7 +49,7 @@ Async do
         output = ClaudeAgentSDK::PreToolUseHookSpecificOutput.new(
           permission_decision: 'allow'
         )
-        return output.to_h
+        return ClaudeAgentSDK::SyncHookJSONOutput.new(hook_specific_output: output)
       end
     end
 
@@ -182,10 +185,12 @@ hook_with_context = lambda do |input, tool_use_id, context|
 
   puts "Hook context signal available: #{!context.signal.nil?}"
 
-  # Return allow decision
-  ClaudeAgentSDK::PreToolUseHookSpecificOutput.new(
-    permission_decision: 'allow'
-  ).to_h
+  # Return allow decision (inside a SyncHookJSONOutput, as above)
+  ClaudeAgentSDK::SyncHookJSONOutput.new(
+    hook_specific_output: ClaudeAgentSDK::PreToolUseHookSpecificOutput.new(
+      permission_decision: 'allow'
+    )
+  )
 end
 
 puts "Hook with context signal defined (for demonstration)"

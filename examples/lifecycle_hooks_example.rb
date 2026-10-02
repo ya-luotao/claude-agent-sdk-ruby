@@ -17,10 +17,15 @@ Async do
   # SessionStart: fires at session startup, resume, clear, or compact
   session_start = lambda do |input, _id, _ctx|
     puts "[SessionStart] source=#{input.source}, model=#{input.model}"
-    # Return additional context to inject into the conversation
-    ClaudeAgentSDK::SessionStartHookSpecificOutput.new(
-      additional_context: "Session started at #{Time.now}"
-    ).to_h
+    # Return additional context to inject into the conversation. The CLI
+    # reads event-specific fields from hookSpecificOutput, so the typed
+    # output goes inside a SyncHookJSONOutput: its own #to_h alone would
+    # leave the fields at the top level, where the CLI ignores them.
+    ClaudeAgentSDK::SyncHookJSONOutput.new(
+      hook_specific_output: ClaudeAgentSDK::SessionStartHookSpecificOutput.new(
+        additional_context: "Session started at #{Time.now}"
+      )
+    )
   end
 
   # SessionEnd: fires when the session ends
@@ -58,16 +63,20 @@ Async do
   # Setup: fires on init or maintenance
   setup = lambda do |input, _id, _ctx|
     puts "[Setup] trigger=#{input.trigger}" # "init" or "maintenance"
-    ClaudeAgentSDK::SetupHookSpecificOutput.new(
-      additional_context: "Environment: #{RUBY_PLATFORM}"
-    ).to_h
+    ClaudeAgentSDK::SyncHookJSONOutput.new(
+      hook_specific_output: ClaudeAgentSDK::SetupHookSpecificOutput.new(
+        additional_context: "Environment: #{RUBY_PLATFORM}"
+      )
+    )
   end
 
   # PermissionDenied: fires when a tool permission is denied
   permission_denied = lambda do |input, _id, _ctx|
     puts "[PermissionDenied] tool=#{input.tool_name}, reason=#{input.reason}"
     # Optionally retry
-    ClaudeAgentSDK::PermissionDeniedHookSpecificOutput.new(retry: false).to_h
+    ClaudeAgentSDK::SyncHookJSONOutput.new(
+      hook_specific_output: ClaudeAgentSDK::PermissionDeniedHookSpecificOutput.new(retry: false)
+    )
   end
 
   # ConfigChange: fires when settings files change
@@ -80,17 +89,21 @@ Async do
   cwd_changed = lambda do |input, _id, _ctx|
     puts "[CwdChanged] #{input.old_cwd} -> #{input.new_cwd}"
     # Optionally return watch paths
-    ClaudeAgentSDK::CwdChangedHookSpecificOutput.new(
-      watch_paths: [input.new_cwd]
-    ).to_h
+    ClaudeAgentSDK::SyncHookJSONOutput.new(
+      hook_specific_output: ClaudeAgentSDK::CwdChangedHookSpecificOutput.new(
+        watch_paths: [input.new_cwd]
+      )
+    )
   end
 
   # FileChanged: fires when watched files change
   file_changed = lambda do |input, _id, _ctx|
     puts "[FileChanged] #{input.event}: #{input.file_path}"
-    ClaudeAgentSDK::FileChangedHookSpecificOutput.new(
-      watch_paths: [File.dirname(input.file_path)]
-    ).to_h
+    ClaudeAgentSDK::SyncHookJSONOutput.new(
+      hook_specific_output: ClaudeAgentSDK::FileChangedHookSpecificOutput.new(
+        watch_paths: [File.dirname(input.file_path)]
+      )
+    )
   end
 
   # InstructionsLoaded: fires when CLAUDE.md or memory files are loaded
