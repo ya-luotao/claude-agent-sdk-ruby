@@ -76,7 +76,7 @@ module ClaudeAgentSDK
       when String
         cmd.push('--system-prompt', @options.system_prompt)
       when SystemPromptFile
-        cmd.push('--system-prompt-file', @options.system_prompt.path)
+        cmd.push('--system-prompt-file', path_string(@options.system_prompt.path))
       when SystemPromptCustom
         # The object form of a String prompt; snapshot travels on the
         # initialize request, not as a CLI flag.
@@ -98,11 +98,17 @@ module ClaudeAgentSDK
       (hash[:type] || hash['type']).to_s
     end
 
+    # A path as the String the command line takes. A Pathname (anything that
+    # answers #to_path) is converted; every other value is returned as it is.
+    def path_string(path)
+      path.respond_to?(:to_path) ? path.to_path : path
+    end
+
     def append_hash_system_prompt(cmd, prompt_hash)
       case hash_type(prompt_hash)
       when 'file'
         prompt_path = prompt_hash[:path] || prompt_hash['path']
-        cmd.push('--system-prompt-file', prompt_path) if prompt_path
+        cmd.push('--system-prompt-file', path_string(prompt_path)) if prompt_path
       when 'custom'
         prompt = prompt_hash.fetch(:prompt) { prompt_hash['prompt'] }
         cmd.push('--system-prompt', custom_prompt_text(prompt))
@@ -313,16 +319,14 @@ module ClaudeAgentSDK
       settings_is_path = false
 
       if @options.settings
-        if @options.settings.is_a?(String)
+        if @options.settings.respond_to?(:to_path)
+          # A Pathname names a settings file; it is never tried as inline JSON.
+          settings_hash, settings_is_path = settings_file(cmd, @options.settings.to_path)
+        elsif @options.settings.is_a?(String)
           begin
             settings_hash = JSON.parse(@options.settings)
           rescue JSON::ParserError
-            if @options.sandbox.nil? # rubocop:disable Metrics/BlockNesting -- settings-is-a-path fallback inside the JSON parse rescue
-              settings_is_path = true
-              cmd.push('--settings', @options.settings)
-            else
-              settings_hash = load_settings_file(@options.settings)
-            end
+            settings_hash, settings_is_path = settings_file(cmd, @options.settings)
           end
         elsif @options.settings.is_a?(Hash)
           settings_hash = @options.settings.dup
@@ -338,6 +342,17 @@ module ClaudeAgentSDK
       end
 
       cmd.push('--settings', JSON.generate(settings_hash)) if !settings_is_path && !settings_hash.empty?
+    end
+
+    # --settings for a settings file, as [settings_hash, settings_is_path].
+    # Without a sandbox option the path itself is passed and the CLI reads
+    # the file. With one, the file is read here, so that the option can be
+    # folded into its content.
+    def settings_file(cmd, path)
+      return [load_settings_file(path), false] unless @options.sandbox.nil?
+
+      cmd.push('--settings', path)
+      [{}, true]
     end
 
     # The sandbox section as the CLI reads it. A Hash stands for the
@@ -437,6 +452,9 @@ module ClaudeAgentSDK
       when Array
         tools_value = @options.tools.empty? ? '' : @options.tools.join(',')
         cmd.push('--tools', tools_value)
+      when String
+        # The CLI's own syntax ("Read,Grep", "default", ""): passed as written.
+        cmd.push('--tools', @options.tools)
       when ToolsPreset
         cmd.push('--tools', 'default')
       when Hash
@@ -531,7 +549,7 @@ module ClaudeAgentSDK
         end
         next unless plugin_path
 
-        cmd.push('--plugin-dir', plugin_path)
+        cmd.push('--plugin-dir', path_string(plugin_path))
       end
     end
 

@@ -81,15 +81,15 @@ module ClaudeAgentSDK
 
   # A local plugin directory (ClaudeAgentOptions#plugins entries).
   class SdkPluginConfig < Type
-    def initialize: (?path: String?) -> void
+    def initialize: (?path: (String | Pathname)?) -> void
                   | (Hash[Symbol | String, untyped]? attributes) -> void
 
-    attr_accessor path: String?
+    attr_accessor path: (String | Pathname)?
 
     # "local".
     attr_reader type: String
 
-    def to_h: () -> { type: String, path: String? }
+    def to_h: () -> { type: String, path: (String | Pathname)? }
   end
 
   class SandboxNetworkConfig < Type
@@ -181,15 +181,15 @@ module ClaudeAgentSDK
 
   # A system prompt loaded from a file.
   class SystemPromptFile < Type
-    def initialize: (?path: String?) -> void
+    def initialize: (?path: (String | Pathname)?) -> void
                   | (Hash[Symbol | String, untyped]? attributes) -> void
 
-    attr_accessor path: String?
+    attr_accessor path: (String | Pathname)?
 
     # "file".
     attr_reader type: String
 
-    def to_h: () -> { type: String, path: String? }
+    def to_h: () -> { type: String, path: (String | Pathname)? }
   end
 
   # The Claude Code preset system prompt, optionally extended.

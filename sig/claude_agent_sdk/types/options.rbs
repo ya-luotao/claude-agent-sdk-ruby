@@ -48,7 +48,7 @@ module ClaudeAgentSDK
                       ?permission_prompt_tool_name: String?,
                       ?cwd: (String | Pathname)?,
                       ?cli_path: (String | Pathname)?,
-                      ?settings: (String | Hash[Symbol | String, untyped])?,
+                      ?settings: (String | Pathname | Hash[Symbol | String, untyped])?,
                       ?add_dirs: Array[String | Pathname]?,
                       ?env: Hash[String | Symbol, String?]?,
                       ?extra_args: Hash[String | Symbol, untyped]?,
@@ -68,7 +68,7 @@ module ClaudeAgentSDK
                       ?plugins: Array[SdkPluginConfig | Hash[Symbol | String, untyped]]?,
                       ?debug_stderr: (_Puts | String)?,
                       ?betas: Array[String]?,
-                      ?tools: (Array[String] | ToolsPreset | Hash[Symbol | String, untyped])?,
+                      ?tools: (Array[String] | ToolsPreset | Hash[Symbol | String, untyped] | String)?,
                       ?sandbox: (SandboxSettings | Hash[Symbol | String, untyped] | bool)?,
                       ?thinking: thinking_config?,
                       ?effort: (String | Symbol | Integer)?,
@@ -133,8 +133,9 @@ module ClaudeAgentSDK
 
     attr_accessor cli_path: (String | Pathname)?
 
-    # A settings JSON String, a path to a settings file, or a Hash.
-    attr_accessor settings: (String | Hash[Symbol | String, untyped])?
+    # A settings JSON String, a path to a settings file (a String or a
+    # Pathname), or a Hash.
+    attr_accessor settings: (String | Pathname | Hash[Symbol | String, untyped])?
 
     attr_accessor add_dirs: Array[String | Pathname]?
 
@@ -185,8 +186,9 @@ module ClaudeAgentSDK
     # Entries of SDK_BETAS.
     attr_accessor betas: Array[String]?
 
-    # The base tool set: tool names, or a preset.
-    attr_accessor tools: (Array[String] | ToolsPreset | Hash[Symbol | String, untyped])?
+    # The base tool set: tool names (an Array, or the CLI's comma-separated
+    # String such as "Read,Grep"), or a preset.
+    attr_accessor tools: (Array[String] | ToolsPreset | Hash[Symbol | String, untyped] | String)?
 
     # true / false are forwarded as-is (a bare toggle).
     attr_accessor sandbox: (SandboxSettings | Hash[Symbol | String, untyped] | bool)?

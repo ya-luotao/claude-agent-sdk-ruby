@@ -64,7 +64,7 @@ Guides: [Structured Output](configuration.md#structured-output), [Thinking Confi
 |-----------------|--------------|
 | `nil` (the default) | `--system-prompt ""`: an empty prompt, not Claude Code's default one |
 | a String, `SystemPromptCustom`, or `{ type: 'custom', prompt: '...' }` | `--system-prompt <text>` |
-| `SystemPromptFile`, or `{ type: 'file', path: '...' }` | `--system-prompt-file <path>` |
+| `SystemPromptFile`, or `{ type: 'file', path: '...' }` (the path a String or a `Pathname`) | `--system-prompt-file <path>` |
 | `SystemPromptPreset`, or `{ type: 'preset', preset: 'claude_code' }` | no system prompt flag, so the CLI uses its default prompt; `append:` adds `--append-system-prompt <text>` |
 
 `exclude_dynamic_sections` on a preset is sent as `initialize.excludeDynamicSections` ([Cross-User Prompt Caching](configuration.md#cross-user-prompt-caching)), and `snapshot` on a preset or a custom prompt as `initialize.systemPromptSnapshot` ([System Prompt Snapshot](configuration.md#system-prompt-snapshot)). Both are left out when unset.
@@ -79,7 +79,7 @@ Guides: [Tools Configuration](configuration.md#tools-configuration), [Skills](co
 
 | Option | Type | Default | Sent to the CLI as |
 |--------|------|---------|--------------------|
-| `tools` | `Array[String] \| ToolsPreset \| Hash[Symbol \| String, untyped]` | `nil` | `--tools <comma-joined names>`. `[]` sends `--tools ""` (no built-in tools); a `ToolsPreset` sends `--tools default` |
+| `tools` | `Array[String] \| ToolsPreset \| Hash[Symbol \| String, untyped] \| String` | `nil` | `--tools <comma-joined names>`; a String is sent as written, in the CLI's own comma-separated form. `[]` sends `--tools ""` (no built-in tools); a `ToolsPreset`, or `{ type: 'preset' }`, sends `--tools default` |
 | `allowed_tools` | `Array[String]` | `[]` | `--allowedTools` (comma-joined; no flag when empty) |
 | `disallowed_tools` | `Array[String]` | `[]` | `--disallowedTools` (comma-joined; no flag when empty) |
 | `permission_mode` | `String` | `nil` | `--permission-mode` |
@@ -100,7 +100,7 @@ Guides: [Custom Tools (SDK MCP Servers)](mcp-servers.md), [Subagent capabilities
 | `mcp_servers` | `Hash[String \| Symbol, mcp_server_config] \| String` | `{}` | `--mcp-config`: a Hash as `{"mcpServers": {...}}` JSON, a String (a file path or JSON) as given. An SDK server contributes only its `type` and `name`; its tools are served in your process over the control protocol |
 | `strict_mcp_config` | `bool` | `false`; explicit `nil` stays `nil` | `--strict-mcp-config`. See [`strict_mcp_config`](#strict_mcp_config) |
 | `agents` | `Hash[String \| Symbol, AgentDefinition \| Hash[Symbol \| String, untyped]]` | `nil` | `initialize.agents` |
-| `plugins` | `Array[SdkPluginConfig \| Hash[Symbol \| String, untyped]]` | `nil` | `--plugin-dir <path>`, once per plugin |
+| `plugins` | `Array[SdkPluginConfig \| Hash[Symbol \| String, untyped]]` | `nil` | `--plugin-dir <path>`, once per plugin. The path may be a String or a `Pathname` |
 
 ### `strict_mcp_config`
 
@@ -114,7 +114,7 @@ Guides: [Bare Mode](configuration.md#bare-mode), [Verbatim Prompts](configuratio
 
 | Option | Type | Default | Sent to the CLI as |
 |--------|------|---------|--------------------|
-| `settings` | `String \| Hash[Symbol \| String, untyped]` | `nil` | `--settings`: a Hash as JSON, a String (a file path or JSON) as given. With `sandbox` set as well, one merged JSON value |
+| `settings` | `String \| Pathname \| Hash[Symbol \| String, untyped]` | `nil` | `--settings`: a Hash as JSON, a String (a file path or JSON) as given, a `Pathname` as the path of a settings file. With `sandbox` set as well, one merged JSON value |
 | `setting_sources` | `Array[String]` | `nil` | `--setting-sources` (comma-joined). `[]` sends `--setting-sources ""`; `nil` sends no flag |
 | `add_dirs` | `Array[String \| Pathname]` | `[]` | `--add-dir`, once per directory |
 | `bare` | `bool` | `nil` | `--bare` |
