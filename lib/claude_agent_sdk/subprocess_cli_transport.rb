@@ -39,6 +39,12 @@ module ClaudeAgentSDK
     VERSION_CHECK_TIMEOUT_SECONDS = 2 # mirrors Python's anyio.fail_after(2)
     # @api private
     RECENT_STDERR_LINES_LIMIT = 20
+    # How the CLI's stderr says that a requested sandbox could not start and
+    # that the session carries on without one — see
+    # #warn_if_sandbox_unavailable.
+    #
+    # @api private
+    SANDBOX_DISABLED_MARKER = 'Sandbox disabled:'
     # After stdout EOF the child has closed (or lost) its last stdout handle,
     # so it is normally already exiting; a CLI still running this long
     # afterwards is wedged and gets the same TERM -> KILL ladder as #close.
@@ -144,6 +150,7 @@ module ClaudeAgentSDK
       @stderr_task = nil
       @recent_stderr = []
       @recent_stderr_mutex = Mutex.new
+      @sandbox_warning_emitted = false
       # Serializes stdin access across the reactor fiber (transport writes
       # from inside Async) and user-callback threads spawned via FiberBoundary
       # (tool handlers / hooks calling Client#query). Without this lock,
@@ -410,6 +417,7 @@ module ClaudeAgentSDK
         next if line_str.empty?
 
         record_bounded_stderr(line_str)
+        warn_if_sandbox_unavailable(line_str)
 
         # Per-line isolation: a callback that raises (e.g. user's logger
         # transiently failing) must not poison the rest of the stderr stream.
@@ -455,6 +463,7 @@ module ClaudeAgentSDK
         next if line_str.empty?
 
         record_bounded_stderr(line_str)
+        warn_if_sandbox_unavailable(line_str)
       end
     end
 
@@ -1193,6 +1202,42 @@ module ClaudeAgentSDK
       @recent_stderr_mutex.synchronize do
         @recent_stderr << line
         @recent_stderr.shift if @recent_stderr.size > RECENT_STDERR_LINES_LIMIT
+      end
+    end
+
+    # When the sandbox was requested but cannot start (and
+    # sandbox.failIfUnavailable is not set), the CLI writes
+    # "⚠ Sandbox disabled: <reason>" to stderr and runs the session's
+    # commands unsandboxed. A host only sees stderr through a `stderr:`
+    # callback, so repeat that line as a Ruby warning: once per transport,
+    # and only when this session's own options asked for the sandbox.
+    #
+    # Called for every stderr line, on the drain thread. Best-effort like
+    # OptionWarnings#emit: a closed or broken $stderr must not raise out of
+    # here and end the drain (the CLI would stall on a full stderr pipe).
+    def warn_if_sandbox_unavailable(line)
+      return if @sandbox_warning_emitted || !line.include?(SANDBOX_DISABLED_MARKER)
+      return unless sandbox_requested?
+
+      @sandbox_warning_emitted = true
+      begin
+        warn '[claude-agent-sdk] The sandbox this session requested is not active: the CLI is running ' \
+             "commands WITHOUT sandboxing. It reported: \"#{line.strip}\". To make this an error instead, " \
+             'set fail_if_unavailable: true on SandboxSettings (failIfUnavailable: true in a Hash).'
+      rescue StandardError
+        nil
+      end
+    end
+
+    # True when ClaudeAgentOptions#sandbox enables the sandbox: `true`, a
+    # SandboxSettings with `enabled` true, or a Hash with an `enabled` /
+    # 'enabled' key that is true (Hashes are forwarded to the CLI verbatim).
+    def sandbox_requested?
+      sandbox = @options.sandbox
+      case sandbox
+      when SandboxSettings then sandbox.enabled == true
+      when Hash then sandbox[:enabled] == true || sandbox['enabled'] == true
+      else sandbox == true
       end
     end
 

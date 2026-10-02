@@ -212,6 +212,8 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
+`enabled: true` asks for the sandbox; it does not guarantee one. When the CLI cannot start it (a Linux container without `bubblewrap` and `socat` is the usual case), it prints `⚠ Sandbox disabled: …` on its stderr and runs commands **without** sandboxing. If the `sandbox:` option enabled the sandbox, the SDK repeats that line as a Ruby warning, once per session, prefixed `[claude-agent-sdk]`. Set `fail_if_unavailable: true` (`failIfUnavailable` in a Hash) to make the CLI exit with an error instead.
+
 See [examples/sandbox_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/sandbox_example.rb).
 
 ## Bare Mode
