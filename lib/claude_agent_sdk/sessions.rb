@@ -937,8 +937,13 @@ module ClaudeAgentSDK
     # List sessions from a SessionStore. Store-backed counterpart to
     # list_sessions. Uses the store's incremental summaries (one batch call +
     # gap-fill) when available, else falls back to list_sessions + one load per
-    # session. Sessions are derived through the same fold the disk path uses, so
-    # both paths agree for identical transcript content.
+    # session. Sessions are derived by folding EVERY entry
+    # (SessionSummary.fold_session_summary), field by field under the rules
+    # of the disk reader — which only reads the head and tail windows of a
+    # transcript (plus the bounded first-prompt scan). The two paths agree
+    # for identical transcript content unless the entry deciding a field
+    # lies outside those windows; docs/sessions.md ("Listing Sessions") lists
+    # the cases.
     #
     # @param session_store [SessionStore] store implementing list_session_summaries and/or list_sessions
     # @return [Array<SDKSessionInfo>] sorted by last_modified descending

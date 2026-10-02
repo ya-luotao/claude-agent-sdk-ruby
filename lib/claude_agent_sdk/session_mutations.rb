@@ -27,8 +27,15 @@ module ClaudeAgentSDK
 
     # Rename a session by appending a custom-title entry.
     #
-    # list_sessions reads the LAST custom-title from the file tail, so
-    # repeated calls are safe — the most recent wins.
+    # Repeated calls are safe: the disk listing takes the LAST custom-title
+    # in the final 64 KiB of the file (then in the first 64 KiB), the store
+    # fold the last one overall. On disk the entry is only seen while it
+    # stays inside one of those windows: rename a session that is still
+    # running, let 64 KiB of transcript follow, and list_sessions /
+    # get_session_info report the previous title again until the CLI resumes
+    # the session and re-appends its metadata at the end (the same holds for
+    # tag_session). Not fixed here: finding it again means reading the whole
+    # file on every listing.
     #
     # @param session_id [String] UUID of the session to rename
     # @param title [String] New session title (whitespace stripped)
