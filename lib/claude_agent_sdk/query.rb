@@ -369,18 +369,15 @@ module ClaudeAgentSDK
       # Reactor-side agent for #close calls arriving from foreign threads
       # (FiberBoundary callbacks, plain user threads): Async::Task#stop needs
       # the owning thread's Fiber.scheduler, so the off-thread caller hands the
-      # whole close over and waits. Transient: must never keep the reactor
-      # alive, and is stopped automatically when the parent task finishes.
-      # One-shot: after serving a close it is done; a reactor-side close wakes
-      # it via @close_requests.close (pop -> nil) so it exits without serving.
+      # whole close over and waits. Transient: while it waits for a request it
+      # must never keep the reactor alive, and it is stopped automatically
+      # once the reactor has nothing else to run. One-shot: it passes the
+      # first request on to a task of its own (#serve_marshalled_close) and
+      # is done; a reactor-side close wakes it via @close_requests.close
+      # (pop -> nil) so it exits without serving.
       @close_watcher = parent.async(transient: true, &FiberBoundary.capture_otel_context do
-        if (reply = @close_requests.pop)
-          begin
-            close
-          ensure
-            reply << true
-          end
-        end
+        reply = @close_requests.pop
+        serve_marshalled_close(reply) if reply
       end)
     end
 
@@ -1819,14 +1816,18 @@ module ClaudeAgentSDK
     # plain user threads — don't have; stopping from one raised NoMethodError
     # and left the read/child tasks running. Such callers hand the close to
     # the reactor-side watcher (spawned in #start) and wait for it to finish,
-    # so close semantics are identical regardless of the calling thread.
+    # so close semantics are identical regardless of the calling thread. The
+    # reactor waits for a close it was handed: it stays alive until the
+    # transport's teardown is done, even when the session's own task has
+    # nothing left to do.
     def close
       if @close_watcher&.alive? && !Fiber.scheduler.equal?(@owning_scheduler)
         marshal_close_to_reactor
       else
-        # Same scheduler (reactor-side caller, including the watcher itself),
-        # or no live watcher: when the reactor is gone its task fibers are
-        # dead, so stopping them no longer touches Fiber.scheduler.
+        # Same scheduler (reactor-side caller, including the task serving a
+        # marshalled close), or no live reactor-side task to hand it to: when
+        # the reactor is gone its task fibers are dead, so stopping them no
+        # longer touches Fiber.scheduler.
         close_now
       end
     end
@@ -1907,8 +1908,8 @@ module ClaudeAgentSDK
       # surfaces as Async::Stop (Python parity: a hook that awaits
       # disconnect() gets CancelledError). Applied ONLY inside the trees of
       # the tasks being stopped: the reactor-side caller (Client#disconnect
-      # from the connect task, the close watcher) and foreign threads keep
-      # the plain path, unchanged.
+      # from the connect task, the task serving a marshalled close) and
+      # foreign threads keep the plain path, unchanged.
       #
       # The deferred Stop SUPERSEDES anything the teardown raises: async
       # raises it from defer_stop's ensure with an explicit `cause:`, so a
@@ -1984,11 +1985,51 @@ module ClaudeAgentSDK
       nil
     end
 
-    # Hand the close to the reactor and wait for completion. Polls watcher
-    # liveness instead of waiting forever: if the reactor shuts down
-    # concurrently (the transient watcher is stopped without serving the
-    # request), no reply will ever arrive — fall back to a direct close,
-    # which is safe once the reactor's fibers are dead.
+    # Reactor side of a marshalled close; runs on the close watcher, which
+    # must not run the close itself. The watcher is transient, and a reactor
+    # does not wait for transient tasks: stopping the read task releases the
+    # session's own task (the end sentinel), and if that was the last
+    # non-transient task the reactor winds down and stops the watcher at the
+    # first suspension point of the transport teardown. SubprocessCLITransport
+    # then TERMs the CLI instead of closing stdin and granting the grace
+    # period that lets it finish its last session write, and the caller is
+    # released before the child is reaped.
+    #
+    # So the close runs in a task of its own that the reactor does wait for
+    # (bounded by the transport's teardown). `defer_stop` on the watcher is
+    # not enough: async 2.10 terminates the tasks of a finished reactor with
+    # repeated stops, and a deferral survives only the first.
+    #
+    # The task is a SIBLING of the watcher, created under the watcher's
+    # current parent. A reactor counts only its direct children, so a child
+    # of the transient watcher would not hold it open — and that is what
+    # `parent.async` creates once the task that started the session is gone
+    # and async has re-parented the watcher to the reactor (Scheduler#async
+    # adopts the current task as the parent).
+    #
+    # @close_watcher follows the close: the waiting caller polls it for
+    # liveness (#marshal_close_to_reactor), so it has to name the task that
+    # will answer. Switched before the new task can suspend, while the
+    # watcher that spawned it is still alive.
+    def serve_marshalled_close(reply)
+      body = FiberBoundary.capture_otel_context do |task|
+        @close_watcher = task
+        begin
+          close
+        ensure
+          reply << true
+        end
+      end
+      Async::Task.new(Async::Task.current.parent, &body).run
+    end
+
+    # Hand the close to the reactor and wait for completion. Polls the
+    # liveness of the reactor-side task that is to answer (@close_watcher:
+    # the idle watcher, then the task serving the close) instead of waiting
+    # forever: if the reactor shuts down concurrently (the transient watcher
+    # is stopped without serving the request), no reply will ever arrive —
+    # fall back to a direct close, which is safe once the reactor's fibers
+    # are dead.
     def marshal_close_to_reactor
       reply = ::Thread::Queue.new
       @close_requests << reply
