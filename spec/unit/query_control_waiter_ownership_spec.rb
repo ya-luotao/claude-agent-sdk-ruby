@@ -204,4 +204,24 @@ RSpec.describe ClaudeAgentSDK::Query, 'control requests from a fiber on another 
       sender&.join
     end
   end
+
+  # The deadline is still chosen by "has an Async task": for such a caller it
+  # is the cooperative timeout, now cancelling a wait on the ThreadWaiter.
+  it 'still times out a caller on another reactor whose response never arrives' do
+    transport.hold_interrupt_response! # the response is never delivered
+
+    with_session_on_its_own_reactor do
+      # Only from here on: the handshake above keeps its generous cap.
+      allow(query).to receive(:control_request_timeout_seconds).and_return(0.2)
+      answer = interrupt_from_another_reactor.value
+
+      aggregate_failures do
+        expect(answer).to be_a(ClaudeAgentSDK::ControlRequestTimeoutError)
+        expect(answer.message).to match(/interrupt/)
+        expect(read_task).to be_alive
+        expect(query.instance_variable_get(:@pending_control_responses)).to be_empty
+        expect(query.instance_variable_get(:@pending_control_results)).to be_empty
+      end
+    end
+  end
 end
