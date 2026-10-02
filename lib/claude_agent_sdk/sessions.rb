@@ -245,17 +245,42 @@ module ClaudeAgentSDK
       sanitized = sanitize_path(path)
       exact_path = File.join(projects_dir, sanitized)
       return exact_path if File.directory?(exact_path)
+      return nil unless sanitized.length > MAX_SANITIZED_LENGTH
 
-      # For long paths, scan for prefix match
-      if sanitized.length > MAX_SANITIZED_LENGTH
-        prefix = sanitized[0, MAX_SANITIZED_LENGTH + 1] # includes the trailing '-'
-        Dir.children(projects_dir).each do |child|
-          candidate = File.join(projects_dir, child)
-          return candidate if File.directory?(candidate) && child.start_with?(prefix)
-        end
+      # A long path is stored under its first 200 characters plus a hash of
+      # the whole path. Older CLIs hashed with Bun.hash, so a directory with
+      # the same prefix and another suffix may be this path's — or that of
+      # ANY path sharing the prefix (a sibling in a deep per-tenant tree).
+      # The name cannot tell them apart; a transcript inside can: accept a
+      # candidate only if one records the path as its cwd, and only when
+      # exactly one candidate does. Taking the first prefix match listed,
+      # read and renamed another project's sessions for a directory that had
+      # none of its own. A directory whose transcripts record no cwd is not
+      # used: no guess from the name alone.
+      prefix = sanitized[0, MAX_SANITIZED_LENGTH + 1] # includes the trailing '-'
+      verified = Dir.children(projects_dir).select do |child|
+        candidate = File.join(projects_dir, child)
+        child.start_with?(prefix) && File.directory?(candidate) && project_dir_records_cwd?(candidate, path)
       end
+      verified.length == 1 ? File.join(projects_dir, verified.first) : nil
+    end
 
-      nil
+    # Whether a session transcript in +project_dir+ was recorded for +path+:
+    # its first non-blank top-level cwd (the one the listing reports) is the
+    # path, compared in NFC like every path the SDK derives a name from.
+    def project_dir_records_cwd?(project_dir, path)
+      Dir.children(project_dir).any? do |name|
+        next false unless name.end_with?('.jsonl') && valid_session_id?(name.delete_suffix('.jsonl'))
+
+        head = File.open(File.join(project_dir, name), 'rb') do |file|
+          (file.read(LITE_READ_BUF_SIZE) || '').force_encoding('UTF-8')
+        end
+        extract_top_level_string_field(head, 'cwd', skip_blank: true)&.unicode_normalize(:nfc) == path
+      rescue SystemCallError
+        false # unreadable, or removed between the listing and the read
+      end
+    rescue SystemCallError
+      false
     end
 
     # Extract a JSON string field value from raw text without full JSON parse
@@ -1800,7 +1825,7 @@ module ClaudeAgentSDK
       end
     end
 
-    private_class_method :get_session_info_for_directory,
+    private_class_method :project_dir_records_cwd?, :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions, :dedup_rank,
                          :find_session_file, :stat_candidate, :resolve_subagents_dir,
