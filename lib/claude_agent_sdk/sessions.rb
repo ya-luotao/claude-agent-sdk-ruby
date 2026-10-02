@@ -536,7 +536,11 @@ module ClaudeAgentSDK
     # with no other summary source was not listed at all — while the store
     # fold, which sees every entry, reported the prompt.
     def first_prompt_from_file(file_path, head, size)
-      prompt, command_fallback = first_prompt_in(head)
+      # Scrubbed for parsing (the offsets below are those of +head+ itself):
+      # a stray non-UTF-8 byte inside a prompt made the text handling raise,
+      # which the listing turned into "no such session" and which a fork must
+      # not die of.
+      prompt, command_fallback = first_prompt_in(head.valid_encoding? ? head : head.scrub)
       if prompt.nil? && size > head.bytesize
         limit = [size, FIRST_PROMPT_SCAN_LIMIT].min
         prompt, command_fallback = first_prompt_past_head(file_path, head, limit, command_fallback)
@@ -652,22 +656,37 @@ module ClaudeAgentSDK
       [head, tail]
     end
 
-    def build_session_info(file_path, head, tail, stat, project_path) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- one optional field per SDKSessionInfo attribute
-      # User-set title (customTitle) wins over AI-generated title (aiTitle).
-      # Consult the head only when the tail has no occurrence of that field.
-      # Normalize blanks AFTER choosing the latest occurrence: an explicit
-      # clearing entry must not resurrect an older title from the head.
-      # Summary-chain fields use the top-level-verified scan: a raw byte scan
-      # also matches these keys nested inside tool_use inputs, reporting tool
-      # arguments as the session title/summary (and diverging from the store
-      # fold, which reads top-level keys only).
-      custom_title = presence(extract_top_level_string_field(tail, 'customTitle', last: true) ||
-                              extract_top_level_string_field(head, 'customTitle', last: true)) ||
-                     presence(extract_top_level_string_field(tail, 'aiTitle', last: true) ||
-                              extract_top_level_string_field(head, 'aiTitle', last: true))
+    # [title, first prompt] of a transcript on disk, each nil when absent: the
+    # two values a disk listing reports as custom_title and first_prompt, and
+    # the ones fork_session names a fork after (SessionMutations).
+    #
+    # Title: the user-set title (customTitle) wins over the AI-generated one
+    # (aiTitle). The head is consulted only when the tail has no occurrence
+    # of the field, and blanks are normalized AFTER the latest occurrence was
+    # chosen (display_title): an explicit clearing entry must not resurrect an
+    # older title from the head. The top-level-verified scan is used: a raw
+    # byte scan also matches these keys nested inside tool_use inputs,
+    # reporting tool arguments as the session title (and diverging from the
+    # store fold, which reads top-level keys only).
+    def title_and_first_prompt(file_path, head, tail, size)
+      custom, generated = %w[customTitle aiTitle].map do |key|
+        extract_top_level_string_field(tail, key, last: true) || extract_top_level_string_field(head, key, last: true)
+      end
       # nil, not '', when there is no prompt — the store path's answer, and
       # Python's (`_extract_first_prompt_from_head(head) or None`).
-      first_prompt = presence(first_prompt_from_file(file_path, head, stat.size))
+      [display_title(custom, generated), presence(first_prompt_from_file(file_path, head, size))]
+    end
+
+    # The ONE rule for a session's title, given the latest custom title and the
+    # latest AI title of its transcript: blank counts as absent, custom first.
+    # Shared by the disk listing, and by fork_session on the disk and the
+    # store path (the store listing applies it in SessionSummary).
+    def display_title(custom_title, ai_title)
+      presence(custom_title) || presence(ai_title)
+    end
+
+    def build_session_info(file_path, head, tail, stat, project_path) # rubocop:disable Metrics/AbcSize -- one optional field per SDKSessionInfo attribute
+      custom_title, first_prompt = title_and_first_prompt(file_path, head, tail, stat.size)
       # lastPrompt tail entry shows what the user was most recently doing.
       summary = custom_title ||
                 presence(extract_top_level_string_field(tail, 'lastPrompt', last: true)) ||
@@ -1953,7 +1972,7 @@ module ClaudeAgentSDK
                          :pick_leaf, :visible_ancestor?, :off_main_conversation?, :visible_message?,
                          :reattach_parallel_tool_results, :off_chain_tool_results,
                          :content_block_values,
-                         :filter_visible_messages, :read_head_tail, :build_session_info, :user_entry_texts,
+                         :filter_visible_messages, :build_session_info, :user_entry_texts,
                          :first_prompt_in, :first_prompt_from_file, :first_prompt_past_head,
                          :valid_agent_id?, :sidechain_head?,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
@@ -1967,6 +1986,7 @@ module ClaudeAgentSDK
     # These remain accessible for SessionMutations / SessionResume:
     # config_dir, sanitize_path, find_project_dir, detect_worktrees,
     # valid_session_id? (mutation boundary checks), listing_sort_key
-    # (--continue candidate order)
+    # (--continue candidate order), read_head_tail, title_and_first_prompt
+    # and display_title (the fork title)
   end
 end

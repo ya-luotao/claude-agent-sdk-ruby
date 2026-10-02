@@ -451,9 +451,10 @@ module ClaudeAgentSDK
                                })
       end
 
-      # Derive title: explicit > original customTitle > original aiTitle > first
-      # prompt, suffixed with " (fork)" when derived. listSessions reads the LAST
-      # custom-title from the tail, so this trailer is what surfaces.
+      # Derive title: explicit > the source's listed title (custom, else AI) >
+      # its first prompt, suffixed with " (fork)" when derived. listSessions
+      # reads the LAST custom-title from the tail, so this trailer is what
+      # surfaces.
       fork_title = title&.strip
       fork_title = "#{derive_title.call || 'Forked session'} (fork)" if fork_title.nil? || fork_title.empty?
 
@@ -490,61 +491,30 @@ module ClaudeAgentSDK
       [transcript, content_replacements]
     end
 
-    # Derive a fork title by scanning already-parsed store entries — the store
-    # path's analogue of derive_fork_title's head/tail byte scan. Last occurrence
-    # wins for both customTitle and aiTitle; customTitle beats aiTitle; the first
-    # user prompt is the final fallback. Returns nil when nothing is found (the
-    # caller supplies the "Forked session" default). This scans the RAW entries,
-    # not the partitioned transcript (which drops customTitle/aiTitle metadata) —
-    # the store half of #837's P0-1 fix.
+    # Derive a fork title from already-parsed store entries: the title the
+    # store listing shows for the session (custom title, else AI title — the
+    # latest occurrence of each, a blank one counting as absent), else its
+    # first prompt. Folds the RAW entries (the partitioned transcript has
+    # dropped the customTitle/aiTitle metadata — the store half of #837's
+    # P0-1 fix) with the fold the listing uses, and takes the title from the
+    # folded fields rather than from summary_entry_to_sdk_info: that returns
+    # nil for a sidechain or summary-less session, which can still be forked.
+    # nil when the session has none of the three (the caller supplies the
+    # "Forked session" default).
     def derive_title_from_entries(raw)
-      custom = nil
-      ai = nil
-      raw.each do |e|
-        next unless e.is_a?(Hash)
-
-        ct = e['customTitle']
-        custom = ct if ct.is_a?(String) && !ct.empty?
-        at = e['aiTitle']
-        ai = at if at.is_a?(String) && !at.empty?
-      end
-      return custom if custom
-      return ai if ai
-
-      # First-prompt fallback: re-serialize to a JSONL string and reuse the head
-      # extractor so skip-patterns/truncation match the disk path exactly.
-      # extract_first_prompt_from_head returns '' (truthy in Ruby!) when no
-      # prompt qualifies — normalize to nil so the caller's 'Forked session'
-      # default actually fires (Python appends `or None` here for this reason).
-      jsonl = "#{raw.map { |e| JSON.generate(e) }.join("\n")}\n"
-      title = Sessions.extract_first_prompt_from_head(jsonl)
-      title.nil? || title.empty? ? nil : title
+      data = SessionSummary.fold_session_summary(nil, {}, raw)['data']
+      first_prompt = data['first_prompt_locked'] ? data['first_prompt'] : data['command_fallback']
+      Sessions.display_title(data['custom_title'], data['ai_title']) || Sessions.presence(first_prompt)
     end
 
-    # Derive a fork title from the source file's head/tail chunks without
-    # slurping the entire file. Matches the lookup order used for
-    # SDKSessionInfo.custom_title / ai_title / first_prompt. Returns nil when
-    # nothing is found (build_fork_lines supplies the "Forked session" default).
+    # Derive a fork title from the source file without slurping it: the title
+    # and first prompt the disk listing reports for the session, taken from
+    # the same head/tail windows by the same rule. nil when it has neither
+    # (build_fork_lines supplies the "Forked session" default).
     def derive_fork_title(file_path, file_size)
-      buf_size = [Sessions::LITE_READ_BUF_SIZE, file_size].min
-      File.open(file_path, 'rb') do |f|
-        head = (f.read(buf_size) || '').force_encoding('UTF-8').scrub
-        tail = if file_size > Sessions::LITE_READ_BUF_SIZE
-                 f.seek(-buf_size, IO::SEEK_END)
-                 (f.read(buf_size) || '').force_encoding('UTF-8').scrub
-               else
-                 head
-               end
-        title = Sessions.extract_json_string_field(tail, 'customTitle', last: true) ||
-                Sessions.extract_json_string_field(head, 'customTitle', last: true) ||
-                Sessions.extract_json_string_field(tail, 'aiTitle', last: true) ||
-                Sessions.extract_json_string_field(head, 'aiTitle', last: true) ||
-                Sessions.extract_first_prompt_from_head(head)
-        # extract_first_prompt_from_head returns '' (truthy in Ruby!) when no
-        # prompt qualifies — normalize to nil so the 'Forked session' default
-        # fires (Python appends `or None` here for the same reason).
-        title.nil? || title.empty? ? nil : title
-      end
+      head, tail = Sessions.read_head_tail(file_path, file_size)
+      title, first_prompt = Sessions.title_and_first_prompt(file_path, head, tail, file_size)
+      title || first_prompt
     end
 
     # Build a single forked entry with remapped UUIDs.

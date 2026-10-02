@@ -119,6 +119,31 @@ RSpec.describe 'reading transcripts that are not clean UTF-8 text' do
     expect(result.content).to be_valid_encoding
   end
 
+  # The same stray byte inside the first prompt, which the listing and the
+  # fork title are taken from. The session was killed before the CLI wrote
+  # its exit-time lines, so the prompt is all there is to list it under.
+  describe 'a raw invalid byte inside the first prompt' do
+    before do
+      transcript = CLITranscript.new(session_id: session_id, cwd: cwd)
+      conversation(transcript)
+      path = transcript.write(transcript_path(session_id))
+      File.binwrite(path, File.binread(path).sub('你好'.b, "\xFF好".b))
+    end
+
+    it 'lists the session, with the byte replaced by U+FFFD' do
+      info = ClaudeAgentSDK.get_session_info(session_id: session_id, directory: cwd)
+
+      expect(info&.first_prompt).to eq(question.sub('你', replacement))
+    end
+
+    it 'forks the session under that prompt' do
+      fork = ClaudeAgentSDK.fork_session(session_id: session_id, directory: cwd)
+
+      expect(ClaudeAgentSDK.get_session_info(session_id: fork.session_id, directory: cwd).custom_title)
+        .to eq("#{question.sub('你', replacement)} (fork)")
+    end
+  end
+
   describe 'import_session_to_store' do
     # A networked adapter serializes what it is given, and JSON.generate
     # rejects a String that is not valid UTF-8.
