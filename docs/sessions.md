@@ -277,7 +277,10 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 > Everything else in your config dir is **not** visible to the subprocess —
 > notably user `CLAUDE.md`, `agents/`, `skills/`, and `plugins/` (so, with the
 > plugin keys stripped, user plugins are off) — so a store-backed resume can
-> still behave differently from a plain `resume:` of the same session.
+> still behave differently from a plain `resume:` of the same session. The
+> project's auto-memory is part of that: the temp config dir has no
+> `projects/<key>/memory/`, so a store-backed resume neither loads the memory
+> you already have nor keeps what the session writes to it.
 > Project-level `.claude/*` still applies (it resolves from `cwd`), and
 > hooks/options passed programmatically via `ClaudeAgentOptions` are unaffected.
 > Seeded files are written owner-only (`0600`); a missing source file is simply
