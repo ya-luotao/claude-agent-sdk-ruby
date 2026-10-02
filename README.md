@@ -39,6 +39,7 @@ Then `bundle install`, or install directly with `gem install claude-agent-sdk`. 
 **Prerequisites**
 
 - Ruby 3.2 or newer
+- Credentials for Claude Code: `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or a login the CLI has already stored (see [Authentication](#authentication))
 - Claude Code CLI 2.0.0 or newer, either installed globally (`npm install -g @anthropic-ai/claude-code`) or vendored with `CLIInstaller`:
 
 ```ruby
@@ -47,6 +48,16 @@ ClaudeAgentSDK::CLIInstaller.install_pinned  # => "/app/vendor/claude/claude"
 ```
 
 `install_pinned` installs `CLIInstaller::PINNED_CLI_VERSION`, so upgrading the gem carries the CLI forward with it; `CLIInstaller.install(version: 'x.y.z')` pins a version of your own. The vendored binary is found ahead of `PATH`, installs are idempotent and concurrency-safe, and a failed upgrade never breaks a working install. See [docs/cli-installer.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/cli-installer.md) for the full behaviour, supported platforms, and the CLI discovery order.
+
+### Authentication
+
+The SDK holds no credentials of its own. The `claude` process it starts authenticates the way Claude Code does, with one of:
+
+- `ANTHROPIC_API_KEY`, in the environment of your Ruby process (the CLI inherits it) or per session with `ClaudeAgentOptions.new(env: { 'ANTHROPIC_API_KEY' => key })`
+- `CLAUDE_CODE_OAUTH_TOKEN`, a long-lived token for a Claude subscription (`claude setup-token` creates one), set the same way
+- a login the CLI has already stored for the user your process runs as (`claude auth login`)
+
+A machine with none of them, such as a fresh container or a CI runner, does not fail at startup. The first prompt comes back as an `AssistantMessage` whose `error` is `'authentication_failed'` (its text is "Not logged in · Please run /login", a command an SDK host cannot run), followed by a `ResultMessage` with `is_error` set. `query()` and `ask` then raise `ResultError` with `terminal_reason == 'api_error'`; a `Client` session stays open, so check the result's `is_error` there. A key or token the API rejects ends the same way, with `api_error_status` 401, but only after the CLI has retried: watch for `APIRetryMessage` (ten of them over about three minutes when tested) rather than waiting for the error. [docs/errors.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/errors.md) shows how to handle both.
 
 ### Rails in a minute
 
