@@ -489,7 +489,8 @@ be resumed with `session_store:` + `resume:` from the original directory.
 Re-importing appends the entries again, so adapters should dedupe by
 `entry['uuid']`. It raises `ArgumentError` for an invalid `session_id` and
 `Errno::ENOENT` when the transcript cannot be found; an unparseable line is
-skipped with a warning.
+skipped with a warning, and bytes that are not valid UTF-8 inside a line that
+does parse are stored as U+FFFD (an adapter could not serialize them).
 
 > **Deprecated:** the separate store functions (`list_sessions_from_store`,
 > `get_session_info_from_store`, `get_session_messages_from_store`,

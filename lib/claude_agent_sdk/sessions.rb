@@ -1257,11 +1257,15 @@ module ClaudeAgentSDK
     def append_jsonl_file_in_batches(file_path, key, store, batch_size)
       batch = []
       nbytes = 0
-      # encoding: transcripts are UTF-8 regardless of locale; without it a
-      # LANG=C process raises Encoding::InvalidByteSequenceError on the first
-      # multibyte line, aborting the import mid-way (Python pins utf-8 here).
-      File.foreach(file_path, encoding: 'UTF-8').with_index(1) do |line, lineno|
-        line = line.chomp
+      # Read as UTF-8 bytes regardless of locale (a LANG=C process raised
+      # Encoding::InvalidByteSequenceError on the first multibyte line,
+      # aborting the import mid-way; Python pins utf-8 here), and scrub a
+      # line that is not valid UTF-8: Ruby's JSON parser accepts a raw
+      # invalid byte inside a string, and the entry it yields makes every
+      # adapter that serializes what it is given raise JSON::GeneratorError
+      # from #append — after the batches before it were already stored.
+      File.foreach(file_path, mode: 'rb').with_index(1) do |line, lineno|
+        line = utf8_transcript_line(line).chomp
         next if line.empty?
 
         begin

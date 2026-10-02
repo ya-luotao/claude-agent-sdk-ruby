@@ -118,4 +118,38 @@ RSpec.describe 'reading transcripts that are not clean UTF-8 text' do
     expect(result.content).to eq("class #{replacement}; end")
     expect(result.content).to be_valid_encoding
   end
+
+  describe 'import_session_to_store' do
+    # A networked adapter serializes what it is given, and JSON.generate
+    # rejects a String that is not valid UTF-8.
+    let(:store) do
+      Class.new(ClaudeAgentSDK::SessionStore) do
+        def initialize
+          super
+          @rows = Hash.new { |rows, key| rows[key] = [] }
+        end
+
+        def append(key, entries)
+          @rows[key].concat(entries.map { |entry| JSON.generate(entry) })
+        end
+
+        def load(key)
+          @rows.key?(key) ? @rows[key].map { |row| JSON.parse(row) } : nil
+        end
+      end.new
+    end
+
+    it 'imports every entry of a transcript that holds a raw invalid byte' do
+      transcript = main_transcript
+      path = transcript.write(transcript_path(session_id))
+      File.binwrite(path, File.binread(path).sub('class Foo; end'.b, "class \xFF; end".b))
+
+      ClaudeAgentSDK.import_session_to_store(session_id: session_id, session_store: store, directory: cwd,
+                                             batch_size: 2)
+
+      stored = store.load('project_key' => ClaudeAgentSDK.project_key_for_directory(cwd), 'session_id' => session_id)
+      expect(stored.map { |entry| entry['type'] }).to eq(transcript.entries.map { |entry| entry['type'] })
+      expect(stored[4].dig('message', 'content', 0, 'content')).to eq("class #{replacement}; end")
+    end
+  end
 end
