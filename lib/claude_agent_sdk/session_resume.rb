@@ -264,10 +264,9 @@ module ClaudeAgentSDK
     # session id is not a valid UUID) — the caller then falls through to the
     # normal spawn path. Raises SessionStoreError (#cause: the adapter's own
     # exception or the timeout) if a store call fails or times out.
-    def materialize_resume_session(options) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength -- materialization sequence kept in order
+    def materialize_resume_session(options) # rubocop:disable Metrics/AbcSize -- materialization sequence kept in order
       store = options.session_store
-      return nil if store.nil?
-      return nil if options.resume.nil? && !options.continue_conversation
+      return nil if store.nil? || (options.resume.nil? && !options.continue_conversation)
 
       # load_timeout_ms reads nil once a caller set it back to nil; the
       # constructor default applies then. 0 is a valid (immediate) timeout.
@@ -296,10 +295,10 @@ module ClaudeAgentSDK
 
       session_id, lines = resolved
       tmp_base = Dir.mktmpdir('claude-resume-')
-      # Taken now: a teardown that deletes inside the directory checks that
-      # the path still leads to this one (MaterializedResume#preserve_transcripts).
-      root_identity = directory_identity(tmp_base)
       begin
+        # Taken now: a teardown that deletes inside the directory checks that
+        # the path still leads to this one (MaterializedResume#preserve_transcripts).
+        root_identity = directory_identity(tmp_base)
         project_dir = File.join(tmp_base, 'projects', project_key)
         FileUtils.mkdir_p(project_dir)
         write_jsonl(File.join(project_dir, "#{session_id}.jsonl"), lines)
