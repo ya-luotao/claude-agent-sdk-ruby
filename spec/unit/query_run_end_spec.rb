@@ -235,6 +235,32 @@ RSpec.describe ClaudeAgentSDK::Query do
       end
     end
 
+    # The idle of the run that just ended can still be on its way when the
+    # next message goes out. It belongs to the earlier run: the new message
+    # owes a result of its own before an idle can end its run.
+    it 'does not let a late idle of the previous run end the run of the next message' do
+      gate = Async::Queue.new
+      prompts = Enumerator.new do |y|
+        y << user_message('one')
+        gate.dequeue
+        y << user_message('two')
+      end
+
+      with_query do |query, feed, ended, task, written|
+        streamer = task.async { query.stream_input(prompts) }
+        expect(written.pop(timeout: 10)).to include('one')
+        feed.call(state('running'), result, state('idle')) # the first message's run ends
+        gate.enqueue(:go)
+        expect(written.pop(timeout: 10)).to include('two')
+        feed.call(state('idle')) # a late duplicate, before message two produced anything
+        expect(ended).to be_empty
+
+        feed.call(state('running'), result, state('idle'))
+        finish(task, streamer)
+        expect(ended).not_to be_empty
+      end
+    end
+
     # Frame sequence observed from CLI 2.1.285 for three messages written
     # before any result: it merges queued messages into fewer turns (two
     # results here) and reports no idle until all queued input is served.
@@ -372,6 +398,18 @@ RSpec.describe ClaudeAgentSDK::Query do
         ceiling_passes(query, ceiling_generation(query), feed)
         finish(task, waiter)
         expect(ended).not_to be_empty
+      end
+    end
+
+    # "running" before any result is a turn starting, not the wait between
+    # turns that the ceiling bounds.
+    it 'is not armed by running before the first result' do
+      with_query do |query, feed, ended, task|
+        task.async { query.wait_for_result_and_end_input }
+        feed.call(state('running'))
+
+        expect(ceiling_armed?(query)).to be(false)
+        expect(ended).to be_empty
       end
     end
 
