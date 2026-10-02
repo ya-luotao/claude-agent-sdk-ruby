@@ -89,6 +89,10 @@ module ClaudeAgentSDK
     LITE_READ_BUF_SIZE = 65_536
     MAX_SANITIZED_LENGTH = 200
 
+    # How far into a transcript the disk listing looks for the first prompt
+    # when the head window holds none (see first_prompt_from_file).
+    FIRST_PROMPT_SCAN_LIMIT = 1_048_576
+
     UUID_RE = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
     # Subagent ids as the CLI writes them (agent-<id>.jsonl): hex ids and
@@ -483,10 +487,17 @@ module ClaudeAgentSDK
     end
 
     # Extract the first meaningful user prompt from the head of a JSONL file
-    def extract_first_prompt_from_head(head) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- first-prompt skip rules, matched by the store fold
-      command_fallback = nil
+    def extract_first_prompt_from_head(head)
+      prompt, command_fallback = first_prompt_in(head)
+      prompt || command_fallback || ''
+    end
 
-      head.each_line do |line|
+    # The first real user prompt among the lines of +text+, and the name of
+    # the first slash command seen on the way (what a session without a real
+    # prompt reports): [prompt or nil, command name or nil]. +command_fallback+
+    # carries a name found in an earlier part of the same transcript.
+    def first_prompt_in(text, command_fallback = nil) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- first-prompt skip rules, matched by the store fold
+      text.each_line do |line|
         next unless line.include?('"type":"user"') || line.include?('"type": "user"')
         next if line.include?('"tool_result"')
         next if line.include?('"isMeta":true') || line.include?('"isMeta": true')
@@ -507,13 +518,59 @@ module ClaudeAgentSDK
 
           next if text.match?(SKIP_FIRST_PROMPT_PATTERN)
 
-          return text.length > 200 ? "#{text[0, 200]}…" : text
+          return [text.length > 200 ? "#{text[0, 200]}…" : text, command_fallback]
         end
       rescue JSON::ParserError
         next
       end
 
-      command_fallback || ''
+      [nil, command_fallback]
+    end
+
+    # first_prompt for the disk listing: from the head window, and when that
+    # holds no real prompt while the file goes on, from a bounded scan past
+    # it. CLI 2.1.x transcripts often carry a large attachment (a
+    # SessionStart hook's output) before the first prompt, and an SDK prompt
+    # that inlines a document is one line longer than the window; the head
+    # alone reported nil or a slash-command name for those, and a session
+    # with no other summary source was not listed at all — while the store
+    # fold, which sees every entry, reported the prompt.
+    def first_prompt_from_file(file_path, head, size)
+      prompt, command_fallback = first_prompt_in(head)
+      if prompt.nil? && size > head.bytesize
+        limit = [size, FIRST_PROMPT_SCAN_LIMIT].min
+        prompt, command_fallback = first_prompt_past_head(file_path, head, limit, command_fallback)
+      end
+      prompt || command_fallback || ''
+    end
+
+    # Continue the first-prompt scan from the end of the last complete line
+    # of +head+ up to byte +limit+ of the file. Read in fixed-size chunks,
+    # never line by line: one transcript line can be gigabytes, and the
+    # limit has to hold before the bytes are in memory. What is left open at
+    # the end is the last line of a file without a final newline — or a line
+    # cut by the limit, which does not parse and is skipped like any other
+    # bad line. An IO failure here leaves the answer the head gave: this
+    # read is an extra, and must not hide a session.
+    def first_prompt_past_head(file_path, head, limit, command_fallback)
+      offset = (head.byterindex("\n") || -1) + 1
+      open_line = String.new(encoding: Encoding::BINARY)
+      File.open(file_path, 'rb') do |file|
+        file.seek(offset)
+        while offset < limit && (chunk = file.read([LITE_READ_BUF_SIZE, limit - offset].min))
+          offset += chunk.bytesize
+          open_line << chunk
+          newline = open_line.rindex("\n")
+          next unless newline
+
+          complete = utf8_transcript_text(open_line.slice!(0, newline + 1))
+          prompt, command_fallback = first_prompt_in(complete, command_fallback)
+          return [prompt, command_fallback] if prompt
+        end
+        first_prompt_in(utf8_transcript_text(open_line), command_fallback)
+      end
+    rescue SystemCallError
+      [nil, command_fallback]
     end
 
     # Text blocks of a genuine user entry, or nil when the line should be
@@ -610,7 +667,7 @@ module ClaudeAgentSDK
                               extract_top_level_string_field(head, 'aiTitle', last: true))
       # nil, not '', when there is no prompt — the store path's answer, and
       # Python's (`_extract_first_prompt_from_head(head) or None`).
-      first_prompt = presence(extract_first_prompt_from_head(head))
+      first_prompt = presence(first_prompt_from_file(file_path, head, stat.size))
       # lastPrompt tail entry shows what the user was most recently doing.
       summary = custom_title ||
                 presence(extract_top_level_string_field(tail, 'lastPrompt', last: true)) ||
@@ -1314,7 +1371,7 @@ module ClaudeAgentSDK
       # adapter that serializes what it is given raise JSON::GeneratorError
       # from #append — after the batches before it were already stored.
       File.foreach(file_path, mode: 'rb').with_index(1) do |line, lineno|
-        line = utf8_transcript_line(line).chomp
+        line = utf8_transcript_text(line).chomp
         next if line.empty?
 
         begin
@@ -1600,7 +1657,7 @@ module ClaudeAgentSDK
       entries = []
 
       File.foreach(file_path, mode: 'rb') do |line|
-        entry = JSON.parse(utf8_transcript_line(line).strip, symbolize_names: false)
+        entry = JSON.parse(utf8_transcript_text(line).strip, symbolize_names: false)
         next unless entry.is_a?(Hash)
         next unless TRANSCRIPT_ENTRY_TYPES.include?(entry['type'])
         next unless entry['uuid'].is_a?(String)
@@ -1612,18 +1669,18 @@ module ClaudeAgentSDK
       entries
     end
 
-    # One transcript line, read in binary mode, as UTF-8 text. Transcripts are
-    # UTF-8 whatever the process locale says: a line tagged with the locale's
-    # encoding (File.foreach's default) raised from String#strip on the first
-    # non-ASCII character under LANG=C. Bytes that are not valid UTF-8 — a
-    # final line the CLI was killed in the middle of, raw binary in a tool
-    # result — become U+FFFD, the policy
+    # Transcript text (one line, or a run of lines) read in binary mode, as
+    # UTF-8. Transcripts are UTF-8 whatever the process locale says: a line
+    # tagged with the locale's encoding (File.foreach's default) raised from
+    # String#strip on the first non-ASCII character under LANG=C. Bytes that
+    # are not valid UTF-8 — a final line the CLI was killed in the middle of,
+    # raw binary in a tool result — become U+FFFD, the policy
     # SessionMutations.parse_fork_transcript already has: a torn line then
     # fails JSON.parse and is skipped like any other bad line instead of
     # raising, and a complete line keeps its entry.
-    def utf8_transcript_line(line)
-      line.force_encoding(Encoding::UTF_8)
-      line.valid_encoding? ? line : line.scrub
+    def utf8_transcript_text(text)
+      text.force_encoding(Encoding::UTF_8)
+      text.valid_encoding? ? text : text.scrub
     end
 
     # Build the conversation chain by finding the leaf and walking parentUuid.
@@ -1844,12 +1901,13 @@ module ClaudeAgentSDK
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions, :dedup_rank,
                          :find_session_file, :stat_candidate, :resolve_subagents_dir,
-                         :collect_agent_files, :parse_jsonl_entries, :utf8_transcript_line,
+                         :collect_agent_files, :parse_jsonl_entries, :utf8_transcript_text,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
                          :pick_leaf, :visible_ancestor?, :off_main_conversation?, :visible_message?,
                          :reattach_parallel_tool_results, :off_chain_tool_results,
                          :content_block_values,
                          :filter_visible_messages, :read_head_tail, :build_session_info, :user_entry_texts,
+                         :first_prompt_in, :first_prompt_from_file, :first_prompt_past_head,
                          :valid_agent_id?, :sidechain_head?,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
                          :derive_info_from_entries, :mtime_from_entries, :apply_sort_limit_offset,
