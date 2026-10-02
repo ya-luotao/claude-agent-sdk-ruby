@@ -667,17 +667,18 @@ module ClaudeAgentSDK
     # Wait for the spawned process to exit, up to +timeout_seconds+. Polls
     # process.alive? rather than using stdlib Timeout.timeout, which raises
     # across threads via Thread#raise and corrupts Async fiber-scheduler state
-    # (close is always called inside an Async task). Yields to the current
-    # Async task when one is active so the reactor keeps running.
+    # (close is always called inside an Async task). Kernel#sleep is
+    # scheduler-aware: on a reactor it parks only the calling fiber, so the
+    # reactor keeps running. (Async::Task#sleep did the same but is
+    # deprecated, and warns on every call under `ruby -w`.)
     #
     # @api private
     def wait_process_with_timeout(timeout_seconds, process = @process)
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
-      task = defined?(Async::Task) ? Async::Task.current? : nil
       while process.alive?
         raise Timeout::Error if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
-        task ? task.sleep(0.05) : sleep(0.05)
+        sleep(0.05)
       end
       process.value
     end
@@ -859,7 +860,7 @@ module ClaudeAgentSDK
         # reached query()/receive_response. Past the grace period escalate
         # like #close (TERM, then KILL) and report it as an error below: a
         # child that outlives its stdout is wedged, whatever its exit code.
-        # The poll parks only this task (task.sleep) on a reactor.
+        # The poll parks only this fiber (Kernel#sleep) on a reactor.
         if process && !process_exited_within?(process, EOF_EXIT_GRACE_SECONDS)
           forced_exit = true
           begin
@@ -1066,11 +1067,10 @@ module ClaudeAgentSDK
       stdin.close
       drainer = Thread.new { [stdout.read, stderr.read] }
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + VERSION_CHECK_TIMEOUT_SECONDS
-      task = defined?(Async::Task) ? Async::Task.current? : nil
       until drainer.join(0)
         raise Timeout::Error if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
-        task ? task.sleep(0.05) : sleep(0.05)
+        sleep(0.05)
       end
       out, err = drainer.value
       (out.to_s + err.to_s).force_encoding(Encoding::UTF_8).scrub.strip
