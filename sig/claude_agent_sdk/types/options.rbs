@@ -190,7 +190,9 @@ module ClaudeAgentSDK
     # String such as "Read,Grep"), or a preset.
     attr_accessor tools: (Array[String] | ToolsPreset | Hash[Symbol | String, untyped] | String)?
 
-    # true / false are forwarded as-is (a bare toggle).
+    # true / false are forwarded as-is (a bare toggle). A Hash may spell the
+    # fields of SandboxSettings, and of its network / filesystem, in
+    # snake_case or in the CLI's camelCase (see SandboxSettings).
     attr_accessor sandbox: (SandboxSettings | Hash[Symbol | String, untyped] | bool)?
 
     attr_accessor thinking: thinking_config?

@@ -138,6 +138,13 @@ module ClaudeAgentSDK
 
   # Sandbox settings for isolated command execution
   # (ClaudeAgentOptions#sandbox).
+  #
+  # network / filesystem take the typed config or a Hash. A Hash may spell
+  # the fields of the typed class in snake_case or in the CLI's camelCase,
+  # with Symbol or String keys; other keys are sent as written. A snake_case
+  # key is sent under the CLI's name only when its value has the shape the
+  # CLI accepts for it; otherwise it is sent as written, which the CLI
+  # ignores.
   class SandboxSettings < Type
     def initialize: (?enabled: bool?, ?fail_if_unavailable: bool?, ?auto_allow_bash_if_sandboxed: bool?, ?excluded_commands: Array[String]?, ?allow_unsandboxed_commands: bool?, ?network: (SandboxNetworkConfig | Hash[Symbol | String, untyped])?, ?filesystem: (SandboxFilesystemConfig | Hash[Symbol | String, untyped])?, ?ignore_violations: Hash[Symbol | String, Array[String]]?, ?enable_weaker_nested_sandbox: bool?, ?enable_weaker_network_isolation: bool?, ?ripgrep: Hash[Symbol | String, untyped]?) -> void
                   | (Hash[Symbol | String, untyped]? attributes) -> void
