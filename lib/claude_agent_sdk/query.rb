@@ -1778,7 +1778,17 @@ module ClaudeAgentSDK
       # on_error never fired. `while` propagates it like any other error.
       while true # rubocop:disable Style/InfiniteLoop
         message = @message_queue.dequeue
-        break if message[:type] == 'end'
+        if message[:type] == 'end'
+          # End of stream is sticky. The read loop enqueues ONE sentinel and
+          # is gone, so the sentinel goes back for the next caller: consumed
+          # here, every later receive would park on a queue nothing writes
+          # to any more. (Python closes the send side of its stream instead,
+          # so later iterations end at once there too.) Only from inside a
+          # task: async < 2.29 raises for an enqueue outside one, so a
+          # receive from outside a reactor consumes the sentinel as before.
+          @message_queue.enqueue(message) if Async::Task.current?
+          break
+        end
         raise message[:error] if message[:type] == 'error'
 
         block.call(message)
