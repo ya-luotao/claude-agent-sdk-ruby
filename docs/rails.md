@@ -196,9 +196,13 @@ module AgentContext
     end
   end
 
+  # The tags of the first tagged logger Rails.logger writes to. Not
+  # Rails.logger.formatter: in a broadcast that can be a plain logger's.
   def self.log_tags
-    formatter = Rails.logger.formatter if Rails.logger.respond_to?(:formatter)
-    formatter.respond_to?(:current_tags) ? formatter.current_tags.dup : []
+    loggers = Rails.logger.respond_to?(:broadcasts) ? Rails.logger.broadcasts : [Rails.logger]
+    formatter = loggers.map { |logger| logger.formatter if logger.respond_to?(:formatter) }
+                       .find { |candidate| candidate.respond_to?(:current_tags) }
+    formatter ? formatter.current_tags.dup : []
   end
 
   # push / pop, not `Rails.logger.tagged(*tags) { ... }`: a BroadcastLogger
@@ -242,7 +246,7 @@ What the recipe depends on:
 - **One wrapper per call, built on the caller.** `AgentContext.callback_wrapper` snapshots whoever calls it. Call it from the request or job, after its state is set and before `query` / `Client.open` — not inside their blocks, which may already run on another fiber. It cannot go into the initializer: a process-wide wrapper only ever runs at the destination and has no caller to look at. And it must not outlive the call: a wrapper is fixed for the lifetime of the session it was passed to, so one built when a long-lived `Client` connects makes every later turn run its callbacks as the **first** caller — another user's turn would read and write under the first user's account and shard. Open a session per request or job and resume it by id, as the examples below do, and the capture happens once per call.
 - **The restore happens inside `rails.call`.** In production the Rails wrapper enters the executor, and the executor starts every execution from a clean slate: it resets `Current` and the error context. State set around `rails.call` is wiped on the way in; state set inside it survives.
 - **No restore on the fiber that captured the state.** Under `:inline` scheduling a `Client`'s message block and observers run on the caller itself. The state is already there, and restoring it again would add the log tags a second time.
-- **Log tags are pushed and popped.** `Rails.logger` is an `ActiveSupport::BroadcastLogger`, and `Rails.logger.tagged(*tags) { ... }` runs its block once for every tagged logger in the broadcast, returning an array: with two tagged loggers the callback would run twice. `push_tags` / `pop_tags` reach every logger and run nothing. The two `respond_to?` checks keep the recipe working with a logger that has no tags.
+- **Log tags are pushed and popped.** `Rails.logger` is an `ActiveSupport::BroadcastLogger`, and `Rails.logger.tagged(*tags) { ... }` runs its block once for every tagged logger in the broadcast, returning an array: with two tagged loggers the callback would run twice. `push_tags` / `pop_tags` reach every tagged logger and run nothing. The tags are read from the first logger in the broadcast that keeps tags rather than from `Rails.logger.formatter`, which is the first logger's on Rails 8.1, tagged or not, and `nil` on 7.1 for a broadcast you built yourself. With no tagged logger at all the recipe carries no tags and still runs.
 - **`ActiveSupport::ExecutionContext` is restored explicitly.** It is where `Rails.error.set_context` and Rails' own controller and job entries live; `Current.set` does not bring it back. Rails has no public reader for it, so recheck this line when you upgrade Rails.
 - **The locale is restored rather than assumed**, because only i18n 1.15 and later hand it to every callback by themselves. The restore is safe wherever a callback has a thread of its own, which is `:thread` scheduling, with any i18n. With i18n 1.14.8 it is only safe there: under `:inline` all fibers of the reactor thread share one locale, so a callback's `I18n.with_locale` changes the locale of every job on that worker while the callback runs, and another job that sets its own locale meanwhile changes the callback's. On a fiber-isolated host with `:inline` scheduling, keeping jobs' locales apart needs i18n 1.15 or later, or `:thread` scheduling.
 - **Values travel, containers do not.** The recipe rebuilds the caller's state from values. The objects themselves — `Current.user`, say — are shared with the caller, so treat them as read-only in callbacks. Do not go further and copy thread-local variables wholesale, hand the caller's ActiveRecord connection to a callback, or pass `ActiveRecord::Base.connected_to_stack` across: those are mutable and belong to one thread.
@@ -264,7 +268,7 @@ and re-enter them innermost, in place of `with_log_tags(tags) { invocation.call 
 
 `connected_to` on `ApplicationRecord` switches the models that inherit from it; an application with several connection classes captures and re-enters each of them.
 
-What is checked: `spec/rails/request_state_spec.rb` boots a Rails application for each combination of production / development, `:thread` / `:inline` scheduling and `ClaudeAgentSDK.query` / `Client.open`. It pins the `Current`, `Time.zone`, log tag and error context rows of the table, the `I18n.locale` cases for whichever i18n the bundle resolves (CI's resolve 1.15 or later; the 1.14.7 and 1.14.8 rows were run against those releases), and runs the `AgentContext` block exactly as printed above through all five kinds of callback. It does not cover the three `connected_to` rows or the role / shard lines — the gem's Rails test bundles carry no ActiveRecord; those were measured in a Rails 8.1 application with ActiveRecord and SQLite.
+What is checked: `spec/rails/request_state_spec.rb` boots a Rails application for each combination of production / development, `:thread` / `:inline` scheduling and `ClaudeAgentSDK.query` / `Client.open`. It pins the `Current`, `Time.zone`, log tag and error context rows of the table, the `I18n.locale` cases for whichever i18n the bundle resolves (CI's resolve 1.15 or later; the 1.14.7 and 1.14.8 rows were run against those releases), and runs the `AgentContext` block exactly as printed above through all five kinds of callback — also with two tagged loggers in the `Rails.logger` broadcast, and with a plain logger ahead of the tagged one. It does not cover the three `connected_to` rows or the role / shard lines — the gem's Rails test bundles carry no ActiveRecord; those were measured in a Rails 8.1 application with ActiveRecord and SQLite.
 
 ## Transactions and the connection pool
 

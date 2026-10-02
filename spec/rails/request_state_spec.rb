@@ -172,4 +172,25 @@ RSpec.describe 'Request state inside SDK callbacks' do
       end
     end
   end
+
+  # The recipe reads the tags from the tagged logger itself, not from
+  # Rails.logger.formatter, which a plain logger in the broadcast can own.
+  describe 'the documented recipe with a plain logger before the tagged one in the Rails.logger broadcast' do
+    [%i[thread thread], %i[fiber inline]].each do |isolation, scheduling|
+      context "under callback_scheduling: :#{scheduling}" do
+        let(:observed) { booted_app(reloading: false, isolation: isolation).fetch('plain logger first') }
+
+        it 'reads the tags from the tagged logger and restores them there' do
+          expect(observed).not_to include('error')
+          callbacks.each do |kind|
+            expect(observed.fetch(kind)).to contain_exactly(include(caller_state)), "in #{kind}"
+          end
+          lines = ['caller', *callbacks].map { |kind| "seen by #{kind}" }
+          expect(observed.fetch('logs')).to match(
+            'plain' => match_array(lines), 'tagged' => match_array(lines.map { |line| "[req-123] #{line}" })
+          )
+        end
+      end
+    end
+  end
 end

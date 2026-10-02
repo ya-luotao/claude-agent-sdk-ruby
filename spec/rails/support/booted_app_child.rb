@@ -79,12 +79,21 @@ module ClaudeAgentSDKRailsSpec
       snapshot = {
         'user' => Current.user,
         'time_zone' => Time.zone.name,
-        'log_tags' => Rails.logger.formatter.current_tags.dup,
+        'log_tags' => log_tags,
         'error_context' => ActiveSupport::ExecutionContext.to_h,
         'locale' => I18n.locale.to_s,
         'on_caller_fiber' => Fiber.current.equal?(@caller_fiber)
       }
       @lock.synchronize { @turns.last[kind] << snapshot }
+    end
+
+    # The tags in effect, as the tagged logger Rails.logger writes to holds
+    # them — read from that logger, so a plain logger in the broadcast does not
+    # hide them.
+    def log_tags
+      loggers = Rails.logger.respond_to?(:broadcasts) ? Rails.logger.broadcasts : [Rails.logger]
+      tagged = loggers.find { |logger| logger.respond_to?(:push_tags) }
+      tagged ? tagged.formatter.current_tags.dup : []
     end
 
     # Observer and message block see every message; one observation each is
@@ -189,6 +198,25 @@ module ClaudeAgentSDKRailsSpec
       seen.merge('logs' => [LOG.string, second_log.string].map { |log| log.lines(chomp: true) })
     ensure
       Rails.logger.stop_broadcasting_to(second)
+    end
+
+    # The same request with Rails.logger broadcasting to a plain logger before
+    # the tagged one, as `ActiveSupport::BroadcastLogger.new(plain, tagged)`
+    # builds it. Rails.logger.formatter is then the plain logger's (Rails 8.1)
+    # or nil (7.1, where only #formatter= sets it).
+    def run_with_a_plain_logger_first(scheduling:)
+      plain_log = StringIO.new
+      tagged_log = StringIO.new
+      booted = Rails.logger
+      Rails.logger = ActiveSupport::BroadcastLogger.new(
+        ActiveSupport::Logger.new(plain_log),
+        ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new(tagged_log))
+      )
+      seen = run(api: 'query', scheduling: scheduling, wrapper: 'recipe')
+      seen.merge('logs' => { 'plain' => plain_log.string.lines(chomp: true),
+                             'tagged' => tagged_log.string.lines(chomp: true) })
+    ensure
+      Rails.logger = booted
     end
 
     # Two fiber-worker jobs on one reactor thread: job A sets its locale with
@@ -314,6 +342,7 @@ end
 end
 observed['reused wrapper'] = requests.run_reusing_a_wrapper
 observed['two tagged loggers'] = requests.run_with_two_tagged_loggers(scheduling: schedulings.first)
+observed['plain logger first'] = requests.run_with_a_plain_logger_first(scheduling: schedulings.first)
 observed['two jobs switching locales'] = requests.run_two_jobs_switching_locales
 
 puts "BOOTED_APP_RESULT #{JSON.generate(observed)}"
