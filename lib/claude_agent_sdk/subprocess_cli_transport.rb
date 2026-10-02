@@ -338,8 +338,11 @@ module ClaudeAgentSDK
         # A path #resolve_cli_path could not settle is never handed to spawn:
         # spawn searches PATH on its own, in this process's cwd, and then
         # executes a relative hit inside options.cwd. Reported like any
-        # missing CLI, by the Errno::ENOENT branch below.
-        raise Errno::ENOENT, @cli_path unless cli_path_settled?
+        # missing CLI, by the Errno::ENOENT branch below. Only when that
+        # path is the program about to be spawned: a subclass whose
+        # #build_command wraps the CLI in another program (docker exec, ssh)
+        # names a file on the far side, and its argv is spawned as built.
+        raise Errno::ENOENT, @cli_path if cmd.first == @cli_path && !cli_path_settled?
 
         # Start process using Open3
         # :uid mirrors Python's anyio.open_process(user=...): String username

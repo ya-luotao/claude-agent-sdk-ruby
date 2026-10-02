@@ -249,4 +249,29 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
       expect(transport.build_command.first).to eq(File.join(app, 'bin', 'claude'))
     end
   end
+
+  # #build_command is not public API, but a transport that runs the CLI
+  # through another program (docker exec, ssh) has no other hook, and its
+  # cli_path names a file on the far side. The refusal to spawn an unsettled
+  # path is about the SDK's own argv; an argv like this is spawned as built.
+  describe 'a subclass that wraps the CLI in another program' do
+    it 'still spawns its argv when cli_path is a bare name this host does not have' do
+      wrapper = File.join(root, 'wrapper')
+      File.write(wrapper, "#!/bin/sh\necho \"wrapped:$1\" >> '#{marker}'\n")
+      File.chmod(0o755, wrapper)
+      wrapping = Class.new(described_class) do
+        define_method(:build_command) { [wrapper, *super()] }
+      end
+      transport = Dir.chdir(app) { wrapping.new(options(cli_path: 'claude-on-the-far-side')) }
+
+      begin
+        transport.connect
+        transport.read_messages { |_frame| nil }
+      ensure
+        transport.close
+      end
+
+      expect(legs).to eq(['wrapped:claude-on-the-far-side'])
+    end
+  end
 end
