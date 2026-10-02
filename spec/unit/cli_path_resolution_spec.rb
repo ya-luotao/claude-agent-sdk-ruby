@@ -81,9 +81,9 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
 
   # Construct and connect from the process cwd, then read to EOF: the fake
   # has exited, so both legs are on record.
-  def legs_executed(**values)
+  def legs_executed(transport_class = described_class, **values)
     Dir.chdir(app) do
-      transport = described_class.new(options(**values))
+      transport = transport_class.new(options(**values))
       begin
         transport.connect
         transport.read_messages { |_frame| nil }
@@ -92,6 +92,16 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
       end
     end
     legs
+  end
+
+  # `link` -> `real/sub`, so `link/..` is `real` on the filesystem but the
+  # root itself when collapsed as text. Fakes on both sides tell them apart.
+  def symlinked_dotdot(name)
+    FileUtils.mkdir_p(File.join(root, 'real', 'sub'))
+    File.symlink(File.join(root, 'real', 'sub'), File.join(root, 'link'))
+    install_fake_cli("real/bin/#{name}")
+    install_fake_cli("bin/#{name}")
+    File.join(root, 'link', '..', 'bin')
   end
 
   describe 'an explicit cli_path' do
@@ -272,6 +282,73 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
       end
 
       expect(legs).to eq(['wrapped:claude-on-the-far-side'])
+    end
+  end
+
+  # spawn resolved `link/..` through the filesystem; a path rewritten as
+  # text (File.expand_path) would name another file when `link` is a
+  # symlink. Paths are anchored, never normalized.
+  describe 'a symlink followed by `..`' do
+    it 'runs an absolute cli_path the way the filesystem resolves it' do
+      bin = symlinked_dotdot('fake-claude-cli')
+
+      expect(legs_executed(cli_path: File.join(bin, 'fake-claude-cli')))
+        .to eq(%w[probe:real/bin/fake-claude-cli spawn:real/bin/fake-claude-cli])
+    end
+
+    it 'searches a PATH entry the way the filesystem resolves it' do
+      bin = symlinked_dotdot('fake-claude-cli')
+
+      with_env('PATH' => path_with(bin)) do
+        expect(legs_executed(cli_path: 'fake-claude-cli'))
+          .to eq(%w[probe:real/bin/fake-claude-cli spawn:real/bin/fake-claude-cli])
+      end
+    end
+
+    it 'keeps an absolute `which` hit exactly as printed' do
+      hit = File.join(symlinked_dotdot('claude'), 'claude')
+      allow(Open3).to receive(:capture2).and_call_original
+      allow(Open3).to receive(:capture2).with('which', 'claude').and_return(["#{hit}\n", nil])
+
+      # HOME at the tmp root: no well-known install location to fall back on.
+      transport = with_env('HOME' => root) { Dir.chdir(app) { described_class.new(options) } }
+
+      expect(transport.build_command.first).to eq(hit)
+    end
+  end
+
+  describe 'inputs that worked before this resolution existed' do
+    it 'treats any falsy cli_path as "discover"', rbs_incompatible: 'cli_path: false is outside the signature' do
+      env_cli = install_fake_cli('tools/claude-from-env')
+
+      with_env('CLAUDE_CLI_PATH' => env_cli) do
+        expect(legs_executed(cli_path: false)).to eq(%w[probe:tools/claude-from-env spawn:tools/claude-from-env])
+      end
+    end
+
+    it "settles a bare name from a subclass's #find_cli like an explicit cli_path" do
+      install_fake_cli('tools/claude-from-subclass')
+      discovering = Class.new(described_class) { define_method(:find_cli) { 'claude-from-subclass' } }
+
+      with_env('PATH' => path_with(File.join(root, 'tools'))) do
+        expect(legs_executed(discovering))
+          .to eq(%w[probe:tools/claude-from-subclass spawn:tools/claude-from-subclass])
+      end
+    end
+
+    it 'searches a PATH that is not valid UTF-8 byte by byte' do
+      install_fake_cli('tools/claude-bytewise')
+      not_utf8 = "#{root}/\xFFdir".force_encoding(Encoding::UTF_8)
+      env = { 'PATH' => "#{not_utf8}#{File::PATH_SEPARATOR}#{File.join(root, 'tools')}" }
+
+      expect(legs_executed(cli_path: 'claude-bytewise', env: env))
+        .to eq(%w[probe:tools/claude-bytewise spawn:tools/claude-bytewise])
+    end
+
+    it 'reports a cli_path with a NUL byte as a CLIConnectionError, not a raw ArgumentError' do
+      transport = Dir.chdir(app) { described_class.new(options(cli_path: "bin/cl\0aude")) }
+
+      expect { Dir.chdir(app) { transport.connect } }.to raise_error(ClaudeAgentSDK::CLIConnectionError)
     end
   end
 end

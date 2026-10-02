@@ -138,7 +138,9 @@ module ClaudeAgentSDK
       super() # Transport defines no state today; keep the chain intact if it ever does
       # Support both new single-arg form and legacy two-arg form
       @options = options.nil? ? options_or_prompt : options
-      @cli_path = resolve_cli_path(@options.cli_path)
+      # Any falsy cli_path means discovery, as it always did. `.to_s`: the
+      # option may be a Pathname.
+      @cli_path = settle_cli_path((@options.cli_path || find_cli).to_s)
       @cwd = @options.cwd
       @process = nil
       @stdin = nil
@@ -178,7 +180,7 @@ module ClaudeAgentSDK
     #   3. `which claude`.
     #   4. Well-known install locations.
     #
-    # Every hit is returned as an absolute path — see #resolve_cli_path.
+    # Every hit is returned as an absolute path — see #settle_cli_path.
     #
     # @api private
     def find_cli # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- ordered discovery probes (env, vendored, PATH, known locations)
@@ -210,9 +212,9 @@ module ClaudeAgentSDK
         stdout, _status = Open3.capture2('which', 'claude')
         hit = stdout.strip
         # A relative PATH entry (`bin`, `.`, the empty entry) makes most
-        # `which` implementations print a relative hit. Absolutize it against
-        # the cwd `which` ran in, for the same reason as CLAUDE_CLI_PATH.
-        cli = File.expand_path(hit) unless hit.empty?
+        # `which` implementations print a relative hit. Anchor it to the cwd
+        # `which` ran in, for the same reason as CLAUDE_CLI_PATH.
+        cli = anchor_to_cwd(hit) unless hit.empty?
       rescue StandardError
         # which command failed, try common locations
       end
@@ -335,7 +337,7 @@ module ClaudeAgentSDK
                            (@options.extra_args || {}).key?('debug-to-stderr')
 
       begin
-        # A path #resolve_cli_path could not settle is never handed to spawn:
+        # A path #settle_cli_path could not settle is never handed to spawn:
         # spawn searches PATH on its own, in this process's cwd, and then
         # executes a relative hit inside options.cwd. Reported like any
         # missing CLI, by the Errno::ENOENT branch below. Only when that
@@ -1008,59 +1010,87 @@ module ClaudeAgentSDK
     # inside the directory the agent was pointed at — while the probe vouched
     # for the one here.
     #
-    #   - nil: discovery (#find_cli), which returns absolute paths only.
-    #   - a path with a separator: expanded against the process cwd, like
-    #     CLAUDE_CLI_PATH.
-    #   - a bare name: searched on PATH here (#executable_on_path) rather
+    #   - a path with a separator is anchored to the process cwd (an absolute
+    #     one is kept as given); a leading `~` becomes a home directory, as
+    #     for CLAUDE_CLI_PATH;
+    #   - a bare name is searched on PATH here (#executable_on_path) rather
     #     than left to spawn.
     #
-    # Never raises for an explicit path. One that cannot be settled (not on
-    # PATH, `~user` naming nobody, a relative path when the cwd is gone) is
-    # kept as given, and #connect reports it as CLINotFoundError.
-    def resolve_cli_path(cli_path)
-      return find_cli if cli_path.nil?
-
-      path = cli_path.to_s # the option may be a Pathname
+    # Nothing is normalized: `link/..` must resolve through the filesystem,
+    # as it did when the path went to spawn as given. (File.expand_path
+    # collapses it lexically, which names another file when `link` is a
+    # symlink.)
+    #
+    # Never raises. A path that cannot be settled (a bare name not on PATH,
+    # `~user` naming nobody, a relative path when the cwd is gone, a NUL
+    # byte) is returned as given, and #connect reports it as
+    # CLINotFoundError.
+    def settle_cli_path(path)
       return executable_on_path(path) || path unless path.include?(File::SEPARATOR)
 
-      begin
-        File.expand_path(path)
-      rescue ArgumentError, SystemCallError
-        path
-      end
+      path.start_with?('~') ? expand_leading_tilde(path) : anchor_to_cwd(path)
+    rescue ArgumentError, EncodingError, SystemCallError
+      path
+    end
+
+    # An absolute path as given, a relative one joined to the process cwd.
+    def anchor_to_cwd(path)
+      File.absolute_path?(path) ? path : File.join(Dir.pwd, path)
+    end
+
+    # `~/x` or `~user/x`: the first component becomes that home directory,
+    # the rest is kept as written.
+    def expand_leading_tilde(path)
+      head, rest = path.split(File::SEPARATOR, 2)
+      File.join(File.expand_path(head), rest)
     end
 
     # The lookup spawn used to do for a bare command name, done here so that
-    # the result is absolute: same PATH (the one the child is given through
-    # options.env when it sets one, else this process's, else Ruby's built-in
-    # default), same test (an executable regular file), first hit wins. The
-    # difference is the point of doing it here: a relative entry — `bin`,
-    # `.`, the empty entry — is expanded against the process cwd, where spawn
-    # found the file here and then executed that relative path inside
-    # options.cwd. (`~` entries expand to the home directory, as spawn's own
-    # lookup did.) Returns nil when nothing matches.
+    # the result is absolute: same PATH (#search_path_entries), same test (an
+    # executable regular file), first hit wins. The difference is the point
+    # of doing it here: a relative entry — `bin`, `.`, the empty entry — is
+    # anchored to the process cwd, where spawn found the file here and then
+    # executed that relative path inside options.cwd. Returns nil when
+    # nothing matches.
     def executable_on_path(name)
       return nil if name.empty?
 
-      env = @options.env
-      search_path = env.transform_keys(&:to_s)['PATH'] if env.is_a?(Hash)
-      search_path ||= ENV.fetch('PATH', DEFAULT_EXEC_SEARCH_PATH)
-      # -1 keeps a trailing empty entry; PATH="" is one empty entry.
-      entries = search_path.to_s.split(File::PATH_SEPARATOR, -1)
-      entries = [''] if entries.empty?
-
-      entries.each do |dir|
-        candidate = File.join(File.expand_path(dir), name)
+      search_path_entries.each do |entry|
+        candidate = File.join(path_entry_dir(entry), name)
         return candidate if File.file?(candidate) && File.executable?(candidate)
-      rescue ArgumentError, SystemCallError
-        next # `~user` naming nobody, or a relative entry when the cwd is gone
+      rescue ArgumentError, EncodingError, SystemCallError
+        next # a NUL byte, mixed encodings, or a relative entry when the cwd is gone
       end
       nil
     end
 
-    # False when #resolve_cli_path had to keep an explicit path as given.
+    # The PATH spawn searched: the one the child is given through options.env
+    # when it sets one, else this process's, else Ruby's built-in default.
+    def search_path_entries
+      env = @options.env
+      search_path = env.transform_keys(&:to_s)['PATH'] if env.is_a?(Hash)
+      search_path = (search_path || ENV.fetch('PATH', DEFAULT_EXEC_SEARCH_PATH)).to_s
+      # spawn searched bytes; a PATH that is invalid in its encoding cannot
+      # be split as text.
+      search_path = search_path.b unless search_path.valid_encoding?
+      # -1 keeps a trailing empty entry; PATH="" is one empty entry.
+      entries = search_path.split(File::PATH_SEPARATOR, -1)
+      entries.empty? ? [''] : entries
+    end
+
+    # As in spawn's lookup, `~` and `~/x` entries start at the home directory
+    # (a `~user` entry is taken literally, as there).
+    def path_entry_dir(entry)
+      return File.join(File.expand_path('~'), entry[1..]) if entry == '~' || entry.start_with?('~/')
+
+      anchor_to_cwd(entry)
+    end
+
+    # False when #settle_cli_path had to keep a path as given.
     def cli_path_settled?
       File.absolute_path?(@cli_path)
+    rescue StandardError
+      false # nil from a subclass's #find_cli, a NUL byte, an incompatible encoding
     end
 
     # Run `claude -v` with a hard deadline. Arg-vector popen3 — no shell, same
