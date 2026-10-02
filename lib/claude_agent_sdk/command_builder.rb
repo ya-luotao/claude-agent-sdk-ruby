@@ -129,8 +129,12 @@ module ClaudeAgentSDK
     # Each listed name is validated before being formatted into a rule (see
     # #validate_skill_name). Both SDKs reject non-list, non-'all' shapes
     # loudly; this raises ArgumentError where Python raises TypeError.
+    #
+    # allowed_tools, like disallowed_tools, add_dirs and extra_args below, is
+    # nil when it was set to nil after construction (the readers are signed
+    # nilable); each use site reads nil as the constructor's default.
     def skills_defaults
-      allowed_tools = @options.allowed_tools.dup
+      allowed_tools = (@options.allowed_tools || []).dup
       setting_sources = @options.setting_sources&.dup
       skills = @options.skills
       return [allowed_tools, setting_sources] if skills.nil?
@@ -210,7 +214,8 @@ module ClaudeAgentSDK
     end
 
     def append_disallowed_tools(cmd)
-      cmd.push('--disallowedTools', @options.disallowed_tools.join(',')) unless @options.disallowed_tools.empty?
+      disallowed_tools = @options.disallowed_tools || []
+      cmd.push('--disallowedTools', disallowed_tools.join(',')) unless disallowed_tools.empty?
     end
 
     def append_max_turns(cmd)
@@ -439,7 +444,7 @@ module ClaudeAgentSDK
     end
 
     def append_additional_dirs(cmd)
-      @options.add_dirs.each { |dir| cmd.push('--add-dir', dir.to_s) }
+      (@options.add_dirs || []).each { |dir| cmd.push('--add-dir', dir.to_s) }
     end
 
     def append_mcp_servers(cmd)
@@ -503,7 +508,7 @@ module ClaudeAgentSDK
     end
 
     def append_extra_args(cmd)
-      @options.extra_args.each do |flag, value|
+      (@options.extra_args || {}).each do |flag, value|
         unless EXTRA_ARG_FLAG_REGEXP.match?(flag)
           raise ArgumentError, "Invalid extra_args flag name: #{flag.inspect} (expected lowercase kebab-case)"
         end
