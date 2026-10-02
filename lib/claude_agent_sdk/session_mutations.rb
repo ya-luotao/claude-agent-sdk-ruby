@@ -293,7 +293,11 @@ module ClaudeAgentSDK
     end
 
     def find_in_directory(file_name, directory)
-      path = File.realpath(directory).unicode_normalize(:nfc)
+      # canonicalize_path, not File.realpath: the transcripts outlive the
+      # directory (a removed worktree), and realpath raised Errno::ENOENT for
+      # it before the session was even looked for — while the readers, which
+      # canonicalize, still found the session through the same directory.
+      path = Sessions.canonicalize_path(directory)
       result = try_project_dir(file_name, Sessions.find_project_dir(path))
       return result if result
 
@@ -587,7 +591,7 @@ module ClaudeAgentSDK
     end
 
     def append_to_session_in_directory(session_id, data, file_name, directory)
-      path = File.realpath(directory).unicode_normalize(:nfc)
+      path = Sessions.canonicalize_path(directory) # see find_in_directory
 
       # Try the exact/prefix-matched project directory first.
       project_dir = Sessions.find_project_dir(path)

@@ -157,19 +157,31 @@ module ClaudeAgentSDK
     end
 
     # Resolve a directory to its canonical form (realpath + NFC), matching the
-    # CLI's project-directory naming. Falls back to an absolute NFC path when
-    # realpath can't resolve it (e.g. the directory does not exist yet) — Ruby's
-    # File.realpath raises on missing paths whereas Python's os.path.realpath is
-    # lexical for the missing suffix, so expand_path restores that behavior.
-    # Known divergence: for a MISSING path Python still resolves symlinks in
-    # the existing prefix (so a deleted /tmp/proj on macOS canonicalizes to
-    # /private/tmp/proj and its project dir is found); the expand_path
-    # fallback resolves none, so deleted-directory lookups under symlinked
-    # prefixes can miss.
+    # CLI's project-directory naming.
+    #
+    # A path that cannot be resolved as a whole (the directory was removed, or
+    # does not exist yet) is resolved as far as it exists: symlinks in the
+    # nearest existing ancestor are followed and the missing rest is appended
+    # as written — what Python's os.path.realpath does, where Ruby's
+    # File.realpath raises. The CLI keyed the project by the real path while
+    # the directory existed, so a removed /tmp/proj on macOS must still
+    # canonicalize to /private/tmp/proj for its sessions to be found; a plain
+    # expand_path (the earlier fallback) resolved no symlink at all.
     def canonicalize_path(dir)
       File.realpath(dir).unicode_normalize(:nfc)
     rescue SystemCallError
-      File.expand_path(dir).unicode_normalize(:nfc)
+      existing = File.expand_path(dir)
+      missing = []
+      until File.exist?(existing) || existing == File.dirname(existing)
+        missing.unshift(File.basename(existing))
+        existing = File.dirname(existing)
+      end
+      resolved = begin
+        File.realpath(existing)
+      rescue SystemCallError
+        existing
+      end
+      File.join(resolved, *missing).unicode_normalize(:nfc)
     end
 
     # Derive the SessionStore +project_key+ for a directory (default: cwd).
