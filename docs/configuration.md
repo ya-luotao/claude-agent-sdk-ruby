@@ -228,7 +228,7 @@ The SDK sends your sandbox settings as you wrote them and does not add this one.
 sandbox = ClaudeAgentSDK::SandboxSettings.new(enabled: true, fail_if_unavailable: true)
 ```
 
-Without it, the only sign is the CLI's warning on stderr ("Sandbox disabled: ... Commands will run WITHOUT sandboxing. Network and filesystem restrictions will NOT be enforced."), and stderr reaches your code only through the `stderr` (or `debug_stderr`) option. This is the CLI's own description of its behavior: the fallback has not been reproduced in this SDK's testing, where the sandbox was always available.
+Without it, the sign is the CLI's warning on stderr ("Sandbox disabled: ... Commands will run WITHOUT sandboxing. Network and filesystem restrictions will NOT be enforced."), and stderr reaches your code only through the `stderr` (or `debug_stderr`) option. This is the CLI's own description of its behavior: the fallback has not been reproduced in this SDK's testing, where the sandbox was always available.
 
 See [examples/sandbox_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/sandbox_example.rb).
 
