@@ -70,7 +70,7 @@ ClaudeAgentSDK::HookMatcher.new(
 
 Hook callbacks receive typed input objects (for example `ClaudeAgentSDK::PreToolUseHookInput`) and a `ClaudeAgentSDK::HookContext` (`request_id`, plus `signal` — a `CancellationSignal` to poll with `cancelled?` or `wait(timeout:)` while waiting on external work; it fires on CLI cancel, EOF, disconnect, callback failure, and `HookMatcher` timeout). `ToolPermissionContext` carries the same `request_id` / `signal` for `can_use_tool`. Access fields via Ruby accessors like `input.tool_name` and `input.tool_input`.
 
-Hook callbacks should return a hash. Only top-level keys are auto-converted; use CLI-style camelCase for nested keys.
+Hook callbacks return a Hash, a typed output (`ClaudeAgentSDK::SyncHookJSONOutput` / `AsyncHookJSONOutput`, holding a `*HookSpecificOutput`) or `nil`. In a Hash, the fields those typed classes model may be written in snake_case or camelCase, with Symbol or String keys, at the top level and inside `hook_specific_output` (which must carry `hook_event_name`). Any other key is sent as written, so spell a field the typed classes do not model the way the CLI does (camelCase); values such as `updated_input` are never rewritten. In 1.1.0 and earlier only top-level Symbol keys were converted: use camelCase for nested keys there.
 
 ## Structured output
 

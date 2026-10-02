@@ -1272,36 +1272,24 @@ module ClaudeAgentSDK
       { mcp_response: mcp_response }
     end
 
-    def convert_hook_output_for_cli(hook_output) # rubocop:disable Metrics/CyclomaticComplexity -- one optional field per hook output key
-      # Handle typed output objects
-      return hook_output.to_h if hook_output.respond_to?(:to_h) && !hook_output.is_a?(Hash)
-
+    # What a hook callback returned, as the object the CLI reads. A typed
+    # output (or anything else with #to_h) contributes its own Hash; a typed
+    # value inside a Hash, such as a *HookSpecificOutput under
+    # hook_specific_output, does the same. The keys of the result are then
+    # normalized, so a Hash written in snake_case or with String keys means
+    # what the typed output means (HookOutputKeys) — and so does the Hash a
+    # typed output carried through as its hook_specific_output.
+    def convert_hook_output_for_cli(hook_output)
+      if hook_output.is_a?(Hash)
+        hook_output = hook_output.transform_values do |value|
+          value.respond_to?(:to_h) && !value.is_a?(Hash) ? value.to_h : value
+        end
+      elsif hook_output.respond_to?(:to_h)
+        hook_output = hook_output.to_h
+      end
       return {} unless hook_output.is_a?(Hash)
 
-      # Convert Ruby hash with symbol keys to CLI format
-      # Handle special keywords that might be Ruby-safe versions
-      converted = {}
-      hook_output.each do |key, value|
-        converted_key = case key
-                        when :async_, 'async_' then 'async'
-                        when :continue_, 'continue_' then 'continue'
-                        when :hook_specific_output then 'hookSpecificOutput'
-                        when :suppress_output then 'suppressOutput'
-                        when :stop_reason then 'stopReason'
-                        when :system_message then 'systemMessage'
-                        when :async_timeout then 'asyncTimeout'
-                        else key.to_s
-                        end
-
-        # Recursively convert nested objects
-        converted_value = if value.respond_to?(:to_h) && !value.is_a?(Hash)
-                            value.to_h
-                          else
-                            value
-                          end
-        converted[converted_key] = converted_value
-      end
-      converted
+      HookOutputKeys.normalize(hook_output)
     end
 
     def send_control_request(request)
