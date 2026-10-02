@@ -55,6 +55,15 @@ RSpec.describe 'docs/configuration.md on turning auto-memory off' do
     end
   end
 
+  # The examples build options from the two switches alone, so no configured
+  # defaults may be left over from another example.
+  around do |example|
+    ClaudeAgentSDK.reset_configuration
+    example.run
+  ensure
+    ClaudeAgentSDK.reset_configuration
+  end
+
   # The list items of the section, each on one line. Fenced code is skipped.
   def bullets
     section = page[/^### Turning auto-memory off\n(.*?)^\#{2,3} /m, 1].to_s.gsub(/^```.*?^```\n/m, '')
