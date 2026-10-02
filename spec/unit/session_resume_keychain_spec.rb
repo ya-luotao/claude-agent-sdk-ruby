@@ -20,8 +20,8 @@ require 'rbconfig'
 # `security find-generic-password -w` does. capture_with_timeout itself is
 # exercised against a real child process that is not `security`.
 #
-# `keychain: true` opts out of a default stub of read_keychain_credentials
-# (session_resume_spec.rb installs one).
+# `keychain: true` opts out of the suite-wide default stub of
+# read_keychain_credentials (spec/support/keychain_bridge_stub.rb).
 RSpec.describe ClaudeAgentSDK::SessionResume, keychain: true do
   let(:store) { ClaudeAgentSDK::InMemorySessionStore.new }
   let(:cwd) { Dir.mktmpdir }
@@ -368,6 +368,30 @@ RSpec.describe ClaudeAgentSDK::SessionResume, keychain: true do
 
     it 'returns [nil, nil] for a command that cannot be spawned' do
       expect(capture([File.join(home, 'no-such-command')], ample)).to eq([nil, nil])
+    end
+  end
+
+  # spec/support/keychain_bridge_stub.rb switches the bridge off for every
+  # example in the suite that does not carry `keychain: true`. This group gives
+  # the tag up again, to pin that default exactly where the bridge would
+  # otherwise run: macOS, no env auth, and a config dir it covers.
+  describe 'the suite-wide default, without keychain: true', keychain: false do
+    it 'keeps materialization away from the lookup' do
+      stub_security("#{keychain_payload}\n", true)
+
+      materialized = materialize
+
+      expect(security_calls).to be_empty
+      expect(File).not_to exist(seeded_credentials(materialized))
+    end
+
+    it 'does so for a custom config dir without a .credentials.json as well' do
+      stub_security("#{keychain_payload}\n", true)
+
+      materialized = materialize('CLAUDE_CONFIG_DIR' => '/nonexistent/claude-profiles/work')
+
+      expect(security_calls).to be_empty
+      expect(File).not_to exist(seeded_credentials(materialized))
     end
   end
 end

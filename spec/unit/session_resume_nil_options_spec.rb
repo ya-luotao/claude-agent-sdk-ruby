@@ -29,7 +29,6 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
   end
 
   before do
-    allow(described_class).to receive(:read_keychain_credentials).and_return(nil)
     store.append({ 'project_key' => ClaudeAgentSDK.project_key_for_directory(cwd), 'session_id' => sid },
                  [{ 'type' => 'user', 'uuid' => SecureRandom.uuid, 'sessionId' => sid,
                     'message' => { 'role' => 'user', 'content' => 'hello' } }])
