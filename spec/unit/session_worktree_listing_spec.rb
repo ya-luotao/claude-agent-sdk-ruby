@@ -33,6 +33,23 @@ RSpec.describe 'list_sessions over git worktrees' do
     raise "git #{[*].join(' ')} failed: #{output}" unless status.success?
   end
 
+  # A `git` that prints +listing+ for any arguments, first on PATH: the
+  # reader runs it as a real subprocess and reads a real pipe.
+  def with_git_printing(listing)
+    Dir.mktmpdir('fake-git') do |bin|
+      script = File.join(bin, 'git')
+      File.binwrite(script, "#!/bin/sh\nprintf '%s\\n' #{listing.lines(chomp: true).map { |l| "'#{l}'" }.join(' ')}\n")
+      File.chmod(0o755, script)
+      saved = ENV.fetch('PATH', nil)
+      ENV['PATH'] = "#{bin}#{File::PATH_SEPARATOR}#{saved}"
+      begin
+        yield
+      ensure
+        ENV['PATH'] = saved
+      end
+    end
+  end
+
   let(:root) { File.join(cwd, 'repo').tap { |dir| FileUtils.mkdir_p(dir) } }
   let(:second) { File.join(cwd, 'repo-wt2').tap { |dir| FileUtils.mkdir_p(dir) } }
   let(:package) { File.join(root, 'packages', 'app').tap { |dir| FileUtils.mkdir_p(dir) } }
@@ -106,6 +123,21 @@ RSpec.describe 'list_sessions over git worktrees' do
 
     it 'lists the linked worktree with the sessions of the main one' do
       expect(summaries(second)).to contain_exactly('asked in the repository root', 'asked in the second worktree')
+    end
+  end
+
+  # git prints a path as the filesystem stores it; one that decomposes names
+  # (HFS+) reports an accented e as "e" + U+0301. The CLI names the project
+  # dir after the NFC form, and the two forms sanitize to different names.
+  it 'finds the sessions of a worktree whose path git reports decomposed' do
+    composed = File.join(cwd, "caf#{[0xE9].pack('U')}-wt") # U+00E9
+    decomposed = File.join(cwd, "cafe#{[0x301].pack('U')}-wt") # e, then combining U+0301
+    record_session(root, 'asked in the repository root')
+    record_session(composed, 'asked in the accented worktree')
+
+    listing = "worktree #{root}\nHEAD 1111111\nbranch refs/heads/main\n\nworktree #{decomposed}\nHEAD 2222222\ndetached\n"
+    with_git_printing(listing) do
+      expect(summaries(root)).to contain_exactly('asked in the repository root', 'asked in the accented worktree')
     end
   end
 end

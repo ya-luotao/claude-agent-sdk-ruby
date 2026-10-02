@@ -1446,8 +1446,12 @@ module ClaudeAgentSDK
 
       return [path] unless wait_thr.value.success?
 
+      # NFC, like every path the SDK derives a project dir name from
+      # (canonicalize_path; Python normalizes here too): git prints a path as
+      # the filesystem stores it, and a decomposed name sanitizes to a
+      # different project dir than the one the CLI created.
       paths = stdout_buf.lines.filter_map do |line|
-        line.strip.delete_prefix('worktree ') if line.start_with?('worktree ')
+        line.strip.delete_prefix('worktree ').unicode_normalize(:nfc) if line.start_with?('worktree ')
       end
       paths.empty? ? [path] : paths
     rescue StandardError
