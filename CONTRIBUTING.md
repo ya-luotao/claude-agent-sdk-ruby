@@ -51,7 +51,7 @@ Run them when you change anything on the CLI wire protocol (the transport, `Quer
 
 **TLA+ models** (`formal/tla/`) model-check the CLI installer's publish/lock ordering and the outbound control-request protocol. They need Java 11+; `run.sh` fetches the pinned TLA+ tools itself. Run `formal/tla/run.sh` when you change `CLIInstaller.install` / `#publish` or `Query#send_control_request` / `#await_control_response`, and update the model if the design changed. `formal/tla/README.md` explains what each model covers.
 
-CI runs the unit suite and RuboCop on Ruby 3.2, 3.3 and 3.4 (Linux), the unit suite on macOS, the dependency floor and latest legs (the latest one on Ruby 3.4 and on Ruby 4.0), and the Rails specs on Rails 7.1 and 8. The Ruby 3.4 Linux leg also runs `rake rbs:validate`, and a separate job runs `rake rbs:test`. See [`.github/workflows/`](.github/workflows/).
+CI runs the unit suite and RuboCop on Ruby 3.2, 3.3, 3.4 and 4.0 (Linux), the unit suite on macOS, the dependency floor and latest legs (the latest one on Ruby 3.4 and on Ruby 4.0), and the Rails specs on Rails 7.1 and 8. The Ruby 3.4 Linux leg also runs `rake rbs:validate`, and a separate job runs `rake rbs:test`. See [`.github/workflows/`](.github/workflows/).
 
 ## Pull requests
 

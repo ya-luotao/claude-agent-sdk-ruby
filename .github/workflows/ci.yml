@@ -15,7 +15,7 @@ jobs:
   # Main suite + lint on every supported Ruby (Linux). The Ruby 3.4 Linux leg
   # also collects coverage (simplecov, COVERAGE=1): the total goes to the job
   # summary and the HTML report is uploaded as an artifact. No threshold gate.
-  # One macOS leg runs the suite on the newest Ruby: the transport depends on
+  # One macOS leg runs the suite on Ruby 3.4: the transport depends on
   # signals, pipes and TERM/KILL escalation, whose behavior differs per OS.
   test:
     name: test (${{ matrix.os }}, Ruby ${{ matrix.ruby-version }})
@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        ruby-version: ['3.2', '3.3', '3.4']
+        ruby-version: ['3.2', '3.3', '3.4', '4.0']
         include:
           - os: ubuntu-latest
             ruby-version: '3.4'
@@ -105,11 +105,6 @@ jobs:
   # on Ruby 3.4 and on Ruby 4.0; `floor` pins the oldest supported runtime
   # dependencies, on Ruby 3.2 and 3.4. rspec only — lint runs on the main leg.
   # See gemfiles/*.gemfile.
-  #
-  # The `latest` row is the only Ruby 4.0 leg: the main Gemfile does not
-  # resolve there (Ruby 4.0 ships Bundler 4; the gemspec's development
-  # dependency is `bundler ~> 2.0`), so 4.0 cannot join the `test` matrix
-  # until that constraint is relaxed.
   deps:
     name: deps (${{ matrix.gemfile }}, Ruby ${{ matrix.ruby-version }})
     runs-on: ubuntu-latest
