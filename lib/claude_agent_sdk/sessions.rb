@@ -992,10 +992,12 @@ module ClaudeAgentSDK
       return nil unless valid_session_id?(session_id)
 
       project_path = canonicalize_path(directory.nil? ? '.' : directory.to_s)
-      entries = session_store.load('project_key' => sanitize_path(project_path), 'session_id' => session_id)
+      project_key = sanitize_path(project_path)
+      entries = session_store.load('project_key' => project_key, 'session_id' => session_id)
       return nil if entries.nil? || entries.empty?
 
-      derive_info_from_entries(session_id, entries, mtime_from_entries(entries), project_path)
+      mtime = store_session_mtime(session_store, project_key, session_id) || mtime_from_entries(entries)
+      derive_info_from_entries(session_id, entries, mtime, project_path)
     end
 
     # Read a session's conversation messages from a SessionStore. Store-backed
@@ -1217,6 +1219,26 @@ module ClaudeAgentSDK
       summary = SessionSummary.fold_session_summary(nil, { 'session_id' => session_id }, entries)
       summary['mtime'] = mtime
       SessionSummary.summary_entry_to_sdk_info(summary, project_path)
+    end
+
+    # The adapter's own mtime for one session, as its listing reports it, or
+    # nil when the store cannot be asked (it implements neither listing
+    # method) or does not list the session.
+    #
+    # get_session_info(session_store:) stamps this as last_modified: it is the
+    # clock list_sessions(session_store:) reports and orders by, and what the
+    # docs promise on the store paths. The entries' own timestamps are another
+    # clock — and absent from metadata entries, which gave last_modified 0 for
+    # a session the listing showed with a real mtime. They remain the fallback
+    # (mtime_from_entries) for a store with nothing but #append and #load.
+    def store_session_mtime(store, project_key, session_id)
+      rows = if SessionStore.implements?(store, :list_sessions)
+               store.list_sessions(project_key)
+             elsif SessionStore.implements?(store, :list_session_summaries)
+               store.list_session_summaries(project_key)
+             end
+      row = Array(rows).find { |candidate| candidate.is_a?(Hash) && candidate['session_id'] == session_id }
+      row && row['mtime']
     end
 
     # Last parseable entry timestamp (epoch ms), scanning from the tail; 0 if none.
@@ -1925,7 +1947,8 @@ module ClaudeAgentSDK
                          :first_prompt_in, :first_prompt_from_file, :first_prompt_past_head,
                          :valid_agent_id?, :sidechain_head?,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
-                         :derive_info_from_entries, :mtime_from_entries, :apply_sort_limit_offset,
+                         :derive_info_from_entries, :store_session_mtime, :mtime_from_entries,
+                         :apply_sort_limit_offset,
                          :filter_transcript_entries, :entries_to_messages,
                          :entries_to_subagent_messages, :build_subagent_chain, :resolve_subagent_subpath,
                          :import_subagent_files, :append_jsonl_file_in_batches, :collect_jsonl_files,

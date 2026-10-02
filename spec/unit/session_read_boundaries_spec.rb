@@ -104,4 +104,81 @@ RSpec.describe 'session API boundaries' do
       expect(messages.map(&:text)).to eq(['Read a.rb', 'It defines Foo.'])
     end
   end
+
+  # last_modified on the store paths is the adapter's mtime for the session:
+  # the value the store listing reports and orders by.
+  describe 'last_modified of a session read from a store' do
+    let(:key) { { 'project_key' => ClaudeAgentSDK.project_key_for_directory(cwd), 'session_id' => session_id } }
+
+    def info_from(store)
+      ClaudeAgentSDK.get_session_info(session_id: session_id, directory: cwd, session_store: store)
+    end
+
+    # A session renamed before it has any timestamped entry in the store:
+    # metadata lines carry no timestamp.
+    def untimed_entries
+      transcript = CLITranscript.new(session_id: session_id, cwd: cwd)
+      transcript.ai_title('Reading a.rb')
+      transcript.last_prompt('what does a.rb define?')
+      transcript.store_entries
+    end
+
+    context 'with a store that lists its sessions' do
+      let(:store) { ClaudeAgentSDK::InMemorySessionStore.new }
+
+      it 'is the same from get_session_info and from list_sessions' do
+        store.append(key, conversation.store_entries)
+        listed = ClaudeAgentSDK.list_sessions(directory: cwd, session_store: store).first
+
+        expect(info_from(store).last_modified).to eq(listed.last_modified)
+        expect(Time.at(listed.last_modified / 1000).year).to eq(Time.now.year) # the adapter's clock, not the entries'
+      end
+
+      it 'is the same for a session whose entries carry no timestamp' do
+        store.append(key, untimed_entries)
+        listed = ClaudeAgentSDK.list_sessions(directory: cwd, session_store: store).first
+
+        expect(listed.last_modified).to be > 0
+        expect(info_from(store).last_modified).to eq(listed.last_modified)
+      end
+    end
+
+    context 'with a store that only summarizes its sessions' do
+      let(:store) do
+        Class.new(ClaudeAgentSDK::InMemorySessionStore) { undef_method :list_sessions }.new
+      end
+
+      it 'takes the mtime of the summary' do
+        store.append(key, conversation.store_entries)
+        listed = ClaudeAgentSDK.list_sessions(directory: cwd, session_store: store).first
+
+        expect(info_from(store).last_modified).to eq(listed.last_modified)
+      end
+    end
+
+    # Only #append and #load are required of an adapter.
+    context 'with a store that cannot list' do
+      let(:store) do
+        Class.new do
+          def initialize = @sessions = {}
+          def append(key, entries) = (@sessions[key] ||= []).concat(entries)
+          def load(key) = @sessions[key]
+        end.new
+      end
+
+      it 'falls back to the timestamp of the last entry' do
+        entries = conversation.store_entries
+        store.append(key, entries)
+
+        expect(info_from(store).last_modified)
+          .to eq(ClaudeAgentSDK::Sessions.parse_iso_timestamp_ms(entries[-2]['timestamp']))
+      end
+
+      it 'is 0 when no entry carries a timestamp' do
+        store.append(key, untimed_entries)
+
+        expect(info_from(store).last_modified).to eq(0)
+      end
+    end
+  end
 end
