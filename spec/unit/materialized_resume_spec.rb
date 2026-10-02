@@ -192,6 +192,34 @@ RSpec.describe ClaudeAgentSDK::MaterializedResume do
         expect(warning).to match(refusal)
       end
 
+      it 'stops deleting as soon as the directory is replaced in the middle of the scrub' do
+        # Give the replacement an entry for every name the scrub has listed,
+        # whatever order it walks them in: each one deleted after the swap
+        # would be a file the SDK never wrote.
+        (Dir.children(config_dir) - ['projects']).each do |name|
+          path = File.join(unrelated, name)
+          File.write(path, 'synthetic') unless File.exist?(path)
+        end
+        materialized = described_class.new(config_dir: config_dir, resume_session_id: sid)
+        swapped = false
+        allow(ClaudeAgentSDK::SessionResume).to receive(:remove_entry_without_following).and_wrap_original do |original, path|
+          result = original.call(path)
+          unless swapped # right after the first deletion
+            swapped = true
+            File.rename(config_dir, aside)
+            File.symlink(unrelated, config_dir)
+          end
+          result
+        end
+        before_scrub = files_under(unrelated).sort
+
+        warning = stderr_of { materialized.preserve_transcripts }
+
+        expect(swapped).to be(true)
+        expect(files_under(unrelated).sort).to eq(before_scrub)
+        expect(warning).to match(refusal)
+      end
+
       it 'refuses a symlink it is handed as the directory' do
         link = File.join(outside, 'replaced-config')
         File.symlink(unrelated, link)
