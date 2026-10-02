@@ -13,6 +13,18 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
   let(:project_key) { ClaudeAgentSDK.project_key_for_directory(cwd) }
   let(:sid) { SecureRandom.uuid }
 
+  # Hermetic by default. Materialization runs the macOS Keychain bridge
+  # (`security find-generic-password`) whenever the caller has no
+  # CLAUDE_CONFIG_DIR and no env auth — a contributor's default macOS setup —
+  # so these examples used to read the developer's real credentials and to
+  # depend on the local Keychain. The bridge has its own examples in
+  # session_resume_keychain_spec.rb, which stub one level lower
+  # (capture_with_timeout); an example in this file that needs the real
+  # method opts in with `keychain: true` and does the same.
+  before do |example|
+    allow(described_class).to receive(:read_keychain_credentials).and_return(nil) unless example.metadata[:keychain]
+  end
+
   after { FileUtils.remove_entry(cwd) if File.directory?(cwd) }
 
   def entry(text, **extra)
