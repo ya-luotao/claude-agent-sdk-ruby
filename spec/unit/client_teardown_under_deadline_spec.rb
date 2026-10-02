@@ -22,7 +22,10 @@ require 'tmpdir'
 # Async::Stop.
 #
 # The observers block on a queue until the example releases them, so the
-# deadlines can only expire while they wait.
+# deadlines can only expire while they wait. disconnect reaches its observer
+# without suspending. connect suspends before it reaches on_error (resume
+# materialization, the handshake), so there the real task.with_timeout is
+# armed only around the observer notification: no slow setup can use it up.
 RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted during an observer' do
   # In-memory stand-in for the CLI process. It answers `initialize` the way
   # CLI 2.1.286 answers control requests (payload trimmed), or rejects it
@@ -124,8 +127,8 @@ RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted 
   end
 
   # An observer that stays in +hook+ until the example releases it. on_error
-  # waits only for the handshake rejection: handed anything else (the
-  # caller's deadline, had it expired before the hop) it returns at once.
+  # waits only for the handshake rejection: handed anything else it returns
+  # at once, and the example's gate (#expect_on_error_reached) fails.
   def blocking_observer(hook)
     queues = { entered: entered, release: release, handed: handed }
     Class.new do
@@ -238,18 +241,26 @@ RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted 
   end
 
   describe 'a failing Client#connect while on_error runs' do
-    # Skips, rather than passes, when the deadline went off before the hop.
+    # Arms a real task.with_timeout on the connecting fiber for exactly the
+    # time Client spends notifying on_error.
+    def arm_deadline_around_on_error(client, seconds, *exception_class)
+      allow(client).to receive(:notify_error).and_wrap_original do |notify, error|
+        Async::Task.current.with_timeout(seconds, *exception_class) { notify.call(error) }
+      end
+    end
+
+    # The gate of every example here: on_error ran, with the handshake rejection.
     def expect_on_error_reached
-      reached = handed.first.is_a?(StandardError) && handed.first.message.include?('Invalid initialize request')
-      skip 'the deadline expired before the on_error hop; this run did not reach it' unless reached
+      expect(handed).to match([have_attributes(class: StandardError, message: 'Invalid initialize request')])
     end
 
     it 'tears the partial session down, then raises the expired deadline (:thread)' do
-      Sync do |task|
+      Sync do
         client, created = client_for(:on_error, scheduling: :thread, reject_initialize: true)
-        outcome = outcome_of { task.with_timeout(0.2) { client.connect } }
-        expect_on_error_reached
+        arm_deadline_around_on_error(client, 0.05)
+        outcome = outcome_of { client.connect }
 
+        expect_on_error_reached
         expect(outcome).to be_a(Async::TimeoutError)
         expect_torn_down(client, created.fetch(0))
       ensure
@@ -259,12 +270,13 @@ RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted 
     end
 
     it 'tears the partial session down, then raises an inline cooperative cancellation (:inline)' do
-      Sync do |task|
+      Sync do
         client, created = client_for(:on_error, scheduling: :inline, reject_initialize: true)
         cancellation = inline_cancellation
-        outcome = outcome_of { task.with_timeout(0.2, cancellation) { client.connect } }
-        expect_on_error_reached
+        arm_deadline_around_on_error(client, 0.05, cancellation)
+        outcome = outcome_of { client.connect }
 
+        expect_on_error_reached
         expect(outcome).to be_a(cancellation)
         expect_torn_down(client, created.fetch(0))
       ensure
@@ -281,6 +293,7 @@ RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted 
         caller_task.stop
         caller_task.wait
 
+        expect_on_error_reached
         expect_torn_down(client, created.fetch(0))
       ensure
         release.close
@@ -290,11 +303,12 @@ RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted 
 
     it 'tears the partial session down and raises the connect error while the observer contains a deadline ' \
        '(:inline, residue)' do
-      Sync do |task|
+      Sync do
         client, created = client_for(:on_error, scheduling: :inline, reject_initialize: true)
-        outcome = outcome_of { task.with_timeout(0.2) { client.connect } }
-        expect_on_error_reached
+        arm_deadline_around_on_error(client, 0.05)
+        outcome = outcome_of { client.connect }
 
+        expect_on_error_reached
         expect(outcome).to be_a(StandardError).and(have_attributes(message: 'Invalid initialize request'))
         expect_torn_down(client, created.fetch(0))
       ensure
