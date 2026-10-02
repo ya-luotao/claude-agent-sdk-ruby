@@ -62,9 +62,11 @@ RSpec.describe 'a session store whose optional methods raise NotImplementedError
     let(:store) { seed(SimpleDelegator.new(minimal_store_class.new)) }
 
     it 'looks as if it implemented every optional method' do
-      %i[list_sessions list_session_summaries delete list_subkeys].each do |method|
+      project_key = key['project_key']
+      { list_sessions: project_key, list_session_summaries: project_key, delete: key,
+        list_subkeys: key }.each do |method, argument|
         expect(ClaudeAgentSDK::SessionStore.implements?(store, method)).to be(true)
-        expect { store.public_send(method, key) }.to raise_error(NotImplementedError)
+        expect { store.public_send(method, argument) }.to raise_error(NotImplementedError)
       end
     end
 
