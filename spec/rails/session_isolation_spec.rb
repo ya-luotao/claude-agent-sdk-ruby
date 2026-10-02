@@ -37,19 +37,55 @@ RSpec.describe 'Auto-memory isolation in the Rails guide, examples and initializ
     end
   end
 
-  describe guide do
-    let(:ruby_blocks) { File.read(File.join(root, guide)).scan(/^```ruby\n(.*?)^```$/m).flatten }
+  # The text between `ClaudeAgentOptions.new(` and its closing parenthesis.
+  arguments_from = lambda do |code, from|
+    depth = 1
+    index = from
+    until depth.zero?
+      raise "unbalanced ClaudeAgentOptions.new( in #{guide}" if index >= code.size
 
-    it 'turns auto-memory off in the ActionCable chat job' do
-      chat_job = ruby_blocks.find { |block| block.include?('class ChatAgentJob') }
+      depth += { '(' => 1, ')' => -1 }.fetch(code[index], 0)
+      index += 1
+    end
+    code[from...(index - 1)]
+  end
 
-      expect(chat_job).to include("preset: 'claude_code'").and include(switch)
+  # Every ClaudeAgentOptions the guide builds, as [the heading it sits under,
+  # the arguments it is built from]. A `**name` argument is resolved to the
+  # `name = { ... }` literal in the same block, which is how the
+  # session-resumption model builds its options.
+  option_sets = []
+  heading = nil
+  File.read(File.join(root, guide)).scan(/^(\#{2,3} [^\n]+)$|^ *```ruby\n(.*?)^ *```$/m) do |title, code|
+    next heading = title.sub(/\A#+ /, '') if title
+
+    code.enum_for(:scan, /ClaudeAgentOptions\.new\(/).each do
+      arguments = arguments_from.call(code, Regexp.last_match.end(0))
+      if (name = arguments[/\A\s*\*\*(\w+)\s*\z/, 1])
+        arguments = code[/^( *)#{name} = \{\n.*?^\1\}/m] || raise("no `#{name} = { ... }` under #{heading}")
+      end
+      option_sets << [heading, arguments]
+    end
+  end
+
+  # An option set in the guide that must not carry the switch goes here,
+  # keyed by the heading it sits under, with the reason. None does.
+  allowed_without_switch = {}.freeze
+
+  describe "#{guide}, every ClaudeAgentOptions it builds" do
+    it 'finds an option set in every section that builds one' do
+      expect(option_sets.map(&:first)).to include(
+        'Getting started', "Carrying the caller's state into callbacks", 'ActionCable Streaming',
+        'Session Resumption', 'Background Jobs with Error Handling', 'HTTP MCP Servers'
+      )
     end
 
-    it 'turns auto-memory off in the session-resumption options' do
-      build_options = ruby_blocks.find { |block| block.include?('def build_options') }
+    option_sets.each do |section, arguments|
+      it "turns auto-memory off in the options under \"#{section}\"" do
+        skip allowed_without_switch.fetch(section) if allowed_without_switch.key?(section)
 
-      expect(build_options).to include(switch)
+        expect(arguments).to match(/env: \{[^}]*'#{variable}' => '1'[^}]*\}/)
+      end
     end
   end
 

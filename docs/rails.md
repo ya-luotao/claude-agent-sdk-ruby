@@ -33,7 +33,10 @@ The gem ships a Railtie, an install generator and a rake task for vendoring the 
    # app/jobs/summarize_ticket_job.rb
    class SummarizeTicketJob < ApplicationJob
      def perform(ticket)
-       options = ClaudeAgentSDK::ClaudeAgentOptions.new(tools: [], max_turns: 1)  # text only, no built-in tools
+       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+         tools: [], max_turns: 1,                            # text only, no built-in tools
+         env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }   # see "Per-user isolation"
+       )
        prompt = "Summarize this support ticket in two sentences:\n\n#{ticket.body}"
 
        ClaudeAgentSDK.query(prompt: prompt, options: options) do |message|
@@ -214,7 +217,8 @@ class SummarizeTicketJob < ApplicationJob
     Current.account = ticket.account
     options = ClaudeAgentSDK::ClaudeAgentOptions.new(
       callback_wrapper: AgentContext.callback_wrapper,   # replaces the configured Rails wrapper, and calls it
-      tools: [], max_turns: 1
+      tools: [], max_turns: 1,
+      env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }
     )
 
     ClaudeAgentSDK.query(prompt: "Summarize:\n\n#{ticket.body}", options: options) do |message|
@@ -388,7 +392,7 @@ One job class serves every chat here, from one working directory — and the CLI
 - A session on the `claude_code` preset also **writes** it when a user asks it to remember something, and that write passes no permission check: no `permission_mode`, `can_use_tool` callback or hook is consulted.
 - `setting_sources: []` isolates settings files. It does not turn this off.
 
-So in a multi-user app one user's "remember that…" becomes part of every other user's context. `env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }` turns auto-memory off for the session; the examples on this page set it, and the generated initializer carries the line, commented out, to make it a process-wide default. The value has to be `'1'`: the CLI reads `'0'` or `'false'` as "force auto-memory on", which overrides even `autoMemoryEnabled: false` in settings. To see what a session loaded, call `client.context_usage[:memoryFiles]` (an entry with `type: "AutoMem"` is the memory index); it costs no model call.
+So in a multi-user app one user's "remember that…" becomes part of every other user's context. `env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }` turns auto-memory off for the session. Every set of options built on this page carries it (`spec/rails/session_isolation_spec.rb` checks each one). Set it for every session a multi-user app runs — per call, as here, or once for the whole process by uncommenting the line the generated initializer carries; defaults merge per key, so a per-call `env:` keeps it, and the short snippets on this page that pass no options get it too. The value has to be `'1'`: the CLI reads `'0'` or `'false'` as "force auto-memory on", which overrides even `autoMemoryEnabled: false` in settings. To see what a session loaded, call `client.context_usage[:memoryFiles]` (an entry with `type: "AutoMem"` is the memory index); it costs no model call.
 
 What else isolates sessions, and what only appears to, is covered in [Session isolation](configuration.md#session-isolation).
 
@@ -437,7 +441,12 @@ class ClaudeAgentJob < ApplicationJob
   def perform(task_id)
     task = Task.find(task_id)
 
-    ClaudeAgentSDK::Client.open(options: ClaudeAgentSDK::ClaudeAgentOptions.new(max_turns: 10)) do |client|
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+      max_turns: 10,
+      env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }   # see "Per-user isolation"
+    )
+
+    ClaudeAgentSDK::Client.open(options: options) do |client|
       client.query(task.prompt)
       client.receive_response do |message|
         task.update!(status: 'done', result: message.result) if message.is_a?(ClaudeAgentSDK::ResultMessage)
@@ -464,7 +473,8 @@ mcp_servers = {
 
 options = ClaudeAgentSDK::ClaudeAgentOptions.new(
   mcp_servers: mcp_servers,
-  permission_mode: 'bypassPermissions'
+  permission_mode: 'bypassPermissions',
+  env: { 'CLAUDE_CODE_DISABLE_AUTO_MEMORY' => '1' }   # see "Per-user isolation"
 )
 ```
 
