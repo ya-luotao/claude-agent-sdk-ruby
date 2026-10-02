@@ -327,10 +327,23 @@ module ClaudeAgentSDK
         # read from JSON spell that key as a String; left next to the Symbol
         # key below it would be written twice (json 3.x raises on that).
         settings_hash = settings_hash.reject { |key, _| key.to_s == 'sandbox' }
-        settings_hash[:sandbox] = @options.sandbox.is_a?(SandboxSettings) ? @options.sandbox.to_h : @options.sandbox
+        settings_hash[:sandbox] = sandbox_section(@options.sandbox)
       end
 
       cmd.push('--settings', JSON.generate(settings_hash)) if !settings_is_path && !settings_hash.empty?
+    end
+
+    # The sandbox section as the CLI reads it. A Hash stands for the
+    # SandboxSettings with the same fields: the CLI only knows the camelCase
+    # keys that class writes, and it ignores the others without an error, so
+    # a Hash in Ruby spelling (deny_read, denied_domains) is renamed like the
+    # typed value would be (SandboxKeys). Booleans go out as they are.
+    def sandbox_section(sandbox)
+      case sandbox
+      when SandboxSettings then sandbox.to_h
+      when Hash then SandboxKeys.normalize(sandbox)
+      else sandbox
+      end
     end
 
     def append_budget(cmd)
