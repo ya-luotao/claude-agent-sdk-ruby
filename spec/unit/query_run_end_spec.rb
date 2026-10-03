@@ -650,10 +650,9 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     allow(stdin).to receive(:close)
     allow(Open3).to receive(:popen3) do |env, *_args|
       captured_env = env
-      [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
-       instance_double(Process::Waiter)]
+      [stdin, StringIO.new, StringIO.new, instance_double(Process::Waiter)]
     end
-    transport.connect
+    connect_draining_stderr(transport)
     captured_env
   end
 
