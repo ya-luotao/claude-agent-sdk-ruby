@@ -29,10 +29,28 @@ module ClaudeAgentSDK
     SKIP_VERSION_CHECK_ENV_VAR = 'CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK'
     # @api private
     CLI_PATH_ENV_VAR = 'CLAUDE_CLI_PATH'
+    # What Ruby's own spawn searches for a bare command name when PATH is
+    # unset (dln_find_exe_r). #executable_on_path uses it for the same case,
+    # so a bare `cli_path` keeps resolving where it did.
+    #
+    # @api private
+    DEFAULT_EXEC_SEARCH_PATH = '/usr/local/bin:/usr/ucb:/usr/bin:/bin:.'
+    # What discovery searches when the process has no PATH (a service, a
+    # minimal container): the same system directories, without the `.` —
+    # discovery never picks a `claude` out of the working directory.
+    #
+    # @api private
+    DEFAULT_DISCOVERY_SEARCH_PATH = '/usr/local/bin:/usr/ucb:/usr/bin:/bin'
     # @api private
     VERSION_CHECK_TIMEOUT_SECONDS = 2 # mirrors Python's anyio.fail_after(2)
     # @api private
     RECENT_STDERR_LINES_LIMIT = 20
+    # How the CLI's stderr says that a requested sandbox could not start and
+    # that the session carries on without one — see
+    # #warn_if_sandbox_unavailable.
+    #
+    # @api private
+    SANDBOX_DISABLED_MARKER = 'Sandbox disabled:'
     # After stdout EOF the child has closed (or lost) its last stdout handle,
     # so it is normally already exiting; a CLI still running this long
     # afterwards is wedged and gets the same TERM -> KILL ladder as #close.
@@ -126,7 +144,11 @@ module ClaudeAgentSDK
       super() # Transport defines no state today; keep the chain intact if it ever does
       # Support both new single-arg form and legacy two-arg form
       @options = options.nil? ? options_or_prompt : options
-      @cli_path = @options.cli_path || find_cli
+      # What the caller named (any falsy cli_path means discovery, as it
+      # always did), as a String: the option may be a Pathname. Settled
+      # here, and again by #connect.
+      @given_cli_path = (@options.cli_path || find_cli).to_s
+      @cli_path = settle_cli_path(@given_cli_path)
       @cwd = @options.cwd
       @process = nil
       @stdin = nil
@@ -138,6 +160,7 @@ module ClaudeAgentSDK
       @stderr_task = nil
       @recent_stderr = []
       @recent_stderr_mutex = Mutex.new
+      @sandbox_warning_emitted = false
       # Serializes stdin access across the reactor fiber (transport writes
       # from inside Async) and user-callback threads spawned via FiberBoundary
       # (tool handlers / hooks calling Client#query). Without this lock,
@@ -158,15 +181,23 @@ module ClaudeAgentSDK
     end
 
     # Probe order (first hit wins):
-    #   1. CLAUDE_CLI_PATH — explicit operator override, no discovery at all.
+    #   1. CLAUDE_CLI_PATH — the operator's override, when it names an
+    #      executable regular file. A value that does not (a missing file, a
+    #      directory, a file that is not executable) is skipped without a
+    #      warning, and discovery goes on with the steps below.
     #   2. A project-local vendored binary (CLIInstaller). Deliberately ahead
     #      of PATH: the point of a pinned, vendored CLI is that it beats
     #      whatever version happens to be installed globally on the host.
-    #   3. `which claude`.
+    #   3. `claude` on this process's PATH, searched here
+    #      (#executable_on_path). Not by running `which`: that program would
+    #      itself be looked up on PATH, relative entries included, and its
+    #      answer would have to be believed.
     #   4. Well-known install locations.
     #
+    # Every hit is returned as an absolute path — see #settle_cli_path.
+    #
     # @api private
-    def find_cli # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- ordered discovery probes (env, vendored, PATH, known locations)
+    def find_cli # rubocop:disable Metrics/MethodLength -- ordered discovery probes (env, vendored, PATH, known locations)
       env_path = ENV.fetch(CLI_PATH_ENV_VAR, nil).to_s
       unless env_path.empty?
         # Absolutize against the CURRENT working directory, which is where the
@@ -189,15 +220,12 @@ module ClaudeAgentSDK
       end
       return vendored if vendored
 
-      # Try which command first (using Open3 for thread safety)
-      cli = nil
-      begin
-        stdout, _status = Open3.capture2('which', 'claude')
-        cli = stdout.strip
-      rescue StandardError
-        # which command failed, try common locations
-      end
-      return cli if cli && !cli.empty? && File.executable?(cli)
+      # The process's own PATH, the one `which claude` used to search here: a
+      # PATH set through options.env is the session's, and only a bare
+      # cli_path is searched on it (#spawn_search_path). With no PATH, the
+      # system directories, as Ruby's own lookup would search them.
+      on_path = executable_on_path('claude', ENV.fetch('PATH', DEFAULT_DISCOVERY_SEARCH_PATH))
+      return on_path if on_path
 
       # Try common locations. The home-relative ones are skipped when no
       # usable home exists (see #home_dir), so a HOME-less container still
@@ -274,13 +302,28 @@ module ClaudeAgentSDK
     def connect # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- spawn sequence kept in order
       return if @process
 
+      # Settled again where spawn used to look the CLI up: a CLI installed
+      # after this transport was built is found, and a relative path
+      # follows the process cwd of this connect, where the probe runs.
+      @cli_path = settle_cli_path(@given_cli_path)
+      cmd = build_command
+      # A subclass whose #build_command runs the CLI through another program
+      # (docker exec, ssh) names a file on the far side. A path settled
+      # against this host — anchored to its cwd, or found on its PATH — would
+      # not exist there, so that argv gets cli_path as the caller gave it,
+      # and the probe below runs only for an absolute one (as for any path
+      # that is not settled).
+      unless cmd.first == @cli_path
+        @cli_path = @given_cli_path
+        cmd = build_command
+      end
       check_claude_version
 
-      cmd = build_command
-
       # Build environment
-      # Convert symbol keys to strings for spawn compatibility
-      custom_env = @options.env.transform_keys(&:to_s)
+      # Convert symbol keys to strings for spawn compatibility. `|| {}`: the
+      # constructor defaults env (and extra_args, below) to {}, but both are
+      # nil again after `options.dup_with(env: nil)` or `options.env = nil`.
+      custom_env = (@options.env || {}).transform_keys(&:to_s)
       # Explicitly unset CLAUDECODE to prevent "nested session" detection when the SDK
       # launches Claude Code from within an existing Claude Code terminal.
       # NOTE: Must set to nil (not just omit the key) — Ruby's spawn only overlays
@@ -310,9 +353,19 @@ module ClaudeAgentSDK
       process_env['PWD'] = @cwd.to_s if @cwd
 
       # Determine stderr handling
-      should_pipe_stderr = @options.stderr || @options.debug_stderr || @options.extra_args.key?('debug-to-stderr')
+      should_pipe_stderr = @options.stderr || @options.debug_stderr ||
+                           (@options.extra_args || {}).key?('debug-to-stderr')
 
       begin
+        # A path #settle_cli_path could not settle is never handed to spawn:
+        # spawn searches PATH on its own, in this process's cwd, and then
+        # executes a relative hit inside options.cwd. Reported like any
+        # missing CLI, by the Errno::ENOENT branch below. Only when that
+        # path is the program about to be spawned: a subclass whose
+        # #build_command wraps the CLI in another program (docker exec, ssh)
+        # names a file on the far side, and its argv is spawned as built.
+        raise Errno::ENOENT, @cli_path if cmd.first == @cli_path && !cli_path_settled?
+
         # Start process using Open3
         # :uid mirrors Python's anyio.open_process(user=...): String username
         # or Integer uid (Unix; requires privileges — typically root). The
@@ -389,20 +442,27 @@ module ClaudeAgentSDK
         next if line_str.empty?
 
         record_bounded_stderr(line_str)
+        warn_if_sandbox_unavailable(line_str)
 
         # Per-line isolation: a callback that raises (e.g. user's logger
         # transiently failing) must not poison the rest of the stderr stream.
         # Without this, the first exception terminates the each_line loop and
         # the SDK silently stops capturing stderr for the lifetime of the
         # process. Matches Python SDK v0.2.82 (PR #932).
+        # ScriptError and SystemStackError as well: a callback raising
+        # NotImplementedError or LoadError (both ScriptErrors), or recursing
+        # too deep, used to end this thread, and with nothing reading the
+        # pipe a CLI that wrote one more pipe buffer of stderr (64 KiB)
+        # blocked in write(2) for good.
         begin
           @options.stderr&.call(line_str)
-        rescue StandardError
+        rescue StandardError, ScriptError, SystemStackError
           # Drop the callback error; the line is already in the recent-stderr
           # ring buffer, which is what ProcessError surfaces on non-zero exit.
         end
 
-        # Write to debug_stderr file/IO if provided, also isolated.
+        # Write to debug_stderr file/IO if provided, also isolated — from the
+        # same exceptions as the callback, for the same reason.
         begin
           if @options.debug_stderr
             if @options.debug_stderr.respond_to?(:puts)
@@ -411,7 +471,7 @@ module ClaudeAgentSDK
               File.open(@options.debug_stderr, 'a') { |f| f.puts(line_str) }
             end
           end
-        rescue StandardError
+        rescue StandardError, ScriptError, SystemStackError
           # Drop debug_stderr write errors so they never interrupt the loop.
         end
       end
@@ -429,6 +489,7 @@ module ClaudeAgentSDK
         next if line_str.empty?
 
         record_bounded_stderr(line_str)
+        warn_if_sandbox_unavailable(line_str)
       end
     end
 
@@ -641,17 +702,18 @@ module ClaudeAgentSDK
     # Wait for the spawned process to exit, up to +timeout_seconds+. Polls
     # process.alive? rather than using stdlib Timeout.timeout, which raises
     # across threads via Thread#raise and corrupts Async fiber-scheduler state
-    # (close is always called inside an Async task). Yields to the current
-    # Async task when one is active so the reactor keeps running.
+    # (close is always called inside an Async task). Kernel#sleep is
+    # scheduler-aware: on a reactor it parks only the calling fiber, so the
+    # reactor keeps running. (Async::Task#sleep did the same but is
+    # deprecated, and warns on every call under `ruby -w`.)
     #
     # @api private
     def wait_process_with_timeout(timeout_seconds, process = @process)
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
-      task = defined?(Async::Task) ? Async::Task.current? : nil
       while process.alive?
         raise Timeout::Error if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
-        task ? task.sleep(0.05) : sleep(0.05)
+        sleep(0.05)
       end
       process.value
     end
@@ -833,7 +895,7 @@ module ClaudeAgentSDK
         # reached query()/receive_response. Past the grace period escalate
         # like #close (TERM, then KILL) and report it as an error below: a
         # child that outlives its stdout is wedged, whatever its exit code.
-        # The poll parks only this task (task.sleep) on a reactor.
+        # The poll parks only this fiber (Kernel#sleep) on a reactor.
         if process && !process_exited_within?(process, EOF_EXIT_GRACE_SECONDS)
           forced_exit = true
           begin
@@ -920,6 +982,8 @@ module ClaudeAgentSDK
       # including '0'/'false'/' '; unset or empty string runs the check.
       skip = ENV.fetch(SKIP_VERSION_CHECK_ENV_VAR, nil)
       return if skip && !skip.empty?
+      # Nothing to probe: #connect reports the unsettled path right after.
+      return unless cli_path_settled?
 
       begin
         output = capture_cli_version_output
@@ -960,6 +1024,102 @@ module ClaudeAgentSDK
 
     private
 
+    # Settle the CLI on ONE absolute path, used for the version probe and for
+    # the spawn alike. The probe runs in this process's working directory,
+    # the CLI is spawned with `chdir: options.cwd`: a path still relative at
+    # the spawn names a different file there — whatever sits at that path
+    # inside the directory the agent was pointed at — while the probe vouched
+    # for the one here.
+    #
+    #   - a path with a separator is anchored to the process cwd (an absolute
+    #     one is kept as given); a leading `~` becomes a home directory, as
+    #     for CLAUDE_CLI_PATH;
+    #   - a bare name is searched on PATH here (#executable_on_path) rather
+    #     than left to spawn.
+    #
+    # Nothing is normalized: `link/..` must resolve through the filesystem,
+    # as it did when the path went to spawn as given. (File.expand_path
+    # collapses it lexically, which names another file when `link` is a
+    # symlink.)
+    #
+    # Never raises. A path that cannot be settled (a bare name not on PATH,
+    # `~user` naming nobody, a relative path when the cwd is gone, a NUL
+    # byte) is returned as given, and #connect reports it as
+    # CLINotFoundError.
+    def settle_cli_path(path)
+      return executable_on_path(path, spawn_search_path) || path unless path.include?(File::SEPARATOR)
+
+      path.start_with?('~') ? expand_leading_tilde(path) : anchor_to_cwd(path)
+    rescue ArgumentError, EncodingError, SystemCallError
+      path
+    end
+
+    # An absolute path as given, a relative one joined to the process cwd.
+    def anchor_to_cwd(path)
+      File.absolute_path?(path) ? path : File.join(Dir.pwd, path)
+    end
+
+    # `~/x` or `~user/x`: the first component becomes that home directory,
+    # the rest is kept as written.
+    def expand_leading_tilde(path)
+      head, rest = path.split(File::SEPARATOR, 2)
+      File.join(File.expand_path(head), rest)
+    end
+
+    # The first executable regular file called +name+ on +search_path+, as an
+    # absolute path, or nil. This is the lookup spawn did for a bare command
+    # name (and `which` for discovery), done here so that nothing is run to
+    # find the CLI and nothing relative comes back: a relative entry — `bin`,
+    # `.`, the empty entry — is anchored to the process cwd, where spawn
+    # found the file here and then executed that relative path inside
+    # options.cwd.
+    def executable_on_path(name, search_path)
+      return nil if name.empty? || search_path.nil?
+
+      search_path_entries(search_path).each do |entry|
+        candidate = File.join(path_entry_dir(entry), name)
+        return candidate if File.file?(candidate) && File.executable?(candidate)
+      rescue ArgumentError, EncodingError, SystemCallError
+        next # a NUL byte, mixed encodings, or a relative entry when the cwd is gone
+      end
+      nil
+    end
+
+    # The PATH spawn searched for a bare cli_path: the one the child is given
+    # through options.env when it sets one, else this process's, else Ruby's
+    # built-in default. (Discovery searches the process's PATH — #find_cli.)
+    def spawn_search_path
+      env = @options.env
+      from_options = env.transform_keys(&:to_s)['PATH'] if env.is_a?(Hash)
+      from_options || ENV.fetch('PATH', DEFAULT_EXEC_SEARCH_PATH)
+    end
+
+    # A PATH value as its entries.
+    def search_path_entries(search_path)
+      search_path = search_path.to_s
+      # spawn searched bytes; a PATH that is invalid in its encoding cannot
+      # be split as text.
+      search_path = search_path.b unless search_path.valid_encoding?
+      # -1 keeps a trailing empty entry; PATH="" is one empty entry.
+      entries = search_path.split(File::PATH_SEPARATOR, -1)
+      entries.empty? ? [''] : entries
+    end
+
+    # As in spawn's lookup, `~` and `~/x` entries start at the home directory
+    # (a `~user` entry is taken literally, as there).
+    def path_entry_dir(entry)
+      return File.join(File.expand_path('~'), entry[1..]) if entry == '~' || entry.start_with?('~/')
+
+      anchor_to_cwd(entry)
+    end
+
+    # False when #settle_cli_path had to keep a path as given.
+    def cli_path_settled?
+      File.absolute_path?(@cli_path)
+    rescue StandardError
+      false # nil from a subclass's #find_cli, a NUL byte, an incompatible encoding
+    end
+
     # Run `claude -v` with a hard deadline. Arg-vector popen3 — no shell, same
     # injection-safety as capture3. Raises Timeout::Error past
     # VERSION_CHECK_TIMEOUT_SECONDS (swallowed by check_claude_version's
@@ -972,15 +1132,14 @@ module ClaudeAgentSDK
     # also bounds CLI exit. ensure always reaps the probe (mirrors Python's
     # finally: terminate(); wait()).
     def capture_cli_version_output # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- bounded subprocess probe: drained pipes, reaping
-      stdin, stdout, stderr, wait_thr = Open3.popen3(@cli_path.to_s, '-v')
+      stdin, stdout, stderr, wait_thr = Open3.popen3(@cli_path, '-v')
       stdin.close
       drainer = Thread.new { [stdout.read, stderr.read] }
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + VERSION_CHECK_TIMEOUT_SECONDS
-      task = defined?(Async::Task) ? Async::Task.current? : nil
       until drainer.join(0)
         raise Timeout::Error if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
-        task ? task.sleep(0.05) : sleep(0.05)
+        sleep(0.05)
       end
       out, err = drainer.value
       (out.to_s + err.to_s).force_encoding(Encoding::UTF_8).scrub.strip
@@ -1103,6 +1262,45 @@ module ClaudeAgentSDK
       @recent_stderr_mutex.synchronize do
         @recent_stderr << line
         @recent_stderr.shift if @recent_stderr.size > RECENT_STDERR_LINES_LIMIT
+      end
+    end
+
+    # When the sandbox was requested but cannot start (and
+    # sandbox.failIfUnavailable is not set), the CLI writes
+    # "⚠ Sandbox disabled: <reason>" to stderr and runs the session's
+    # commands unsandboxed. A host only sees stderr through a `stderr:`
+    # callback, so repeat that line as a Ruby warning: once per transport,
+    # and only when this session's own options asked for the sandbox.
+    #
+    # Called for every stderr line, on the drain thread. Best-effort like
+    # OptionWarnings#emit: a closed or broken $stderr — or a custom
+    # Warning.warn / $stderr sink raising NotImplementedError, LoadError or
+    # SystemStackError, the exceptions the stderr callback is contained from
+    # — must not raise out of here and end the drain (the CLI would stall on
+    # a full stderr pipe).
+    def warn_if_sandbox_unavailable(line)
+      return if @sandbox_warning_emitted || !line.include?(SANDBOX_DISABLED_MARKER)
+      return unless sandbox_requested?
+
+      @sandbox_warning_emitted = true
+      begin
+        warn '[claude-agent-sdk] The sandbox this session requested is not active: the CLI is running ' \
+             "commands WITHOUT sandboxing. It reported: \"#{line.strip}\". To make this an error instead, " \
+             'set fail_if_unavailable: true on SandboxSettings (failIfUnavailable: true in a Hash).'
+      rescue StandardError, ScriptError, SystemStackError
+        nil
+      end
+    end
+
+    # True when ClaudeAgentOptions#sandbox enables the sandbox: `true`, a
+    # SandboxSettings with `enabled` true, or a Hash with an `enabled` /
+    # 'enabled' key that is true (Hashes are forwarded to the CLI verbatim).
+    def sandbox_requested?
+      sandbox = @options.sandbox
+      case sandbox
+      when SandboxSettings then sandbox.enabled == true
+      when Hash then sandbox[:enabled] == true || sandbox['enabled'] == true
+      else sandbox == true
       end
     end
 
