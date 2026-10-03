@@ -260,10 +260,27 @@ module ClaudeAgentSDK
     # have — where calling #strip on it raised NoMethodError or an encoding
     # error from inside.
     def stripped_title(title)
-      stripped = title.is_a?(String) && title.valid_encoding? ? title.strip : ''
+      text = utf8_text(title)
+      stripped = text ? text.strip : ''
       raise ArgumentError, 'title must be non-empty' if stripped.empty?
 
       stripped
+    end
+
+    # +value+ as UTF-8 text, or nil when it is not usable text: not a String,
+    # or bytes that are not valid text. A binary String (ASCII-8BIT, what
+    # File.binread returns) always reports valid_encoding?, so it is read as
+    # the UTF-8 it usually holds and checked as such; a String in another
+    # encoding is transcoded. Without this, binary bytes that are not UTF-8
+    # got past the check and failed later as JSON::GeneratorError or
+    # Encoding::CompatibilityError instead of the documented ArgumentError.
+    def utf8_text(value)
+      return nil unless value.is_a?(String)
+
+      text = value.encoding == Encoding::BINARY ? value.dup.force_encoding(Encoding::UTF_8) : value.encode(Encoding::UTF_8)
+      text.valid_encoding? ? text : nil
+    rescue EncodingError
+      nil
     end
 
     # The tag to store: Unicode-sanitized and stripped, or '' (which clears
@@ -273,7 +290,8 @@ module ClaudeAgentSDK
     def sanitized_tag(tag)
       return '' if tag.nil?
 
-      sanitized = tag.is_a?(String) && tag.valid_encoding? ? sanitize_unicode(tag).strip : ''
+      text = utf8_text(tag)
+      sanitized = text ? sanitize_unicode(text).strip : ''
       raise ArgumentError, 'tag must be non-empty (use nil to clear)' if sanitized.empty?
 
       sanitized

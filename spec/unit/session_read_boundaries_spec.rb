@@ -192,7 +192,8 @@ RSpec.describe 'session API boundaries' do
 
     before { store.append(key, conversation.store_entries) }
 
-    { 'nil' => nil, 'an Integer' => 123, 'invalid bytes' => "caf\xC3".dup.force_encoding('UTF-8') }.each do |label, title|
+    { 'nil' => nil, 'an Integer' => 123, 'invalid bytes' => "caf\xC3".dup.force_encoding('UTF-8'),
+      'binary bytes that are not UTF-8' => "caf\xC3".b }.each do |label, title|
       it "raises ArgumentError for a title that is #{label}, on disk and with a store" do
         on_disk = File.binread(transcript_file)
 
@@ -205,7 +206,8 @@ RSpec.describe 'session API boundaries' do
       end
     end
 
-    { 'an Integer' => 123, 'false' => false, 'invalid bytes' => "caf\xC3".dup.force_encoding('UTF-8') }.each do |label, tag|
+    { 'an Integer' => 123, 'false' => false, 'invalid bytes' => "caf\xC3".dup.force_encoding('UTF-8'),
+      'binary bytes that are not UTF-8' => "caf\xC3".b }.each do |label, tag|
       it "raises ArgumentError for a tag that is #{label}, on disk and with a store" do
         on_disk = File.binread(transcript_file)
 
@@ -216,6 +218,18 @@ RSpec.describe 'session API boundaries' do
         expect(File.binread(transcript_file)).to eq(on_disk)
         expect(store.load(key).length).to eq(conversation.store_entries.length)
       end
+    end
+
+    # A binary String (what File.binread returns) that holds UTF-8 is that
+    # text; it is stored as UTF-8 on both paths.
+    it 'accepts a binary title and tag that hold UTF-8, as UTF-8 text' do
+      ClaudeAgentSDK.rename_session(session_id: session_id, title: "caf\xC3\xA9".b, directory: cwd)
+      ClaudeAgentSDK.tag_session(session_id: session_id, tag: "\xC3\xA9t\xC3\xA9".b, directory: cwd)
+      ClaudeAgentSDK.rename_session(session_id: session_id, title: "caf\xC3\xA9".b, directory: cwd, session_store: store)
+
+      info = ClaudeAgentSDK.get_session_info(session_id: session_id, directory: cwd)
+      expect([info.custom_title, info.custom_title.encoding, info.tag]).to eq(["caf\u00e9", Encoding::UTF_8, "\u00e9t\u00e9"])
+      expect(store.load(key).last).to include('customTitle' => "caf\u00e9")
     end
 
     it 'still clears the tag for nil' do
