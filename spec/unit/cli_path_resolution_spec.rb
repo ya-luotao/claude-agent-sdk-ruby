@@ -396,6 +396,41 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
 
       expect(legs).to eq(['wrapped:claude-on-the-far-side'])
     end
+
+    # The path is the far side's: settling it against this host — anchoring
+    # it to the process cwd, or finding a same-named file on this host's
+    # PATH — would hand the wrapper a path that does not exist there.
+    def wrapped_legs(cli_path, env: {})
+      wrapper = File.join(root, 'wrapper')
+      File.write(wrapper, "#!/bin/sh\necho \"wrapped:$1\" >> '#{marker}'\n")
+      File.chmod(0o755, wrapper)
+      wrapping = Class.new(described_class) do
+        define_method(:build_command) { [wrapper, *super()] }
+      end
+      with_env(env) do
+        transport = Dir.chdir(app) { wrapping.new(options(cli_path: cli_path)) }
+        Dir.chdir(app) do
+          transport.connect
+          transport.read_messages { |_frame| nil }
+        ensure
+          transport.close
+        end
+      end
+      legs
+    end
+
+    it 'hands the wrapper a relative cli_path as given, not anchored to this host' do
+      install_fake_cli('app/bin/claude')
+
+      expect(wrapped_legs('bin/claude')).to eq(['wrapped:bin/claude'])
+    end
+
+    it 'hands the wrapper a bare cli_path as given, even when this host has a file of that name on PATH' do
+      install_fake_cli('tools/claude')
+
+      expect(wrapped_legs('claude', env: { 'PATH' => path_with(File.join(root, 'tools')) }))
+        .to eq(['wrapped:claude'])
+    end
   end
 
   # spawn resolved `link/..` through the filesystem; a path rewritten as

@@ -299,9 +299,18 @@ module ClaudeAgentSDK
       # after this transport was built is found, and a relative path
       # follows the process cwd of this connect, where the probe runs.
       @cli_path = settle_cli_path(@given_cli_path)
-      check_claude_version
-
       cmd = build_command
+      # A subclass whose #build_command runs the CLI through another program
+      # (docker exec, ssh) names a file on the far side. A path settled
+      # against this host — anchored to its cwd, or found on its PATH — would
+      # not exist there, so that argv gets cli_path as the caller gave it,
+      # and the probe below runs only for an absolute one (as for any path
+      # that is not settled).
+      unless cmd.first == @cli_path
+        @cli_path = @given_cli_path
+        cmd = build_command
+      end
+      check_claude_version
 
       # Build environment
       # Convert symbol keys to strings for spawn compatibility. `|| {}`: the
