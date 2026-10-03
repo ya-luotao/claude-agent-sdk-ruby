@@ -27,19 +27,25 @@ module ClaudeAgentSDK
 
     # Rename a session by appending a custom-title entry.
     #
-    # list_sessions reads the LAST custom-title from the file tail, so
-    # repeated calls are safe — the most recent wins.
+    # Repeated calls are safe: the disk listing takes the LAST custom-title
+    # in the final 64 KiB of the file (then in the first 64 KiB), the store
+    # fold the last one overall. On disk the entry is only seen while it
+    # stays inside one of those windows: rename a session that is still
+    # running, let 64 KiB of transcript follow, and list_sessions /
+    # get_session_info report the previous title again until the CLI resumes
+    # the session and re-appends its metadata at the end (the same holds for
+    # tag_session). Not fixed here: finding it again means reading the whole
+    # file on every listing.
     #
     # @param session_id [String] UUID of the session to rename
     # @param title [String] New session title (whitespace stripped)
     # @param directory [String, nil] Project directory path
-    # @raise [ArgumentError] if session_id is invalid or title is empty
+    # @raise [ArgumentError] if session_id is invalid, or title is blank or not a String
     # @raise [Errno::ENOENT] if the session file cannot be found
     def rename_session(session_id:, title:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
-      stripped = title.strip
-      raise ArgumentError, 'title must be non-empty' if stripped.empty?
+      stripped = stripped_title(title)
 
       data = "#{JSON.generate({ type: 'custom-title', customTitle: stripped, sessionId: session_id })}\n"
 
@@ -54,19 +60,12 @@ module ClaudeAgentSDK
     # @param session_id [String] UUID of the session to tag
     # @param tag [String, nil] Tag string, or nil to clear
     # @param directory [String, nil] Project directory path
-    # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
+    # @raise [ArgumentError] if session_id is invalid, or tag is not a String or is empty after sanitization
     # @raise [Errno::ENOENT] if the session file cannot be found
     def tag_session(session_id:, tag:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
-      if tag
-        sanitized = sanitize_unicode(tag).strip
-        raise ArgumentError, 'tag must be non-empty (use nil to clear)' if sanitized.empty?
-
-        tag = sanitized
-      end
-
-      data = "#{JSON.generate({ type: 'tag', tag: tag || '', sessionId: session_id })}\n"
+      data = "#{JSON.generate({ type: 'tag', tag: sanitized_tag(tag), sessionId: session_id })}\n"
 
       append_to_session(session_id, data, directory)
     end
@@ -164,13 +163,12 @@ module ClaudeAgentSDK
     # appended entry carries a fresh uuid + ISO timestamp so adapters that dedupe
     # by entry["uuid"] (per the SessionStore#append contract) treat it correctly.
     #
-    # @raise [ArgumentError] if session_id is invalid or title is empty
+    # @raise [ArgumentError] if session_id is invalid, or title is blank or not a String
     # @raise [Errno::ENOENT] if the session is not found in the store
     def rename_session_via_store(session_store:, session_id:, title:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
-      stripped = title.strip
-      raise ArgumentError, 'title must be non-empty' if stripped.empty?
+      stripped = stripped_title(title)
 
       key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
       ensure_store_session_exists(session_store, key)
@@ -188,23 +186,17 @@ module ClaudeAgentSDK
     # counterpart to tag_session. Pass nil to clear the tag. Tags are
     # Unicode-sanitized before storing.
     #
-    # @raise [ArgumentError] if session_id is invalid or tag is empty after sanitization
+    # @raise [ArgumentError] if session_id is invalid, or tag is not a String or is empty after sanitization
     # @raise [Errno::ENOENT] if the session is not found in the store
     def tag_session_via_store(session_store:, session_id:, tag:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
 
-      if tag
-        sanitized = sanitize_unicode(tag).strip
-        raise ArgumentError, 'tag must be non-empty (use nil to clear)' if sanitized.empty?
-
-        tag = sanitized
-      end
-
+      tag = sanitized_tag(tag)
       key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
       ensure_store_session_exists(session_store, key)
       session_store.append(key, [{
                              'type' => 'tag',
-                             'tag' => tag || '',
+                             'tag' => tag,
                              'sessionId' => session_id,
                              'uuid' => SecureRandom.uuid,
                              'timestamp' => iso_now
@@ -222,10 +214,9 @@ module ClaudeAgentSDK
     # @raise [ArgumentError] if session_id is invalid
     def delete_session_via_store(session_store:, session_id:, directory: nil)
       raise ArgumentError, "Invalid session_id: #{session_id}" unless Sessions.valid_session_id?(session_id)
-      return unless SessionStore.implements?(session_store, :delete)
 
       key = { 'project_key' => Sessions.project_key_for_directory(directory), 'session_id' => session_id }
-      session_store.delete(key)
+      SessionStores.optional_call(session_store, :delete) { session_store.delete(key) }
       nil
     end
 
@@ -263,6 +254,49 @@ module ClaudeAgentSDK
 
     # -- Private helpers --
 
+    # The title to store: stripped and non-empty. A value that is not a usable
+    # String (nil, another type, bytes invalid in their encoding) gets the
+    # ArgumentError an empty title gets — the boundary check the session ids
+    # have — where calling #strip on it raised NoMethodError or an encoding
+    # error from inside.
+    def stripped_title(title)
+      text = utf8_text(title)
+      stripped = text ? text.strip : ''
+      raise ArgumentError, 'title must be non-empty' if stripped.empty?
+
+      stripped
+    end
+
+    # +value+ as UTF-8 text, or nil when it is not usable text: not a String,
+    # or bytes that are not valid text. A binary String (ASCII-8BIT, what
+    # File.binread returns) always reports valid_encoding?, so it is read as
+    # the UTF-8 it usually holds and checked as such; a String in another
+    # encoding is transcoded. Without this, binary bytes that are not UTF-8
+    # got past the check and failed later as JSON::GeneratorError or
+    # Encoding::CompatibilityError instead of the documented ArgumentError.
+    def utf8_text(value)
+      return nil unless value.is_a?(String)
+
+      text = value.encoding == Encoding::BINARY ? value.dup.force_encoding(Encoding::UTF_8) : value.encode(Encoding::UTF_8)
+      text.valid_encoding? ? text : nil
+    rescue EncodingError
+      nil
+    end
+
+    # The tag to store: Unicode-sanitized and stripped, or '' (which clears
+    # the tag) for nil — only nil: false is not a tag either, and clearing on
+    # it would turn a Boolean from untyped input into a destructive write.
+    # Same boundary check as stripped_title.
+    def sanitized_tag(tag)
+      return '' if tag.nil?
+
+      text = utf8_text(tag)
+      sanitized = text ? sanitize_unicode(text).strip : ''
+      raise ArgumentError, 'tag must be non-empty (use nil to clear)' if sanitized.empty?
+
+      sanitized
+    end
+
     # Raise Errno::ENOENT (as the disk counterparts and fork_session_via_store
     # do) unless the store holds entries for +key+. Without this probe, a
     # rename/tag of a typo'd or stale id APPENDED metadata to a never-written
@@ -293,8 +327,12 @@ module ClaudeAgentSDK
     end
 
     def find_in_directory(file_name, directory)
-      path = File.realpath(directory).unicode_normalize(:nfc)
-      result = try_project_dir(file_name, Sessions.find_project_dir(path))
+      # canonicalize_path, not File.realpath: the transcripts outlive the
+      # directory (a removed worktree), and realpath raised Errno::ENOENT for
+      # it before the session was even looked for — while the readers, which
+      # canonicalize, still found the session through the same directory.
+      path = Sessions.canonicalize_path(directory)
+      result = try_project_dir(file_name, Sessions.find_project_dir(path), path)
       return result if result
 
       worktree_paths = begin
@@ -305,7 +343,7 @@ module ClaudeAgentSDK
       worktree_paths.each do |wt_path|
         next if wt_path == path
 
-        result = try_project_dir(file_name, Sessions.find_project_dir(wt_path))
+        result = try_project_dir(file_name, Sessions.find_project_dir(wt_path), wt_path)
         return result if result
       end
       nil
@@ -315,11 +353,17 @@ module ClaudeAgentSDK
     # in one project dir must not stop the search when the real transcript
     # lives under another (worktree) project dir. Mirrors the read path
     # (Sessions.stat_candidate) and the append path (try_append).
-    def try_project_dir(file_name, project_dir)
+    # With +path+ (a directory-scoped lookup), the candidate must also be one
+    # of that path's own transcripts (Sessions.own_transcript?: a directory
+    # the long-path fallback found can hold other paths' sessions).
+    def try_project_dir(file_name, project_dir, path = nil)
       return nil unless project_dir
 
       candidate = File.join(project_dir, file_name)
-      File.size(candidate).positive? ? [candidate, project_dir] : nil
+      return nil unless File.size(candidate).positive?
+      return nil if path && !Sessions.own_transcript?(project_dir, candidate, path)
+
+      [candidate, project_dir]
     rescue SystemCallError
       nil
     end
@@ -433,9 +477,10 @@ module ClaudeAgentSDK
                                })
       end
 
-      # Derive title: explicit > original customTitle > original aiTitle > first
-      # prompt, suffixed with " (fork)" when derived. listSessions reads the LAST
-      # custom-title from the tail, so this trailer is what surfaces.
+      # Derive title: explicit > the source's listed title (custom, else AI) >
+      # its first prompt, suffixed with " (fork)" when derived. listSessions
+      # reads the LAST custom-title from the tail, so this trailer is what
+      # surfaces.
       fork_title = title&.strip
       fork_title = "#{derive_title.call || 'Forked session'} (fork)" if fork_title.nil? || fork_title.empty?
 
@@ -472,61 +517,30 @@ module ClaudeAgentSDK
       [transcript, content_replacements]
     end
 
-    # Derive a fork title by scanning already-parsed store entries — the store
-    # path's analogue of derive_fork_title's head/tail byte scan. Last occurrence
-    # wins for both customTitle and aiTitle; customTitle beats aiTitle; the first
-    # user prompt is the final fallback. Returns nil when nothing is found (the
-    # caller supplies the "Forked session" default). This scans the RAW entries,
-    # not the partitioned transcript (which drops customTitle/aiTitle metadata) —
-    # the store half of #837's P0-1 fix.
+    # Derive a fork title from already-parsed store entries: the title the
+    # store listing shows for the session (custom title, else AI title — the
+    # latest occurrence of each, a blank one counting as absent), else its
+    # first prompt. Folds the RAW entries (the partitioned transcript has
+    # dropped the customTitle/aiTitle metadata — the store half of #837's
+    # P0-1 fix) with the fold the listing uses, and takes the title from the
+    # folded fields rather than from summary_entry_to_sdk_info: that returns
+    # nil for a sidechain or summary-less session, which can still be forked.
+    # nil when the session has none of the three (the caller supplies the
+    # "Forked session" default).
     def derive_title_from_entries(raw)
-      custom = nil
-      ai = nil
-      raw.each do |e|
-        next unless e.is_a?(Hash)
-
-        ct = e['customTitle']
-        custom = ct if ct.is_a?(String) && !ct.empty?
-        at = e['aiTitle']
-        ai = at if at.is_a?(String) && !at.empty?
-      end
-      return custom if custom
-      return ai if ai
-
-      # First-prompt fallback: re-serialize to a JSONL string and reuse the head
-      # extractor so skip-patterns/truncation match the disk path exactly.
-      # extract_first_prompt_from_head returns '' (truthy in Ruby!) when no
-      # prompt qualifies — normalize to nil so the caller's 'Forked session'
-      # default actually fires (Python appends `or None` here for this reason).
-      jsonl = "#{raw.map { |e| JSON.generate(e) }.join("\n")}\n"
-      title = Sessions.extract_first_prompt_from_head(jsonl)
-      title.nil? || title.empty? ? nil : title
+      data = SessionSummary.fold_session_summary(nil, {}, raw)['data']
+      first_prompt = data['first_prompt_locked'] ? data['first_prompt'] : data['command_fallback']
+      Sessions.display_title(data['custom_title'], data['ai_title']) || Sessions.presence(first_prompt)
     end
 
-    # Derive a fork title from the source file's head/tail chunks without
-    # slurping the entire file. Matches the lookup order used for
-    # SDKSessionInfo.custom_title / ai_title / first_prompt. Returns nil when
-    # nothing is found (build_fork_lines supplies the "Forked session" default).
+    # Derive a fork title from the source file without slurping it: the title
+    # and first prompt the disk listing reports for the session, taken from
+    # the same head/tail windows by the same rule. nil when it has neither
+    # (build_fork_lines supplies the "Forked session" default).
     def derive_fork_title(file_path, file_size)
-      buf_size = [Sessions::LITE_READ_BUF_SIZE, file_size].min
-      File.open(file_path, 'rb') do |f|
-        head = (f.read(buf_size) || '').force_encoding('UTF-8').scrub
-        tail = if file_size > Sessions::LITE_READ_BUF_SIZE
-                 f.seek(-buf_size, IO::SEEK_END)
-                 (f.read(buf_size) || '').force_encoding('UTF-8').scrub
-               else
-                 head
-               end
-        title = Sessions.extract_json_string_field(tail, 'customTitle', last: true) ||
-                Sessions.extract_json_string_field(head, 'customTitle', last: true) ||
-                Sessions.extract_json_string_field(tail, 'aiTitle', last: true) ||
-                Sessions.extract_json_string_field(head, 'aiTitle', last: true) ||
-                Sessions.extract_first_prompt_from_head(head)
-        # extract_first_prompt_from_head returns '' (truthy in Ruby!) when no
-        # prompt qualifies — normalize to nil so the 'Forked session' default
-        # fires (Python appends `or None` here for the same reason).
-        title.nil? || title.empty? ? nil : title
-      end
+      head, tail = Sessions.read_head_tail(file_path, file_size)
+      title, first_prompt = Sessions.title_and_first_prompt(file_path, head, tail, file_size)
+      title || first_prompt
     end
 
     # Build a single forked entry with remapped UUIDs.
@@ -587,11 +601,11 @@ module ClaudeAgentSDK
     end
 
     def append_to_session_in_directory(session_id, data, file_name, directory)
-      path = File.realpath(directory).unicode_normalize(:nfc)
+      path = Sessions.canonicalize_path(directory) # see find_in_directory
 
       # Try the exact/prefix-matched project directory first.
       project_dir = Sessions.find_project_dir(path)
-      return if project_dir && try_append(File.join(project_dir, file_name), data)
+      return if project_dir && own_append(project_dir, file_name, path, data)
 
       # Worktree fallback
       begin
@@ -604,7 +618,7 @@ module ClaudeAgentSDK
         next false if wt_path == path
 
         wt_project_dir = Sessions.find_project_dir(wt_path)
-        wt_project_dir && try_append(File.join(wt_project_dir, file_name), data)
+        wt_project_dir && own_append(wt_project_dir, file_name, wt_path, data)
       end
       return if found
 
@@ -624,6 +638,12 @@ module ClaudeAgentSDK
       return if found
 
       raise Errno::ENOENT, "Session #{session_id} not found in any project directory"
+    end
+
+    # try_append, for a transcript of +path+'s own (Sessions.own_transcript?).
+    def own_append(project_dir, file_name, path, data)
+      candidate = File.join(project_dir, file_name)
+      Sessions.own_transcript?(project_dir, candidate, path) && try_append(candidate, data)
     end
 
     # Try appending to a path.
@@ -675,11 +695,11 @@ module ClaudeAgentSDK
       'Other'
     end
 
-    private_class_method :find_session_file_with_dir,
+    private_class_method :stripped_title, :sanitized_tag, :find_session_file_with_dir,
                          :find_in_directory, :try_project_dir, :find_in_all_projects,
                          :parse_fork_transcript, :derive_fork_title, :build_forked_entry, :resolve_parent_uuid,
                          :append_to_session, :append_to_session_in_directory,
-                         :append_to_session_global, :try_append, :sanitize_unicode, :unicode_category,
+                         :append_to_session_global, :own_append, :try_append, :sanitize_unicode, :unicode_category,
                          :iso_now, :build_fork_lines, :partition_fork_entries, :derive_title_from_entries,
                          :ensure_store_session_exists
   end
