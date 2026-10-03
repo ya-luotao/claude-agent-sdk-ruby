@@ -272,10 +272,11 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 > `HOME` the subprocess will see — `options.env`'s `HOME` when it sets one):
 >
 > - `.credentials.json`, with the OAuth `refreshToken` removed so the resumed
->   subprocess can't consume it. On macOS with the default config dir and no
+>   subprocess can't consume it. On macOS with no
 >   `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN`, the credentials come from
->   the Keychain entry when one exists (the redirected config dir would
->   otherwise miss it).
+>   the CLI's Keychain entry for your config dir when one exists (the
+>   redirected config dir would otherwise miss it) — with a custom
+>   `CLAUDE_CONFIG_DIR`, only when that directory has no `.credentials.json`.
 > - `.claude.json` (from `$CLAUDE_CONFIG_DIR/.claude.json` when set, else
 >   `~/.claude.json`).
 > - User `settings.json` and `cowork_settings.json` — so `apiKeyHelper`, `env`,
@@ -287,7 +288,10 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 > Everything else in your config dir is **not** visible to the subprocess —
 > notably user `CLAUDE.md`, `agents/`, `skills/`, and `plugins/` (so, with the
 > plugin keys stripped, user plugins are off) — so a store-backed resume can
-> still behave differently from a plain `resume:` of the same session.
+> still behave differently from a plain `resume:` of the same session. The
+> project's auto-memory is part of that: the temp config dir has no
+> `projects/<key>/memory/`, so a store-backed resume neither loads the memory
+> you already have nor keeps what the session writes to it.
 > Project-level `.claude/*` still applies (it resolves from `cwd`), and
 > hooks/options passed programmatically via `ClaudeAgentOptions` are unaffected.
 > Seeded files are written owner-only (`0600`); a missing source file is simply
@@ -297,8 +301,16 @@ normal spawn path and `continue_conversation` moves on to the next candidate.
 > (terminal append failures — timeouts immediately, other failures after up to
 > three attempts — surfaced as `MirrorErrorMessage`):
 > the store copy is then incomplete and the temp dir holds the only copy of the
-> dropped turns, so the SDK scrubs the credential copies, keeps the transcripts,
-> and warns with the preserved path so you can import them into the store.
+> dropped turns, so the SDK moves it into a fresh private directory next to it
+> (`claude-preserved-resume-*`), keeps the transcripts (`projects/`) there,
+> deletes everything else — the seeded credential and settings copies and
+> whatever the CLI wrote beside them, such as its `backups/` copy of
+> `.claude.json` — and warns with the new path so you can import them into the
+> store. If what it moved is not the directory the SDK created (the path had
+> been replaced, for instance by a symlink), or it cannot be moved, the SDK
+> deletes nothing and the warning says the scrub was skipped and why; if an
+> entry cannot be removed, the warning says the scrub failed and names what is
+> left.
 
 ### Implementing an adapter
 

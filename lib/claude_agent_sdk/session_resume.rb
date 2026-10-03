@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'digest'
 require 'fileutils'
 require 'tmpdir'
 require 'open3'
@@ -22,31 +23,167 @@ module ClaudeAgentSDK
   class MaterializedResume
     attr_reader :config_dir, :resume_session_id
 
-    def initialize(config_dir:, resume_session_id:)
+    MIRROR_DROPPED = 'Claude SDK: transcript mirror dropped batches; the session store copy is incomplete.'
+    SKIPPED = 'Scrubbing was skipped and nothing was deleted:'
+    # Prefix of the private directory a preserved temp dir is moved into. Not
+    # "claude-resume-": that one is for directories the SDK may still delete.
+    STAGING_PREFIX = 'claude-preserved-resume-'
+    private_constant :MIRROR_DROPPED, :SKIPPED, :STAGING_PREFIX
+
+    # +root_identity+ is SessionResume.directory_identity of +config_dir+ as
+    # the SDK created it; materialize_resume_session takes it right after
+    # mkdtemp. Without it, it is taken here.
+    def initialize(config_dir:, resume_session_id:, root_identity: nil)
       @config_dir = config_dir
       @resume_session_id = resume_session_id
+      @root_identity = root_identity || SessionResume.directory_identity(config_dir)
+      @kept = false
     end
 
     # Best-effort removal of the temp config dir (never raises).
+    #
+    # Does nothing once preserve_transcripts was called, however that went. A
+    # teardown can run twice — a disconnect after one that was cut short —
+    # and the second time nothing remembers that the mirror dropped batches:
+    # it asks for a cleanup of the directory holding the only copy of them.
+    # Leaving copies that were not scrubbed yet is the lesser harm.
     def cleanup
+      return if @kept
+
       SessionResume.rmtree_with_retry(@config_dir)
     end
 
     # Teardown when the transcript mirror dropped batches: the CLI's
     # authoritative transcript lives in this temp dir, and the store copy is
     # missing the dropped turns — deleting the dir would permanently lose
-    # them. Keep the transcripts (projects/), remove the redacted credential
-    # copies, and tell the user where the data is so they can import it into
-    # the store manually. Never raises.
+    # them. Keep the transcripts (projects/), delete every other entry, and
+    # tell the user where the data is so they can import it into the store
+    # manually. Never raises.
+    #
+    # An allow-list on purpose. Besides the files the SDK seeds
+    # (.credentials.json, .claude.json, settings.json, cowork_settings.json)
+    # the CLI writes its own: at startup it saves the seeded .claude.json —
+    # which can hold MCP header secrets — as backups/.claude.json.backup.<ts>.
+    # A list of names to delete missed that one and would miss the next.
+    #
+    # Deleting "everything else" must never reach outside the directory the
+    # SDK created, and the CLI's tools can write into that directory —
+    # sandboxed ones too — up to and during this call: they can turn the
+    # directory, or anything in it, into a symlink between two steps taken
+    # here. So a path that was checked is never resolved again:
+    #
+    # 1. The directory is moved, in one rename, into a fresh private directory
+    #    next to it. A rename moves a symlink itself, never its target, and it
+    #    takes the directory away from the path its writers know. (A read-only
+    #    directory cannot be moved; it is made writable first, through a
+    #    handle that has to be the directory the SDK created.)
+    # 2. What was moved is then examined: it has to be a real directory with
+    #    the device and inode recorded when the SDK created it. If it is not,
+    #    or it could not be moved, nothing is deleted and the warning says why.
+    # 3. Its entries are deleted by SessionResume::Scrubber, which takes each
+    #    one out of the tree before it looks at it.
+    #
+    # config_dir is the new location afterwards, the one the warning names.
     def preserve_transcripts
-      ['.credentials.json', '.claude.json', 'settings.json', 'cowork_settings.json'].each do |name|
-        FileUtils.rm_f(File.join(@config_dir, name))
-      end
-      warn 'Claude SDK: transcript mirror dropped batches; the session store copy is incomplete. ' \
-           "Preserving the session transcript under #{File.join(@config_dir, 'projects')} instead of " \
-           'deleting it — import it into your session store, then remove the directory.'
+      @kept = true # first: whatever happens below, #cleanup must not delete it
+      original = @config_dir
+      announced = false
+      warn "#{MIRROR_DROPPED} #{move_aside_and_scrub(original)}"
+      announced = true
     rescue StandardError => e
       warn "Claude SDK: failed to scrub preserved transcript dir #{@config_dir}: #{e.message}"
+      announced = true
+    ensure
+      # Cut short by something that is not a StandardError (a cancellation, a
+      # signal). #cleanup leaves the directory alone from now on, so say what
+      # is left to do with it.
+      warn "#{MIRROR_DROPPED} #{interrupted_notice(original)}" unless announced
+    end
+
+    private
+
+    # What is left to say when the scrub was cut short: where the transcript
+    # is, that copies which were not removed yet may be left, and which
+    # directory to remove once the transcript is imported. That is the private
+    # directory once the move happened (config_dir changed with it; the trash
+    # is in there too) and the temp dir itself before — never its parent,
+    # which would be the system's temp directory.
+    def interrupted_notice(original)
+      holding = @config_dir == original ? @config_dir : File.dirname(@config_dir)
+      "Scrubbing was interrupted; the session transcript is under #{File.join(@config_dir, 'projects')}. Copies of " \
+        "your credentials and settings that were not removed yet may be left under #{holding} — import the " \
+        "transcript into your session store, then remove #{holding}."
+    end
+
+    # Returns the rest of the preservation warning. +original+ is config_dir
+    # as it is when preserve_transcripts starts.
+    def move_aside_and_scrub(original)
+      staging, failure = move_aside(original)
+      if failure
+        return "#{SKIPPED} #{original} could not be moved aside (#{failure.message}). If it is still there, the " \
+               "session transcript is under #{File.join(original, 'projects')}, next to copies of your " \
+               'credentials and settings that were not removed.'
+      end
+
+      @config_dir = File.join(staging, File.basename(original))
+      unless @root_identity && SessionResume.directory_identity(@config_dir) == @root_identity
+        return "#{SKIPPED} what was at #{original} is not the directory the SDK created (it had been replaced). " \
+               "It is now at #{@config_dir}; check what it holds before importing anything from it."
+      end
+
+      preserved = "Preserving the session transcript under #{File.join(@config_dir, 'projects')} instead of " \
+                  "deleting it — import it into your session store, then remove #{staging}."
+      [preserved, scrub_all_but_projects(staging)].compact.join(' ')
+    end
+
+    # Step 1. Returns [private directory the root now lives in, nil], or
+    # [nil, error] when it stayed where it was.
+    def move_aside(original)
+      staging = nil
+      make_root_movable(original)
+      staging = Dir.mktmpdir(STAGING_PREFIX, File.dirname(original))
+      File.rename(original, File.join(staging, File.basename(original)))
+      [staging, nil]
+    rescue SystemCallError, SessionResume::Scrubber::Changed => e
+      Dir.rmdir(staging) if staging
+      [nil, e]
+    end
+
+    # Moving a directory to another parent takes write permission on the
+    # directory itself. Skipping the scrub for a read-only one would leave the
+    # credential copies behind, so it is made accessible first — through a
+    # handle that has to be the directory the SDK created.
+    def make_root_movable(root)
+      stat = File.lstat(root)
+      return if !stat.directory? || SessionResume::Scrubber.owner_rwx?(stat)
+
+      SessionResume::Scrubber.make_accessible(root, @root_identity)
+    end
+
+    # Step 3. Deletes every entry of the moved root but projects/, then checks
+    # that nothing else is left. Returns nil, or what the warning has to add.
+    def scrub_all_but_projects(staging)
+      trash = Dir.mktmpdir('scrub-', staging)
+      scrubber = SessionResume::Scrubber.new(trash)
+      errors = {}
+      Dir.children(@config_dir).each do |name|
+        next if name == 'projects'
+
+        scrubber.remove(@config_dir, name)
+      rescue SessionResume::Scrubber::Changed => e
+        errors[name] = e
+        break # something is rearranging the directory under the scrub
+      rescue SystemCallError => e
+        errors[name] = e
+      end
+      Dir.rmdir(trash) if errors.empty?
+
+      left = (Dir.children(@config_dir) - ['projects'] + errors.keys).uniq.sort
+      return if left.empty?
+
+      reason = errors.values_at(*left).compact.first&.message
+      "Scrubbing failed: could not remove #{left.join(', ')}#{" (#{reason})" if reason}. What is left is under " \
+        "#{staging} and can hold copies of your credentials and settings."
     end
   end
 
@@ -75,6 +212,10 @@ module ClaudeAgentSDK
     KEYCHAIN_SERVICE_NAME = 'Claude Code-credentials'
     KEYCHAIN_TIMEOUT_SECONDS = 5
 
+    # The default ClaudeAgentOptions gives load_timeout_ms; used when a caller
+    # set the attribute back to nil.
+    DEFAULT_LOAD_TIMEOUT_MS = 60_000
+
     # SystemCallError classes that indicate a transiently-held handle (Windows
     # AV/indexer scanning a freshly-written file) or a recoverable resource
     # shortage (file-table exhaustion) rather than a permanent failure. EMFILE/
@@ -89,9 +230,11 @@ module ClaudeAgentSDK
     # Return a copy of +options+ repointed at a materialized temp config dir:
     # CLAUDE_CONFIG_DIR in env, resume set to the materialized session id, and
     # continue_conversation cleared (already resolved to a concrete session id).
+    # options.env reads nil once a caller set it back to nil (the constructor
+    # default is {}); that means no overrides.
     def apply_materialized_options(options, materialized)
       options.dup_with(
-        env: options.env.merge('CLAUDE_CONFIG_DIR' => materialized.config_dir.to_s),
+        env: (options.env || {}).merge('CLAUDE_CONFIG_DIR' => materialized.config_dir.to_s),
         resume: materialized.resume_session_id,
         continue_conversation: false
       )
@@ -123,10 +266,11 @@ module ClaudeAgentSDK
     # exception or the timeout) if a store call fails or times out.
     def materialize_resume_session(options) # rubocop:disable Metrics/AbcSize -- materialization sequence kept in order
       store = options.session_store
-      return nil if store.nil?
-      return nil if options.resume.nil? && !options.continue_conversation
+      return nil if store.nil? || (options.resume.nil? && !options.continue_conversation)
 
-      timeout_s = options.load_timeout_ms / 1000.0
+      # load_timeout_ms reads nil once a caller set it back to nil; the
+      # constructor default applies then. 0 is a valid (immediate) timeout.
+      timeout_s = (options.load_timeout_ms || DEFAULT_LOAD_TIMEOUT_MS) / 1000.0
       # Probed ONCE at materialization entry (the resume path's construction
       # point) so an invalid callback_scheduling declaration fails fast here,
       # before any store IO or temp-dir work.
@@ -152,6 +296,9 @@ module ClaudeAgentSDK
       session_id, lines = resolved
       tmp_base = Dir.mktmpdir('claude-resume-')
       begin
+        # Taken now: a teardown that deletes inside the directory checks that
+        # the path still leads to this one (MaterializedResume#preserve_transcripts).
+        root_identity = directory_identity(tmp_base)
         project_dir = File.join(tmp_base, 'projects', project_key)
         FileUtils.mkdir_p(project_dir)
         write_jsonl(File.join(project_dir, "#{session_id}.jsonl"), lines)
@@ -170,7 +317,7 @@ module ClaudeAgentSDK
         raise
       end
 
-      MaterializedResume.new(config_dir: tmp_base, resume_session_id: session_id)
+      MaterializedResume.new(config_dir: tmp_base, resume_session_id: session_id, root_identity: root_identity)
     end
 
     # -- Helpers --
@@ -358,16 +505,23 @@ module ClaudeAgentSDK
       # read_if_present returns raw bytes; the credentials path parses and
       # re-serializes JSON, so hand it a UTF-8-tagged string (invalid bytes
       # simply fail to parse and get written through, as before).
-      creds_bytes = source_config_dir && read_if_present(File.join(source_config_dir, '.credentials.json'))
+      creds_path = source_config_dir && File.join(source_config_dir, '.credentials.json')
+      creds_bytes = creds_path && read_if_present(creds_path)
       creds_json = creds_bytes&.dup&.force_encoding(Encoding::UTF_8)
 
-      # macOS default keeps OAuth tokens in the Keychain, not a file. Redirecting
-      # CLAUDE_CONFIG_DIR changes the Keychain service suffix so the subprocess's
-      # lookup misses; populate the plaintext file from the parent's Keychain.
-      # Skipped when env-based auth or a custom config dir is already in play.
-      if caller_config_dir.nil? && env_value(opt_env, 'ANTHROPIC_API_KEY').nil? &&
-         env_value(opt_env, 'CLAUDE_CODE_OAUTH_TOKEN').nil?
-        keychain = read_keychain_credentials
+      # macOS keeps OAuth tokens in the Keychain, not in a file, under a
+      # service name that depends on the config dir (see
+      # keychain_service_name). Redirecting CLAUDE_CONFIG_DIR changes that
+      # name, so the subprocess's own lookup misses; populate the plaintext
+      # file from the caller's entry instead. Skipped under env-based auth.
+      #
+      # Default config dir: a Keychain hit overrides the file. Custom config
+      # dir: the Keychain is consulted only when the directory has no
+      # .credentials.json at all — which of the two the CLI prefers when both
+      # exist is not established, so a file that is there keeps winning.
+      if env_value(opt_env, 'ANTHROPIC_API_KEY').nil? && env_value(opt_env, 'CLAUDE_CODE_OAUTH_TOKEN').nil? &&
+         (caller_config_dir.nil? || !File.exist?(creds_path))
+        keychain = read_keychain_credentials(caller_config_dir)
         creds_json = keychain unless keychain.nil?
       end
 
@@ -537,9 +691,11 @@ module ClaudeAgentSDK
       creds_json
     end
 
-    # Read OAuth credentials JSON from the macOS Keychain (default service name).
-    # Best-effort — returns nil on any error or non-macOS platforms.
-    def read_keychain_credentials
+    # Read OAuth credentials JSON from the macOS Keychain entry the CLI keeps
+    # for +config_dir+ (the caller's CLAUDE_CONFIG_DIR; nil for the default
+    # config dir). Best-effort — returns nil on any error or non-macOS
+    # platforms.
+    def read_keychain_credentials(config_dir)
       return nil unless RbConfig::CONFIG['host_os'].match?(/darwin/)
 
       user = (ENV['USER'] && !ENV['USER'].empty? ? ENV['USER'] : nil) || begin
@@ -550,7 +706,7 @@ module ClaudeAgentSDK
       end
 
       stdout, status = capture_with_timeout(
-        ['security', 'find-generic-password', '-a', user, '-w', '-s', KEYCHAIN_SERVICE_NAME],
+        ['security', 'find-generic-password', '-a', user, '-w', '-s', keychain_service_name(config_dir)],
         KEYCHAIN_TIMEOUT_SECONDS
       )
       return nil if status.nil? || !status.success?
@@ -559,6 +715,21 @@ module ClaudeAgentSDK
       out.empty? ? nil : out
     rescue StandardError
       nil
+    end
+
+    # The Keychain service the CLI stores its credentials under. With the
+    # default config dir that is KEYCHAIN_SERVICE_NAME; with a custom
+    # CLAUDE_CONFIG_DIR the CLI appends the first 8 hex digits of the SHA-256
+    # of that directory — the string the environment carries (no realpath),
+    # NFC-normalized. The bytes are tagged UTF-8 first, which is how the CLI
+    # reads them: under a C locale Ruby tags a non-ASCII ENV value as binary,
+    # and unicode_normalize rejects that.
+    def keychain_service_name(config_dir)
+      return KEYCHAIN_SERVICE_NAME if config_dir.nil?
+
+      dir = config_dir.to_s.dup.force_encoding(Encoding::UTF_8)
+      dir = dir.unicode_normalize(:nfc) if dir.valid_encoding?
+      "#{KEYCHAIN_SERVICE_NAME}-#{Digest::SHA256.hexdigest(dir)[0, 8]}"
     end
 
     # Run a command with a hard timeout, draining stdout on a side thread and
@@ -695,6 +866,143 @@ module ClaudeAgentSDK
       File.expand_path(dir)
     end
 
+    # [device, inode] of +path+ itself when it is a real directory — lstat, so
+    # a symlink is not followed and does not count — else nil. Taken when the
+    # temp config dir is created; MaterializedResume compares it before it
+    # deletes anything inside.
+    def directory_identity(path)
+      stat = File.lstat(path)
+      stat.directory? ? [stat.dev, stat.ino] : nil
+    rescue SystemCallError, TypeError
+      nil
+    end
+
+    # Deletes entries of a directory tree that something else may still be
+    # writing into, without ever following a symlink — not even one that takes
+    # an entry's place while this runs.
+    #
+    # Looking at an entry and then acting on it by path leaves a gap: what
+    # lstat called a directory can be a symlink by the time it is listed,
+    # chmodded or descended into, and a path through it then leads outside the
+    # tree. So an entry is taken out first — renamed into +trash+, a private
+    # directory nothing else knows; a rename moves a symlink itself, never its
+    # target. Only then is the entry examined, and unlinked or, for a
+    # directory, emptied the same way one level at a time. Every path used is
+    # therefore an entry of the directory handed to #remove (which the caller
+    # vouches for), trash/<taken> or trash/<taken>/<child>.
+    #
+    # A directory can refuse: moving one to another parent takes write
+    # permission on the directory itself, emptying it takes read, write and
+    # search. It is then made accessible (see .make_accessible); nothing else
+    # is ever chmodded.
+    class Scrubber
+      # An entry was no longer what an earlier look at it had found.
+      class Changed < StandardError; end
+
+      OWNER_RWX = 0o700
+
+      # How many times a directory that keeps receiving entries is emptied
+      # before rmdir's "not empty" is left to report it.
+      EMPTYING_PASSES = 3
+
+      def self.owner_rwx?(stat)
+        stat.mode.allbits?(OWNER_RWX)
+      end
+
+      # chmod 0700 the directory at +path+ without following a symlink: the
+      # mode is set through a handle (fchmod), and only once that handle
+      # proved to be a directory this user owns whose [device, inode] is
+      # +identity+. The path is looked at again afterwards. Raises Changed
+      # when either look finds something else, and SystemCallError when the
+      # directory cannot be opened (its owner cannot read it) or chmodded.
+      def self.make_accessible(path, identity)
+        File.open(path, File::RDONLY | File::NOFOLLOW | File::NONBLOCK) do |handle|
+          stat = handle.stat
+          unless stat.directory? && [stat.dev, stat.ino] == identity
+            raise Changed, "#{path} is not the directory it was a moment ago"
+          end
+          raise Errno::EPERM, path unless stat.owned?
+
+          handle.chmod(OWNER_RWX)
+        end
+        return if SessionResume.directory_identity(path) == identity
+
+        raise Changed, "#{path} was replaced while it was being made writable"
+      rescue Errno::ELOOP, Errno::EMLINK
+        # What O_NOFOLLOW answers for a symlink (EMLINK on some BSDs).
+        raise Changed, "#{path} became a symlink"
+      end
+
+      def initialize(trash)
+        @trash = trash
+        @taken = 0
+      end
+
+      # Remove the entry +name+ of +dir+ and everything under it. Raises
+      # SystemCallError when something cannot be removed, and Changed when an
+      # entry was swapped while it was being made accessible.
+      #
+      # Nothing here recurses: this runs on the reactor, and a tree can be
+      # deeper than a fiber's stack. Emptying a directory moves its entries
+      # into the trash, which is flat, so what is still to be removed is a
+      # list of trash paths, whatever depth they came from.
+      def remove(dir, name)
+        pending = [take(dir, name)]
+        until pending.empty?
+          path = pending.pop
+          stat = File.lstat(path)
+          next File.unlink(path) unless stat.directory?
+
+          self.class.make_accessible(path, [stat.dev, stat.ino]) unless self.class.owner_rwx?(stat)
+          pending.concat(empty_and_remove(path))
+        end
+      end
+
+      private
+
+      # Empty the directory at +path+ into the trash and remove it; returns
+      # where its entries are now.
+      #
+      # Something that still holds the directory open can write into it
+      # meanwhile, and a listing cannot tell: the entry may arrive right after
+      # it, and the listing may well have been empty. rmdir is what notices
+      # (ENOTEMPTY; EEXIST on some systems). The directory then gets another
+      # pass, EMPTYING_PASSES in all; the last refusal is the caller's to
+      # report.
+      def empty_and_remove(path)
+        taken = []
+        passes = 0
+        begin
+          passes += 1
+          Dir.children(path).each { |child| taken << take(path, child) }
+          Dir.rmdir(path)
+        rescue Errno::ENOTEMPTY, Errno::EEXIST
+          retry if passes < EMPTYING_PASSES
+          raise
+        end
+        taken
+      end
+
+      # Move dir/name into the trash, whatever it is, and return its new path.
+      def take(dir, name)
+        source = File.join(dir, name)
+        target = File.join(@trash, (@taken += 1).to_s)
+        begin
+          File.rename(source, target)
+        rescue Errno::EACCES, Errno::EPERM
+          # A directory that is not writable cannot be moved to another
+          # parent. It is looked at immediately before it is repaired;
+          # whatever else refuses (the parent, a file) is left as it is.
+          stat = File.lstat(source)
+          raise if !stat.directory? || self.class.owner_rwx?(stat)
+
+          self.class.make_accessible(source, [stat.dev, stat.ino])
+          File.rename(source, target)
+        end
+        target
+      end
+    end
+
     # Best-effort recursive removal with retries on transient lock errors
     # (Windows AV/indexer). Never raises. The temp dir holds an access token, so
     # the final sweep matters for not leaking secrets.
@@ -791,7 +1099,7 @@ module ClaudeAgentSDK
 
     private_class_method :load_candidate, :resolve_continue_candidate, :with_timeout, :write_jsonl,
                          :copy_auth_files, :write_redacted_credentials, :read_keychain_credentials,
-                         :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
+                         :keychain_service_name, :capture_with_timeout, :materialize_subkeys, :write_subagent_files,
                          :resolve_dir, :read_if_present, :chmod_owner_only, :copy_if_present, :env_value,
                          :strip_settings_for_resume, :parse_settings_bytes, :mask_surrogate_escapes,
                          :redacted_credentials, :encode_candidate, :encode_jsonl_lines, :encode_entry,

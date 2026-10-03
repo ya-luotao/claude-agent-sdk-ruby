@@ -1049,10 +1049,10 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
   # not delete it. It keeps the transcripts but scrubs the credential copies.
   describe 'MaterializedResume#preserve_transcripts' do
     it 'removes credential copies, keeps transcripts, warns, and never rmtrees' do
-      Dir.mktmpdir do |dir|
-        transcript = File.join(dir, 'projects', 'pk', 'sid.jsonl')
-        FileUtils.mkdir_p(File.dirname(transcript))
-        File.write(transcript, "{}\n")
+      Dir.mktmpdir do |scratch|
+        dir = File.join(scratch, 'claude-resume-spec')
+        FileUtils.mkdir_p(File.join(dir, 'projects', 'pk'))
+        File.write(File.join(dir, 'projects', 'pk', 'sid.jsonl'), "{}\n")
         # settings.json / cowork_settings.json are seeded from the caller's
         # config dir too, and their env blocks routinely carry API keys — the
         # scrub must cover them, not just the credential files.
@@ -1063,10 +1063,14 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
         materialized = ClaudeAgentSDK::MaterializedResume.new(config_dir: dir, resume_session_id: 'sid')
         expect { materialized.preserve_transcripts }.to output(/[Pp]reserving/).to_stderr
 
+        # The directory is kept in a private one created next to it (so still
+        # under scratch): that is where the transcript is now.
+        preserved = materialized.config_dir
+        expect(File.dirname(preserved, 2)).to eq(scratch)
         ['.credentials.json', '.claude.json', 'settings.json', 'cowork_settings.json'].each do |name|
-          expect(File).not_to exist(File.join(dir, name))
+          expect(File).not_to exist(File.join(preserved, name))
         end
-        expect(File).to exist(transcript)
+        expect(File).to exist(File.join(preserved, 'projects', 'pk', 'sid.jsonl'))
       end
     end
   end

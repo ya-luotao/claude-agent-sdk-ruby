@@ -34,7 +34,7 @@
 #       session_id  text   NOT NULL,
 #       subpath     text   NOT NULL DEFAULT '',
 #       seq         bigserial,
-#       entry       jsonb  NOT NULL,
+#       entry       json   NOT NULL,
 #       mtime       bigint NOT NULL,
 #       PRIMARY KEY (project_key, session_id, subpath, seq)
 #     );
@@ -53,11 +53,18 @@
 # many concurrent sessions, use one adapter instance (with its own
 # connection) per session instead.
 #
-# JSONB key ordering: entries are stored as `jsonb`, which REORDERS object keys
-# on read-back. This is explicitly allowed by the SessionStore contract — #load
-# requires deep-equal, not byte-equal, returns. The Ruby SDK reads entry fields
-# by key from the parsed Hash (never a byte/prefix scan), so reordering is
-# transparent. Use a `json` or `text` column if you need byte-stable storage.
+# Column type: entries are stored as `json`, not `jsonb`. `jsonb` rejects the
+# \u0000 escape, and transcripts do carry it (a NUL character in binary tool
+# output): one such entry fails the whole multi-row INSERT, so the mirror drops
+# every entry of that batch. `json` keeps the text as given, key order
+# included; this adapter only ever reads whole entries, so it needs none of
+# jsonb's operators or indexes.
+#
+# A table created by an earlier copy of this adapter keeps its `jsonb` column:
+# #create_schema is CREATE TABLE IF NOT EXISTS and never alters an existing
+# table. Migrate it explicitly:
+#
+#     ALTER TABLE claude_session_store ALTER COLUMN entry TYPE json USING entry::json;
 #
 # Retention: this adapter never deletes rows on its own. Add a scheduled
 # DELETE ... WHERE mtime < $cutoff (or partition by mtime).
@@ -103,7 +110,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
         session_id  text   NOT NULL,
         subpath     text   NOT NULL DEFAULT '',
         seq         bigserial,
-        entry       jsonb  NOT NULL,
+        entry       json   NOT NULL,
         mtime       bigint NOT NULL,
         PRIMARY KEY (project_key, session_id, subpath, seq)
       );
@@ -128,7 +135,7 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
     db_exec_params(
       <<~SQL,
         INSERT INTO #{@table} (project_key, session_id, subpath, entry, mtime)
-        SELECT $1, $2, $3, e::jsonb, $5
+        SELECT $1, $2, $3, e::json, $5
         FROM unnest($4::text[]) WITH ORDINALITY AS t(e, ord)
         ORDER BY ord
       SQL
@@ -145,8 +152,8 @@ class PostgresSessionStore < ClaudeAgentSDK::SessionStore
     )
     return nil if result.ntuples.zero?
 
-    # The pg gem returns jsonb as its JSON text; parse each row. (If a type map
-    # decodes jsonb to a Hash already, pass it through.)
+    # The pg gem returns json as its JSON text; parse each row. (If a type map
+    # decodes json to a Hash already, pass it through.)
     out = result.map do |row|
       v = row['entry']
       v.is_a?(String) ? JSON.parse(v) : v
