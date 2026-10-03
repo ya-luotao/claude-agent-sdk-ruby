@@ -670,9 +670,33 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
       expect(root_span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
     end
 
-    it 'is a no-op when no root span exists' do
+    it 'gives an error that arrives before any InitMessage a finished session span of its own' do
       fresh_observer = described_class.new
-      expect { fresh_observer.on_error(RuntimeError.new('test')) }.not_to raise_error
+      spans_before = created_spans.length
+
+      fresh_observer.on_error(RuntimeError.new('test'))
+
+      spans = created_spans[spans_before..]
+      expect(spans.map(&:name)).to eq(['claude_agent.session'])
+      expect(spans.first).to have_attributes(finished: true)
+      expect(spans.first.status).to have_attributes(code: OpenTelemetry::Trace::Status::ERROR, description: 'test')
+      expect(spans.first.events.map { |event| event[:name] }).to eq(['exception'])
+    end
+
+    # The CLI exits non-zero after an error result, so query() raises a
+    # ResultError when the trace has already ended. That trace reports the
+    # failure; a second session span for it would be a duplicate.
+    it 'adds no span for an error that follows a finished trace' do
+      observer.on_message(
+        ClaudeAgentSDK::ResultMessage.new(
+          subtype: 'error_during_execution', is_error: true, duration_ms: 1, duration_api_ms: 1,
+          num_turns: 1, session_id: 'sess-1', usage: {}
+        )
+      )
+      observer.on_error(ClaudeAgentSDK::ProcessError.new('Claude Code returned an error result: boom', exit_code: 1))
+
+      expect(created_spans.map(&:name)).to eq(['claude_agent.session'])
+      expect(created_spans.first.events).to be_empty
     end
   end
 
@@ -1094,6 +1118,344 @@ RSpec.describe ClaudeAgentSDK::Instrumentation::OTelObserver do
 
       expect(span.attributes).not_to have_key('output.value')
       expect(span.finished).to be(true)
+    end
+  end
+
+  # The CLI sends one `assistant` frame PER CONTENT BLOCK, and every frame of
+  # one API response repeats that response's message id and usage snapshot.
+  # The hand-built messages above hold a whole response in one message with
+  # no id, a shape the CLI does not send, so these examples replay a recorded
+  # turn instead (spec/fixtures/cli_frames/README.md).
+  describe 'token usage on generation spans, from recorded CLI frames' do
+    let(:frames) do
+      path = File.expand_path('../../fixtures/cli_frames/tool_turn.jsonl', __dir__)
+      File.readlines(path).map { |line| JSON.parse(line, symbolize_names: true) }
+    end
+    let(:assistant_frames) { frames.select { |frame| frame[:type] == 'assistant' } }
+    let(:token_keys) { %i[input_tokens output_tokens cache_creation_input_tokens cache_read_input_tokens] }
+
+    # Hands frames to the observer the way a session does: Query drops the
+    # `sdk_host_only` state frames, everything else is parsed and observed.
+    def replay(frames)
+      frames.each do |frame|
+        next if frame[:subtype] == 'session_state_changed' && frame[:sdk_host_only] == true
+
+        observer.on_message(ClaudeAgentSDK::MessageParser.parse(frame))
+      end
+    end
+
+    def recorded_init
+      ClaudeAgentSDK::MessageParser.parse(frames.find { |frame| frame[:subtype] == 'init' })
+    end
+
+    def recorded_result
+      ClaudeAgentSDK::MessageParser.parse(frames.find { |frame| frame[:type] == 'result' })
+    end
+
+    # A recorded assistant frame with another message id / usage, for frame
+    # orders the recording does not contain.
+    def assistant_frame(id:, usage: assistant_frames.last.dig(:message, :usage))
+      frame = assistant_frames.last
+      ClaudeAgentSDK::MessageParser.parse(frame.merge(message: frame[:message].merge(id: id, usage: usage)))
+    end
+
+    def generation_spans
+      created_spans.select { |span| span.name == 'claude_agent.generation' }
+    end
+
+    def token_usage(span)
+      token_keys.select { |key| span.attributes.key?("gen_ai.usage.#{key}") }
+                .to_h { |key| [key, span.attributes["gen_ai.usage.#{key}"]] }
+    end
+
+    it 'replays a turn in which each API response spans two frames that repeat one usage snapshot' do
+      by_message_id = assistant_frames.group_by { |frame| frame.dig(:message, :id) }
+
+      expect(by_message_id.keys).to all(start_with('msg_'))
+      expect(by_message_id.values.map(&:length)).to eq([2, 2])
+      expect(assistant_frames.map { |frame| frame.dig(:message, :content).map { |block| block[:type] } })
+        .to eq([%w[thinking], %w[tool_use], %w[thinking], %w[text]])
+      by_message_id.each_value do |group|
+        expect(group.map { |frame| frame.dig(:message, :usage) }.uniq.length).to eq(1)
+      end
+    end
+
+    it 'still emits one generation span per assistant frame' do
+      replay(frames)
+
+      expect(generation_spans.length).to eq(4)
+      expect(generation_spans).to all(have_attributes(finished: true))
+    end
+
+    it 'attaches the usage of an API response to the first of its generation spans only' do
+      replay(frames)
+
+      first_frames = assistant_frames.uniq { |frame| frame.dig(:message, :id) }
+      expected = assistant_frames.map do |frame|
+        first_frames.any? { |first| first.equal?(frame) } ? frame.dig(:message, :usage).slice(*token_keys) : {}
+      end
+      expect(expected.map(&:empty?)).to eq([false, true, false, true])
+      expect(generation_spans.map { |span| token_usage(span) }).to eq(expected)
+    end
+
+    it 'reports the same input-side token usage on generation spans as the ResultMessage' do
+      replay(frames)
+
+      input_side = %i[input_tokens cache_read_input_tokens cache_creation_input_tokens]
+      summed = input_side.to_h { |key| [key, generation_spans.sum { |span| token_usage(span).fetch(key, 0) }] }
+
+      expect(summed).to eq(input_tokens: 18, cache_read_input_tokens: 45_028, cache_creation_input_tokens: 4928)
+      expect(summed).to eq(recorded_result.usage.slice(*input_side))
+    end
+
+    # Every frame carries the snapshot taken when the response started, so a
+    # generation span cannot know the response's final output count; the
+    # ResultMessage, and with it the session span, can.
+    it 'leaves the authoritative totals, output tokens included, to the session span' do
+      replay(frames)
+
+      session_span = created_spans.find { |span| span.name == 'claude_agent.session' }
+      expect(token_usage(session_span)).to eq(recorded_result.usage.slice(*token_keys))
+      expect(token_usage(session_span)).to include(output_tokens: 161)
+      expect(generation_spans.sum { |span| token_usage(span).fetch(:output_tokens, 0) }).to eq(4 + 2)
+    end
+
+    it 'opens the tool span on the tool_use frame and closes it on the tool result frame' do
+      replay(frames)
+
+      tool_span = created_spans.find { |span| span.name == 'claude_agent.tool.Bash' }
+      expect(tool_span).to have_attributes(finished: true)
+      expect(tool_span.attributes).to include(
+        'input.value' => '{"command":"echo placeholder","description":"placeholder"}',
+        'output.value' => 'placeholder'
+      )
+    end
+
+    # Constructed order: two subagents answering at once interleave the
+    # frames of their responses.
+    it 'tells the frames of interleaved API responses apart by message id' do
+      observer.on_message(recorded_init)
+      %w[msg_a msg_b msg_a msg_b].each { |id| observer.on_message(assistant_frame(id: id)) }
+
+      expect(generation_spans.map { |span| token_usage(span).empty? }).to eq([false, false, true, true])
+    end
+
+    it 'keeps the usage for a later frame when the first frame of a response carries none' do
+      observer.on_message(recorded_init)
+      observer.on_message(assistant_frame(id: 'msg_a', usage: nil))
+      observer.on_message(assistant_frame(id: 'msg_a'))
+      observer.on_message(assistant_frame(id: 'msg_a'))
+
+      expect(generation_spans.map { |span| token_usage(span).empty? }).to eq([true, false, true])
+    end
+
+    it 'keeps usage on every span when messages carry no id to group them by' do
+      observer.on_message(recorded_init)
+      2.times { observer.on_message(assistant_frame(id: nil)) }
+
+      expect(generation_spans.map { |span| token_usage(span).empty? }).to eq([false, false])
+    end
+
+    it 'remembers message ids for one trace only' do
+      observer.on_message(recorded_init)
+      observer.on_message(assistant_frame(id: 'msg_a'))
+      observer.on_message(recorded_result) # the trace ends
+      observer.on_message(recorded_init)
+      observer.on_message(assistant_frame(id: 'msg_a'))
+      observer.on_message(recorded_init) # superseded without a result
+      observer.on_message(assistant_frame(id: 'msg_a'))
+      observer.on_close
+      observer.on_message(recorded_init)
+      observer.on_message(assistant_frame(id: 'msg_a'))
+
+      expect(generation_spans.map { |span| token_usage(span).empty? }).to eq([false, false, false, false])
+    end
+  end
+
+  # A CLI that cannot be found or started, an initialize that fails or times
+  # out, a process that dies before its first frame: the session never sends
+  # an InitMessage, so there is no trace to record the error on.
+  describe 'a session that fails before its first InitMessage' do
+    let(:error) { ClaudeAgentSDK::CLINotFoundError.new('Claude Code not found at: /nonexistent/claude') }
+    let(:init_message) do
+      ClaudeAgentSDK::InitMessage.new(subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4')
+    end
+    let(:result_message) do
+      ClaudeAgentSDK::ResultMessage.new(
+        subtype: 'success', is_error: false, duration_ms: 1, duration_api_ms: 1, num_turns: 1,
+        session_id: 'sess-1', usage: {}
+      )
+    end
+
+    before do
+      # As the outer capture, and counting how often each span is finished.
+      allow_any_instance_of(OpenTelemetry::MockTracer).to receive(:start_span) do |_tracer, name, **kwargs|
+        span = OpenTelemetry::MockSpan.new(name, kwargs[:attributes] || {})
+        allow(span).to receive(:finish).and_call_original
+        created_spans << span
+        span
+      end
+    end
+
+    def error_span?(span)
+      span.status&.code == OpenTelemetry::Trace::Status::ERROR && span.events.map { |event| event[:name] } == ['exception']
+    end
+
+    it 'exports a session span with the exception, error status and the prompt, and nothing an init would add' do
+      observer.on_user_prompt('Fix the bug')
+      observer.on_error(error)
+
+      expect(created_spans.map(&:name)).to eq(['claude_agent.session'])
+      span = created_spans.first
+      expect(span.attributes).to eq(
+        'gen_ai.system' => 'anthropic', 'openinference.span.kind' => 'AGENT',
+        'langfuse.observation.type' => 'agent', 'input.mime_type' => 'text/plain',
+        'output.mime_type' => 'text/plain', 'input.value' => 'Fix the bug'
+      )
+      expect(span.status).to have_attributes(code: OpenTelemetry::Trace::Status::ERROR, description: error.message)
+      expect(span.events).to eq(
+        [{ name: 'exception', attributes: { 'exception.type' => 'ClaudeAgentSDK::CLINotFoundError',
+                                            'exception.message' => error.message } }]
+      )
+    end
+
+    # Client#connect notifies on_error and never on_close when it fails
+    # before the handshake; an unfinished span is never exported.
+    it 'finishes that span in on_error, without waiting for an on_close' do
+      observer.on_error(error)
+
+      expect(created_spans.first).to have_attributes(finished: true)
+    end
+
+    it 'does not finish it a second time when on_close follows, as it does in query()' do
+      observer.on_error(error)
+      observer.on_close
+
+      expect(created_spans.length).to eq(1)
+      expect(created_spans.first).to have_received(:finish).once
+    end
+
+    it 'adds the default attributes of the observer' do
+      tagged = described_class.new('langfuse.session.id' => 'checkout-42', 'user.id' => 'user-7')
+      tagged.on_error(error)
+
+      expect(created_spans.first.attributes).to include('langfuse.session.id' => 'checkout-42', 'user.id' => 'user-7')
+    end
+
+    it 'does not carry the prompt of the failed session into the next trace' do
+      observer.on_user_prompt('Failed prompt')
+      observer.on_error(error)
+      observer.on_message(init_message) # a retry on the same observer; no on_close came in between
+
+      expect(created_spans.map { |span| span.attributes['input.value'] }).to eq(['Failed prompt', nil])
+    end
+
+    it 'labels a retry after the failure with its own prompt' do
+      observer.on_user_prompt('Failed prompt')
+      observer.on_error(error)
+      observer.on_close
+      observer.on_user_prompt('Retry prompt')
+      observer.on_message(init_message)
+
+      expect(created_spans.map { |span| span.attributes['input.value'] }).to eq(['Failed prompt', 'Retry prompt'])
+      expect(created_spans.map { |span| error_span?(span) }).to eq([true, false])
+    end
+
+    it 'gives every error that surfaces before the first InitMessage its own finished span' do
+      observer.on_error(error)
+      observer.on_error(ClaudeAgentSDK::CLIConnectionError.new('Not connected'))
+
+      expect(created_spans.map { |span| span.status.description }).to eq([error.message, 'Not connected'])
+      expect(created_spans).to all(have_attributes(finished: true))
+    end
+
+    it 'reports a failed start again once the observer has been closed' do
+      observer.on_message(init_message)
+      observer.on_message(result_message)
+      observer.on_close
+      observer.on_error(error)
+
+      expect(created_spans.map { |span| error_span?(span) }).to eq([false, true])
+      expect(created_spans).to all(have_attributes(finished: true))
+    end
+
+    it 'stays silent for an error between two traces of one session' do
+      observer.on_message(init_message)
+      observer.on_message(result_message)
+      observer.on_error(ClaudeAgentSDK::CLIConnectionError.new('Not connected'))
+      observer.on_message(init_message)
+
+      expect(created_spans.map { |span| error_span?(span) }).to eq([false, false])
+    end
+
+    describe 'through the public entry points' do
+      # The real transport, pointed at a CLI that is not there.
+      let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [observer], cli_path: '/nonexistent/claude') }
+
+      it 'leaves one finished error span when query() cannot start the CLI' do
+        context = { span: Object.new }
+
+        OpenTelemetry::Context.with_current(context) do
+          expect { ClaudeAgentSDK.query(prompt: 'hello', options: options) { |_message| nil } }
+            .to raise_error(ClaudeAgentSDK::CLINotFoundError)
+        end
+
+        expect(created_spans.map(&:name)).to eq(['claude_agent.session'])
+        expect(error_span?(created_spans.first)).to be(true)
+        expect(created_spans.first).to have_attributes(finished: true, parent_context: context)
+        expect(created_spans.first).to have_received(:finish).once
+      end
+
+      it 'leaves one finished error span when Client#connect cannot start the CLI, though no on_close follows' do
+        notified = []
+        recorder = Object.new.extend(ClaudeAgentSDK::Observer)
+        recorder.define_singleton_method(:on_error) { |_error| notified << :on_error }
+        recorder.define_singleton_method(:on_close) { notified << :on_close }
+        both = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [recorder, observer], cli_path: options.cli_path)
+        context = { span: Object.new }
+
+        OpenTelemetry::Context.with_current(context) do
+          expect { ClaudeAgentSDK::Client.open(options: both) { |_client| nil } }
+            .to raise_error(ClaudeAgentSDK::CLINotFoundError)
+        end
+
+        expect(notified).to eq([:on_error])
+        expect(created_spans.map(&:name)).to eq(['claude_agent.session'])
+        expect(error_span?(created_spans.first)).to be(true)
+        expect(created_spans.first).to have_attributes(finished: true, parent_context: context)
+        expect(created_spans.first).to have_received(:finish).once
+      end
+
+      it 'records the prompt when the CLI dies after the prompt was written and before any InitMessage' do
+        incoming = Async::Queue.new
+        transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
+        allow(transport).to receive(:write) do |json|
+          message = JSON.parse(json, symbolize_names: true)
+          case message[:type]
+          when 'control_request'
+            incoming.enqueue(type: 'control_response',
+                             response: { subtype: 'success', request_id: message[:request_id], response: {} })
+          when 'user'
+            incoming.enqueue(:exit)
+          end
+        end
+        allow(transport).to receive(:read_messages) do |&receive|
+          loop do
+            frame = incoming.dequeue
+            raise ClaudeAgentSDK::ProcessError.new('Command failed', exit_code: 1, stderr: 'boom') if frame == :exit
+
+            receive.call(frame)
+          end
+        end
+
+        expect { ClaudeAgentSDK.query(prompt: 'hello', options: options, transport: transport) { |_message| nil } }
+          .to raise_error(ClaudeAgentSDK::ProcessError, /exit code: 1/)
+
+        expect(created_spans.map(&:name)).to eq(['claude_agent.session'])
+        expect(error_span?(created_spans.first)).to be(true)
+        expect(created_spans.first.attributes).to include('input.value' => 'hello')
+        expect(created_spans.first).to have_received(:finish).once
+      end
     end
   end
 end
