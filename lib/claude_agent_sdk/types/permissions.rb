@@ -34,20 +34,21 @@ module ClaudeAgentSDK
       @rules = value&.map { |rule| rule.is_a?(Hash) ? PermissionRuleValue.new(rule) : rule }
     end
 
+    # The wire form. The CLI validates the updatedPermissions of a
+    # can_use_tool reply as one unit and drops the whole array when a single
+    # entry does not fit its schema, so two things it rejects are never
+    # written: a rule without content has no ruleContent key (the schema
+    # wants a String or no key, not null), and an update that has a type but
+    # no destination goes to 'session' — the narrowest one: it lasts for this
+    # run and writes no settings file (the default Python PR #1330 proposes).
     def to_h
       result = { type: @type }
-      result[:destination] = @destination if @destination
+      destination = @destination || ('session' unless @type.nil?)
+      result[:destination] = destination if destination
 
       case @type
       when 'addRules', 'replaceRules', 'removeRules'
-        if @rules
-          result[:rules] = @rules.map do |rule|
-            {
-              toolName: rule.tool_name,
-              ruleContent: rule.rule_content
-            }
-          end
-        end
+        result[:rules] = @rules.map { |rule| rule_to_h(rule) } if @rules
         result[:behavior] = @behavior if @behavior
       when 'setMode'
         result[:mode] = @mode if @mode
@@ -56,6 +57,14 @@ module ClaudeAgentSDK
       end
 
       result
+    end
+
+    private
+
+    def rule_to_h(rule)
+      wire_rule = { toolName: rule.tool_name }
+      wire_rule[:ruleContent] = rule.rule_content unless rule.rule_content.nil?
+      wire_rule
     end
   end
 

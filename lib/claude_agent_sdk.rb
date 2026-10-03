@@ -79,7 +79,10 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   end
 
   # Internal: normalize hook lists for the control protocol. An absent or
-  # disabled event must not become an empty registration in initialize.
+  # disabled event must not become an empty registration in initialize. An
+  # event written as a String under one key and as a Symbol under another
+  # ('PreToolUse' and :PreToolUse) is one event: its matcher lists are
+  # joined in the order they were written, never replaced.
   # @api private
   def self.convert_hooks_to_internal_format(hooks)
     return nil unless hooks
@@ -94,7 +97,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         config[:timeout] = matcher.timeout if matcher.timeout
         entries << config
       end
-      internal_hooks[event.to_s] = entries unless entries.empty?
+      (internal_hooks[event.to_s] ||= []).concat(entries) unless entries.empty?
     end
     internal_hooks.empty? ? nil : internal_hooks
   end
