@@ -267,9 +267,11 @@ module ClaudeAgentSDK
     end
 
     # The tag to store: Unicode-sanitized and stripped, or '' (which clears
-    # the tag) for nil. Same boundary check as stripped_title.
+    # the tag) for nil — only nil: false is not a tag either, and clearing on
+    # it would turn a Boolean from untyped input into a destructive write.
+    # Same boundary check as stripped_title.
     def sanitized_tag(tag)
-      return '' unless tag
+      return '' if tag.nil?
 
       sanitized = tag.is_a?(String) && tag.valid_encoding? ? sanitize_unicode(tag).strip : ''
       raise ArgumentError, 'tag must be non-empty (use nil to clear)' if sanitized.empty?

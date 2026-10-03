@@ -205,12 +205,15 @@ RSpec.describe 'session API boundaries' do
       end
     end
 
-    { 'an Integer' => 123, 'invalid bytes' => "caf\xC3".dup.force_encoding('UTF-8') }.each do |label, tag|
+    { 'an Integer' => 123, 'false' => false, 'invalid bytes' => "caf\xC3".dup.force_encoding('UTF-8') }.each do |label, tag|
       it "raises ArgumentError for a tag that is #{label}, on disk and with a store" do
+        on_disk = File.binread(transcript_file)
+
         expect { ClaudeAgentSDK.tag_session(session_id: session_id, tag: tag, directory: cwd) }
           .to raise_error(ArgumentError, 'tag must be non-empty (use nil to clear)')
         expect { ClaudeAgentSDK.tag_session(session_id: session_id, tag: tag, directory: cwd, session_store: store) }
           .to raise_error(ArgumentError, 'tag must be non-empty (use nil to clear)')
+        expect(File.binread(transcript_file)).to eq(on_disk)
         expect(store.load(key).length).to eq(conversation.store_entries.length)
       end
     end
