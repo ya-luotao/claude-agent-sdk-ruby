@@ -136,14 +136,16 @@ module ClaudeAgentSDK
     end
     private_class_method :parse_streamed_message
 
-    # Waiter for control responses awaited OFF the reactor — i.e. a control
-    # method called from inside a hook/can_use_tool/SDK-MCP callback, which
-    # runs on a FiberBoundary worker thread (Python supports this reentrancy
-    # natively: callbacks are event-loop tasks and anyio.Event is
-    # level-triggered). Duck-types Async::Condition#signal for the read
-    # loop's signal sites; the unconditional token push makes it
-    # level-triggered, closing the check-then-wait gap that an
-    # edge-triggered Condition would lose across threads.
+    # Waiter for control responses awaited OFF the reactor that owns the
+    # Query — a control method called from inside a hook/can_use_tool/SDK-MCP
+    # callback, which runs on a FiberBoundary worker thread (Python supports
+    # this reentrancy natively: callbacks are event-loop tasks and
+    # anyio.Event is level-triggered), from any other plain thread, or from a
+    # fiber on another thread's reactor (see #send_control_request for the
+    # choice). Duck-types Async::Condition#signal for the read loop's signal
+    # sites; the unconditional token push makes it level-triggered, closing
+    # the check-then-wait gap that an edge-triggered Condition would lose
+    # across threads.
     class ThreadWaiter
       def initialize
         @queue = ::Queue.new
@@ -193,6 +195,8 @@ module ClaudeAgentSDK
 
       # Message stream
       @message_queue = Async::Queue.new
+      # Set once #receive_messages has consumed the read loop's end sentinel.
+      @stream_ended = false
       # Ends when the run is over, so the stdin-closing waiter can wake; see
       # #read_messages and @inflight_tasks below (Python #1088, #1190/#1279).
       # Work the CLI takes up after the run ended swaps in a fresh one
@@ -673,9 +677,16 @@ module ClaudeAgentSDK
     end
 
     # The run is over: wake the stdin-closing waiter. Idempotent.
+    #
+    # The run is marked ended BEFORE the ceiling is cleared: stopping the
+    # sleeper task yields to whatever else is ready, and a #stream_input task
+    # that writes its next message in that gap must find the run already
+    # ended, so that #reopen_run gives the message a run of its own. Cleared
+    # first, the message joined the run that was about to end, and stdin
+    # closed before the message's own run had produced a frame.
     def end_run
-      clear_run_end_ceiling
       @run_end.end!
+      clear_run_end_ceiling
     end
 
     # Reopen an ended run for work that started after it ended. A waiter the
@@ -846,15 +857,42 @@ module ClaudeAgentSDK
       raise
     rescue StandardError => e
       send_control_error(request_id, e.message)
+    rescue *FiberBoundary::CALLBACK_FAILURES => e
+      # What is left of the list: a callback (or its callback_wrapper)
+      # failing outside StandardError — NotImplementedError, LoadError,
+      # SystemStackError, SecurityError. No `rescue StandardError` on the
+      # way here caught it, not even the one in #handle_sdk_mcp_request that
+      # turns a resource or prompt handler's failure into its JSON-RPC
+      # error, so the answer an ordinary failure gets is built here.
+      # Unanswered, it would also end this task with an exception Async
+      # treats as fatal for the whole reactor.
+      respond_to_callback_failure(request_id, request_data, e.message)
+    end
+
+    # Answers the request, then leaves the process-exit exception to its
+    # caller to re-raise: the response an ordinary exception from the
+    # callback would have produced, naming the exception by class.
+    #
+    # The text has the format of FiberBoundary.process_exit_message, built
+    # here from the normalized message instead of calling it: that method
+    # joins the class name to the raw message, which raises
+    # Encoding::CompatibilityError for an encoding that is not
+    # ASCII-compatible (UTF-16). Raised in the rescue clause this runs in,
+    # that error would leave the request unanswered and replace the exit.
+    # +error+ is only read, never changed.
+    def respond_to_process_exit(request_id, request_data, error)
+      detail = wire_text(error.message)
+      message = detail.empty? || detail == error.class.name ? error.class.name : "#{error.class}: #{detail}"
+      respond_to_callback_failure(request_id, request_data, message)
     end
 
     # The response an ordinary exception from the callback would have
-    # produced, with the process-exit exception named by class: an error
-    # control response for hooks / can_use_tool; for SDK MCP requests an
-    # in-band isError result (tools/call) or a JSON-RPC internal error
-    # (resources/read, prompts/get), inside a successful control response.
-    def respond_to_process_exit(request_id, request_data, error)
-      message = FiberBoundary.process_exit_message(error)
+    # produced, with +message+ as its text: an error control response for
+    # hooks / can_use_tool; for SDK MCP requests an in-band isError result
+    # (tools/call) or a JSON-RPC internal error (resources/read,
+    # prompts/get), inside a successful control response.
+    def respond_to_callback_failure(request_id, request_data, message)
+      message = wire_text(message)
       mcp_message = request_data[:message] if request_data.is_a?(Hash) && request_data[:subtype] == 'mcp_message'
       return send_control_error(request_id, message) unless mcp_message.is_a?(Hash)
 
@@ -871,10 +909,19 @@ module ClaudeAgentSDK
                                 response: { mcp_response: mcp_response }
                               }
                             }))
+    rescue JSON::GeneratorError
+      # Not reachable through the text, which #wire_text made encodable.
+      # Kept because an exception leaving this method would take the place
+      # of the process exit the caller is about to re-raise.
+      send_control_error(request_id, message)
     rescue CLIConnectionError
       nil # the CLI is already gone; nothing is waiting for the answer
     end
 
+    # Called from the rescue clauses of #handle_control_request, where an
+    # exception raised while building the answer has no rescue left: the
+    # request would stay unanswered. So the text goes through #wire_text, and
+    # whatever JSON.generate still rejects is replaced by a fixed one.
     def send_control_error(request_id, message)
       error_response = {
         type: 'control_response',
@@ -882,15 +929,42 @@ module ClaudeAgentSDK
           subtype: 'error',
           request_id: request_id,
           requestId: request_id,
-          error: message
+          error: wire_text(message)
         }
       }
-      writeln(JSON.generate(error_response))
+      line = begin
+        JSON.generate(error_response)
+      rescue JSON::GeneratorError
+        error_response[:response][:error] = 'Control request failed; its error message could not be encoded as JSON'
+        JSON.generate(error_response)
+      end
+      writeln(line)
     rescue CLIConnectionError
       # EOF/close can invalidate a callback after the peer has gone away.
       # Only this best-effort reply is discarded; read errors still reach
       # the message queue through read_messages.
       nil
+    end
+
+    # Error text as JSON.generate accepts it. An exception message can hold
+    # anything: a multibyte character cut by byteslice, the raw bytes of a
+    # subprocess or an HTTP body, a driver's own encoding. Valid UTF-8
+    # passes through. A UTF-8, BINARY or US-ASCII string is read as UTF-8,
+    # with U+FFFD in place of each byte that is not valid there. Any other
+    # encoding is transcoded, so valid text in it survives, with U+FFFD for
+    # what cannot be converted.
+    def wire_text(text)
+      text = text.to_s
+      return text if text.encoding == Encoding::UTF_8 && text.valid_encoding?
+
+      if [Encoding::UTF_8, Encoding::BINARY, Encoding::US_ASCII].include?(text.encoding)
+        text.dup.force_encoding(Encoding::UTF_8).scrub
+      else
+        text.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+      end
+    rescue EncodingError
+      # No converter for the declared encoding (a dummy one such as UTF-7).
+      text.dup.force_encoding(Encoding::UTF_8).scrub
     end
 
     def handle_permission_request(request_data, request_id: nil) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- permission round-trip: input, callback, result conversion
@@ -1308,10 +1382,25 @@ module ClaudeAgentSDK
       # RuntimeError; the eventual response dropped by the key? guard).
       task = Async::Task.current?
 
-      # Reactor callers wait on an Async::Condition; worker-thread callers
-      # on a ThreadWaiter. Register atomically with the terminal-state check
-      # so EOF cannot strand a sender that missed the final broadcast.
-      waiter = task ? Async::Condition.new : ThreadWaiter.new
+      # The waiter is chosen by reactor OWNERSHIP, not by "has a task". Only
+      # a fiber of the reactor that owns this Query (the one #start ran on,
+      # whose read loop does the signaling) checks its result slot and parks
+      # with no chance for the read loop to run in between, so only there is
+      # the edge-triggered Async::Condition safe. Every other caller races
+      # the read loop between its check and its park and gets the
+      # level-triggered ThreadWaiter: a FiberBoundary worker thread, a plain
+      # thread, and also a fiber on ANOTHER thread's reactor (`Sync {
+      # client.interrupt }` on a request thread while the session lives on a
+      # background reactor; a Sync block inside a :thread-mode callback).
+      # Given a Condition, such a fiber could lose its wakeup on async >=
+      # 2.29, and on async 2.10-2.28 the cross-thread signal raised
+      # FiberError in the read loop, ending the whole session. The deadline
+      # mechanism (#await_control_response) is still chosen by "has a task".
+      #
+      # Register atomically with the terminal-state check so EOF cannot
+      # strand a sender that missed the final broadcast.
+      on_owning_reactor = task && Fiber.scheduler.equal?(@owning_scheduler)
+      waiter = on_owning_reactor ? Async::Condition.new : ThreadWaiter.new
       request_id = @request_counter_mutex.synchronize do
         raise @control_stream_error if @control_stream_error
 
@@ -1361,7 +1450,12 @@ module ClaudeAgentSDK
         # only this deadline is translated, not an outer task's cancellation.
         FiberBoundary.with_cooperative_timeout(task, timeout_seconds, on_timeout: expired) do
           yield
-          waiter.wait until @pending_control_results.key?(request_id)
+          # A ThreadWaiter here belongs to a fiber on a reactor that does not
+          # own this Query: Thread::Queue#pop parks that fiber through its
+          # own scheduler, and the deadline cancels it like any suspension.
+          until @pending_control_results.key?(request_id)
+            waiter.is_a?(ThreadWaiter) ? waiter.wait(nil) : waiter.wait
+          end
         end
       else
         # Only schedulerless callers use stdlib Timeout. A fresh, private
@@ -1709,10 +1803,21 @@ module ClaudeAgentSDK
       #   open until the run ends so hooks/SDK MCP control replies can still
       #   be written (the run's end or process exit is guaranteed to signal).
       # - No complete message ever reached the CLI (empty stream, or the
-      #   stream raised before the first write): no result can ever arrive,
-      #   so waiting would park query() forever beside an idle CLI. Close
-      #   stdin so the CLI sees EOF and exits. Deliberate improvement over
-      #   Python, which leaves stdin open and hangs on this path.
+      #   stream raised before the first write): no result is owed, so there
+      #   is nothing to wait for. Close stdin at once so the CLI sees EOF and
+      #   exits, as the Python and TypeScript SDKs do.
+      #   This is a trade-off, not a free win. An empty stream is also how a
+      #   caller says "send nothing, just resume", and a resumed session can
+      #   have work of its own: a tool call that a PreToolUse hook deferred
+      #   is re-run by the CLI on resume. If that tool is served by an SDK
+      #   MCP server, the CLI's request for it finds stdin already closed and
+      #   the CLI exits with an error (ProcessError, exit code 1;
+      #   anthropics/claude-agent-sdk-python#1226). Waiting instead would
+      #   hang every empty resume that has nothing pending: a CLI that is
+      #   idle with no input reports no session state (seen with 2.1.286),
+      #   so the two cases cannot be told apart without a signal from the
+      #   CLI. Until there is one, resume a deferred tool through Client,
+      #   which keeps stdin open.
       unless @closed
         if wrote_message
           wait_for_result_and_end_input
@@ -1740,8 +1845,21 @@ module ClaudeAgentSDK
       # reception — ResultMessage dropped, the query reported as complete, and
       # on_error never fired. `while` propagates it like any other error.
       while true # rubocop:disable Style/InfiniteLoop
+        # End of stream is sticky. The read loop enqueues ONE sentinel and is
+        # gone, so once a receive has consumed it, every later one must end
+        # at once rather than wait on a queue nothing writes to any more
+        # (Python closes the send side of its stream, so later iterations
+        # end at once there too). The end is remembered, not put back on the
+        # queue: a receive can be made after the reactor has finished, and
+        # async < 2.29 cannot enqueue outside a task. Anything still queued,
+        # such as a mirror error reported after the end, is delivered first.
+        break if @stream_ended && @message_queue.empty?
+
         message = @message_queue.dequeue
-        break if message[:type] == 'end'
+        if message[:type] == 'end'
+          @stream_ended = true
+          break
+        end
         raise message[:error] if message[:type] == 'error'
 
         block.call(message)

@@ -6,10 +6,15 @@
 (* ensure.                                                                 *)
 (*                                                                         *)
 (* Senders call a control method (interrupt, set_model, ...). Sender 1 is  *)
-(* a reactor fiber (Async::Condition: edge-triggered, but checking the     *)
-(* result slot and parking happen without a suspension point in between).  *)
-(* Sender 2 runs on a FiberBoundary worker thread (ThreadWaiter): between  *)
-(* its slot check and its park the read loop can run.                      *)
+(* a fiber of the reactor that owns the Query, the one its read loop runs  *)
+(* on (Async::Condition: edge-triggered, but checking the result slot and  *)
+(* parking happen without a suspension point in between). Sender 2 is any  *)
+(* caller NOT on the owning reactor (ThreadWaiter): a FiberBoundary worker *)
+(* thread, a plain thread, or a fiber on another thread's reactor. Between *)
+(* its slot check and its park the read loop can run. The code picks the   *)
+(* waiter by that ownership (Fiber.scheduler.equal?(@owning_scheduler)),   *)
+(* not by whether the caller has an Async task. Kind's "fiber" / "thread"  *)
+(* below are this model's names for sender 1 / sender 2.                   *)
 (*                                                                         *)
 (* Timeouts are left out ON PURPOSE: with the 1200s deadline everything    *)
 (* terminates trivially. The question is whether a sender ever NEEDS it.   *)
@@ -23,7 +28,10 @@
 (*                          mutex, shared with the EOF snapshot            *)
 (*   CHECK_SLOT_FIRST       `waiter.wait until slot.key?` (vs. a bare wait) *)
 (*   LEVEL_TRIGGERED        ThreadWaiter pushes a token (vs. a plain       *)
-(*                          edge-triggered condition on the thread path)   *)
+(*                          edge-triggered condition for sender 2; FALSE   *)
+(*                          is also what a fiber on another thread's       *)
+(*                          reactor got while the waiter was picked by     *)
+(*                          "has an Async task" instead of by ownership)   *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -121,8 +129,9 @@ Detect(s) ==
   /\ UNCHANGED <<slot, tokens, woken, written, answered, unread, delivered,
                  cliGone, streamErr, snapshot>>
 
-\* `until @pending_control_results.key?(id)` -- the check. A fiber parks in
-\* the same step (no suspension point); a thread parks in a separate one.
+\* `until @pending_control_results.key?(id)` -- the check. A fiber of the
+\* owning reactor parks in the same step (no suspension point); any other
+\* caller parks in a separate one.
 Wait(s) ==
   /\ spc[s] = "wait"
   /\ IF CHECK_SLOT_FIRST /\ slot[s] # NONE

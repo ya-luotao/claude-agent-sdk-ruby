@@ -492,7 +492,7 @@ Accepted: Symbol or String keys, snake_case or camelCase spellings, and the fixe
 
 `#[]`, `#[]=` and the camelCase readers (`msg[:session_id]`, `msg['sessionId']`, `msg.sessionId`) are public API for a type's **attributes**: the fields it declares, plus predicates such as `options.forkSession?`. Methods your own code adds to a subclass (an `attr_accessor`, a hand-written reader or setter, a mixin's accessors, a singleton method) count as attributes too.
 
-A name that is not an attribute behaves like an undefined one: `#[]` returns `nil`, `#[]=` ignores it (on the strict types above it raises `ArgumentError`), a camelCase call raises `NoMethodError`, and `respond_to?` answers `false`. So `msg[:to_h]` is `nil`, `msg['freeze']` does not freeze the message, and `msg.toH` raises; call the method directly instead (`msg.to_h`). `UserMessage#text` and `AssistantMessage#text` are convenience methods, not attributes.
+A name that is not an attribute behaves like an undefined one: `#[]` returns `nil`, `#[]=` ignores it (on the strict types above it raises `ArgumentError`), a camelCase call raises `NoMethodError`, and `respond_to?` answers `false`. So `msg[:to_h]` is `nil`, `msg['freeze']` does not freeze the message, and `msg.toH` raises; call the method directly instead (`msg.to_h`). `#[]` only reads: a writer's name, as in `msg['session_id=']`, is `nil` too. `UserMessage#text` and `AssistantMessage#text` are convenience methods, not attributes.
 
 (Through 0.37 these accessors reached any public method, with a one-time warning in 0.37.)
 

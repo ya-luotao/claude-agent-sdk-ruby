@@ -89,6 +89,11 @@ module ClaudeAgentSDK
     LITE_READ_BUF_SIZE = 65_536
     MAX_SANITIZED_LENGTH = 200
 
+    # How far into a transcript the disk listing looks for the first prompt,
+    # and for the first timestamp, when the head window holds none (see
+    # first_prompt_from_file, created_at_from_file).
+    FIRST_PROMPT_SCAN_LIMIT = 1_048_576
+
     UUID_RE = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
     # Subagent ids as the CLI writes them (agent-<id>.jsonl): hex ids and
@@ -139,28 +144,131 @@ module ClaudeAgentSDK
       out.join
     end
 
-    # Sanitize a filesystem path to a project directory name
+    # Sanitize a filesystem path to a project directory name.
+    #
+    # The CLI does this with JavaScript's replace(/[^a-zA-Z0-9]/g, "-"),
+    # without the `u` flag: the replacement runs per UTF-16 code unit, so a
+    # character outside the BMP (an emoji, a CJK Extension B ideograph) is a
+    # surrogate pair and becomes TWO hyphens. One hyphen per code point named
+    # a directory the CLI never created — every directory-scoped session API
+    # came back empty for such a path, and the store key computed here did
+    # not match the one the transcript mirror derives from the CLI's own
+    # path. (The hash below already works on code units, see simple_hash.)
     def sanitize_path(name)
-      sanitized = name.gsub(SANITIZE_RE, '-')
+      sanitized = name.gsub(SANITIZE_RE) { |char| char.ord > 0xFFFF ? '--' : '-' }
       return sanitized if sanitized.length <= MAX_SANITIZED_LENGTH
 
       "#{sanitized[0, MAX_SANITIZED_LENGTH]}-#{simple_hash(name)}"
     end
 
     # Resolve a directory to its canonical form (realpath + NFC), matching the
-    # CLI's project-directory naming. Falls back to an absolute NFC path when
-    # realpath can't resolve it (e.g. the directory does not exist yet) — Ruby's
-    # File.realpath raises on missing paths whereas Python's os.path.realpath is
-    # lexical for the missing suffix, so expand_path restores that behavior.
-    # Known divergence: for a MISSING path Python still resolves symlinks in
-    # the existing prefix (so a deleted /tmp/proj on macOS canonicalizes to
-    # /private/tmp/proj and its project dir is found); the expand_path
-    # fallback resolves none, so deleted-directory lookups under symlinked
-    # prefixes can miss.
+    # CLI's project-directory naming.
+    #
+    # A path that cannot be resolved as a whole (the directory was removed, or
+    # does not exist yet) is resolved as far as it exists, the way Python's
+    # os.path.realpath does where Ruby's File.realpath raises
+    # (resolve_missing_path). The CLI keyed the project by the real path while
+    # the directory existed, so a removed /tmp/proj on macOS must still
+    # canonicalize to /private/tmp/proj for its sessions to be found; a plain
+    # expand_path (the earlier fallback) resolved no symlink at all. The path
+    # goes to that walk absolute but with its `..` components still in it
+    # (absolute_path_keeping_dots).
     def canonicalize_path(dir)
-      File.realpath(dir).unicode_normalize(:nfc)
+      nfc_path(File.realpath(dir))
     rescue SystemCallError
-      File.expand_path(dir).unicode_normalize(:nfc)
+      nfc_path(resolve_missing_path(absolute_path_keeping_dots(dir)))
+    end
+
+    # +dir+ as an absolute path with its `.` and `..` components left where
+    # they are, for resolve_missing_path. File.expand_path — what that walk
+    # was given before — removes a `..` together with the name in front of
+    # it. When that name is a symlink, the parent meant is the one of the
+    # link's TARGET: a session recorded through `current/../sibling` while
+    # `current` pointed at checkouts/project belongs to checkouts/sibling.
+    # Collapsed by name, the path was the sibling of the link — another
+    # project key as soon as the target was gone and File.realpath raised.
+    #
+    # Otherwise as File.expand_path has it: a relative path starts at the
+    # working directory, a leading ~ or ~user is that home directory
+    # (File.realpath expands neither, so `directory: '~/project'` has always
+    # been resolved through here), and a Pathname is taken as well as a
+    # String (File.path).
+    #
+    # The result is a BINARY String, and resolve_missing_path works on bytes
+    # throughout. Its parts come tagged by the locale — under LANG=C the
+    # working directory BINARY and a link target US-ASCII, whatever their
+    # bytes — and as tagged Strings they did not always go together: a link
+    # with a non-ASCII target made the walk raise there ("invalid byte
+    # sequence in US-ASCII"), as did a non-ASCII relative path in a non-ASCII
+    # working directory. nfc_path tags the result.
+    def absolute_path_keeping_dots(dir)
+      dir = File.path(dir).b
+      return dir if File.absolute_path?(dir)
+
+      first, rest = dir.split(File::SEPARATOR, 2)
+      base = first&.start_with?('~') ? File.expand_path(first).b : File.join(Dir.pwd.b, first.to_s)
+      rest ? File.join(base, rest) : base
+    end
+
+    # +path+ as an NFC-normalized UTF-8 String. Paths are UTF-8 whatever the
+    # locale says, but under LANG=C Ruby hands out what it gets from the
+    # system — ENV values, Dir.pwd, File.realpath — tagged BINARY or US-ASCII.
+    # String#unicode_normalize raises on the first ("Unicode Normalization
+    # not appropriate for ASCII-8BIT": `directory: Dir.pwd` and a non-ASCII
+    # CLAUDE_CONFIG_DIR failed every disk session API there) and leaves the
+    # second as it is, non-ASCII bytes included. So the bytes are tagged
+    # UTF-8 first, and scrubbed when they are not valid UTF-8.
+    def nfc_path(path)
+      utf8 = path.encoding == Encoding::UTF_8 ? path : path.dup.force_encoding(Encoding::UTF_8)
+      utf8 = utf8.scrub unless utf8.valid_encoding?
+      utf8.unicode_normalize(:nfc)
+    end
+
+    # How many symlinks resolve_missing_path follows before it keeps a link as
+    # written: the guard against links that point at each other.
+    MAX_SYMLINK_HOPS = 40
+
+    # Resolve an absolute +path+ that does not exist as a whole, component by
+    # component: a component that is a symlink is followed (lstat/readlink)
+    # whether or not its target exists, any other one — existing or missing —
+    # is kept as written. So is everything after the first missing
+    # component, and a link past MAX_SYMLINK_HOPS. Following a link whose
+    # target is gone is the point: a session recorded through a symlinked
+    # project directory is keyed by the target, and must still be found
+    # through the link after the target was removed.
+    #
+    # A `..` drops the last component of what is resolved so far — after the
+    # links in front of it were followed, never before: the order of the
+    # kernel and of Python's os.path.realpath.
+    def resolve_missing_path(path)
+      root = path[%r{\A(?:[A-Za-z]:)?/+}] || File::SEPARATOR
+      resolved = root
+      pending = path.delete_prefix(root).split(File::SEPARATOR).reject(&:empty?)
+      hops = 0
+      until pending.empty?
+        name = pending.shift
+        next if name == '.'
+
+        candidate = name == '..' ? File.dirname(resolved) : File.join(resolved, name)
+        target = name == '..' || hops >= MAX_SYMLINK_HOPS ? nil : symlink_target(candidate)
+        if target.nil?
+          resolved = candidate
+          next
+        end
+
+        hops += 1
+        resolved = root if target.start_with?(File::SEPARATOR)
+        pending.unshift(*target.split(File::SEPARATOR).reject(&:empty?))
+      end
+      resolved
+    end
+
+    # The target of +path+ when it is a symlink (dangling or not), else nil.
+    # As bytes, like the path it is joined with (absolute_path_keeping_dots).
+    def symlink_target(path)
+      File.symlink?(path) ? File.readlink(path).b : nil
+    rescue SystemCallError
+      nil
     end
 
     # Derive the SessionStore +project_key+ for a directory (default: cwd).
@@ -186,7 +294,7 @@ module ClaudeAgentSDK
     #   raised a bare ArgumentError from deep inside every disk session API.
     def config_dir
       dir = ENV.fetch('CLAUDE_CONFIG_DIR', nil)
-      return dir.unicode_normalize(:nfc) if dir && !dir.empty?
+      return nfc_path(dir) if dir && !dir.empty?
 
       home = home_dir
       unless home
@@ -196,7 +304,7 @@ module ClaudeAgentSDK
               'Set CLAUDE_CONFIG_DIR to the directory holding your Claude Code data (normally ~/.claude).'
       end
 
-      File.join(home, '.claude').unicode_normalize(:nfc)
+      nfc_path(File.join(home, '.claude'))
     end
 
     # A usable home directory, or nil when there is none. The ONE definition
@@ -236,17 +344,87 @@ module ClaudeAgentSDK
       sanitized = sanitize_path(path)
       exact_path = File.join(projects_dir, sanitized)
       return exact_path if File.directory?(exact_path)
+      return nil unless sanitized.length > MAX_SANITIZED_LENGTH
 
-      # For long paths, scan for prefix match
-      if sanitized.length > MAX_SANITIZED_LENGTH
-        prefix = sanitized[0, MAX_SANITIZED_LENGTH + 1] # includes the trailing '-'
-        Dir.children(projects_dir).each do |child|
-          candidate = File.join(projects_dir, child)
-          return candidate if File.directory?(candidate) && child.start_with?(prefix)
+      # A long path is stored under its first 200 characters plus a hash of
+      # the whole path. Older CLIs hashed with Bun.hash, so a directory with
+      # the same prefix and another suffix may be this path's — or that of
+      # ANY path sharing the prefix (a sibling in a deep per-tenant tree).
+      # The name cannot tell them apart; a transcript inside can: accept a
+      # candidate only if one records the path as its cwd (recorded_cwd), and
+      # only when exactly one candidate does. Taking the first prefix match
+      # listed, read and renamed another project's sessions for a directory
+      # that had none of its own. A directory whose transcripts record no cwd
+      # is not used: no guess from the name alone. The directory returned may
+      # still hold sessions of other paths sharing the prefix: callers keep
+      # only the path's own transcripts (own_transcript?).
+      prefix = sanitized[0, MAX_SANITIZED_LENGTH + 1] # includes the trailing '-'
+      verified = Dir.children(projects_dir).select do |child|
+        candidate = File.join(projects_dir, child)
+        child.start_with?(prefix) && File.directory?(candidate) && project_dir_records_cwd?(candidate, path)
+      end
+      verified.length == 1 ? File.join(projects_dir, verified.first) : nil
+    end
+
+    # Whether a session transcript in +project_dir+ was recorded for +path+.
+    def project_dir_records_cwd?(project_dir, path)
+      Dir.children(project_dir).any? do |name|
+        name.end_with?('.jsonl') && valid_session_id?(name.delete_suffix('.jsonl')) &&
+          recorded_cwd(File.join(project_dir, name)) == path
+      end
+    rescue SystemCallError
+      false
+    end
+
+    # Whether +file_path+, a transcript in +project_dir+ — the directory
+    # find_project_dir returned for +path+ — is one of +path+'s sessions. Every
+    # transcript of the directory named after the path is. In a directory the
+    # long-path prefix fallback found, only one whose own recorded cwd is the
+    # path: that directory can hold the sessions of every path sharing the
+    # prefix, and a transcript whose cwd cannot be verified is not counted.
+    def own_transcript?(project_dir, file_path, path)
+      !prefix_fallback_dir?(project_dir, path) || recorded_cwd(file_path) == path
+    end
+
+    # Whether +project_dir+, the directory find_project_dir returned for
+    # +path+, is one the long-path prefix fallback found rather than the one
+    # named after the path.
+    def prefix_fallback_dir?(project_dir, path)
+      File.basename(project_dir) != sanitize_path(path)
+    end
+
+    # The directory a session transcript was recorded in: the first non-blank
+    # top-level cwd of a COMPLETE line in its first LITE_READ_BUF_SIZE bytes,
+    # NFC-normalized; nil when there is none (or the file cannot be read). A
+    # line the window cuts establishes nothing: its top-level shape cannot be
+    # checked, and a raw "cwd" match on it may sit inside a tool input.
+    def recorded_cwd(file_path)
+      File.open(file_path, 'rb') do |file|
+        head = file.read(LITE_READ_BUF_SIZE) || ''
+        each_parsed_entry(head, file.eof?) do |entry|
+          cwd = entry['cwd']
+          return cwd.unicode_normalize(:nfc) if cwd.is_a?(String) && presence(cwd)
         end
       end
-
       nil
+    rescue SystemCallError
+      nil
+    end
+
+    # Yield each Hash entry parsed from a COMPLETE line of +text+, a window
+    # read from the start of a transcript: every line that ends in a newline,
+    # and the last one too when +to_eof+ (the window reaches the end of the
+    # file). A line that does not parse is skipped.
+    def each_parsed_entry(text, to_eof)
+      complete = to_eof ? text.bytesize : (text.byterindex("\n") || -1) + 1
+      text.byteslice(0, complete).each_line do |line|
+        entry = begin
+          JSON.parse(line)
+        rescue JSON::ParserError
+          next
+        end
+        yield entry if entry.is_a?(Hash)
+      end
     end
 
     # Extract a JSON string field value from raw text without full JSON parse
@@ -354,11 +532,13 @@ module ClaudeAgentSDK
       nil
     end
 
-    # Unescape a JSON string value
+    # Unescape a JSON string value. A slice that does not parse as a JSON
+    # string (a raw control character in it) is returned as it is — tagged
+    # UTF-8: the windows it is cut from are binary (read_head_tail).
     def unescape_json_string(str)
       JSON.parse("\"#{str}\"")
     rescue JSON::ParserError
-      str
+      str.encoding == Encoding::UTF_8 ? str : str.dup.force_encoding(Encoding::UTF_8)
     end
 
     # Python's `x or None` for the summary/title fallback chains: Ruby's ||
@@ -437,16 +617,25 @@ module ClaudeAgentSDK
     end
 
     # Extract the first meaningful user prompt from the head of a JSONL file
-    def extract_first_prompt_from_head(head) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- first-prompt skip rules, matched by the store fold
-      command_fallback = nil
+    def extract_first_prompt_from_head(head)
+      prompt, command_fallback = first_prompt_in(head)
+      prompt || command_fallback || ''
+    end
 
-      head.each_line do |line|
+    # The first real user prompt among the lines of +text+, and the name of
+    # the first slash command seen on the way (what a session without a real
+    # prompt reports): [prompt or nil, command name or nil]. +command_fallback+
+    # carries a name found in an earlier part of the same transcript.
+    def first_prompt_in(text, command_fallback = nil) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- first-prompt skip rules, matched by the store fold
+      text.each_line do |line|
         next unless line.include?('"type":"user"') || line.include?('"type": "user"')
         next if line.include?('"tool_result"')
         next if line.include?('"isMeta":true') || line.include?('"isMeta": true')
         next if line.include?('"isCompactSummary":true') || line.include?('"isCompactSummary": true')
 
-        entry = JSON.parse(line, symbolize_names: false)
+        # +text+ may be a binary window or chunk: the line becomes UTF-8 here,
+        # scrubbed, so the text handling below never meets a stray byte.
+        entry = JSON.parse(utf8_transcript_text(line), symbolize_names: false)
         texts = user_entry_texts(entry)
         next unless texts
 
@@ -461,13 +650,65 @@ module ClaudeAgentSDK
 
           next if text.match?(SKIP_FIRST_PROMPT_PATTERN)
 
-          return text.length > 200 ? "#{text[0, 200]}…" : text
+          return [text.length > 200 ? "#{text[0, 200]}…" : text, command_fallback]
         end
       rescue JSON::ParserError
         next
       end
 
-      command_fallback || ''
+      [nil, command_fallback]
+    end
+
+    # first_prompt for the disk listing: from the head window, and when that
+    # holds no real prompt while the file goes on, from a bounded scan past
+    # it. CLI 2.1.x transcripts often carry a large attachment (a
+    # SessionStart hook's output) before the first prompt, and an SDK prompt
+    # that inlines a document is one line longer than the window; the head
+    # alone reported nil or a slash-command name for those, and a session
+    # with no other summary source was not listed at all — while the store
+    # fold, which sees every entry, reported the prompt.
+    def first_prompt_from_file(file_path, head, size)
+      prompt, command_fallback = first_prompt_in(head)
+      if prompt.nil? && size > head.bytesize
+        limit = [size, FIRST_PROMPT_SCAN_LIMIT].min
+        prompt, command_fallback = first_prompt_past_head(file_path, head, limit, command_fallback)
+      end
+      prompt || command_fallback || ''
+    end
+
+    # Continue the first-prompt scan past +head+ (see each_line_past_head). An
+    # IO failure there leaves the answer the head gave.
+    def first_prompt_past_head(file_path, head, limit, command_fallback)
+      each_line_past_head(file_path, head, limit) do |line|
+        prompt, command_fallback = first_prompt_in(line, command_fallback)
+        return [prompt, command_fallback] if prompt
+      end
+      [nil, command_fallback]
+    end
+
+    # Yield the lines of a transcript that follow the last complete line of
+    # +head+, up to byte +limit+ of the file. Read in fixed-size chunks,
+    # never line by line: one transcript line can be gigabytes, and the
+    # limit has to hold before the bytes are in memory. What is yielded last
+    # is the final line of a file without a closing newline — or a line cut
+    # by the limit, which does not parse and is skipped by its consumer like
+    # any other bad line. An IO failure ends the read quietly: this read is
+    # an extra, and must not hide a session.
+    def each_line_past_head(file_path, head, limit, &)
+      offset = (head.byterindex("\n") || -1) + 1
+      open_line = String.new(encoding: Encoding::BINARY)
+      File.open(file_path, 'rb') do |file|
+        file.seek(offset)
+        while offset < limit && (chunk = file.read([LITE_READ_BUF_SIZE, limit - offset].min))
+          offset += chunk.bytesize
+          open_line << chunk
+          newline = open_line.rindex("\n")
+          open_line.slice!(0, newline + 1).each_line(&) if newline
+        end
+        yield open_line unless open_line.empty?
+      end
+    rescue SystemCallError
+      nil
     end
 
     # Text blocks of a genuine user entry, or nil when the line should be
@@ -535,13 +776,24 @@ module ClaudeAgentSDK
       false
     end
 
+    # The first and the last LITE_READ_BUF_SIZE bytes of a transcript, as
+    # BINARY Strings — on purpose. The field scanners step through a window
+    # by offset (String#index with a position, text[pos], #length), and Ruby
+    # keeps no character index for a UTF-8 String that is not ASCII-only:
+    # there every one of those steps walks the bytes from the start, so a
+    # scan with many matches is quadratic in the window, and one multibyte
+    # character anywhere in it is enough (nearly every real transcript has
+    # one). On bytes each step is O(1). The patterns are ASCII, JSON.parse
+    # reads a binary source as UTF-8, and the two places that return a raw
+    # slice of the window tag it UTF-8 (unescape_json_string), so every value
+    # that leaves the scanners is a UTF-8 String as before.
     def read_head_tail(file_path, size)
       head = tail = nil
       File.open(file_path, 'rb') do |f|
-        head = (f.read(LITE_READ_BUF_SIZE) || '').force_encoding('UTF-8')
+        head = f.read(LITE_READ_BUF_SIZE) || String.new(encoding: Encoding::BINARY)
         tail = if size > LITE_READ_BUF_SIZE
                  f.seek([0, size - LITE_READ_BUF_SIZE].max)
-                 (f.read(LITE_READ_BUF_SIZE) || '').force_encoding('UTF-8')
+                 f.read(LITE_READ_BUF_SIZE) || String.new(encoding: Encoding::BINARY)
                else
                  head
                end
@@ -549,22 +801,70 @@ module ClaudeAgentSDK
       [head, tail]
     end
 
-    def build_session_info(file_path, head, tail, stat, project_path) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- one optional field per SDKSessionInfo attribute
-      # User-set title (customTitle) wins over AI-generated title (aiTitle).
-      # Consult the head only when the tail has no occurrence of that field.
-      # Normalize blanks AFTER choosing the latest occurrence: an explicit
-      # clearing entry must not resurrect an older title from the head.
-      # Summary-chain fields use the top-level-verified scan: a raw byte scan
-      # also matches these keys nested inside tool_use inputs, reporting tool
-      # arguments as the session title/summary (and diverging from the store
-      # fold, which reads top-level keys only).
-      custom_title = presence(extract_top_level_string_field(tail, 'customTitle', last: true) ||
-                              extract_top_level_string_field(head, 'customTitle', last: true)) ||
-                     presence(extract_top_level_string_field(tail, 'aiTitle', last: true) ||
-                              extract_top_level_string_field(head, 'aiTitle', last: true))
+    # [title, first prompt] of a transcript on disk, each nil when absent: the
+    # two values a disk listing reports as custom_title and first_prompt, and
+    # the ones fork_session names a fork after (SessionMutations).
+    #
+    # Title: the user-set title (customTitle) wins over the AI-generated one
+    # (aiTitle). The head is consulted only when the tail has no occurrence
+    # of the field, and blanks are normalized AFTER the latest occurrence was
+    # chosen (display_title): an explicit clearing entry must not resurrect an
+    # older title from the head. The top-level-verified scan is used: a raw
+    # byte scan also matches these keys nested inside tool_use inputs,
+    # reporting tool arguments as the session title (and diverging from the
+    # store fold, which reads top-level keys only).
+    def title_and_first_prompt(file_path, head, tail, size)
+      custom, generated = %w[customTitle aiTitle].map do |key|
+        extract_top_level_string_field(tail, key, last: true) || extract_top_level_string_field(head, key, last: true)
+      end
       # nil, not '', when there is no prompt — the store path's answer, and
       # Python's (`_extract_first_prompt_from_head(head) or None`).
-      first_prompt = presence(extract_first_prompt_from_head(head))
+      [display_title(custom, generated), presence(first_prompt_from_file(file_path, head, size))]
+    end
+
+    # The ONE rule for a session's title, given the latest custom title and the
+    # latest AI title of its transcript: blank counts as absent, custom first.
+    # Shared by the disk listing, and by fork_session on the disk and the
+    # store path (the store listing applies it in SessionSummary).
+    def display_title(custom_title, ai_title)
+      presence(custom_title) || presence(ai_title)
+    end
+
+    # created_at (epoch ms) for the disk listing: the first top-level
+    # timestamp that parses — what the store fold takes. More reliable than
+    # stat().birthtime, which is unsupported on some filesystems. Every line
+    # is looked at, not only the first: the first record may be a
+    # metadata-only entry (e.g. permission-mode) with no timestamp field, and
+    # the first user/assistant record that follows carries one (Python #907).
+    #
+    # Parsed top-level fields of COMPLETE lines only, never a raw match: a
+    # file-history-snapshot entry, common near the start of an interactive
+    # session, has no timestamp of its own but nests one
+    # (snapshot.timestamp), and on a line the head window cuts a raw match
+    # cannot be told from such a nested one. When the complete head lines
+    # hold no timestamp and the file goes on, the lines past them are read
+    # to their end instead (bounded like the first-prompt scan): the cut line
+    # is usually the one that carries it — an SDK prompt of more than 64 KiB
+    # makes the very first line that long.
+    def created_at_from_file(file_path, head, size)
+      to_eof = size <= head.bytesize
+      each_parsed_entry(head, to_eof) do |entry|
+        created_at = parse_iso_timestamp_ms(entry['timestamp'])
+        return created_at if created_at
+      end
+      return nil if to_eof
+
+      each_line_past_head(file_path, head, [size, FIRST_PROMPT_SCAN_LIMIT].min) do |line|
+        each_parsed_entry(line, true) do |entry|
+          created_at = parse_iso_timestamp_ms(entry['timestamp'])
+          return created_at if created_at
+        end
+      end
+      nil
+    end
+
+    def build_session_info(file_path, head, tail, stat, project_path) # rubocop:disable Metrics/AbcSize -- one optional field per SDKSessionInfo attribute
+      custom_title, first_prompt = title_and_first_prompt(file_path, head, tail, stat.size)
       # lastPrompt tail entry shows what the user was most recently doing.
       summary = custom_title ||
                 presence(extract_top_level_string_field(tail, 'lastPrompt', last: true)) ||
@@ -577,14 +877,7 @@ module ClaudeAgentSDK
       tag_line = tail.lines.reverse.find { |ln| ln.start_with?('{"type":"tag"') }
       tag_value = presence(tag_line ? extract_json_string_field(tag_line, 'tag', last: true) : nil)
 
-      # created_at from the first ISO timestamp found in the head (epoch ms).
-      # More reliable than stat().birthtime which is unsupported on some
-      # filesystems. Scans the whole head rather than only the first line
-      # because the first record may be a metadata-only entry (e.g.
-      # permission-mode) with no timestamp field; the first user/assistant
-      # record that follows does carry one (Python #907).
-      first_timestamp = extract_json_string_field(head, 'timestamp', last: false)
-      created_at = parse_iso_timestamp_ms(first_timestamp) if first_timestamp
+      created_at = created_at_from_file(file_path, head, stat.size)
 
       SDKSessionInfo.new(
         session_id: File.basename(file_path, '.jsonl'),
@@ -616,7 +909,10 @@ module ClaudeAgentSDK
       return nil unless timestamp_str.is_a?(String)
 
       require 'time'
-      (Time.iso8601(timestamp_str).to_f * 1000).to_i
+      # Integer arithmetic: through a Float (to_f * 1000, truncated) about one
+      # millisecond value in eight came out 1 ms low — ...30.933Z as ...932.
+      time = Time.iso8601(timestamp_str)
+      (time.to_i * 1000) + (time.nsec / 1_000_000)
     rescue ArgumentError
       nil
     end
@@ -626,9 +922,18 @@ module ClaudeAgentSDK
       return [] unless File.directory?(project_dir)
 
       sessions = []
-      Dir.glob(File.join(project_dir, '*.jsonl')).each do |file_path|
-        stem = File.basename(file_path, '.jsonl')
+      # Listing a directory found by the long-path prefix fallback: only the
+      # transcripts recorded for +project_path+ (own_transcript?).
+      verify = project_path && prefix_fallback_dir?(project_dir, project_path)
+      # base:, not a pattern built from the directory: a config dir path with
+      # glob characters in it (`/Volumes/Data [SSD]/…`, `/srv/{tenant}/…`)
+      # is a path, and as part of the pattern it matched nothing.
+      Dir.glob('*.jsonl', base: project_dir).each do |name|
+        stem = File.basename(name, '.jsonl')
         next unless stem.match?(UUID_RE)
+
+        file_path = File.join(project_dir, name)
+        next if verify && recorded_cwd(file_path) != project_path
 
         session = read_session_lite(file_path, project_path)
         sessions << session if session
@@ -721,10 +1026,12 @@ module ClaudeAgentSDK
     # List subagent IDs recorded for a session on local disk (counterpart to
     # list_subagents_from_store). Scans
     # <projectDir>/<sessionId>/subagents/**/agent-<id>.jsonl, including nested
-    # workflows/<runId>/ paths, in sorted walk order. Mirrors the Python SDK's
-    # list_subagents (#825) — no dedupe (the store variant dedupes because
-    # adapter subkey ordering is adapter-defined; the sorted disk walk is
-    # already deterministic).
+    # workflows/<runId>/ paths, in sorted walk order (the Python SDK's
+    # list_subagents, #825). Each id once, at its first position in the walk
+    # — the transcript the message and metadata readers take for it. Python
+    # does not dedupe here; an id whose transcript exists both directly and
+    # under workflows/<runId>/ came back twice, where the store variant
+    # returns it once.
     # @param session_id [String] The session UUID
     # @param directory [String, nil] Working directory to search in (strictly
     #   scopes to that project + its worktrees; nil searches all projects)
@@ -735,7 +1042,7 @@ module ClaudeAgentSDK
       subagents_dir = resolve_subagents_dir(session_id, directory)
       return [] if subagents_dir.nil?
 
-      collect_agent_files(subagents_dir).map(&:first)
+      collect_agent_files(subagents_dir).map(&:first).uniq
     end
 
     # Read the optional subagent metadata sidecar without reading its transcript.
@@ -831,8 +1138,13 @@ module ClaudeAgentSDK
     # List sessions from a SessionStore. Store-backed counterpart to
     # list_sessions. Uses the store's incremental summaries (one batch call +
     # gap-fill) when available, else falls back to list_sessions + one load per
-    # session. Sessions are derived through the same fold the disk path uses, so
-    # both paths agree for identical transcript content.
+    # session. Sessions are derived by folding EVERY entry
+    # (SessionSummary.fold_session_summary), field by field under the rules
+    # of the disk reader — which only reads the head and tail windows of a
+    # transcript (plus the bounded first-prompt scan). The two paths agree
+    # for identical transcript content unless the entry deciding a field
+    # lies outside those windows; docs/sessions.md ("Listing Sessions") lists
+    # the cases.
     #
     # @param session_store [SessionStore] store implementing list_session_summaries and/or list_sessions
     # @return [Array<SDKSessionInfo>] sorted by last_modified descending
@@ -841,17 +1153,18 @@ module ClaudeAgentSDK
       project_path = canonicalize_path(directory.nil? ? '.' : directory.to_s)
       project_key = sanitize_path(project_path)
 
-      if SessionStore.implements?(session_store, :list_session_summaries)
-        via = list_sessions_via_summaries(session_store, project_key, project_path, limit, offset)
-        return via unless via.nil?
-      end
+      via = list_sessions_via_summaries(session_store, project_key, project_path, limit, offset)
+      return via unless via.nil?
 
-      unless SessionStore.implements?(session_store, :list_sessions)
+      listed, listing = SessionStores.optional_call(session_store, :list_sessions) do
+        session_store.list_sessions(project_key)
+      end
+      unless listed
         raise ArgumentError,
               'session_store implements neither list_session_summaries nor list_sessions -- cannot list sessions'
       end
 
-      listing = Array(session_store.list_sessions(project_key))
+      listing = Array(listing)
       # Build all-placeholder slots (the shape the summaries fast path uses) and
       # reuse its bounded pagination: sessions are loaded newest-first only
       # until the page fills (~offset + limit + dropped), instead of one full
@@ -874,10 +1187,12 @@ module ClaudeAgentSDK
       return nil unless valid_session_id?(session_id)
 
       project_path = canonicalize_path(directory.nil? ? '.' : directory.to_s)
-      entries = session_store.load('project_key' => sanitize_path(project_path), 'session_id' => session_id)
+      project_key = sanitize_path(project_path)
+      entries = session_store.load('project_key' => project_key, 'session_id' => session_id)
       return nil if entries.nil? || entries.empty?
 
-      derive_info_from_entries(session_id, entries, mtime_from_entries(entries), project_path)
+      mtime = store_session_mtime(session_store, project_key, session_id) || mtime_from_entries(entries)
+      derive_info_from_entries(session_id, entries, mtime, project_path)
     end
 
     # Read a session's conversation messages from a SessionStore. Store-backed
@@ -897,16 +1212,21 @@ module ClaudeAgentSDK
     def list_subagents_from_store(session_store:, session_id:, directory: nil)
       return [] unless valid_session_id?(session_id)
 
-      unless SessionStore.implements?(session_store, :list_subkeys)
+      project_key = project_key_for_directory(directory)
+      implemented, subkeys = SessionStores.optional_call(session_store, :list_subkeys) do
+        session_store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+      end
+      unless implemented
         raise ArgumentError,
               'session_store does not implement list_subkeys -- cannot list subagents'
       end
 
-      project_key = project_key_for_directory(directory)
-      subkeys = Array(session_store.list_subkeys('project_key' => project_key, 'session_id' => session_id))
       seen = {}
-      subkeys.filter_map do |subpath|
-        next unless subpath.start_with?('subagents/')
+      Array(subkeys).filter_map do |subpath|
+        # A non-String subkey (Symbol, nil, Integer) is an adapter contract
+        # violation; skip it like resume does instead of calling String
+        # methods on it.
+        next unless subpath.is_a?(String) && subpath.start_with?('subagents/')
 
         last = subpath.rpartition('/').last
         next unless last.start_with?('agent-')
@@ -996,22 +1316,25 @@ module ClaudeAgentSDK
     # -- Private helpers --
 
     # Summary fast-path for list_sessions_from_store. Returns the paginated
-    # result, or nil if the store's list_session_summaries raises
-    # NotImplementedError (caller falls back to the slow path). Sessions missing
+    # result, or nil if the store does not implement list_session_summaries
+    # (see SessionStores.optional_call; the caller falls back to the slow
+    # path). Sessions missing
     # a sidecar or whose sidecar is stale (summary.mtime < the session's current
     # mtime) are routed through gap-fill so the fold is recomputed from source.
-    def list_sessions_via_summaries(store, project_key, project_path, limit, offset) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- fast path plus stale/missing-sidecar gap-fill
-      begin
-        # Array(): a non-conformant store returning nil (e.g. a NULL JSONB read)
-        # degrades to gap-fill instead of crashing on nil.each, matching the
-        # defensive Array() already applied to list_sessions / list_subkeys.
-        summaries = Array(store.list_session_summaries(project_key))
-      rescue NotImplementedError
-        return nil
+    def list_sessions_via_summaries(store, project_key, project_path, limit, offset) # rubocop:disable Metrics/AbcSize -- fast path plus stale/missing-sidecar gap-fill
+      implemented, summaries = SessionStores.optional_call(store, :list_session_summaries) do
+        store.list_session_summaries(project_key)
       end
+      return nil unless implemented
 
-      has_list_sessions = SessionStore.implements?(store, :list_sessions)
-      listing = has_list_sessions ? Array(store.list_sessions(project_key)) : []
+      # Array(): a non-conformant store returning nil (e.g. a NULL JSONB read)
+      # degrades to gap-fill instead of crashing on nil.each, matching the
+      # defensive Array() already applied to list_sessions / list_subkeys.
+      summaries = Array(summaries)
+      has_list_sessions, listing = SessionStores.optional_call(store, :list_sessions) do
+        store.list_sessions(project_key)
+      end
+      listing = Array(listing)
       known_mtimes = listing.to_h { |e| [e['session_id'], e['mtime']] }
 
       slots = []
@@ -1098,6 +1421,27 @@ module ClaudeAgentSDK
       SessionSummary.summary_entry_to_sdk_info(summary, project_path)
     end
 
+    # The adapter's own mtime for one session, as its listing reports it, or
+    # nil when the store cannot be asked (it implements neither listing
+    # method) or does not list the session.
+    #
+    # get_session_info(session_store:) stamps this as last_modified: it is the
+    # clock list_sessions(session_store:) reports and orders by, and what the
+    # docs promise on the store paths. The entries' own timestamps are another
+    # clock — and absent from metadata entries, which gave last_modified 0 for
+    # a session the listing showed with a real mtime. They remain the fallback
+    # (mtime_from_entries) for a store with nothing but #append and #load.
+    def store_session_mtime(store, project_key, session_id)
+      listed, rows = SessionStores.optional_call(store, :list_sessions) { store.list_sessions(project_key) }
+      unless listed
+        _, rows = SessionStores.optional_call(store, :list_session_summaries) do
+          store.list_session_summaries(project_key)
+        end
+      end
+      row = Array(rows).find { |candidate| candidate.is_a?(Hash) && candidate['session_id'] == session_id }
+      row && row['mtime']
+    end
+
     # Last parseable entry timestamp (epoch ms), scanning from the tail; 0 if none.
     def mtime_from_entries(entries)
       entries.reverse_each do |entry|
@@ -1159,25 +1503,33 @@ module ClaudeAgentSDK
     end
 
     # Find the last user/assistant entry and walk parentUuid links back to the
-    # root (subagent transcripts are linear). Mirrors Python's
-    # _build_subagent_chain.
+    # root, as Python's _build_subagent_chain does. Subagent transcripts are
+    # not linear either (Python's comment says they are): parallel tool calls
+    # fan out exactly as in a main transcript, so the results the walk passes
+    # by are put back. No flag rejection there — every subagent entry is a
+    # sidechain entry.
     def build_subagent_chain(entries)
       return [] if entries.empty?
 
       by_uuid = entries.to_h { |e| [e['uuid'], e] }
       leaf = entries.reverse_each.find { |e| %w[user assistant].include?(e['type']) }
-      leaf ? walk_to_root(by_uuid, leaf) : []
+      return [] unless leaf
+
+      reattach_parallel_tool_results(walk_to_root(by_uuid, leaf), entries, skip_flagged: false)
     end
 
     # Find the subpath for a subagent, scanning subkeys (subagents may be nested
     # under subagents/workflows/<runId>/agent-<id>) when list_subkeys is
     # available, else falling back to the direct subagents/agent-<id> path.
     def resolve_subagent_subpath(store, project_key, session_id, agent_id)
-      return "subagents/agent-#{agent_id}" unless SessionStore.implements?(store, :list_subkeys)
+      implemented, subkeys = SessionStores.optional_call(store, :list_subkeys) do
+        store.list_subkeys('project_key' => project_key, 'session_id' => session_id)
+      end
+      return "subagents/agent-#{agent_id}" unless implemented
 
       target = "agent-#{agent_id}"
-      matches = Array(store.list_subkeys('project_key' => project_key, 'session_id' => session_id))
-                .select { |sk| sk.start_with?('subagents/') && sk.rpartition('/').last == target }
+      matches = Array(subkeys)
+                .select { |sk| sk.is_a?(String) && sk.start_with?('subagents/') && sk.rpartition('/').last == target }
       # Several subpaths can share a trailing agent-<id> (a top-level agent and a
       # nested subagents/workflows/<run>/agent-<id>). Prefer the canonical
       # top-level path, else pick deterministically (shortest, then lexical) so
@@ -1252,11 +1604,15 @@ module ClaudeAgentSDK
     def append_jsonl_file_in_batches(file_path, key, store, batch_size)
       batch = []
       nbytes = 0
-      # encoding: transcripts are UTF-8 regardless of locale; without it a
-      # LANG=C process raises Encoding::InvalidByteSequenceError on the first
-      # multibyte line, aborting the import mid-way (Python pins utf-8 here).
-      File.foreach(file_path, encoding: 'UTF-8').with_index(1) do |line, lineno|
-        line = line.chomp
+      # Read as UTF-8 bytes regardless of locale (a LANG=C process raised
+      # Encoding::InvalidByteSequenceError on the first multibyte line,
+      # aborting the import mid-way; Python pins utf-8 here), and scrub a
+      # line that is not valid UTF-8: Ruby's JSON parser accepts a raw
+      # invalid byte inside a string, and the entry it yields makes every
+      # adapter that serializes what it is given raise JSON::GeneratorError
+      # from #append — after the batches before it were already stored.
+      File.foreach(file_path, mode: 'rb').with_index(1) do |line, lineno|
+        line = utf8_transcript_text(line).chomp
         next if line.empty?
 
         begin
@@ -1314,7 +1670,7 @@ module ClaudeAgentSDK
       # os.path.realpath never raises here.
       canonical = canonicalize_path(directory)
       project_dir = find_project_dir(canonical)
-      if project_dir
+      if project_dir && own_transcript?(project_dir, File.join(project_dir, file_name), canonical)
         info = read_session_lite(File.join(project_dir, file_name), canonical)
         return info if info
       end
@@ -1325,7 +1681,7 @@ module ClaudeAgentSDK
         next if wt_path == canonical
 
         wt_project_dir = find_project_dir(wt_path)
-        next unless wt_project_dir
+        next unless wt_project_dir && own_transcript?(wt_project_dir, File.join(wt_project_dir, file_name), wt_path)
 
         info = read_session_lite(File.join(wt_project_dir, file_name), wt_path)
         return info if info
@@ -1344,13 +1700,29 @@ module ClaudeAgentSDK
         return project_dir ? read_sessions_from_dir(project_dir, path) : []
       end
 
-      # Multiple worktrees: scan all project dirs for matches
+      # Several worktrees: the caller's own directory first, unconditionally.
+      # `git worktree list` reports worktree ROOTS, so a subdirectory (a
+      # monorepo package) is none of them, and reading only the listed paths
+      # left out exactly the sessions that were asked for (Python:
+      # "Always include the user's actual directory"). Then every worktree.
+      #
+      # A project dir named after its path is read once. One found by the
+      # long-path prefix fallback is read once per path: reading it keeps
+      # that path's own transcripts only (read_sessions_from_dir), and
+      # worktrees whose paths share the first 200 characters share the
+      # directory. Marked as read after the first of them, it never gave the
+      # sessions of the others.
       all_sessions = []
-      worktree_paths.each do |wt_path|
-        project_dir = find_project_dir(wt_path)
-        next unless project_dir
+      seen = {}
+      [path, *worktree_paths].each do |dir|
+        project_dir = find_project_dir(dir)
+        next if project_dir.nil?
 
-        all_sessions.concat(read_sessions_from_dir(project_dir, wt_path))
+        scan = prefix_fallback_dir?(project_dir, dir) ? [project_dir, dir] : project_dir
+        next if seen[scan]
+
+        seen[scan] = true
+        all_sessions.concat(read_sessions_from_dir(project_dir, dir))
       end
 
       deduplicate_sessions(all_sessions)
@@ -1376,10 +1748,11 @@ module ClaudeAgentSDK
     # One entry per session_id when the same session sits in several project
     # dirs (copied config dirs, worktrees). The newest last_modified wins; on
     # equal mtimes the larger file (the more complete copy), and then the
-    # copy scanned first — project dirs in name order for the global listing,
-    # worktrees in `git worktree list` order (main worktree first) for a
-    # directory listing. Python keeps the first copy seen in iterdir() order
-    # (sessions.py _deduplicate_by_session_id), which is arbitrary on a tie.
+    # copy scanned first — project dirs in name order for the global listing;
+    # for a directory listing the directory itself, then its worktrees in
+    # `git worktree list` order (main worktree first). Python keeps the first
+    # copy seen in iterdir() order (sessions.py _deduplicate_by_session_id),
+    # which is arbitrary on a tie.
     def deduplicate_sessions(sessions)
       by_id = {}
       sessions.each do |s|
@@ -1404,6 +1777,7 @@ module ClaudeAgentSDK
     def detect_worktrees(path) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- bounded git subprocess: drained pipes, deadline kill
       stdin, stdout, stderr, wait_thr = Open3.popen3('git', '-C', path, 'worktree', 'list', '--porcelain')
       stdin.close
+      stdout.binmode # bytes: no transcoding to Encoding.default_internal; tagged in worktree_paths
 
       # Drain stdout/stderr concurrently — without this, a repo with enough
       # worktrees to overrun the 64 KB pipe buffer causes git to block on
@@ -1433,9 +1807,7 @@ module ClaudeAgentSDK
 
       return [path] unless wait_thr.value.success?
 
-      paths = stdout_buf.lines.filter_map do |line|
-        line.strip.delete_prefix('worktree ') if line.start_with?('worktree ')
-      end
+      paths = worktree_paths(stdout_buf)
       paths.empty? ? [path] : paths
     rescue StandardError
       [path]
@@ -1443,6 +1815,22 @@ module ClaudeAgentSDK
       stdout_reader&.kill if stdout_reader&.alive?
       stderr_reader&.kill if stderr_reader&.alive?
       [stdout, stderr].each { |io| io&.close rescue nil } # rubocop:disable Style/RescueModifier
+    end
+
+    # The paths in the output of `git worktree list --porcelain`.
+    #
+    # The output was read as bytes and is UTF-8 here, whatever the locale:
+    # under LANG=C the pipe yielded US-ASCII Strings, the first non-ASCII
+    # worktree path made String#strip raise, and detect_worktrees' rescue
+    # then dropped EVERY worktree. Each path is NFC-normalized, like every
+    # path the SDK derives a project dir name from (canonicalize_path; Python
+    # normalizes here too): git prints a path as the filesystem stores it, and
+    # a decomposed name sanitizes to a different project dir than the one the
+    # CLI created.
+    def worktree_paths(porcelain)
+      porcelain.force_encoding(Encoding::UTF_8).lines.filter_map do |line|
+        line.strip.delete_prefix('worktree ').unicode_normalize(:nfc) if line.start_with?('worktree ')
+      end
     end
 
     def find_session_file(session_id, directory)
@@ -1453,13 +1841,13 @@ module ClaudeAgentSDK
 
       if directory
         path = canonicalize_path(directory)
-        found = stat_candidate(find_project_dir(path), file_name)
+        found = stat_candidate(find_project_dir(path), file_name, path)
         return found if found
 
         detect_worktrees(path).each do |wt_path|
           next if wt_path == path # already tried above
 
-          found = stat_candidate(find_project_dir(wt_path), file_name)
+          found = stat_candidate(find_project_dir(wt_path), file_name, wt_path)
           return found if found
         end
 
@@ -1485,11 +1873,16 @@ module ClaudeAgentSDK
     # exists AND is non-empty — a 0-byte stub in one project dir must not
     # stop the search when the real transcript lives under another
     # worktree's project dir (same hazard SessionMutations.try_append guards).
-    def stat_candidate(project_dir, file_name)
+    # With +path+ (a directory-scoped lookup), the candidate must also be one
+    # of that path's own transcripts (own_transcript?).
+    def stat_candidate(project_dir, file_name, path = nil)
       return nil if project_dir.nil?
 
       candidate = File.join(project_dir, file_name)
-      File.size(candidate).positive? ? candidate : nil
+      return nil unless File.size(candidate).positive?
+      return nil if path && !own_transcript?(project_dir, candidate, path)
+
+      candidate
     rescue SystemCallError
       nil
     end
@@ -1529,8 +1922,8 @@ module ClaudeAgentSDK
     def parse_jsonl_entries(file_path)
       entries = []
 
-      File.foreach(file_path) do |line|
-        entry = JSON.parse(line.strip, symbolize_names: false)
+      File.foreach(file_path, mode: 'rb') do |line|
+        entry = JSON.parse(utf8_transcript_text(line).strip, symbolize_names: false)
         next unless entry.is_a?(Hash)
         next unless TRANSCRIPT_ENTRY_TYPES.include?(entry['type'])
         next unless entry['uuid'].is_a?(String)
@@ -1540,6 +1933,20 @@ module ClaudeAgentSDK
         next
       end
       entries
+    end
+
+    # Transcript text (one line, or a run of lines) read in binary mode, as
+    # UTF-8. Transcripts are UTF-8 whatever the process locale says: a line
+    # tagged with the locale's encoding (File.foreach's default) raised from
+    # String#strip on the first non-ASCII character under LANG=C. Bytes that
+    # are not valid UTF-8 — a final line the CLI was killed in the middle of,
+    # raw binary in a tool result — become U+FFFD, the policy
+    # SessionMutations.parse_fork_transcript already has: a torn line then
+    # fails JSON.parse and is skipped like any other bad line instead of
+    # raising, and a complete line keeps its entry.
+    def utf8_transcript_text(text)
+      text.force_encoding(Encoding::UTF_8)
+      text.valid_encoding? ? text : text.scrub
     end
 
     # Build the conversation chain by finding the leaf and walking parentUuid.
@@ -1570,15 +1977,182 @@ module ClaudeAgentSDK
         walk_to_leaf(by_uuid, uuid)
       end
 
-      # Keep only main-chain candidates (not sidechain, team, or meta)
-      main_leaves = leaf_candidates.reject do |e|
-        e['isSidechain'] || e['teamName'] || e['isMeta']
-      end
-      return [] if main_leaves.empty?
+      best_leaf = pick_leaf(leaf_candidates, by_uuid, by_position)
+      return [] unless best_leaf
 
-      # Pick the leaf with highest file position, walk to root
-      best_leaf = main_leaves.max_by { |e| by_position[e['uuid']] || 0 }
-      walk_to_root(by_uuid, best_leaf)
+      reattach_parallel_tool_results(walk_to_root(by_uuid, best_leaf), entries, skip_flagged: true)
+    end
+
+    # The leaf a conversation is read back from: the main-chain candidate
+    # (not sidechain, team or meta) with the highest file position.
+    #
+    # Without one, fall back to the other candidates instead of reading the
+    # conversation as empty, as Python does (`_pick_best(main_leaves) if
+    # main_leaves else _pick_best(leaves)`): a session can end on a meta
+    # entry nobody answered (a slash-command or skill body, a stop-hook
+    # message, a system reminder — the user closed the session first), and
+    # filter_visible_messages drops the flagged entries of the chain anyway.
+    # Among those candidates one whose path to the root passes a visible
+    # message comes first, then file position: the latest of them may be a
+    # sidechain or teammate leaf with nothing visible above it, and taking
+    # it would still read the conversation as empty.
+    def pick_leaf(candidates, by_uuid, by_position)
+      latest = ->(leaves) { leaves.max_by { |e| by_position[e['uuid']] || 0 } }
+      main_leaves = candidates.reject { |e| off_main_conversation?(e) }
+      return latest.call(main_leaves) unless main_leaves.empty?
+
+      known = {}
+      with_visible = candidates.select { |e| visible_ancestor?(by_uuid, e, known) }
+      latest.call(with_visible.empty? ? candidates : with_visible)
+    end
+
+    # Whether the path from +leaf+ to its root passes an entry
+    # filter_visible_messages returns. +known+ carries the answer for every
+    # uuid already walked, so all the candidates of one transcript cost one
+    # pass over it.
+    def visible_ancestor?(by_uuid, leaf, known)
+      walked = []
+      current = leaf
+      found = false
+      while current && !known.key?(current['uuid'])
+        known[current['uuid']] = false # a parentUuid cycle ends here
+        walked << current['uuid']
+        break if (found = visible_message?(current))
+
+        current = by_uuid[current['parentUuid']]
+      end
+      found ||= current ? known[current['uuid']] : false
+      walked.each { |uuid| known[uuid] = found }
+      found
+    end
+
+    # An entry that is not part of the user's own conversation: written by a
+    # subagent (sidechain) or a teammate, or a meta injection.
+    def off_main_conversation?(entry)
+      entry['isSidechain'] || entry['teamName'] || entry['isMeta']
+    end
+
+    # A user/assistant entry of the user's own conversation.
+    def visible_message?(entry)
+      %w[user assistant].include?(entry['type']) && !off_main_conversation?(entry)
+    end
+
+    # Put the results of parallel tool calls back on a leaf-to-root chain.
+    #
+    # The CLI writes one assistant entry per tool_use block (chained through
+    # parentUuid) and parents every tool_result on the entry that holds ITS
+    # tool_use. With two or more calls in one API message, only the result
+    # the conversation continued from is an ancestor of the leaf; the others
+    # are siblings of the next tool_use entry, and a single-path walk returns
+    # their tool_use without them.
+    #
+    # For each assistant entry on the chain, take its user children that are
+    # not on the chain and carry a tool_result for a tool_use on the chain,
+    # and insert them — in file order — before the next user entry of the
+    # chain (the batch's own on-chain result), or at the end when the chain
+    # has none. The anchor, not the raw file position, decides the place: a
+    # result that arrived after the conversation had already moved on to a
+    # further tool_use of the same message still lands with its batch, so
+    # every result follows the assistant turn that asked for it.
+    #
+    # The tool_use_id match is what keeps other user siblings out: a prompt
+    # abandoned by a rewind is a second child of a chain entry too, and
+    # starts a branch that was dropped — and so is the old result of a call
+    # the conversation was rewound to and answered again: the chain's own
+    # result for a tool_use_id wins, and at most one off-chain result per id
+    # is ever added (the first in file order). Nor does a result that a user
+    # or assistant entry went on from come back: after a rewind to the call
+    # that continued with a new prompt, it heads the dropped branch.
+    # +skip_flagged+ additionally
+    # rejects sidechain / meta / team entries (main transcripts; a subagent
+    # transcript is sidechain throughout).
+    def reattach_parallel_tool_results(chain, entries, skip_flagged:)
+      off_chain = off_chain_tool_results(chain, entries, skip_flagged)
+      return chain if off_chain.empty?
+
+      placed = []
+      pending = []
+      chain.each do |entry|
+        if entry['type'] == 'user' && !pending.empty?
+          placed.concat(pending.sort_by(&:first).map(&:last))
+          pending = []
+        end
+        placed << entry
+        pending.concat(off_chain.fetch(entry['uuid'], []))
+      end
+      placed.concat(pending.sort_by(&:first).map(&:last))
+    end
+
+    # { uuid of an assistant entry on the chain => [[file position, entry], ...] }
+    # for the off-chain user children reattach_parallel_tool_results places.
+    def off_chain_tool_results(chain, entries, skip_flagged) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- one filter per condition of the re-attachment rule
+      on_chain = Set.new
+      assistants = Set.new
+      tool_use_ids = Set.new
+      answered = Set.new # tool_use ids the chain's own results answer
+      chain.each do |entry|
+        on_chain << entry['uuid']
+        case entry['type']
+        when 'assistant'
+          assistants << entry['uuid']
+          tool_use_ids.merge(content_block_values(entry, 'tool_use', 'id'))
+        when 'user' then answered.merge(content_block_values(entry, 'tool_result', 'tool_use_id'))
+        end
+      end
+      return {} if (tool_use_ids - answered).empty?
+
+      continued = continued_from(entries)
+      found = {}
+      entries.each_with_index do |entry, position|
+        next unless entry['type'] == 'user' && assistants.include?(entry['parentUuid'])
+        next if on_chain.include?(entry['uuid'])
+        next if skip_flagged && off_main_conversation?(entry)
+        # A result something went on from started a branch that a rewind
+        # dropped (the conversation was rewound to the call and went on
+        # with a new prompt). The results of parallel calls are never
+        # continued from: the conversation goes on from the last one written.
+        next if continued.include?(entry['uuid'])
+
+        ids = content_block_values(entry, 'tool_result', 'tool_use_id')
+        next if ids.empty? || !ids.all? { |id| tool_use_ids.include?(id) && !answered.include?(id) }
+
+        # Claimed: a later result for the same call is not added — nor a
+        # second copy of this entry, which a store can hold (a retried mirror
+        # batch overlaps the write it retries).
+        answered.merge(ids)
+        (found[entry['parentUuid']] ||= []) << [position, entry]
+      end
+      found
+    end
+
+    # uuids of the entries a user or assistant entry continues from: its
+    # nearest user / assistant ancestor, reached through entries that are
+    # neither (hook attachments, system entries) — so a hook attachment
+    # written after an entry does not count as going on from it.
+    def continued_from(entries)
+      by_uuid = {}
+      entries.each { |entry| by_uuid[entry['uuid']] = entry if entry['uuid'] }
+      continued = Set.new
+      entries.each do |entry|
+        next unless %w[user assistant].include?(entry['type'])
+
+        seen = Set.new
+        parent = by_uuid[entry['parentUuid']]
+        parent = by_uuid[parent['parentUuid']] while parent && !%w[user assistant].include?(parent['type']) &&
+                                                     seen.add?(parent['uuid'])
+        continued << parent['uuid'] if parent && %w[user assistant].include?(parent['type'])
+      end
+      continued
+    end
+
+    # Values of +key+ over the +type+ content blocks of an entry's message
+    # ([] for a message without array content — entries are opaque blobs).
+    def content_block_values(entry, type, key)
+      message = entry['message']
+      content = message.is_a?(Hash) ? message['content'] : nil
+      return [] unless content.is_a?(Array)
+
+      content.filter_map { |block| block[key] if block.is_a?(Hash) && block['type'] == type }
     end
 
     def walk_to_leaf(by_uuid, uuid)
@@ -1609,10 +2183,7 @@ module ClaudeAgentSDK
 
     def filter_visible_messages(chain)
       chain.filter_map do |entry|
-        next unless %w[user assistant].include?(entry['type'])
-        next if entry['isMeta']
-        next if entry['isSidechain']
-        next if entry['teamName']
+        next unless visible_message?(entry)
 
         # NOTE: isCompactSummary messages are intentionally included. They contain
         # the summarized content from compacted conversations and are the only
@@ -1628,16 +2199,24 @@ module ClaudeAgentSDK
       end
     end
 
-    private_class_method :get_session_info_for_directory,
+    private_class_method :absolute_path_keeping_dots, :resolve_missing_path, :symlink_target,
+                         :project_dir_records_cwd?, :prefix_fallback_dir?, :recorded_cwd,
+                         :each_parsed_entry, :get_session_info_for_directory,
                          :list_sessions_for_directory, :list_all_sessions,
                          :deduplicate_sessions, :dedup_rank,
-                         :find_session_file, :stat_candidate, :resolve_subagents_dir,
-                         :collect_agent_files, :parse_jsonl_entries,
+                         :worktree_paths, :find_session_file, :stat_candidate, :resolve_subagents_dir,
+                         :collect_agent_files, :parse_jsonl_entries, :utf8_transcript_text,
                          :build_conversation_chain, :walk_to_leaf, :walk_to_root,
-                         :filter_visible_messages, :read_head_tail, :build_session_info, :user_entry_texts,
+                         :pick_leaf, :visible_ancestor?, :off_main_conversation?, :visible_message?,
+                         :reattach_parallel_tool_results, :off_chain_tool_results,
+                         :content_block_values,
+                         :filter_visible_messages, :build_session_info, :created_at_from_file, :user_entry_texts,
+                         :each_line_past_head,
+                         :first_prompt_in, :first_prompt_from_file, :first_prompt_past_head,
                          :valid_agent_id?, :sidechain_head?,
                          :list_sessions_via_summaries, :paginate_resolving_gaps, :resolve_gap_slot,
-                         :derive_info_from_entries, :mtime_from_entries, :apply_sort_limit_offset,
+                         :derive_info_from_entries, :store_session_mtime, :mtime_from_entries,
+                         :apply_sort_limit_offset,
                          :filter_transcript_entries, :entries_to_messages,
                          :entries_to_subagent_messages, :build_subagent_chain, :resolve_subagent_subpath,
                          :import_subagent_files, :append_jsonl_file_in_batches, :collect_jsonl_files,
@@ -1646,6 +2225,9 @@ module ClaudeAgentSDK
     # These remain accessible for SessionMutations / SessionResume:
     # config_dir, sanitize_path, find_project_dir, detect_worktrees,
     # valid_session_id? (mutation boundary checks), listing_sort_key
-    # (--continue candidate order)
+    # (--continue candidate order), nfc_path (SessionStores.projects_dir),
+    # read_head_tail, title_and_first_prompt
+    # and display_title (the fork title), own_transcript? (the mutations'
+    # lookups)
   end
 end

@@ -262,6 +262,8 @@ Without it, the sign is the CLI's warning on stderr ("Sandbox disabled: ... Comm
 
 See [examples/sandbox_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/sandbox_example.rb).
 
+When the `sandbox:` option enabled the sandbox and the CLI reports `Sandbox disabled: …` on its stderr, the SDK repeats that line as a Ruby warning prefixed `[claude-agent-sdk]`, once per session, whether or not you set `stderr:`.
+
 ## Bare Mode
 
 Bare mode (`--bare`) is a minimal startup mode that skips hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. It sets `CLAUDE_CODE_SIMPLE=1` internally. Useful for scripted/programmatic usage where you want fast startup and full control over what's loaded.

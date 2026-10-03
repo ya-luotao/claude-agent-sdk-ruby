@@ -177,14 +177,39 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   # Each observer is invoked through FiberBoundary so that user code runs
   # on a plain thread (no Fiber scheduler) even when called from inside
   # the SDK's Async reactor — or in place when scheduling is :inline.
+  #
+  # What the observer raises, and what its callback_wrapper raises, is
+  # contained where it happens: inside the hop, on the execution context
+  # the observer runs on. The rescue must not sit around the hop, because
+  # the calling fiber WAITS there, and an exception raised into a waiting
+  # fiber is not the observer's — a caller's `task.with_timeout` /
+  # `Timeout.timeout` deadline is delivered exactly that way. Rescued out
+  # here, an expired deadline was swallowed as if the observer had failed,
+  # and the turn carried on. So the wrapper is composed inside the rescued
+  # body rather than handed to FiberBoundary.invoke, which would run it
+  # outside that rescue.
+  #
+  # Known residue with `scheduling: :inline` (and with no scheduler at all):
+  # the observer runs on the calling fiber itself, so a deadline that lands
+  # while the observer is suspended is raised inside the observer's own
+  # frames, cannot be told from the observer's own timeout, and is still
+  # swallowed here.
   # @api private
   def self.notify_observers(observers, method, *args, scheduling: :thread, wrapper: nil)
     observers.each do |obs|
-      FiberBoundary.invoke(scheduling: scheduling, wrapper: wrapper) { obs.send(method, *args) }
-    rescue StandardError, ScriptError
-      # ScriptError too: NotImplementedError < ScriptError (not
-      # StandardError), and a stubbed observer must never mask the original
-      # error being notified or abort connect/teardown cleanup.
+      FiberBoundary.invoke(scheduling: scheduling) do
+        invocation = proc { obs.send(method, *args) }
+        wrapper ? wrapper.call(invocation) : invocation.call
+      rescue StandardError, ScriptError
+        # ScriptError too: NotImplementedError < ScriptError (not
+        # StandardError), and a stubbed observer must never mask the original
+        # error being notified or abort connect/teardown cleanup.
+        nil
+      end
+    rescue ScriptError
+      # A ScriptError raised around the body rather than in it (the hop's own
+      # plumbing). No deadline is a ScriptError, so nothing a caller injects
+      # into the waiting fiber is caught here.
       nil
     end
   end
@@ -707,7 +732,14 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)'
     end
 
-    Async(&FiberBoundary.capture_otel_context do # rubocop:disable Metrics/BlockLength -- the reactor task body of query()
+    # finished: false tells Async that a waiter handles this task's failure
+    # (the .wait at the end re-raises it), as Kernel#Sync does for its own
+    # task. Without it a task that fails before anyone waits for it — always
+    # the case outside a reactor, where Async runs the whole task before it
+    # returns — is also logged as "Task may have ended with unhandled
+    # exception", message and backtrace included, although the caller gets
+    # the same error raised and may well rescue it.
+    Async(finished: false, &FiberBoundary.capture_otel_context do # rubocop:disable Metrics/BlockLength -- the reactor task body of query()
       materialized = nil
       query_handler = nil
       begin
@@ -1044,17 +1076,22 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         # (The enumerator branch streams in the background and cannot raise
         # out of connect.) No on_close follows for pre-handshake failures
         # (disconnect gates it on @connected): the session never opened.
-        notify_error(e) if e.is_a?(StandardError) && !@connected
-        # Tear down the partial connect, but never let a cleanup failure (e.g. a
-        # custom transport whose #close raises) mask the original connect error.
-        # Rescue Exception (not StandardError) so reactor cancellation
-        # (Async::Stop < Exception) after materialize_resume set @materialized
-        # still runs disconnect -> @materialized.cleanup, never leaking the temp
-        # CLAUDE_CONFIG_DIR that holds the redacted .credentials.json copy.
         begin
-          disconnect
-        rescue StandardError => cleanup_error
-          warn "Claude SDK: cleanup after failed connect raised: #{cleanup_error.message}"
+          notify_error(e) if e.is_a?(StandardError) && !@connected
+        ensure
+          # Tear down the partial connect, but never let a cleanup failure (e.g. a
+          # custom transport whose #close raises) mask the original connect error.
+          # Rescue Exception (not StandardError) so reactor cancellation
+          # (Async::Stop < Exception) after materialize_resume set @materialized
+          # still runs disconnect -> @materialized.cleanup, never leaking the temp
+          # CLAUDE_CONFIG_DIR that holds the redacted .credentials.json copy.
+          # In an ensure: an exception raised into this fiber while it waits
+          # for the on_error observer (a caller's deadline) must not skip it.
+          begin
+            disconnect
+          rescue StandardError => cleanup_error
+            warn "Claude SDK: cleanup after failed connect raised: #{cleanup_error.message}"
+          end
         end
         raise
       end
@@ -1315,11 +1352,11 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # holds, in every scheduling mode, for a streaming-input enumerator that
     # calls disconnect: it is iterated on the reactor inside a task the close
     # stops, so it unwinds with Async::Stop once the teardown has completed.
+    #
+    # Interrupted while an observer's on_close runs — the caller's deadline
+    # expires, or its task is stopped — disconnect still completes the
+    # teardown, then lets the interruption propagate.
     def disconnect
-      if @connected
-        ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close,
-                                        scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-      end
       # Tear down whatever exists — robust to a partial/failed connect, where
       # @connected is still false but a transport and/or materialized temp dir
       # were already created. #close on the query handler also closes the
@@ -1336,26 +1373,36 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       # and the materialized-dir decision at the bottom needs to ask it.
       query_handler = @query_handler
       begin
-        @query_handler&.close
+        # Notified inside the begin: an exception raised into this fiber while
+        # it waits for an observer (a caller's deadline) propagates, and must
+        # not skip the teardown below.
+        if @connected
+          ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close,
+                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+        end
       ensure
-        @query_handler = nil
         begin
-          @transport&.close
+          @query_handler&.close
         ensure
-          @transport = nil
-          @connected = false
-          # Remove the materialized resume temp dir AFTER the subprocess
-          # exited — unless the mirror dropped batches: the store copy is then
-          # incomplete and the temp dir holds the only copy of the dropped
-          # turns, so it is preserved (scrubbed of credentials) with a warning
-          # instead of deleted.
-          if @materialized
-            if query_handler&.mirror_batches_dropped?
-              @materialized.preserve_transcripts
-            else
-              @materialized.cleanup
+          @query_handler = nil
+          begin
+            @transport&.close
+          ensure
+            @transport = nil
+            @connected = false
+            # Remove the materialized resume temp dir AFTER the subprocess
+            # exited — unless the mirror dropped batches: the store copy is then
+            # incomplete and the temp dir holds the only copy of the dropped
+            # turns, so it is preserved (scrubbed of credentials) with a warning
+            # instead of deleted.
+            if @materialized
+              if query_handler&.mirror_batches_dropped?
+                @materialized.preserve_transcripts
+              else
+                @materialized.cleanup
+              end
+              @materialized = nil
             end
-            @materialized = nil
           end
         end
       end

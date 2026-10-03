@@ -57,10 +57,17 @@ module ClaudeAgentSDK
     #    the interlock keeps a reload from unloading code under it until the
     #    whole SDK call returns.
     # 3. Otherwise (production: no reloading, concurrency allowed) — run the
-    #    callback inside `Rails.application.executor.wrap`.
+    #    callback inside the executor (see .run_in_executor).
     #
     # The configuration is read on every call, so the same wrapper is correct
     # in every environment.
+    #
+    # The wrapper reports nothing to `Rails.error`, in any branch. An exception
+    # that escapes a callback reaches the code that called the SDK, whose own
+    # layer (the request middleware, ActiveJob) reports it with its context;
+    # the failures the SDK handles itself — a hook or tool error answered to
+    # the CLI, a swallowed observer error, a cancellation — are not errors of
+    # the application.
     #
     # @return [Proc] a callable suitable for `callback_wrapper:`
     # @example config/initializers/claude_agent_sdk.rb
@@ -71,7 +78,7 @@ module ClaudeAgentSDK
       lambda do |invocation|
         app = ::Rails.application
         next invocation.call if app.nil? || app.executor.active?
-        next app.executor.wrap { invocation.call } unless executor_locks?(app.config)
+        next run_in_executor(app.executor, invocation) unless executor_locks?(app.config)
 
         begin
           invocation.call
@@ -80,6 +87,24 @@ module ClaudeAgentSDK
         end
       end
     end
+
+    # `executor.wrap { invocation.call }` minus its error report. `wrap`
+    # rescues what passes through it (every Exception on Rails 8.1, 8.0.2+
+    # and 7.2.3+; StandardError before) and reports it to `Rails.error` as
+    # unhandled, from a callback thread that has none of the caller's
+    # context — and Rails then skips the same exception as already reported
+    # when it reaches the request or job. It reported the SDK's own
+    # cancellations and the callback failures the SDK answers or swallows,
+    # too. `run!` / `complete!` run the same hooks.
+    def self.run_in_executor(executor, invocation)
+      execution = executor.run!
+      begin
+        invocation.call
+      ensure
+        execution.complete!
+      end
+    end
+    private_class_method :run_in_executor
 
     # Whether railties registered a process-wide lock hook on the executor
     # (Rails::Application::Finisher, initializer

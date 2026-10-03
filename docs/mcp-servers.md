@@ -52,7 +52,28 @@ ClaudeAgentSDK.create_tool('lookup_order', 'Look up an order', { id: :string }) 
 end
 ```
 
-Any other return value (`nil`, an Integer, an Array, ...) is reported to Claude as an `isError: true` result saying the tool must return a hash with a `:content` key.
+Any other return value (`nil`, an Integer, an Array, ...) is reported to Claude as an `isError: true` result saying the tool must return a hash with a `:content` key. So is a Hash whose `:content` is not an Array — `{ content: 'text' }`, or a single block Hash — with a message saying `:content` must be an Array of content blocks; return the String itself, or wrap the block in an Array.
+
+## Shorthand Input Schemas
+
+`{ name: :string }` is shorthand for a JSON Schema object in which every listed parameter is required. Each value names a type, as a Ruby class or as a Symbol:
+
+| Shorthand | JSON Schema type | The handler receives |
+| --- | --- | --- |
+| `String`, `:string` | `string` | a String |
+| `Integer`, `:integer` | `integer` | an Integer |
+| `Float`, `:float`, `:number` | `number` | an Integer or a Float |
+| `TrueClass`, `FalseClass`, `:boolean` | `boolean` | `true` or `false` |
+| `Array`, `:array` | `array` | an Array, with elements of any type |
+| `Hash`, `:object` | `object` | a Hash with Symbol keys |
+
+```ruby
+ClaudeAgentSDK.create_tool('tag_order', 'Tag an order', { order_id: Integer, tags: Array }) do |args|
+  "Tagged order #{args[:order_id]} with #{args[:tags].join(', ')}"
+end
+```
+
+Arguments are validated against these types before the handler runs. For an optional parameter, the type of an Array's elements, an enum or a per-parameter description, pass a full JSON Schema instead (next section).
 
 ## Pre-built JSON Schemas
 
@@ -121,12 +142,14 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 An exception raised inside a handler is returned to the model as an
 `isError: true` result carrying the exception message, so it can self-correct.
+That holds for `NotImplementedError`, `LoadError`, `SystemStackError` and
+`SecurityError` as well, although they are not `StandardError`s.
 `exit`, `Interrupt` and other signal exceptions are never swallowed: the CLI
 first gets an `isError` result naming the exception class
 (`"SystemExit: exit"`), so it is not left waiting on the tool call, and then
 the exception propagates as Ruby normally would (`exit` ends the process,
 Ctrl-C interrupts it). Called directly, without a session,
-`SdkMcpServer#call_tool` simply lets such exceptions propagate. Cancellation of the tool call itself still propagates.
+`SdkMcpServer#call_tool` simply lets `exit` and signal exceptions propagate. Cancellation of the tool call itself still propagates.
 
 ## Mixed Server Support
 
@@ -192,7 +215,9 @@ server = ClaudeAgentSDK.create_sdk_mcp_server(
 ```
 
 An exception raised inside a resource reader or prompt generator is answered
-with a JSON-RPC internal error (`-32603`) carrying the exception message. For
+with a JSON-RPC internal error (`-32603`) carrying the exception message;
+`NotImplementedError`, `LoadError`, `SystemStackError` and `SecurityError`
+are covered here too. For
 `exit`, `Interrupt` and other signal exceptions the CLI gets that error first,
 naming the exception class, and then the exception propagates as Ruby normally
 would.

@@ -135,6 +135,23 @@ module ClaudeAgentSDK
       end
     end
 
+    # What a failing user callback raises — a hook, can_use_tool, an SDK MCP
+    # tool / resource / prompt handler, or the callback_wrapper around one.
+    # The Ruby spelling of Python's `except Exception`: NotImplementedError
+    # and LoadError (both ScriptError), SystemStackError and SecurityError
+    # are not StandardErrors, so `rescue StandardError` lets them through.
+    # The control request then goes unanswered and its handler task ends
+    # with an exception Async treats as fatal for the whole reactor. Rescue
+    # `*FiberBoundary::CALLBACK_FAILURES` wherever a callback's failure is
+    # turned into the answer the CLI is waiting for.
+    #
+    # An explicit list, not `rescue Exception`: cancellation (Async::Stop,
+    # InlineCancellation) and process exits (SystemExit, SignalException —
+    # see .invoke_callback) must keep propagating. NoMemoryError stays out
+    # as well: building the answer would most likely fail again.
+    # @api private
+    CALLBACK_FAILURES = [StandardError, ScriptError, SystemStackError, SecurityError].freeze
+
     # Carries a SystemExit / SignalException (Interrupt included) raised by
     # a user callback out of the FiberBoundary hop — see .invoke_callback.
     # A StandardError so the hop ends normally: a :thread worker that died
@@ -335,9 +352,35 @@ module ClaudeAgentSDK
         Thread.current.report_on_exception = false
         work.call
       end
-      return thread.value if timeout.nil?
-      raise JoinTimeout, "timed out after #{timeout}s" unless thread.join(timeout)
+      await_worker(thread, timeout)
+    end
 
+    # Wait for the worker thread of one hop and return its value (or re-raise
+    # what it raised); with +timeout+, raise JoinTimeout once that many
+    # seconds have passed.
+    #
+    # Only "the thread has finished" or "the deadline has really passed" ends
+    # the wait. Under a fiber scheduler Thread#join parks the fiber, and MRI
+    # reports ANY wakeup that finds the thread alive as a timeout: join
+    # returns nil, and Thread#value returns nil with it. The wakeup need not
+    # belong to this join — one queued by an earlier hop's thread stays behind
+    # when an exception (Async::Stop, a deadline) is raised into the fiber
+    # before it is consumed, and resumes this hop instead. Trusting a single
+    # join then returned nil while the callback was still running, or raised
+    # JoinTimeout with no time passed.
+    # @api private
+    def await_worker(thread, timeout)
+      if timeout.nil?
+        nil until thread.join
+        return thread.value
+      end
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+      until thread.join([deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max)
+        next if Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+
+        raise JoinTimeout, "timed out after #{timeout}s"
+      end
       thread.value
     end
 

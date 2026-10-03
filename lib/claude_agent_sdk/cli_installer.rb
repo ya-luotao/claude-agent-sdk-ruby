@@ -53,13 +53,18 @@ module ClaudeAgentSDK
     # Single source of truth: bumped here (and only here) by
     # .github/workflows/cli-pin-bump.yml or a Python-sync release, so a
     # Dependabot bump of the gem carries the CLI forward with it.
-    PINNED_CLI_VERSION = '2.1.285'
+    PINNED_CLI_VERSION = '2.1.287'
     # @api private
     BINARY_NAME = 'claude'
     # @api private
     VERSION_FILE = 'VERSION'
     # @api private
     LOCK_FILE = '.install.lock'
+    # How often a waiting installer retries the install lock. See
+    # .with_install_lock for why it polls instead of blocking in flock.
+    #
+    # @api private
+    LOCK_POLL_SECONDS = 0.05
     # Relative to .root (Dir.pwd when unset), resolved at CALL time by
     # .default_dir — an absolute constant would freeze the working directory
     # as of require time, which is wrong for anything that chdirs (Rake
@@ -168,6 +173,11 @@ module ClaudeAgentSDK
         # +max_bytes+ (the manifest's declared size, when it has one) aborts a
         # response that runs long instead of filling the disk before the
         # checksum gets a chance to reject it.
+        #
+        # The file is fsynced before it is closed: the caller renames it into
+        # place, and a rename only orders metadata. Without the sync, a power
+        # loss shortly after an install could leave the published name
+        # pointing at an empty or partial file.
         def download_to(url, path, max_bytes: nil)
           with_response(url) do |response|
             written = 0
@@ -180,6 +190,7 @@ module ClaudeAgentSDK
 
                 file.write(chunk)
               end
+              file.fsync
             end
           end
           path
@@ -195,9 +206,9 @@ module ClaudeAgentSDK
           uri = url.is_a?(URI::Generic) ? url : URI(url.to_s)
           raise CLIInstallError, "Refusing to fetch non-HTTPS URL: #{uri}" unless uri.is_a?(URI::HTTPS)
 
-          Net::HTTP.start(uri.host, uri.port, use_ssl: true,
-                                              open_timeout: OPEN_TIMEOUT_SECONDS,
-                                              read_timeout: READ_TIMEOUT_SECONDS) do |http|
+          Net::HTTP.start(uri.host, uri.port, *proxy_args(uri), use_ssl: true,
+                                                                open_timeout: OPEN_TIMEOUT_SECONDS,
+                                                                read_timeout: READ_TIMEOUT_SECONDS) do |http|
             http.request(Net::HTTP::Get.new(uri)) do |response|
               # Branch on the status BEFORE touching the body: a redirect or an
               # error page must never be streamed into the target file.
@@ -211,6 +222,35 @@ module ClaudeAgentSDK
           raise
         rescue StandardError => e
           raise CLIInstallError, "Failed to fetch #{url}: #{e.class}: #{e.message}"
+        end
+
+        # The proxy arguments for Net::HTTP.start: address, port, user,
+        # password — or none.
+        #
+        # Left to itself, Net::HTTP looks its proxy up as if for an http://
+        # URL: it reads http_proxy even though this connection is TLS. An
+        # environment that exports only HTTPS_PROXY (what curl, RubyGems and
+        # the CLI itself read for an https URL) was therefore bypassed.
+        # URI#find_proxy on the https URL reads https_proxy / HTTPS_PROXY and
+        # applies no_proxy / NO_PROXY; the proxy it names is passed
+        # explicitly, its credentials percent-decoded the way Net::HTTP
+        # decodes the ones it finds itself.
+        #
+        # No arguments means "as before": Net::HTTP's own lookup (http_proxy)
+        # stays in charge. That is the answer when the variable is unset or
+        # no_proxy excludes the host, and also when its value is nothing
+        # Net::HTTP can use as an HTTP proxy — no scheme, socks5://, https://,
+        # not a URL at all. Such a value was ignored before and still is,
+        # rather than turning a download that works directly into a failure.
+        # ALL_PROXY is not consulted.
+        def proxy_args(uri)
+          proxy = uri.find_proxy
+          return [] unless proxy.instance_of?(URI::HTTP) && !proxy.hostname.to_s.empty?
+
+          credentials = [proxy.user, proxy.password].map { |part| part && URI.decode_www_form_component(part) }
+          [proxy.hostname, proxy.port, *credentials]
+        rescue URI::InvalidURIError
+          []
         end
 
         def follow_redirect(uri, response, redirects_left, &)
@@ -322,11 +362,14 @@ module ClaudeAgentSDK
         # Atomic: an unpredictable temp name opened O_EXCL, then renamed over
         # the old file. Without this a reader could observe a half-written
         # VERSION, or (worse) the previous version paired with a new binary.
+        # Fsynced before the rename, so that after a power loss VERSION is
+        # the old file or the new one, not an empty one.
         def write(dir, version, checksum, platform)
           tmp = File.join(dir, "#{VERSION_FILE}.#{SecureRandom.hex(8)}.tmp")
           begin
             File.open(tmp, File::WRONLY | File::CREAT | File::EXCL, 0o644) do |file|
               file.write("#{version}\n#{checksum}\n#{platform}\n")
+              file.fsync
             end
             File.rename(tmp, File.join(dir, VERSION_FILE))
           ensure
@@ -376,7 +419,7 @@ module ClaudeAgentSDK
       # +version+ is 'stable', 'latest', or a concrete version like '2.1.220'.
       #
       # Idempotent and safe to run concurrently: an exclusive lock on
-      # dir/.install.lock covers the whole check-download-place-record
+      # dir/.install.lock covers the whole check-download-record-place
       # sequence, so parallel boots (Docker layers, `foreman start`, CI matrix
       # jobs sharing a cache) never race each other into a partially written
       # binary — the loser of the race observes a finished install.
@@ -385,6 +428,12 @@ module ClaudeAgentSDK
       # binary) rather than trusting the recorded version alone, and never
       # touches the network: repeat boots must work offline (with a pinned
       # version — a dist-tag has to be re-resolved to be resolved at all).
+      #
+      # That shortcut also holds in a directory this process cannot write (an
+      # image built as root and run as another user, a read-only root
+      # filesystem): a concrete version that is already installed and intact
+      # is returned. Anything that would need a write — a dist-tag, another
+      # version, a damaged binary — raises there.
       #
       # An upgrade never destroys a working install: see #publish.
       def install(version: 'stable', dir: nil)
@@ -396,7 +445,19 @@ module ClaudeAgentSDK
         requested = Release.validate_version(version)
         binary = File.join(dir, BINARY_NAME)
         FileUtils.mkdir_p(dir)
-        with_install_lock(dir) do
+        begin
+          lock = open_lock_file(dir)
+        rescue Errno::EACCES, Errno::EROFS, Errno::EPERM
+          # The lock file cannot be opened for writing, so nothing can be
+          # installed here — and nothing has to be when the requested version
+          # already is (see .installed_without_lock?). This rescue covers
+          # OPENING the lock file and nothing else: a permission error raised
+          # inside the critical section must keep failing the install.
+          raise unless installed_without_lock?(dir, requested)
+
+          return binary
+        end
+        with_install_lock(lock) do
           sweep_stale_temp_files(dir)
           resolved = Release.resolve_version(requested)
           platform = Platform.detect
@@ -410,8 +471,11 @@ module ClaudeAgentSDK
       rescue SystemCallError, IOError => e
         # Filesystem failures (EACCES on the install dir, ENOSPC mid-download,
         # a read-only mount) reach callers as CLIInstallError like every other
-        # install failure; `cause` keeps the original for debugging.
-        raise CLIInstallError, "Failed to install the Claude Code CLI into #{dir}: #{e.class}: #{e.message}"
+        # install failure; `cause` keeps the original for debugging. +dir+ is
+        # still nil when resolving the default directory is what failed (the
+        # working directory was deleted): name it by its relative path then.
+        raise CLIInstallError,
+              "Failed to install the Claude Code CLI into #{dir || DEFAULT_DIR}: #{e.class}: #{e.message}"
       end
 
       # Install PINNED_CLI_VERSION — the version this gem release was tested
@@ -441,20 +505,50 @@ module ClaudeAgentSDK
       private
 
       # Cross-process mutual exclusion for the whole install. flock is
-      # advisory and per open file description, so concurrent threads in one
-      # process contend here exactly like separate processes do.
-      def with_install_lock(dir)
+      # advisory and per open file description, so concurrent threads — and
+      # concurrent fibers — in one process contend here exactly like separate
+      # processes do.
+      #
+      # The lock is polled (LOCK_NB + sleep), never taken with a blocking
+      # LOCK_EX. File#flock has no Fiber-scheduler hook, so a blocking call
+      # parks the whole reactor THREAD; when the holder is another fiber of
+      # that reactor, waiting inside the critical section for the network, it
+      # is never resumed and neither install returns. Kernel#sleep yields to
+      # a scheduler and is an ordinary sleep on a plain thread. Mutual
+      # exclusion is the same either way; like flock itself, the order in
+      # which waiters get the lock is unspecified.
+      #
+      # +lock+ is the open lock file (see .open_lock_file); it is closed here.
+      def with_install_lock(lock)
+        sleep(LOCK_POLL_SECONDS) until lock.flock(File::LOCK_EX | File::LOCK_NB)
+        begin
+          yield
+        ensure
+          lock.flock(File::LOCK_UN)
+        end
+      ensure
+        lock.close
+      end
+
+      # Opened read-write and created when missing. Kept apart from
+      # .with_install_lock so that .install can tell a lock file that cannot
+      # be opened from a failure inside the critical section.
+      def open_lock_file(dir)
         flags = File::RDWR | File::CREAT
         # Never follow a symlink planted at the lock path.
         flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-        File.open(File.join(dir, LOCK_FILE), flags, 0o644) do |lock|
-          lock.flock(File::LOCK_EX)
-          begin
-            yield
-          ensure
-            lock.flock(File::LOCK_UN)
-          end
-        end
+        File.open(File.join(dir, LOCK_FILE), flags, 0o644)
+      end
+
+      # Whether .install can answer +requested+ without the install lock: it
+      # has to be a concrete version — a dist-tag must be resolved and may
+      # have to be published, which needs the lock — whose binary is in place
+      # and re-hashes to the checksum recorded for it. This is the lock-free
+      # read .installed_path already documents (#publish only ever renames a
+      # complete, verified binary into place) plus the re-hash, and it writes
+      # nothing.
+      def installed_without_lock?(dir, requested)
+        !DIST_TAGS.include?(requested) && installed?(dir, requested, Platform.detect)
       end
 
       # Remove temp files abandoned by an earlier install that died before its
@@ -503,15 +597,36 @@ module ClaudeAgentSDK
       # (The reverse order — rename then record — briefly published a binary
       # nothing vouched for, and a metadata failure then had to delete the
       # freshly renamed file, taking the previous working install with it.)
+      #
+      # Across a power loss, a rename only orders metadata. So the downloaded
+      # bytes (Http.download_to), the binary's executable mode (after its
+      # chmod, #fetch_verified) and the VERSION bytes (Metadata.write) are
+      # fsynced before their renames: each name then holds a complete file,
+      # the old one or the new one, never an empty, partial or
+      # non-executable one. The
+      # directory is synced after the rename so that an install that returned
+      # is still there afterwards; that sync is best-effort and cannot fail
+      # the install, which keeps the rename the last step that can.
       def publish(dir, binary, version, platform, entry)
         tmp = "#{binary}.download.#{SecureRandom.hex(8)}"
         begin
           fetch_verified(version, platform, entry, tmp)
           Metadata.write(dir, version, entry[:checksum], platform)
           File.rename(tmp, binary)
+          sync_directory(dir)
         ensure
           FileUtils.rm_f(tmp)
         end
+      end
+
+      # Makes the renames in +dir+ durable (VERSION's and the binary's).
+      # Best-effort by necessity: it runs after the rename, where nothing may
+      # fail the install, and not every platform or filesystem can fsync a
+      # directory — some refuse to open one, others answer EINVAL or EBADF.
+      def sync_directory(dir)
+        File.open(dir, File::RDONLY, &:fsync)
+      rescue SystemCallError, IOError, NotImplementedError
+        nil
       end
 
       # Download to an unpredictable sibling temp name (same filesystem, so the
@@ -526,6 +641,12 @@ module ClaudeAgentSDK
         raise CLIInstallError, "Checksum mismatch for #{url}: expected #{expected}, got #{actual}" if actual != expected
 
         File.chmod(0o755, tmp)
+        # The mode is metadata of the file itself: the data fsync in
+        # Http.download_to came before it, and the directory sync after the
+        # rename does not cover it. Without this sync a power loss could bring
+        # the published binary back without its executable bit, and
+        # installed_path would skip it.
+        File.open(tmp, File::RDONLY, &:fsync)
       end
     end
   end

@@ -79,7 +79,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'mcp', '>= 0.22', '< 2'
 
   # Development dependencies
-  spec.add_development_dependency 'bundler', '~> 2.0'
+  spec.add_development_dependency 'bundler', '>= 2.0'
   spec.add_development_dependency 'rake', '~> 13.0'
   spec.add_development_dependency 'rspec', '~> 3.0'
   # Pinned to a single minor so local and CI resolve the same RuboCop (Gemfile.lock

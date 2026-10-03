@@ -7,20 +7,30 @@ require 'async'
 # #1190/#1279): at the CLI's "idle" session state after a result, bounded
 # between turns by CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS, and at the first
 # result with no tracked task in flight from a CLI that sends no state.
+#
+# Nothing here waits on a clock to "let the read loop catch up": frames are
+# followed by a barrier (#with_query), and the ceiling is fired by hand
+# (#ceiling_passes) in every example but one.
 RSpec.describe ClaudeAgentSDK::Query do
+  # The transport double. Frames come from +queue+; a Thread::Queue among
+  # them is a barrier, which is answered instead of delivered (#with_query).
+  # +written+ receives every line the SDK writes.
   def queue_fed_transport(queue)
     ended = []
+    written = Thread::Queue.new
     transport = mock_transport
     allow(transport).to receive(:end_input) { ended << true }
+    allow(transport).to receive(:write) { |line| written << line }
     allow(transport).to receive(:read_messages) do |&blk|
       loop do
         msg = queue.dequeue
         break if msg == :eof
+        next msg.push(:reached) if msg.is_a?(Thread::Queue)
 
         blk.call(msg)
       end
     end
-    [transport, ended]
+    [transport, ended, written]
   end
 
   def hooks_config
@@ -57,22 +67,62 @@ RSpec.describe ClaudeAgentSDK::Query do
     { type: 'user', message: { role: 'user', content: content }, session_id: '' }
   end
 
-  # Runs +body+ with a started query whose read loop is fed from a queue.
-  # `feed` enqueues frames and yields so the read loop processes them.
+  # Runs +body+ with a started query whose read loop is fed from a queue, and
+  # yields the query, `feed`, the end_input calls so far, the task and the
+  # queue of written lines.
+  #
+  # `feed.call(*frames)` returns once the read loop is done with the frames
+  # and what they woke has run. It enqueues a barrier behind them, which the
+  # transport double only takes off the queue after the block for the frame
+  # before it has returned — so every side effect of every frame is in place,
+  # including the ones that suspend the read loop half-way (arming and
+  # stopping the ceiling sleeper both yield). Being told that a frame was
+  # dequeued would not be enough. Then every task that is ready gets a few
+  # turns on the reactor: a task the frames woke (the stdin-closing waiter)
+  # needs two to reach end_input, as it yields once if it has a ceiling
+  # sleeper to stop; five is that with room to spare, and still no clock.
+  #
+  # `feed.call` with no frames is the same barrier with nothing in front of
+  # it: it lets what the example itself made ready (a gate it opened, a
+  # ceiling it fired) run.
   def with_query(**kwargs)
     queue = Async::Queue.new
-    transport, ended = queue_fed_transport(queue)
+    transport, ended, written = queue_fed_transport(queue)
     query = build_query(transport, **kwargs)
     Async do |task|
       query.start
       feed = lambda do |*frames|
-        frames.each { |frame| queue.enqueue(frame) }
-        task.sleep 0.01
+        barrier = Thread::Queue.new
+        [*frames, barrier].each { |frame| queue.enqueue(frame) }
+        raise 'the read loop never got through the frames it was fed' unless barrier.pop(timeout: 10)
+
+        5.times { task.yield }
       end
-      yield query, feed, ended, task
+      yield query, feed, ended, task, written
     ensure
       query.close
+      release_parked_tasks(task)
     end.wait
+  end
+
+  # Closing the query ends the run for good, which releases every task the
+  # example left parked on it (a wait_for_result_and_end_input, a
+  # stream_input). Bounded, and what is still parked is stopped: a task that
+  # close did not release would keep this reactor alive forever, and the
+  # example would hang the suite instead of failing.
+  def release_parked_tasks(task)
+    parked = []
+    task.children&.each { |child| parked << child }
+    task.with_timeout(10) { task.yield while parked.any?(&:alive?) }
+  rescue Async::TimeoutError
+    parked.each(&:stop)
+    raise
+  end
+
+  # Waits for a task that is expected to finish now. The bound is what a
+  # regression runs into; nothing healthy comes near it.
+  def finish(task, awaited)
+    task.with_timeout(10) { awaited.wait }
   end
 
   describe 'stdin stays open until idle' do
@@ -86,7 +136,7 @@ RSpec.describe ClaudeAgentSDK::Query do
         expect(ended).to be_empty
 
         feed.call(state('idle'))
-        task.with_timeout(2) { waiter.wait }
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
@@ -112,7 +162,7 @@ RSpec.describe ClaudeAgentSDK::Query do
         expect(ended).to be_empty
 
         feed.call(state('idle', sdk_host_only: false))
-        task.with_timeout(2) { waiter.wait }
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
@@ -121,7 +171,7 @@ RSpec.describe ClaudeAgentSDK::Query do
       with_query do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(result)
-        task.with_timeout(2) { waiter.wait }
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
@@ -133,7 +183,7 @@ RSpec.describe ClaudeAgentSDK::Query do
         expect(ended).to be_empty # idle before any result does not end the run
 
         feed.call(result)
-        task.with_timeout(2) { waiter.wait }
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
@@ -145,7 +195,7 @@ RSpec.describe ClaudeAgentSDK::Query do
         expect(ended).to be_empty
 
         feed.call(task_done('bg-1'), state('running'), main_assistant, result, state('idle'))
-        task.with_timeout(2) { waiter.wait }
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
@@ -157,7 +207,7 @@ RSpec.describe ClaudeAgentSDK::Query do
         expect(ended).to be_empty
 
         feed.call(state('idle'))
-        task.with_timeout(2) { streamer.wait }
+        finish(task, streamer)
         expect(ended).not_to be_empty
       end
     end
@@ -170,15 +220,43 @@ RSpec.describe ClaudeAgentSDK::Query do
         y << user_message('two')
       end
 
-      with_query do |query, feed, ended, task|
+      with_query do |query, feed, ended, task, written|
         streamer = task.async { query.stream_input(prompts) }
+        expect(written.pop(timeout: 10)).to include('one')
         feed.call(state('running'), result, state('idle')) # the first message's run ends
         gate.enqueue(:go)
-        task.sleep 0.01
-        expect(ended).to be_empty # the second message's run has not even started
+        expect(written.pop(timeout: 10)).to include('two')
+        feed.call # the stream is exhausted: the streamer now waits for message two's run
+        expect(ended).to be_empty # which has not even started
 
         feed.call(state('running'), result, state('idle'))
-        task.with_timeout(2) { streamer.wait }
+        finish(task, streamer)
+        expect(ended).not_to be_empty
+      end
+    end
+
+    # The idle of the run that just ended can still be on its way when the
+    # next message goes out. It belongs to the earlier run: the new message
+    # owes a result of its own before an idle can end its run.
+    it 'does not let a late idle of the previous run end the run of the next message' do
+      gate = Async::Queue.new
+      prompts = Enumerator.new do |y|
+        y << user_message('one')
+        gate.dequeue
+        y << user_message('two')
+      end
+
+      with_query do |query, feed, ended, task, written|
+        streamer = task.async { query.stream_input(prompts) }
+        expect(written.pop(timeout: 10)).to include('one')
+        feed.call(state('running'), result, state('idle')) # the first message's run ends
+        gate.enqueue(:go)
+        expect(written.pop(timeout: 10)).to include('two')
+        feed.call(state('idle')) # a late duplicate, before message two produced anything
+        expect(ended).to be_empty
+
+        feed.call(state('running'), result, state('idle'))
+        finish(task, streamer)
         expect(ended).not_to be_empty
       end
     end
@@ -196,7 +274,7 @@ RSpec.describe ClaudeAgentSDK::Query do
         expect(ended).to be_empty
 
         feed.call(state('idle'))
-        task.with_timeout(2) { streamer.wait }
+        finish(task, streamer)
         expect(ended).not_to be_empty
       end
     end
@@ -214,11 +292,11 @@ RSpec.describe ClaudeAgentSDK::Query do
           feed.call(state('running'), result, state('idle')) # ended while the stream is still open
           feed.call(state(wake)) # a finished background task woke the CLI
           gate.enqueue(:go)
-          task.sleep 0.01
+          feed.call # the stream is exhausted: the streamer waits for the reopened run
           expect(ended).to be_empty
 
           feed.call(state('running'), main_assistant, result, state('idle'))
-          task.with_timeout(2) { streamer.wait }
+          finish(task, streamer)
           expect(ended).not_to be_empty
         end
       end
@@ -226,136 +304,219 @@ RSpec.describe ClaudeAgentSDK::Query do
   end
 
   describe 'run-end ceiling' do
-    let(:ceiling) { { run_end_ceiling_ms: 50 } }
+    # The ceiling is a sleeper task that calls end_run_at_ceiling(generation)
+    # when its sleep is over. These examples leave the default ceiling of ten
+    # minutes in place, so the real sleeper never wakes, and make that call
+    # themselves: what is under test is which sleeper is armed when, and what
+    # one that wakes is allowed to do — not how long the sleep takes. The one
+    # example that sleeps through a real ceiling is the first.
+    def ceiling_armed?(query)
+      !query.instance_variable_get(:@run_end_ceiling_task).nil?
+    end
+
+    # The generation the armed sleeper holds (it stands down when it wakes
+    # with a stale one).
+    def ceiling_generation(query)
+      query.instance_variable_get(:@run_end_ceiling_generation)
+    end
+
+    # What the sleeper armed at +generation+ does when its sleep is over;
+    # +feed+ then lets what that woke run.
+    def ceiling_passes(query, generation, feed)
+      query.send(:end_run_at_ceiling, generation)
+      feed.call
+    end
 
     it 'ends the run when no idle arrives within the ceiling after a result' do
-      with_query(**ceiling) do |query, feed, ended, task|
+      with_query(run_end_ceiling_ms: 300) do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(state('running'), result)
-        expect(ended).to be_empty
 
-        task.with_timeout(2) { waiter.wait }
+        # No idle follows: only the ceiling, a real one here, ends this run.
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
 
+    it 'does not end the run at a result while the CLI still reports running' do
+      with_query do |query, feed, ended, task|
+        task.async { query.wait_for_result_and_end_input }
+        feed.call(state('running'), result)
+
+        expect(ended).to be_empty
+        expect(ceiling_armed?(query)).to be(true) # the clock for the wait between turns
+      end
+    end
+
     it 'is stopped by a main-thread turn and re-armed by its result' do
-      with_query(**ceiling) do |query, feed, ended, task|
+      with_query do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
-        feed.call(state('running'), result, main_assistant)
-        task.sleep 0.15
+        feed.call(state('running'), result)
+        stopped = ceiling_generation(query)
+        feed.call(main_assistant)
+        expect(ceiling_armed?(query)).to be(false)
+
+        ceiling_passes(query, stopped, feed) # the stopped sleeper was already waking up
         expect(ended).to be_empty
 
         feed.call(result)
-        task.with_timeout(2) { waiter.wait }
+        expect(ceiling_armed?(query)).to be(true)
+        ceiling_passes(query, ceiling_generation(query), feed)
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
 
     it 'is not stopped by subagent messages' do
-      with_query(**ceiling) do |query, feed, ended, task|
+      with_query do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
-        feed.call(state('running'), result, main_assistant.merge(parent_tool_use_id: 'toolu_1'))
-        task.with_timeout(2) { waiter.wait }
+        feed.call(state('running'), result)
+        armed = ceiling_generation(query)
+        feed.call(main_assistant.merge(parent_tool_use_id: 'toolu_1'))
+        expect(ceiling_armed?(query)).to be(true)
+        expect(ceiling_generation(query)).to eq(armed) # the same sleeper, not a new one
+
+        ceiling_passes(query, armed, feed)
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
 
     it 'is stopped by requires_action and re-armed by the running that follows' do
-      with_query(**ceiling) do |query, feed, ended, task|
+      with_query do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
-        feed.call(state('running'), result, state('requires_action'))
-        task.sleep 0.15
+        feed.call(state('running'), result)
+        stopped = ceiling_generation(query)
+        feed.call(state('requires_action'))
+        expect(ceiling_armed?(query)).to be(false)
+
+        ceiling_passes(query, stopped, feed)
         expect(ended).to be_empty
 
         feed.call(state('running'))
-        task.with_timeout(2) { waiter.wait }
+        expect(ceiling_armed?(query)).to be(true)
+        ceiling_passes(query, ceiling_generation(query), feed)
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
 
+    # "running" before any result is a turn starting, not the wait between
+    # turns that the ceiling bounds.
+    it 'is not armed by running before the first result' do
+      with_query do |query, feed, ended, task|
+        task.async { query.wait_for_result_and_end_input }
+        feed.call(state('running'))
+
+        expect(ceiling_armed?(query)).to be(false)
+        expect(ended).to be_empty
+      end
+    end
+
     it 'is not armed mid-turn' do
-      with_query(**ceiling) do |query, feed, ended, task|
+      with_query do |query, feed, ended, task|
         task.async { query.wait_for_result_and_end_input }
         feed.call(state('running'), result, main_assistant,
                   task_started('bg-1'), task_done('bg-1'), state('running'))
-        task.sleep 0.15
+
+        expect(ceiling_armed?(query)).to be(false)
         expect(ended).to be_empty
       end
     end
 
     it 'is not armed by a result that arrives while the SDK is answering a request' do
-      with_query(**ceiling) do |query, feed, ended, task|
+      with_query do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(state('requires_action'), result)
-        task.sleep 0.15
+        expect(ceiling_armed?(query)).to be(false)
         expect(ended).to be_empty
 
         feed.call(state('running'))
-        task.with_timeout(2) { waiter.wait }
+        expect(ceiling_armed?(query)).to be(true)
+        ceiling_passes(query, ceiling_generation(query), feed)
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
 
     it 'leaves a tracked agent alone and starts over once it settles' do
-      with_query(**ceiling) do |query, feed, ended, task|
+      with_query do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(state('running'), task_started('bg-1'), result)
-        task.sleep 0.15
+
+        ceiling_passes(query, ceiling_generation(query), feed) # with bg-1 still running
         expect(ended).to be_empty
+        expect(ceiling_armed?(query)).to be(false)
 
         feed.call(task_done('bg-1'))
-        task.with_timeout(2) { waiter.wait }
+        expect(ceiling_armed?(query)).to be(true)
+        ceiling_passes(query, ceiling_generation(query), feed)
+        finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
 
     it 'does not close stdin under a control request the SDK is still answering' do
-      log = []
-      queue = Async::Queue.new
-      transport = mock_transport
-      allow(transport).to receive(:write) { |data| log << [:write, data] }
-      allow(transport).to receive(:end_input) { log << [:end_input] }
-      allow(transport).to receive(:read_messages) do |&blk|
-        loop { blk.call(queue.dequeue) }
-      end
-      slow_hook = lambda do |_input, _tool_use_id, _context|
-        sleep 0.25 # on its worker thread, several ceilings long
+      entered = Thread::Queue.new
+      release = Thread::Queue.new
+      parked_hook = lambda do |_input, _tool_use_id, _context|
+        entered << true
+        release.pop # on its worker thread, for as long as the example wants
         {}
       end
-      query = build_query(transport, run_end_ceiling_ms: 50)
-      query.instance_variable_set(:@hook_callbacks, { 'hook_0' => slow_hook })
+      hook_request = { type: 'control_request', request_id: 'req_1',
+                       request: { subtype: 'hook_callback', callback_id: 'hook_0', tool_use_id: nil,
+                                  input: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {},
+                                           session_id: 's', cwd: '/tmp' } } }
 
-      Async do |task|
-        query.start
+      with_query do |query, feed, ended, task, written|
+        query.instance_variable_set(:@hook_callbacks, { 'hook_0' => parked_hook })
         waiter = task.async { query.wait_for_result_and_end_input }
-        [state('running'), result,
-         { type: 'control_request', request_id: 'req_1',
-           request: { subtype: 'hook_callback', callback_id: 'hook_0', tool_use_id: nil,
-                      input: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {},
-                               session_id: 's', cwd: '/tmp' } } }].each { |frame| queue.enqueue(frame) }
-        task.with_timeout(3) { waiter.wait }
-      ensure
-        query.close
-      end.wait
+        feed.call(state('running'), result, hook_request)
+        expect(entered.pop(timeout: 10)).to be(true)
 
-      reply = log.index { |entry| entry[0] == :write && entry[1].include?('req_1') }
-      expect(reply).not_to be_nil
-      expect(log.index([:end_input])).to be > reply
+        ceiling_passes(query, ceiling_generation(query), feed) # while the hook is still running
+        expect(ended).to be_empty
+        expect(ceiling_armed?(query)).to be(true) # the clock starts over instead
+
+        release << true
+        expect(written.pop(timeout: 10)).to include('req_1') # the reply went out,
+        expect(ended).to be_empty # on a stdin that was still open
+        feed.call
+
+        ceiling_passes(query, ceiling_generation(query), feed)
+        finish(task, waiter)
+        expect(ended).not_to be_empty
+      ensure
+        release << true # never leave the worker thread parked
+      end
     end
 
-    [0, 10**12].each do |ms|
-      it "waits for idle with a ceiling of #{ms}" do
-        with_query(run_end_ceiling_ms: ms) do |query, feed, ended, task|
-          waiter = task.async { query.wait_for_result_and_end_input }
-          feed.call(state('running'), result)
-          task.sleep 0.1
-          expect(ended).to be_empty
+    it 'arms no ceiling when the ceiling is 0, and waits for idle' do
+      with_query(run_end_ceiling_ms: 0) do |query, feed, ended, task|
+        waiter = task.async { query.wait_for_result_and_end_input }
+        feed.call(state('running'), result)
+        expect(ceiling_armed?(query)).to be(false)
+        expect(ended).to be_empty
 
-          feed.call(state('idle'))
-          task.with_timeout(2) { waiter.wait }
-          expect(ended).not_to be_empty
-        end
+        feed.call(state('idle'))
+        finish(task, waiter)
+        expect(ended).not_to be_empty
+      end
+    end
+
+    # 10**12 ms is past what a timer can take; the ceiling is capped
+    # (MAX_RUN_END_CEILING_MS), so arming it must neither raise nor fire.
+    it 'waits for idle with a ceiling of 10**12' do
+      with_query(run_end_ceiling_ms: 10**12) do |query, feed, ended, task|
+        waiter = task.async { query.wait_for_result_and_end_input }
+        feed.call(state('running'), result)
+        expect(ceiling_armed?(query)).to be(true)
+        expect(ended).to be_empty
+
+        feed.call(state('idle'))
+        finish(task, waiter)
+        expect(ended).not_to be_empty
       end
     end
 
@@ -366,30 +527,30 @@ RSpec.describe ClaudeAgentSDK::Query do
         gate.dequeue
       end
 
-      with_query(**ceiling) do |query, feed, ended, task|
+      with_query do |query, feed, ended, task|
         streamer = task.async { query.stream_input(prompts) }
         feed.call(state('running'), result)
-        task.sleep 0.1 # the ceiling ends the run while the stream is still open
+        ceiling_passes(query, ceiling_generation(query), feed) # ends the run while the stream is still open
         feed.call(main_assistant)
         gate.enqueue(:go)
-        task.sleep 0.01
+        feed.call # the stream is exhausted: the streamer waits for the reopened run
         expect(ended).to be_empty
 
         feed.call(result, state('idle'))
-        task.with_timeout(2) { streamer.wait }
+        finish(task, streamer)
         expect(ended).not_to be_empty
       end
     end
 
     it 'arms no ceiling once stdin is closed' do
-      with_query(**ceiling) do |query, feed, ended, task|
+      with_query do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(state('running'), result, state('idle'))
-        task.with_timeout(2) { waiter.wait }
+        finish(task, waiter)
         expect(ended.length).to eq(1)
 
         feed.call(state('running'), main_assistant, result)
-        expect(query.instance_variable_get(:@run_end_ceiling_task)).to be_nil
+        expect(ceiling_armed?(query)).to be(false)
       end
     end
 
@@ -407,7 +568,7 @@ RSpec.describe ClaudeAgentSDK::Query do
           [state('running'), result, :eof].each { |frame| queue.enqueue(frame) }
           waiter.wait
         end.wait
-      end.join(5)
+      end.join(30)
 
       expect(finished).to be_truthy
       expect(ended).not_to be_empty
@@ -475,6 +636,12 @@ RSpec.describe ClaudeAgentSDK::Query do
 end
 
 RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
+  # #connect registers the stubbed Process::Waiter in the process-wide
+  # at-exit registry and these examples never #close: drop it here, so the
+  # double does not outlive its example (see the suite-wide check in
+  # spec_helper.rb).
+  after { described_class.active_processes_mutex.synchronize { described_class.active_processes.clear } }
+
   def connect_and_capture_env(options)
     transport = described_class.new('hi', options)
     allow(transport).to receive(:check_claude_version)

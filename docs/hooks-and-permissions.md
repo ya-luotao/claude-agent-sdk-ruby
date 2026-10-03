@@ -219,6 +219,9 @@ An exception raised inside a hook or a `can_use_tool` callback fails that
 control request: the CLI receives an error response carrying the exception
 message, and the session carries on with later requests. The request's
 cancellation signal is invalidated, as for any other callback failure.
+`NotImplementedError`, `LoadError`, `SystemStackError` and `SecurityError` are
+answered the same way, although they are not `StandardError`s. Bytes of the
+message that are not valid UTF-8 are replaced with U+FFFD.
 
 `exit`, `Interrupt` and other signal exceptions are never swallowed. If one
 is raised while a callback runs (by the callback itself, or a real Ctrl-C /

@@ -47,11 +47,11 @@ bundle exec rake claude_agent_sdk:install_cli   # optional: the pinned CLI, into
 PATH="$PWD/vendor/claude:$PATH" RUN_INTEGRATION=1 ANTHROPIC_API_KEY=... bundle exec rspec spec/integration
 ```
 
-Run them when you change anything on the CLI wire protocol (the transport, `Query`, the control protocol, `CommandBuilder`). CI also runs them weekly, and on PRs that touch `cli_installer.rb`, against the pinned CLI version.
+Run them when you change anything on the CLI wire protocol (the transport, `Query`, the control protocol, `CommandBuilder`). CI also runs them weekly, and on PRs that touch the installer, the transport, `Query` or the message parser, against the pinned CLI version, when the repository has an `ANTHROPIC_API_KEY` secret; without it that job shows as skipped. On the same triggers CI runs a keyless smoke that needs no secret (`spec/integration/keyless_smoke_spec.rb`): it installs the pinned CLI, completes the `initialize` handshake and checks that a prompt without credentials fails with a `ResultError`.
 
 **TLA+ models** (`formal/tla/`) model-check the CLI installer's publish/lock ordering and the outbound control-request protocol. They need Java 11+; `run.sh` fetches the pinned TLA+ tools itself. Run `formal/tla/run.sh` when you change `CLIInstaller.install` / `#publish` or `Query#send_control_request` / `#await_control_response`, and update the model if the design changed. `formal/tla/README.md` explains what each model covers.
 
-CI runs the unit suite and RuboCop on Ruby 3.2, 3.3 and 3.4 (Linux), the unit suite on macOS, the dependency floor and latest legs, and the Rails specs on Rails 7.1 and 8. The Ruby 3.4 Linux leg also runs `rake rbs:validate`, and a separate job runs `rake rbs:test`. See [`.github/workflows/`](.github/workflows/).
+CI runs the unit suite and RuboCop on Ruby 3.2, 3.3, 3.4 and 4.0 (Linux), the unit suite on macOS, the dependency floor and latest legs (the latest one on Ruby 3.4 and on Ruby 4.0), and the Rails specs on Rails 7.1 and 8. The Ruby 3.4 Linux leg also runs `rake rbs:validate`, and a separate job runs `rake rbs:test`. See [`.github/workflows/`](.github/workflows/).
 
 ## Pull requests
 
@@ -88,6 +88,7 @@ The gem ships [RBS](https://github.com/ruby/rbs) signatures for exactly that pub
 - **Duck types are interfaces.** Transports (`_Transport`), session stores (`_SessionStore`, with the optional methods listed in its comment), and every user callback (`_CanUseTool`, `_HookCallback`, `_ToolHandler`, `_CallbackWrapper`, ...) are interfaces, so any object with the right methods fits, including a `Method` or a custom class. A proc type (`^(...) -> ...`) would accept only a `Proc`.
 - **Follow the Hash-key rule** in [docs/types.md](docs/types.md#hash-keys): use `wire_hash` (`Hash[Symbol, untyped]`) for a Hash passed through from the CLI stream and `transcript_hash` (`Hash[String, untyped]`) for transcript and store data.
 - **Type attributes are nilable.** A `Type` can be built empty, and the SDK parses CLI output leniently, so an attribute reads `nil` whenever the CLI did not send it.
+- **Constructor keywords are documented, not checked.** `ClaudeAgentOptions` and the value types sign their constructor with two overloads: `(?name: T, ...) -> void | (Hash[Symbol | String, untyped]? attributes) -> void`. The keyword overload documents the accepted keys and their types, but no type checker enforces it: `Klass.new(typo: 1)` is also a Symbol-keyed Hash, which the second overload accepts whatever its keys and values. Steep reports neither a misspelled keyword nor a wrong value type, and `rbs:test` never reports a constructor mismatch (it only checks the attribute setters the constructor calls). The enforcement is the `ArgumentError` the constructor raises at runtime for an unknown key. Keep the keyword overload in step with the attributes all the same: it is what a reader and an editor's completion see.
 - **Use `void` for a return value the docs don't promise.** It keeps the return value out of the contract, and the runtime checker skips it.
 - **Deprecated methods keep their signature** until they are removed, marked with a `# @deprecated` comment.
 

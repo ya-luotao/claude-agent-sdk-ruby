@@ -165,8 +165,8 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
     # Latency-injecting store: append sleeps on its (batcher-spawned) worker
     # thread, so a drain is in flight — holding the semaphore — while later
     # frames enqueue and schedule their own drains. This exercises the
-    # detach-before-lock + Async::Semaphore(1) ordering guarantee under genuine
-    # concurrency (the sole reason that machinery exists).
+    # detach-under-the-lock + Async::Semaphore(1) ordering guarantee under
+    # genuine concurrency (the sole reason that machinery exists).
     slow_store = Class.new(ClaudeAgentSDK::SessionStore) do
       def initialize
         super
@@ -302,10 +302,11 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
     end
 
     # The looping drainer re-detaches after its append completes. A #flush
-    # barrier that detached OLDER frames is already parked on the lock by
-    # then, and Semaphore#release hands the lock straight to it (FIFO), so the
-    # drainer's NEWER frames must land after the barrier's — not ahead of it.
-    it 'appends a parked flush barrier batch before frames the drainer picks up later' do
+    # barrier is already parked on the lock by then; Semaphore#release hands
+    # the lock straight to it (FIFO) and it takes everything pending, older
+    # frames first — so nothing the drainer picks up later can land ahead of
+    # a frame that was enqueued before it.
+    it 'keeps enqueue order across a flush barrier parked behind the looping drainer' do
       Async do |task|
         task.with_timeout(10) do
           b = described_class.new(store: gated_store, projects_dir: projects, on_error: on_error,
@@ -313,12 +314,12 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
           b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'a' }])
           gated_store.started.pop # drainer's append of `a` parked on the gate
           b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'b' }])
-          flusher = task.async { b.flush } # detaches `b`, parks on the lock
-          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'c' }]) # buffered for the drainer
+          flusher = task.async { b.flush } # parks on the lock
+          b.enqueue(file_path, [{ 'type' => 'user', 'uuid' => 'c' }]) # buffered behind `b`
 
           gated_store.gate.close
           flusher.wait
-          b.flush # barrier covering the drainer's `c` iteration
+          b.flush # barrier: nothing the drainer took is still in flight
         end
       end
 
@@ -328,12 +329,14 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
     end
 
     # Teardown corner: Query#close runs batcher.close, then stops the read
-    # task (the drainer's parent). A frame the read loop enqueued during the
-    # close window sits in @pending (the live drainer would have taken it
-    # next), so stopping the read task first loses it — and that loss must
-    # surface through batches_dropped?, as the old per-frame parked drain's
-    # cancellation did, so resume-from-store teardown preserves the temp dir.
-    it 'counts a frame buffered during close as dropped when the read task is stopped first' do
+    # task (the drainer's parent). A frame the read loop enqueues while close
+    # is still queued behind the drainer's in-flight append used to sit in
+    # @pending until the read task was stopped, and was lost (reported through
+    # batches_dropped?). close detaches inside the lock now, so it takes that
+    # frame along and delivers it before the read task is stopped. (A frame
+    # that arrives after close detached is still a counted drop — see
+    # transcript_mirror_batcher_cancellation_spec.rb.)
+    it 'delivers a frame buffered while close waits behind an in-flight append, before the read task is stopped' do
       b = nil
       pending_at_stop = nil
       Async do |task|
@@ -363,9 +366,9 @@ RSpec.describe ClaudeAgentSDK::TranscriptMirrorBatcher do
         end
       end
 
-      expect(pending_at_stop).to eq(1) # the corner was reached: `late` never detached
-      expect(gated_store.entries.map { |e| e['uuid'] }).to eq(%w[a])
-      expect(b.batches_dropped?).to be(true)
+      expect(pending_at_stop).to eq(0) # `late` went out with close's own batch
+      expect(gated_store.entries.map { |e| e['uuid'] }).to eq(%w[a late])
+      expect(b.batches_dropped?).to be(false)
     end
 
     it 'does not report a drop when frames buffered during close are drained before teardown ends' do

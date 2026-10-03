@@ -77,9 +77,11 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
     true
   end
 
-  # True while +thread+ is parked inside File#flock (its innermost frame).
-  def blocked_in_flock?(thread)
-    thread.backtrace_locations&.first&.base_label == 'flock'
+  # True while +thread+ is waiting for the install lock: in with_install_lock's
+  # poll loop, asleep between attempts or inside the non-blocking flock call.
+  def waiting_for_install_lock?(thread)
+    innermost, caller = thread.backtrace_locations&.first(2)&.map(&:base_label)
+    %w[sleep flock].include?(innermost) && caller == 'with_install_lock'
   end
 
   describe '.default_dir' do
@@ -680,11 +682,11 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller do
       contended = nil
       allow(http).to receive(:download_to) do |_url, path, **|
         counter_mutex.synchronize { downloads += 1 }
-        # Hold the lock until the other installer is observably blocked in
-        # flock (bounded poll) rather than sleeping and hoping it got there.
+        # Hold the lock until the other installer is observably waiting for
+        # it (bounded poll) rather than sleeping and hoping it got there.
         # Without the lock the other thread would reach its own download
         # instead: the poll times out and downloads ends up 2.
-        contended = eventually? { threads.any? { |t| !t.equal?(Thread.current) && blocked_in_flock?(t) } }
+        contended = eventually? { threads.any? { |t| !t.equal?(Thread.current) && waiting_for_install_lock?(t) } }
         File.binwrite(path, binary_body)
         path
       end
