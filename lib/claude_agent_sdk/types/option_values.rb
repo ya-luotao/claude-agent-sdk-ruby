@@ -158,7 +158,19 @@ module ClaudeAgentSDK
     end
   end
 
-  # Sandbox settings for isolated command execution
+  # Sandbox settings for isolated command execution.
+  #
+  # +network+ and +filesystem+ take a SandboxNetworkConfig /
+  # SandboxFilesystemConfig or a Hash. A Hash may spell the fields of those
+  # classes as their attributes (+denied_domains+) or as the CLI does
+  # (+deniedDomains+), with Symbol or String keys; any other key is sent as
+  # written. The same holds for a Hash given as +sandbox:+ in place of a
+  # SandboxSettings.
+  #
+  # A snake_case key in such a Hash is sent under the CLI's name only when
+  # its value has the shape the CLI accepts there (an Array of Strings for
+  # +denied_domains+, +true+ or +false+ for +allow_local_binding+, ...).
+  # With any other value it is sent as written, and the CLI ignores it.
   class SandboxSettings < Type
     include Type::OptionValue
 
@@ -169,15 +181,15 @@ module ClaudeAgentSDK
                   :ignore_violations, :enable_weaker_nested_sandbox,
                   :enable_weaker_network_isolation, :ripgrep
 
-    def to_h # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- one optional key per sandbox field
+    def to_h
       result = {}
       result[:enabled] = @enabled unless @enabled.nil?
       result[:failIfUnavailable] = @fail_if_unavailable unless @fail_if_unavailable.nil?
       result[:autoAllowBashIfSandboxed] = @auto_allow_bash_if_sandboxed unless @auto_allow_bash_if_sandboxed.nil?
       result[:excludedCommands] = @excluded_commands if @excluded_commands
       result[:allowUnsandboxedCommands] = @allow_unsandboxed_commands unless @allow_unsandboxed_commands.nil?
-      result[:network] = @network.is_a?(SandboxNetworkConfig) ? @network.to_h : @network if @network
-      result[:filesystem] = @filesystem.is_a?(SandboxFilesystemConfig) ? @filesystem.to_h : @filesystem if @filesystem
+      result[:network] = SandboxKeys.network(@network) if @network
+      result[:filesystem] = SandboxKeys.filesystem(@filesystem) if @filesystem
       result[:ignoreViolations] = @ignore_violations if @ignore_violations
       result[:enableWeakerNestedSandbox] = @enable_weaker_nested_sandbox unless @enable_weaker_nested_sandbox.nil?
       unless @enable_weaker_network_isolation.nil?
@@ -186,6 +198,176 @@ module ClaudeAgentSDK
       result[:ripgrep] = @ripgrep if @ripgrep
       result
     end
+  end
+
+  # The spellings a sandbox Hash may use for a field of the three sandbox
+  # classes above, mapped to the key their #to_h emits, which is the key the
+  # CLI reads. A Hash given as the +sandbox:+ option, or as the network /
+  # filesystem of a SandboxSettings, stands for the typed value with the same
+  # fields: its keys may be Symbols or Strings, the attribute names
+  # (snake_case) or the wire keys (camelCase).
+  #
+  # Every attribute is listed, also the ones whose name is their wire key. A
+  # key that is not listed is sent as written, so a field of the CLI that the
+  # typed classes do not model (allowAppleEvents, network.strictAllowlist,
+  # filesystem.disabled, ...) still gets through, in the CLI's own spelling.
+  # spec/unit/sandbox_hash_keys_spec.rb walks the attributes of the three
+  # classes and fails when one of them and these tables disagree.
+  #
+  # @api private
+  module SandboxKeys
+    # SandboxSettings attribute => wire key.
+    TOP_LEVEL = {
+      'enabled' => :enabled,
+      'fail_if_unavailable' => :failIfUnavailable,
+      'auto_allow_bash_if_sandboxed' => :autoAllowBashIfSandboxed,
+      'excluded_commands' => :excludedCommands,
+      'allow_unsandboxed_commands' => :allowUnsandboxedCommands,
+      'network' => :network,
+      'filesystem' => :filesystem,
+      'ignore_violations' => :ignoreViolations,
+      'enable_weaker_nested_sandbox' => :enableWeakerNestedSandbox,
+      'enable_weaker_network_isolation' => :enableWeakerNetworkIsolation,
+      'ripgrep' => :ripgrep
+    }.freeze
+
+    # SandboxNetworkConfig attribute => wire key.
+    NETWORK = {
+      'allowed_domains' => :allowedDomains,
+      'denied_domains' => :deniedDomains,
+      'allow_managed_domains_only' => :allowManagedDomainsOnly,
+      'allow_unix_sockets' => :allowUnixSockets,
+      'allow_all_unix_sockets' => :allowAllUnixSockets,
+      'allow_local_binding' => :allowLocalBinding,
+      'allow_mach_lookup' => :allowMachLookup,
+      'http_proxy_port' => :httpProxyPort,
+      'socks_proxy_port' => :socksProxyPort
+    }.freeze
+
+    # SandboxFilesystemConfig attribute => wire key.
+    FILESYSTEM = {
+      'allow_write' => :allowWrite,
+      'deny_write' => :denyWrite,
+      'deny_read' => :denyRead,
+      'allow_read' => :allowRead,
+      'allow_managed_read_paths_only' => :allowManagedReadPathsOnly
+    }.freeze
+
+    # Wire key => the kind of value CLI 2.1.287's sandbox schema accepts
+    # under it, for every wire key an attribute spells differently (read from
+    # the schema in the CLI binary and checked against the running CLI):
+    #
+    #   :boolean        true or false
+    #   :strings        an Array of Strings
+    #   :mach_services  an Array of Strings; a "*" only as the last character
+    #   :port           an Integer from 0 to 65535
+    #   :string_lists   a Hash whose values are Arrays of Strings
+    #
+    # One value outside its kind makes the CLI discard the whole --settings
+    # value, the sandbox and the permissions next to it. It lists the error
+    # in its get_settings response only, so the SDK is not told. A key in
+    # snake_case is one the CLI does not know and ignores, so it is renamed
+    # only when its value is of the kind listed here (see #rename). A kind
+    # that is too strict leaves a key without effect, as it was before the
+    # renaming existed; one that is too loose can cost a session its sandbox.
+    #
+    # :port is the strict side of what the CLI does. It takes any number it
+    # can read as a port, but an Integer too large for that (2**1024 and up,
+    # say 10**400) reaches it as a non-finite value and fails its schema.
+    SHAPES = {
+      boolean: %i[failIfUnavailable autoAllowBashIfSandboxed allowUnsandboxedCommands enableWeakerNestedSandbox
+                  enableWeakerNetworkIsolation allowManagedDomainsOnly allowAllUnixSockets allowLocalBinding
+                  allowManagedReadPathsOnly],
+      strings: %i[excludedCommands allowedDomains deniedDomains allowUnixSockets
+                  allowWrite denyWrite denyRead allowRead],
+      mach_services: %i[allowMachLookup],
+      port: %i[httpProxyPort socksProxyPort],
+      string_lists: %i[ignoreViolations]
+    }.flat_map { |kind, wire_keys| wire_keys.map { |wire| [wire, kind] } }.to_h.freeze
+
+    # A Hash +sandbox:+ as the CLI reads it: its known keys under their wire
+    # keys, at the top level and inside its network / filesystem, which may
+    # each be a Hash or the typed config. Other values are not rewritten:
+    # ignore_violations and ripgrep hold structures of the CLI's own.
+    def self.normalize(sandbox)
+      normalized = rename(sandbox, TOP_LEVEL)
+      normalized[:network] = network(normalized[:network]) if normalized.key?(:network)
+      normalized[:filesystem] = filesystem(normalized[:filesystem]) if normalized.key?(:filesystem)
+      normalized
+    end
+
+    # A network section as the CLI reads it: the typed config's #to_h, or a
+    # Hash with its known keys renamed. Any other value is returned as it is.
+    def self.network(section)
+      case section
+      when SandboxNetworkConfig then section.to_h
+      when Hash then rename(section, NETWORK)
+      else section
+      end
+    end
+
+    # A filesystem section as the CLI reads it (see .network).
+    def self.filesystem(section)
+      case section
+      when SandboxFilesystemConfig then section.to_h
+      when Hash then rename(section, FILESYSTEM)
+      else section
+      end
+    end
+
+    # A known key ends up as the one Symbol #to_h emits, so the spellings of
+    # a field (attribute name or wire key, Symbol or String) cannot reach
+    # JSON.generate side by side: json 3.x raises on a key given as a Symbol
+    # and as a String, 2.x writes it twice. When a Hash carries both
+    # spellings of a field the wire spelling wins, whichever comes first;
+    # between two keys in the same spelling the later one does.
+    #
+    # A known key holding nil is left out, as #to_h leaves out a nil
+    # attribute. The CLI rejects null under every one of these keys, and
+    # when it does it drops the whole --settings value, sandbox included.
+    #
+    # A key in snake_case is renamed only when the CLI accepts its value
+    # under the wire key (SHAPES). Otherwise it is sent as written, which
+    # the CLI ignores, as it ignored every snake_case key before: renaming
+    # must not be what makes the CLI drop the settings. A key the caller
+    # wrote in wire spelling is not looked at; it goes out as it always did.
+    def self.rename(hash, table)
+      renamed = {}
+      wire_spelled = {}
+      hash.each do |key, value|
+        name = key.to_s
+        wire = table[name] || table.each_value.find { |candidate| candidate.name == name }
+        next if wire && value.nil?
+
+        if wire && wire.name == name
+          wire_spelled[wire] = true
+          renamed[wire] = value
+        elsif wire && well_shaped?(wire, value)
+          renamed[wire] = value unless wire_spelled.key?(wire)
+        else
+          renamed[key] = value
+        end
+      end
+      renamed
+    end
+
+    # Whether the CLI accepts +value+ under +wire+. A key without a kind is
+    # answered false, the side that cannot cost the sandbox.
+    def self.well_shaped?(wire, value)
+      case SHAPES[wire]
+      when :boolean then [true, false].include?(value)
+      when :strings then strings?(value)
+      when :mach_services then strings?(value) && value.none? { |name| name.delete_suffix('*').include?('*') }
+      when :port then value.is_a?(Integer) && value.between?(0, 65_535)
+      when :string_lists then value.is_a?(Hash) && value.each_value.all? { |list| strings?(list) }
+      else false
+      end
+    end
+
+    def self.strings?(value)
+      value.is_a?(Array) && value.all?(String)
+    end
+    private_class_method :rename, :well_shaped?, :strings?
   end
 
   # API-side task budget in tokens.
