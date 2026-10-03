@@ -35,6 +35,12 @@ module ClaudeAgentSDK
     #
     # @api private
     DEFAULT_EXEC_SEARCH_PATH = '/usr/local/bin:/usr/ucb:/usr/bin:/bin:.'
+    # What discovery searches when the process has no PATH (a service, a
+    # minimal container): the same system directories, without the `.` —
+    # discovery never picks a `claude` out of the working directory.
+    #
+    # @api private
+    DEFAULT_DISCOVERY_SEARCH_PATH = '/usr/local/bin:/usr/ucb:/usr/bin:/bin'
     # @api private
     VERSION_CHECK_TIMEOUT_SECONDS = 2 # mirrors Python's anyio.fail_after(2)
     # @api private
@@ -216,8 +222,9 @@ module ClaudeAgentSDK
 
       # The process's own PATH, the one `which claude` used to search here: a
       # PATH set through options.env is the session's, and only a bare
-      # cli_path is searched on it (#spawn_search_path). No PATH, no step.
-      on_path = executable_on_path('claude', ENV.fetch('PATH', nil))
+      # cli_path is searched on it (#spawn_search_path). With no PATH, the
+      # system directories, as Ruby's own lookup would search them.
+      on_path = executable_on_path('claude', ENV.fetch('PATH', DEFAULT_DISCOVERY_SEARCH_PATH))
       return on_path if on_path
 
       # Try common locations. The home-relative ones are skipped when no

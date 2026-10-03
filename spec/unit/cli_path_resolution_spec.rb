@@ -371,6 +371,33 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'CLI path resolution' do
 
       expect(transport.build_command.first).to eq(File.join(app, 'bin', 'claude'))
     end
+
+    # No PATH at all (a service, a minimal container): Ruby's own lookup
+    # falls back to the system directories, and so does discovery — without
+    # the `.` Ruby's default ends with, so nothing is picked up from the
+    # working directory.
+    it 'searches the system directories when PATH is unset' do
+      install_fake_cli('sys/claude')
+      stub_const("#{described_class}::DEFAULT_DISCOVERY_SEARCH_PATH", File.join(root, 'sys'))
+
+      with_env('PATH' => nil, 'HOME' => root) do
+        expect(legs_executed).to eq(%w[probe:sys/claude spawn:sys/claude])
+      end
+    end
+
+    it 'does not pick up a claude in the working directory when PATH is unset' do
+      install_fake_cli('app/claude')
+      stub_const("#{described_class}::DEFAULT_DISCOVERY_SEARCH_PATH", File.join(root, 'no-such-directory'))
+
+      found = with_env('PATH' => nil, 'HOME' => root) do
+        Dir.chdir(app) { described_class.new(options).build_command.first }
+      rescue ClaudeAgentSDK::CLINotFoundError
+        nil
+      end
+
+      # Whatever this host has in the well-known locations, not ./claude.
+      expect(found).not_to eq(File.join(app, 'claude'))
+    end
   end
 
   # #build_command is not public API, but a transport that runs the CLI
