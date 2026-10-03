@@ -27,11 +27,12 @@ ClaudeAgentSDK::CLIInstaller.installed_path
 `install` is idempotent and safe to run concurrently, so it fits `bin/setup`, a cached Docker layer, and every process of a multi-process boot:
 
 - The install directory's `VERSION` file records the installed version, verified SHA-256, and target platform (OS, architecture, libc). The shortcut re-hashes the vendored binary (~0.1s for the real 245MB binary) and only skips the download when all three match — a truncated binary or a cache copied from another platform is reinstalled instead of trusted. It makes **no network request**, so same-platform repeat boots work offline — with a pinned concrete version; `'stable'`/`'latest'` must always re-resolve through the endpoint, which is one more reason to pin in production. Older one- or two-line metadata lacks a platform and requires one online reinstall to migrate; subsequent pinned installs work offline again.
-- An exclusive `flock` on `<dir>/.install.lock` covers the whole check → download → place → record sequence, so parallel installs into one directory don't race; the loser simply observes the finished install.
+- An exclusive `flock` on `<dir>/.install.lock` covers the whole check → download → record → place sequence, so parallel installs into one directory don't race — whether they come from separate processes, threads, or fibers of one `Async` reactor (a waiting installer polls the lock rather than blocking its thread on it); the loser simply observes the finished install.
+- The shortcut also works where the running process cannot write the install directory: an image built as root and run as another user, or a read-only root filesystem. `install` cannot open its lock file there (`EACCES`, `EROFS` or `EPERM`), and still returns the binary when the request is a concrete version that is already installed and intact — the same `VERSION` and SHA-256 check, without the lock. Anything that would need a write raises `CLIInstallError` as before: a dist-tag (`'stable'` / `'latest'`, which has to be resolved and may have to be installed), a different version, a damaged binary, an empty directory.
 
 Failures (unsupported platform, invalid version, HTTP error, response-size cap, oversized download, checksum mismatch, filesystem errors) raise `ClaudeAgentSDK::CLIInstallError`.
 
-**A failed install never breaks a working one.** The new binary is downloaded to a temp file, checksum-verified and recorded, and only then renamed into place — the rename is the last step, and nothing can fail after it. So a failed upgrade leaves the previously installed binary intact and runnable (the SDK keeps working), and the next `install` redoes it cleanly. A first install that fails leaves nothing behind at all.
+**A failed install never breaks a working one.** The new binary is downloaded to a temp file, checksum-verified and recorded, and only then renamed into place — the rename is the last step, and nothing can fail after it. So a failed upgrade leaves the previously installed binary intact and runnable (the SDK keeps working), and the next `install` redoes it cleanly. The binary and `VERSION` are also flushed to disk (`fsync`) before they are renamed into place, so a machine that loses power right after an install comes back with a complete binary or with the previous state, not with a truncated file under the published name. A first install that fails never publishes a binary. It can leave the install directory and its `.install.lock` behind and — when the step that failed is the last one, the rename — a `VERSION` that already records the version. Nothing trusts that file on its own: discovery finds no binary there and moves on, and the next `install` redoes it cleanly.
 
 ## When the pin moves
 
@@ -95,6 +96,17 @@ RUN bin/rails claude_agent_sdk:install_cli
 ```
 
 The variable is deliberately not rake's conventional `VERSION`, which Rails' `db:migrate` uses and build environments often export for an app version or git SHA. An empty `CLAUDE_CLI_VERSION` means the gem's pin.
+
+## Proxies and custom CAs
+
+The installer downloads over HTTPS with Ruby's `Net::HTTP` and reads the usual environment variables:
+
+- **`HTTPS_PROXY`** (or `https_proxy`) names the proxy to download through, as an `http://` URL: `HTTPS_PROXY=http://proxy.corp.example:3128`, with `user:password@` in front of the host for an authenticating proxy (percent-encode special characters). The download is tunnelled through it with `CONNECT`, so TLS still ends at the release endpoint.
+- **`NO_PROXY`** (or `no_proxy`) lists the hosts, domain suffixes and IP ranges to reach directly, separated by commas.
+- With neither spelling of `HTTPS_PROXY` set, `Net::HTTP`'s own default applies: it goes through `http_proxy` when that is set.
+- **`SSL_CERT_FILE`** points OpenSSL at another CA bundle, which is what a TLS-inspecting proxy needs. Set it in the environment the process starts with. The server certificate is always verified; there is no switch to turn that off.
+
+This is not everything `curl` understands. `ALL_PROXY` is not read, and only an `http://` proxy URL is used: a value without a scheme (`proxy.corp.example:3128`), a `socks5://` proxy or an `https://` one is ignored.
 
 ## Supported platforms
 
