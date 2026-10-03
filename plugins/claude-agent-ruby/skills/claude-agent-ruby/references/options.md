@@ -38,7 +38,7 @@ Notes:
 
 ## Tools and permissions
 
-- `tools`: Set base tools (Array, Hash, or `ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code')`).
+- `tools`: Set base tools (Array, a comma-separated String such as `'Read,Grep'`, Hash, or `ClaudeAgentSDK::ToolsPreset.new(preset: 'claude_code')`). Before 1.2.0 a String was ignored and the session got every built-in tool.
 - `allowed_tools`: Explicit allow-list (examples: `Read`, `Write`, `Edit`, `Bash`, and `mcp__name__tool`). Passing `Skill` here directly is deprecated — use `skills:` instead.
 - `disallowed_tools`: Explicit block-list.
 - `permission_mode`: Valid values: `default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`.

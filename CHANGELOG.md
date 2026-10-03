@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-03
+
+Fixes from a review of the whole SDK, a reference for every option (`docs/options.md`), and Claude Code 2.1.288 as the pinned CLI. Settings the SDK used to drop without an error now take effect — hook outputs and `sandbox:` Hashes in Ruby spelling, a `tools:` String, option Hashes with a Symbol `type` — so read the entries in bold before upgrading: they say what changes for code that relied on the old behavior.
+
 ### Added
 - **`docs/options.md`**: a reference for every `ClaudeAgentOptions` attribute — its type, its default, and the CLI flag, `initialize` field or environment variable it becomes — plus what an option reads when it is left out, passed as `nil` or given a configured default, and the environment variables the SDK reads. It documents options that had no entry anywhere before (`extra_args`, `include_partial_messages`, `include_hook_events`, `task_budget`, `strict_mcp_config`) and the `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` ceiling from 1.1.0. A spec checks every row against the code. `docs/client.md` documents the `transport:` argument of `query` / `ask`. ([#155](https://github.com/ya-luotao/claude-agent-sdk-ruby/pull/155))
 - `Pathname` where a path goes: `settings:` (a settings file; used to send no `--settings` at all), `SystemPromptFile#path`, the `path` of a `{ type: 'file' }` system prompt Hash, and a plugin path, typed or Hash (these failed at connect with `no implicit conversion of Pathname into String`). `tools:` is signed `String` as well; the RBS signatures are widened accordingly. ([#160](https://github.com/ya-luotao/claude-agent-sdk-ruby/pull/160))
