@@ -72,6 +72,19 @@ module TestHelpers
     }
   end
 
+  # #connect over a stubbed Open3.popen3, then wait for the stderr drain it
+  # starts. An example that never closes its transport leaves that thread
+  # running: given an rspec double as stderr, it reads it after the example,
+  # when the double has expired, dies, and Ruby prints the report on $stderr in
+  # whichever example is running then — inside an `output.to_stderr` matcher, a
+  # failure (seen on Ruby 4.0). Stub stdout and stderr with StringIOs; the join
+  # turns a double that comes back into a failure of its own example.
+  def connect_draining_stderr(transport)
+    transport.connect
+    drain = transport.instance_variable_get(:@stderr_task)
+    raise 'the stderr drain did not finish' if drain && !drain.join(5)
+  end
+
   # Helper to create a mock transport
   def mock_transport
     double('Transport').tap do |transport|

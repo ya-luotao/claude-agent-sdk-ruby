@@ -773,10 +773,9 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       stdin = instance_double(IO, close: nil)
       allow(Open3).to receive(:popen3) do |_env, *rest|
         captured_opts = rest.last.is_a?(Hash) ? rest.last : {}
-        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
-         instance_double(Process::Waiter)]
+        [stdin, StringIO.new, StringIO.new, instance_double(Process::Waiter)]
       end
-      transport.connect
+      connect_draining_stderr(transport)
       captured_opts
     end
 
@@ -812,10 +811,9 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(stdin).to receive(:close)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
-         instance_double(Process::Waiter)]
+        [stdin, StringIO.new, StringIO.new, instance_double(Process::Waiter)]
       end
-      transport.connect
+      connect_draining_stderr(transport)
       captured_env
     end
 
@@ -1012,12 +1010,11 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
-         instance_double(Process::Waiter)]
+        [stdin, StringIO.new, StringIO.new, instance_double(Process::Waiter)]
       end
       allow(stdin).to receive(:close)
 
-      transport.connect
+      connect_draining_stderr(transport)
 
       expect(captured_env['SYMBOL_KEY']).to eq('value')
       expect(captured_env['STRING_KEY']).to eq('value2')
@@ -1035,11 +1032,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
-         instance_double(Process::Waiter)]
+        [stdin, StringIO.new, StringIO.new, instance_double(Process::Waiter)]
       end
 
-      transport.connect
+      connect_draining_stderr(transport)
 
       # Pre-fix ||= let the inherited 'cli' win, mis-attributing telemetry.
       expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('sdk-rb')
@@ -1062,11 +1058,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
-         instance_double(Process::Waiter)]
+        [stdin, StringIO.new, StringIO.new, instance_double(Process::Waiter)]
       end
 
-      transport.connect
+      connect_draining_stderr(transport)
 
       expect(captured_env['CLAUDE_AGENT_SDK_VERSION']).to eq(ClaudeAgentSDK::VERSION)
     end
@@ -1083,12 +1078,11 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
-         instance_double(Process::Waiter)]
+        [stdin, StringIO.new, StringIO.new, instance_double(Process::Waiter)]
       end
       allow(stdin).to receive(:close)
 
-      transport.connect
+      connect_draining_stderr(transport)
 
       expect(captured_env['CLAUDE_CODE_ENTRYPOINT']).to eq('custom-entrypoint')
     end
@@ -1105,12 +1099,11 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
-         instance_double(Process::Waiter)]
+        [stdin, StringIO.new, StringIO.new, instance_double(Process::Waiter)]
       end
       allow(stdin).to receive(:close)
 
-      transport.connect
+      connect_draining_stderr(transport)
 
       expect(captured_env['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING']).to eq('true')
     end
@@ -1127,12 +1120,11 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       allow(transport).to receive(:check_claude_version)
       allow(Open3).to receive(:popen3) do |env, *_args|
         captured_env = env
-        [stdin, instance_double(IO, set_encoding: nil), instance_double(IO, set_encoding: nil),
-         instance_double(Process::Waiter)]
+        [stdin, StringIO.new, StringIO.new, instance_double(Process::Waiter)]
       end
       allow(stdin).to receive(:close)
 
-      transport.connect
+      connect_draining_stderr(transport)
 
       # FGTS env var was reverted in Python SDK v0.1.48 due to 400 errors on proxies/Bedrock/Vertex
       expect(captured_env).not_to have_key('CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING')
