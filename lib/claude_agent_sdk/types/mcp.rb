@@ -109,6 +109,25 @@ module ClaudeAgentSDK
         config
       end
     end
+
+    private
+
+    # The CLI echoes a server's config back with its credentials (headers, a
+    # token in the url, args). A Hash config prints like a raw Hash config in
+    # ClaudeAgentOptions#mcp_servers; the typed proxy and SDK configs print
+    # as they are.
+    def inspect_attributes
+      super.map { |name, value| [name, name == 'config' ? inspect_config(value) : value] }
+    end
+
+    def inspect_config(config)
+      case config # not config.is_a?: a BasicObject has no such method
+      when Hash then inspect_mcp_server_config(config)
+      else config
+      end
+    rescue StandardError
+      '[FILTERED]'
+    end
   end
 
   # Response from get_mcp_status containing all server statuses
@@ -138,7 +157,8 @@ module ClaudeAgentSDK
     attr_accessor :command, :args, :env
     attr_reader :type
 
-    inspect_filtered :env
+    # `args` carries flags such as `--api-key <key>`.
+    inspect_filtered :env, :args
 
     def initialize(attributes = {})
       super
@@ -173,6 +193,14 @@ module ClaudeAgentSDK
       result[:headers] = @headers if @headers
       result
     end
+
+    private
+
+    # The url can carry a token (userinfo, path or query): #inspect shows
+    # its scheme and host.
+    def inspect_attributes
+      super.map { |name, value| [name, name == 'url' ? inspect_filter_url(value) : value] }
+    end
   end
 
   class McpHttpServerConfig < Type
@@ -194,6 +222,14 @@ module ClaudeAgentSDK
       result = { type: @type, url: @url }
       result[:headers] = @headers if @headers
       result
+    end
+
+    private
+
+    # The url can carry a token (userinfo, path or query): #inspect shows
+    # its scheme and host.
+    def inspect_attributes
+      super.map { |name, value| [name, name == 'url' ? inspect_filter_url(value) : value] }
     end
   end
 
