@@ -2060,7 +2060,10 @@ module ClaudeAgentSDK
     # starts a branch that was dropped — and so is the old result of a call
     # the conversation was rewound to and answered again: the chain's own
     # result for a tool_use_id wins, and at most one off-chain result per id
-    # is ever added (the first in file order). +skip_flagged+ additionally
+    # is ever added (the first in file order). Nor does a result that a user
+    # or assistant entry went on from come back: after a rewind to the call
+    # that continued with a new prompt, it heads the dropped branch.
+    # +skip_flagged+ additionally
     # rejects sidechain / meta / team entries (main transcripts; a subagent
     # transcript is sidechain throughout).
     def reattach_parallel_tool_results(chain, entries, skip_flagged:)
@@ -2098,11 +2101,17 @@ module ClaudeAgentSDK
       end
       return {} if (tool_use_ids - answered).empty?
 
+      continued = continued_from(entries)
       found = {}
       entries.each_with_index do |entry, position|
         next unless entry['type'] == 'user' && assistants.include?(entry['parentUuid'])
         next if on_chain.include?(entry['uuid'])
         next if skip_flagged && off_main_conversation?(entry)
+        # A result something went on from started a branch that a rewind
+        # dropped (the conversation was rewound to the call and went on
+        # with a new prompt). The results of parallel calls are never
+        # continued from: the conversation goes on from the last one written.
+        next if continued.include?(entry['uuid'])
 
         ids = content_block_values(entry, 'tool_result', 'tool_use_id')
         next if ids.empty? || !ids.all? { |id| tool_use_ids.include?(id) && !answered.include?(id) }
@@ -2114,6 +2123,26 @@ module ClaudeAgentSDK
         (found[entry['parentUuid']] ||= []) << [position, entry]
       end
       found
+    end
+
+    # uuids of the entries a user or assistant entry continues from: its
+    # nearest user / assistant ancestor, reached through entries that are
+    # neither (hook attachments, system entries) — so a hook attachment
+    # written after an entry does not count as going on from it.
+    def continued_from(entries)
+      by_uuid = {}
+      entries.each { |entry| by_uuid[entry['uuid']] = entry if entry['uuid'] }
+      continued = Set.new
+      entries.each do |entry|
+        next unless %w[user assistant].include?(entry['type'])
+
+        seen = Set.new
+        parent = by_uuid[entry['parentUuid']]
+        parent = by_uuid[parent['parentUuid']] while parent && !%w[user assistant].include?(parent['type']) &&
+                                                     seen.add?(parent['uuid'])
+        continued << parent['uuid'] if parent && %w[user assistant].include?(parent['type'])
+      end
+      continued
     end
 
     # Values of +key+ over the +type+ content blocks of an entry's message

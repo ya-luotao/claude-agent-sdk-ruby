@@ -204,6 +204,71 @@ RSpec.describe 'session readers and parallel tool calls' do
       expect(transcript.labels(messages)).to eq(%w[prompt use result_new current answer])
     end
 
+    # A rewind to the tool call that went on with a new prompt instead of a
+    # new result: the old result started a branch that continued and was
+    # dropped. It is not the result of a parallel call — those are never
+    # continued from, the conversation goes on from the last one written.
+    #
+    #   use ─ result_old ─ abandoned
+    #     └─ new_prompt ─ answer
+    def rewound_to_call_then_prompted(transcript, through_attachment: false)
+      transcript.prompt(:prompt, 'Read a.rb')
+      transcript.assistant(:use, transcript.tool_use('toolu_a'), parent: :prompt)
+      transcript.tool_result(:result_old, 'toolu_a', 'contents of a.rb', parent: :use)
+      transcript.attachment(:hook_old, parent: :result_old) if through_attachment
+      transcript.assistant(:abandoned, transcript.text('a.rb defines Foo.'),
+                           parent: through_attachment ? :hook_old : :result_old, message: 'msg_02')
+      transcript.prompt(:new_prompt, 'Never mind, summarize the README instead', parent: :use)
+      transcript.assistant(:answer, transcript.text('The README says hello.'), parent: :new_prompt, message: 'msg_03')
+    end
+
+    it 'does not pull in the old result of a branch that went on, after a rewind to the call' do
+      transcript = main_transcript { |t| rewound_to_call_then_prompted(t) }
+      transcript.write(transcript_path(session_id))
+
+      messages = ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: cwd)
+
+      expect(transcript.labels(messages)).to eq(%w[prompt use new_prompt answer])
+    end
+
+    it 'does not pull in the old result of a branch that went on, after a rewind to the call, from a store' do
+      transcript = main_transcript { |t| rewound_to_call_then_prompted(t) }
+      store.append({ 'project_key' => ClaudeAgentSDK.project_key_for_directory(cwd), 'session_id' => session_id },
+                   transcript.store_entries)
+
+      messages = ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: cwd, session_store: store)
+
+      expect(transcript.labels(messages)).to eq(%w[prompt use new_prompt answer])
+    end
+
+    it 'does not pull in the old result when the branch went on through a hook attachment' do
+      transcript = main_transcript { |t| rewound_to_call_then_prompted(t, through_attachment: true) }
+      transcript.write(transcript_path(session_id))
+
+      messages = ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: cwd)
+
+      expect(transcript.labels(messages)).to eq(%w[prompt use new_prompt answer])
+    end
+
+    # Only a user or assistant entry continuing from a result marks a branch
+    # that went on; a hook attachment written after the result does not.
+    it 'still pulls in a parallel result that only a hook attachment follows' do
+      transcript = main_transcript do |t|
+        t.prompt(:prompt, 'Read a.rb and b.rb')
+        t.assistant(:use_a, t.tool_use('toolu_a'), parent: :prompt)
+        t.assistant(:use_b, t.tool_use('toolu_b'), parent: :use_a)
+        t.tool_result(:result_a, 'toolu_a', 'contents of a.rb', parent: :use_a)
+        t.attachment(:hook_a, parent: :result_a)
+        t.tool_result(:result_b, 'toolu_b', 'contents of b.rb', parent: :use_b)
+        t.assistant(:answer, t.text('Both files read.'), parent: :result_b, message: 'msg_02')
+      end
+      transcript.write(transcript_path(session_id))
+
+      messages = ClaudeAgentSDK.get_session_messages(session_id: session_id, directory: cwd)
+
+      expect(transcript.labels(messages)).to eq(%w[prompt use_a use_b result_a result_b answer])
+    end
+
     # Two results for one call that the conversation did not take up (the
     # tool was run twice): one of them comes back, the first written.
     it 'pulls in at most one result per tool call' do
