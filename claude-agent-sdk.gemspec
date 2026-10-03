@@ -34,8 +34,13 @@ Gem::Specification.new do |spec|
   # spec/unit/gemspec_spec.rb asserts both select the same set. Not a hard
   # failure: Bundler evaluates this file for path/git-sourced consumers, and
   # raising here would break their bundle, not just a release build.
+  #
+  # .yardopts ships because rubydoc.info builds the API docs from the gem's
+  # own files: without it YARD runs with its defaults, which list everything
+  # tagged `@api private` (the tag is the SemVer boundary) and skip the
+  # CHANGELOG / UPGRADING pages.
   tracked = begin
-    IO.popen(%w[git ls-files -z lib sig docs README.md LICENSE CHANGELOG.md UPGRADING-1.0.md],
+    IO.popen(%w[git ls-files -z lib sig docs README.md LICENSE CHANGELOG.md UPGRADING-1.0.md .yardopts],
              chdir: __dir__, err: File::NULL, &:read).split("\x0")
   rescue SystemCallError
     []
@@ -45,7 +50,7 @@ Gem::Specification.new do |spec|
                   # .rake: the Railtie's tasks; .tt: the Rails generator's templates;
                   # sig/: the RBS signatures of the public API (+ manifest.yaml).
                   Dir.glob(['lib/**/*.{rb,rake,tt}', 'sig/**/*.{rbs,yaml}', 'docs/**/*.md', 'README.md', 'LICENSE',
-                            'CHANGELOG.md', 'UPGRADING-1.0.md'],
+                            'CHANGELOG.md', 'UPGRADING-1.0.md', '.yardopts'],
                            base: __dir__)
                 else
                   tracked

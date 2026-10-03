@@ -1,4 +1,4 @@
-![Claude Agent SDK for Ruby — a ruby connecting code to terminal, tools, and messages](assets/readme-banner.webp)
+![Claude Agent SDK for Ruby — a ruby connecting code to terminal, tools, and messages](https://raw.githubusercontent.com/ya-luotao/claude-agent-sdk-ruby/main/assets/readme-banner.webp)
 
 # Claude Agent SDK for Ruby
 
@@ -6,17 +6,17 @@
 [![CI](https://github.com/ya-luotao/claude-agent-sdk-ruby/actions/workflows/ci.yml/badge.svg)](https://github.com/ya-luotao/claude-agent-sdk-ruby/actions/workflows/ci.yml)
 [![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.2-CC342D)](https://www.ruby-lang.org/)
 [![Docs](https://img.shields.io/badge/docs-rubydoc.info-blue)](https://rubydoc.info/gems/claude-agent-sdk)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/LICENSE)
 
 A Ruby SDK for the [Claude Code](https://docs.claude.com/en/docs/claude-code-overview) agent runtime, built for running agents in production Ruby and Rails apps. It has the same capabilities as the official [TypeScript](https://github.com/anthropics/claude-agent-sdk-typescript) and [Python](https://github.com/anthropics/claude-agent-sdk-python) SDKs, plus what a Rails deploy needs around them: a generator and CLI-vendoring rake task, callbacks that are safe to touch ActiveRecord from, a pinned CLI binary, built-in OpenTelemetry tracing, and transcript mirroring to your own storage.
 
-> **Unofficial and community-maintained.** This project is not affiliated with or supported by Anthropic. It tracks the official SDKs release by release; see the [CHANGELOG](CHANGELOG.md) for the currently synced version.
+> **Unofficial and community-maintained.** This project is not affiliated with or supported by Anthropic. It tracks the official SDKs release by release; see the [CHANGELOG](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/CHANGELOG.md) for the currently synced version.
 
-> **Upgrading from 0.x?** 1.0 raises on unknown keys, limits `#[]` to attributes and adds `SessionStoreError`. [UPGRADING-1.0.md](UPGRADING-1.0.md) has the checklist.
+> **Upgrading from 0.x?** 1.0 raises on unknown keys, limits `#[]` to attributes and adds `SessionStoreError`. [UPGRADING-1.0.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/UPGRADING-1.0.md) has the checklist.
 
 ## Highlights
 
-- **Rails integration.** `bin/rails generate claude_agent_sdk:install` writes the initializer and `bin/rails claude_agent_sdk:install_cli` vendors the CLI; [docs/rails.md](docs/rails.md) covers jobs, ActionCable streaming, session resumption, and solid_queue fiber workers (`callback_scheduling: :inline`).
+- **Rails integration.** `bin/rails generate claude_agent_sdk:install` writes the initializer and `bin/rails claude_agent_sdk:install_cli` vendors the CLI; [docs/rails.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/rails.md) covers jobs, ActionCable streaming, session resumption, and solid_queue fiber workers (`callback_scheduling: :inline`).
 - **Callbacks that are safe around ActiveRecord.** Tool handlers, hooks, permission callbacks, and message blocks run on a plain thread by default, outside the SDK's fiber scheduler, so thread-keyed libraries (ActiveRecord, `pg`, per-thread caches) behave as they do everywhere else in your app. `ClaudeAgentSDK::Railtie.callback_wrapper` runs them in the Rails executor so connections go back to the pool, without deadlocking development code reloading.
 - **Hermetic deploys.** `CLIInstaller` vendors a checksum-verified CLI binary, pinned to the version each gem release is tested with, so production never depends on a global `npm install`.
 - **Built-in OpenTelemetry observer** with Langfuse support; no third-party instrumentation library required.
@@ -39,14 +39,25 @@ Then `bundle install`, or install directly with `gem install claude-agent-sdk`. 
 **Prerequisites**
 
 - Ruby 3.2 or newer
+- Credentials for Claude Code: `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or a login the CLI has already stored (see [Authentication](#authentication))
 - Claude Code CLI 2.0.0 or newer, either installed globally (`npm install -g @anthropic-ai/claude-code`) or vendored with `CLIInstaller`:
 
 ```ruby
-# bin/setup or a cached Docker layer — pin a concrete version in production
-ClaudeAgentSDK::CLIInstaller.install(version: '2.1.220')  # => "/app/vendor/claude/claude"
+# bin/setup or a cached Docker layer: the CLI version this gem release was tested with
+ClaudeAgentSDK::CLIInstaller.install_pinned  # => "/app/vendor/claude/claude"
 ```
 
-The vendored binary is found ahead of `PATH`, installs are idempotent and concurrency-safe, and a failed upgrade never breaks a working install. See [docs/cli-installer.md](docs/cli-installer.md) for the full behaviour, supported platforms, and the CLI discovery order.
+`install_pinned` installs `CLIInstaller::PINNED_CLI_VERSION`, so upgrading the gem carries the CLI forward with it; `CLIInstaller.install(version: 'x.y.z')` pins a version of your own. The vendored binary is found ahead of `PATH`, installs are idempotent and concurrency-safe, and a failed upgrade never breaks a working install. See [docs/cli-installer.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/cli-installer.md) for the full behaviour, supported platforms, and the CLI discovery order.
+
+### Authentication
+
+The SDK holds no credentials of its own. The `claude` process it starts authenticates the way Claude Code does, with one of:
+
+- `ANTHROPIC_API_KEY`, in the environment of your Ruby process (the CLI inherits it) or per session with `ClaudeAgentOptions.new(env: { 'ANTHROPIC_API_KEY' => key })`
+- `CLAUDE_CODE_OAUTH_TOKEN`, a long-lived token for a Claude subscription (`claude setup-token` creates one), set the same way
+- a login the CLI has already stored for the user your process runs as (`claude auth login`)
+
+A machine with none of them, such as a fresh container or a CI runner, does not fail at startup. The first prompt comes back as an `AssistantMessage` whose `error` is `'authentication_failed'` (its text is "Not logged in · Please run /login", a command an SDK host cannot run), followed by a `ResultMessage` with `is_error` set. `query()` and `ask` then raise `ResultError` with `terminal_reason == 'api_error'`; a `Client` session stays open, so check the result's `is_error` there. A key or token the API rejects ends the same way, with `api_error_status` 401, but only after the CLI has retried: watch for `APIRetryMessage` (ten of them over about three minutes when tested) rather than waiting for the error. [docs/errors.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/errors.md) shows how to handle both.
 
 ### Rails in a minute
 
@@ -70,7 +81,7 @@ class SummarizeTicketJob < ApplicationJob
 end
 ```
 
-The block runs on a plain thread, so ActiveRecord calls inside it just work. [docs/rails.md](docs/rails.md) continues with multi-turn sessions, ActionCable streaming, and fiber workers.
+The block runs on a plain thread, so ActiveRecord calls inside it just work. [docs/rails.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/rails.md) continues with multi-turn sessions, ActionCable streaming, and fiber workers.
 
 ## Quick Start
 
@@ -89,7 +100,7 @@ end
 puts result
 ```
 
-It raises the same errors as `query()` (see [docs/errors.md](docs/errors.md)), plus `CLIConnectionError` if the stream ends without a result.
+It raises the same errors as `query()` (see [docs/errors.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/errors.md)), plus `CLIConnectionError` if the stream ends without a result.
 
 ### `query()` — one-shot and streaming
 
@@ -121,7 +132,7 @@ end
 
 ### `Client` — bidirectional sessions
 
-`Client` keeps a session open so you can send follow-up queries, interrupt, switch models, and use hooks, permission callbacks, and custom tools. `Client.open` connects, yields the client, and always disconnects when the block exits, even on an exception. It returns the block's value.
+`Client` keeps a session open so you can send follow-up queries, interrupt, and switch the model or the permission mode mid-session. (Hooks, permission callbacks and custom tools are not a reason to choose it: they work with `query()` and `ask` too.) `Client.open` connects, yields the client, and always disconnects when the block exits, even on an exception. It returns the block's value.
 
 ```ruby
 require 'claude_agent_sdk'
@@ -148,7 +159,7 @@ ensure
 end
 ```
 
-See [docs/client.md](docs/client.md) for `interrupt`, mid-session model and permission switching, MCP status, and custom transports.
+See [docs/client.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/client.md) for `interrupt`, mid-session model and permission switching, MCP status, and custom transports.
 
 ### Custom tools (SDK MCP servers)
 
@@ -167,7 +178,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
-A String return is sent to Claude as a single text block. Return a Hash instead (`{ content: [...], is_error: true }`) to flag an error, attach `structured_content:`, or send several content blocks or images. Arguments are validated against the tool's JSON Schema before your handler runs, and handler exceptions are reported back to the model in-band so it can self-correct. See [docs/mcp-servers.md](docs/mcp-servers.md) for resources, prompts, mixed SDK + external servers, and schema details.
+A String return is sent to Claude as a single text block. Return a Hash instead (`{ content: [...], is_error: true }`) to flag an error, attach `structured_content:`, or send several content blocks or images. Arguments are validated against the tool's JSON Schema before your handler runs, and handler exceptions are reported back to the model in-band so it can self-correct. See [docs/mcp-servers.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/mcp-servers.md) for resources, prompts, mixed SDK + external servers, and schema details.
 
 ### Hooks and permission callbacks
 
@@ -180,23 +191,24 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
-See [docs/hooks-and-permissions.md](docs/hooks-and-permissions.md) for the full event list and worked examples.
+See [docs/hooks-and-permissions.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/hooks-and-permissions.md) for the full event list and worked examples.
 
 ## Documentation
 
 | Topic | Guide |
 |-------|-------|
-| `Client` advanced features and custom transports | [docs/client.md](docs/client.md) |
-| SDK MCP servers: tools, resources, prompts, schema compatibility | [docs/mcp-servers.md](docs/mcp-servers.md) |
-| All hook events, typed inputs, permission callbacks | [docs/hooks-and-permissions.md](docs/hooks-and-permissions.md) |
-| Structured output, thinking, budget, fallback and advisor models, sandbox, bare mode, checkpointing | [docs/configuration.md](docs/configuration.md) |
-| Session listing, reading, renaming, tagging, forking, resume-at-message | [docs/sessions.md](docs/sessions.md) |
-| Subagent capabilities, event contracts, and minimal example | [docs/subagents.md](docs/subagents.md) |
-| OpenTelemetry tracing, Langfuse, custom observers | [docs/observability.md](docs/observability.md) |
-| Rails: generator, `install_cli` task, callback wrapper, fiber safety, solid_queue fiber workers, ActionCable, jobs | [docs/rails.md](docs/rails.md) |
-| Vendoring a pinned CLI binary and CLI discovery order | [docs/cli-installer.md](docs/cli-installer.md) |
-| Hash-key rule, attribute access, and the message, content block, and configuration type reference | [docs/types.md](docs/types.md) |
-| Error handling, exception hierarchy, timeouts | [docs/errors.md](docs/errors.md) |
+| `Client` advanced features and custom transports | [docs/client.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/client.md) |
+| SDK MCP servers: tools, resources, prompts, schema compatibility | [docs/mcp-servers.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/mcp-servers.md) |
+| All hook events, typed inputs, permission callbacks | [docs/hooks-and-permissions.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/hooks-and-permissions.md) |
+| Structured output, thinking, budget, fallback and advisor models, sandbox, bare mode, session isolation, checkpointing | [docs/configuration.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/configuration.md) |
+| Every `ClaudeAgentOptions` attribute: type, default, and the CLI flag or protocol field it becomes; environment variables | [docs/options.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/options.md) |
+| Session listing, reading, renaming, tagging, forking, resume-at-message | [docs/sessions.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/sessions.md) |
+| Subagent capabilities, event contracts, and minimal example | [docs/subagents.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/subagents.md) |
+| OpenTelemetry tracing, Langfuse, custom observers | [docs/observability.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/observability.md) |
+| Rails: generator, `install_cli` task, callback wrapper, fiber safety, solid_queue fiber workers, ActionCable, jobs | [docs/rails.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/rails.md) |
+| Vendoring a pinned CLI binary and CLI discovery order | [docs/cli-installer.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/cli-installer.md) |
+| Hash-key rule, attribute access, and the message, content block, and configuration type reference | [docs/types.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/types.md) |
+| Error handling, exception hierarchy, timeouts | [docs/errors.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/errors.md) |
 
 API reference: [rubydoc.info/gems/claude-agent-sdk](https://rubydoc.info/gems/claude-agent-sdk). Available built-in tools: [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code/settings#tools-available-to-claude).
 
@@ -223,18 +235,18 @@ All three SDKs drive the same CLI over the same protocol, so capabilities line u
 | Bidirectional `Client` | ✅ | ✅ | ✅ |
 | Streaming input | `AsyncIterable` | `AsyncIterable` | `Enumerator` |
 | Custom tools (SDK MCP servers) | `tool()` | `@tool` decorator | `create_tool` block |
-| Hooks (all 27 events) | ✅ | ✅ | ✅ |
+| Hooks (all 27 events) | ✅ | 10 typed, the rest by name | ✅ |
 | Permission callbacks | ✅ | ✅ | ✅ |
 | Structured output | ✅ | ✅ | ✅ |
 | All 28 message types | ✅ | partial | ✅ |
 | [Sandbox](https://github.com/anthropic-experimental/sandbox-runtime) settings | ✅ | partial | ✅ |
-| Bare mode (`--bare`) | ✅ | ✅ | ✅ |
+| Bare mode (`--bare`) | ✅ | via `extra_args` | ✅ |
 | File checkpointing & rewind | ✅ | ✅ | ✅ |
 | Session browsing & mutations | ✅ | ✅ | ✅ |
 | Programmatic subagents | ✅ | ✅ | ✅ |
 | CLI binary | bundled | bundled | vendored on demand (`CLIInstaller`) |
 | Observability (OTel / Langfuse) | via [Arize](https://github.com/Arize-ai/openinference) | — | ✅ built-in |
-| Custom transport (pluggable I/O) | — | — | ✅ |
+| Custom transport (pluggable I/O) | — | ✅ | ✅ |
 | Rails integration | — | — | ✅ |
 
 Types are plain Ruby classes with `attr_accessor` and keyword arguments, mirroring the field names of the TypeScript Zod schemas and Python dataclasses; there is no runtime type checking.
@@ -264,8 +276,8 @@ CI runs the suite and RuboCop on Ruby 3.2, 3.3, and 3.4 on Linux, the suite on m
 
 ## Contributing
 
-Bug reports and pull requests are welcome on [GitHub](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues). Please include a failing spec with bug reports where possible, and keep pull requests focused on one change; [CONTRIBUTING.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/CONTRIBUTING.md) has the details. Report security vulnerabilities privately, as described in [SECURITY.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/SECURITY.md). Releases follow [Semantic Versioning](https://semver.org/) and are recorded in the [CHANGELOG](CHANGELOG.md).
+Bug reports and pull requests are welcome on [GitHub](https://github.com/ya-luotao/claude-agent-sdk-ruby/issues). Please include a failing spec with bug reports where possible, and keep pull requests focused on one change; [CONTRIBUTING.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/CONTRIBUTING.md) has the details. Report security vulnerabilities privately, as described in [SECURITY.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/SECURITY.md). Releases follow [Semantic Versioning](https://semver.org/) and are recorded in the [CHANGELOG](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/CHANGELOG.md).
 
 ## License
 
-Released under the [MIT License](LICENSE).
+Released under the [MIT License](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/LICENSE).

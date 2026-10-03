@@ -69,11 +69,10 @@ Async do
     }
   )
 
-  client = ClaudeAgentSDK::Client.new(options: options)
-  client.connect
-  client.query("Run the bash command: ./foo.sh --help")
-  client.receive_response { |msg| puts msg }
-  client.disconnect
+  ClaudeAgentSDK::Client.open(options: options) do |client|
+    client.query("Run the bash command: ./foo.sh --help")
+    client.receive_response { |msg| puts msg }
+  end
 end.wait
 ```
 
@@ -142,11 +141,10 @@ Async do
     can_use_tool: permission_callback
   )
 
-  client = ClaudeAgentSDK::Client.new(options: options)
-  client.connect
-  client.query("Create a file called test.txt with content 'Hello'")
-  client.receive_response { |msg| puts msg }
-  client.disconnect
+  ClaudeAgentSDK::Client.open(options: options) do |client|
+    client.query("Create a file called test.txt with content 'Hello'")
+    client.receive_response { |msg| puts msg }
+  end
 end.wait
 ```
 

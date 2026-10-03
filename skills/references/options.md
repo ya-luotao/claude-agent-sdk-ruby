@@ -10,13 +10,13 @@ Set defaults once, then override only when needed per call.
 ClaudeAgentSDK.configure do |config|
   config.default_options = {
     model: 'claude-sonnet-5',
-    permission_mode: 'bypassPermissions',
-    env: { 'ANTHROPIC_API_KEY' => ENV.fetch('ANTHROPIC_API_KEY') }
+    permission_mode: 'bypassPermissions'
   }
 end
 ```
 
 Notes:
+- Credentials need no option. The CLI process inherits your process's environment, so `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`) set there already reaches it. Do not copy it into `env` with `ENV.fetch` in an initializer: every boot without the key (asset precompilation in a Docker build, `db:migrate` in CI) would raise `KeyError`.
 - `ClaudeAgentOptions.new(...)` still overrides defaults you pass explicitly.
 - Hash options like `env` and `mcp_servers` merge with configured defaults.
 - Assignment stores a frozen deep copy (containers, typed values and Strings included): change defaults by assigning a new Hash. In-place mutation of `config.default_options` raises `FrozenError`, and later changes to the Hash, typed objects or Strings you passed have no effect. Sessions get mutable copies of the containers and typed values but keep the snapshot's frozen Strings, so reassign `options.model = ...` rather than `options.model << ...`.
@@ -105,7 +105,7 @@ Use `agents:` to configure sub-agent definitions passed to the CLI via the contr
 
 ## Custom transport
 
-`Client.new` accepts `transport_class:` and `transport_args:` to swap the default `SubprocessCLITransport` for a custom transport (must implement the `Transport` interface: `connect`, `write`, `read_messages`, `close`).
+`Client.new` accepts `transport_class:` and `transport_args:` to swap the default `SubprocessCLITransport` for a custom transport; `ClaudeAgentSDK.query` and `.ask` take a ready-made instance as `transport:`. A custom transport must implement `connect`, `write`, `read_messages`, `end_input` and `close` (`ready?` is optional: the SDK never calls it). A transport without `end_input` makes `query` and `ask` hang (or raise `NotImplementedError`, if it subclasses `Transport`). `read_messages` yields each stdout line parsed with `JSON.parse(line, symbolize_names: true)`, and `close` must be safe to call twice.
 
 ```ruby
 client = ClaudeAgentSDK::Client.new(
