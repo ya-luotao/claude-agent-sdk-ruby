@@ -846,15 +846,42 @@ module ClaudeAgentSDK
       raise
     rescue StandardError => e
       send_control_error(request_id, e.message)
+    rescue *FiberBoundary::CALLBACK_FAILURES => e
+      # What is left of the list: a callback (or its callback_wrapper)
+      # failing outside StandardError — NotImplementedError, LoadError,
+      # SystemStackError, SecurityError. No `rescue StandardError` on the
+      # way here caught it, not even the one in #handle_sdk_mcp_request that
+      # turns a resource or prompt handler's failure into its JSON-RPC
+      # error, so the answer an ordinary failure gets is built here.
+      # Unanswered, it would also end this task with an exception Async
+      # treats as fatal for the whole reactor.
+      respond_to_callback_failure(request_id, request_data, e.message)
+    end
+
+    # Answers the request, then leaves the process-exit exception to its
+    # caller to re-raise: the response an ordinary exception from the
+    # callback would have produced, naming the exception by class.
+    #
+    # The text has the format of FiberBoundary.process_exit_message, built
+    # here from the normalized message instead of calling it: that method
+    # joins the class name to the raw message, which raises
+    # Encoding::CompatibilityError for an encoding that is not
+    # ASCII-compatible (UTF-16). Raised in the rescue clause this runs in,
+    # that error would leave the request unanswered and replace the exit.
+    # +error+ is only read, never changed.
+    def respond_to_process_exit(request_id, request_data, error)
+      detail = wire_text(error.message)
+      message = detail.empty? || detail == error.class.name ? error.class.name : "#{error.class}: #{detail}"
+      respond_to_callback_failure(request_id, request_data, message)
     end
 
     # The response an ordinary exception from the callback would have
-    # produced, with the process-exit exception named by class: an error
-    # control response for hooks / can_use_tool; for SDK MCP requests an
-    # in-band isError result (tools/call) or a JSON-RPC internal error
-    # (resources/read, prompts/get), inside a successful control response.
-    def respond_to_process_exit(request_id, request_data, error)
-      message = FiberBoundary.process_exit_message(error)
+    # produced, with +message+ as its text: an error control response for
+    # hooks / can_use_tool; for SDK MCP requests an in-band isError result
+    # (tools/call) or a JSON-RPC internal error (resources/read,
+    # prompts/get), inside a successful control response.
+    def respond_to_callback_failure(request_id, request_data, message)
+      message = wire_text(message)
       mcp_message = request_data[:message] if request_data.is_a?(Hash) && request_data[:subtype] == 'mcp_message'
       return send_control_error(request_id, message) unless mcp_message.is_a?(Hash)
 
@@ -871,10 +898,19 @@ module ClaudeAgentSDK
                                 response: { mcp_response: mcp_response }
                               }
                             }))
+    rescue JSON::GeneratorError
+      # Not reachable through the text, which #wire_text made encodable.
+      # Kept because an exception leaving this method would take the place
+      # of the process exit the caller is about to re-raise.
+      send_control_error(request_id, message)
     rescue CLIConnectionError
       nil # the CLI is already gone; nothing is waiting for the answer
     end
 
+    # Called from the rescue clauses of #handle_control_request, where an
+    # exception raised while building the answer has no rescue left: the
+    # request would stay unanswered. So the text goes through #wire_text, and
+    # whatever JSON.generate still rejects is replaced by a fixed one.
     def send_control_error(request_id, message)
       error_response = {
         type: 'control_response',
@@ -882,15 +918,42 @@ module ClaudeAgentSDK
           subtype: 'error',
           request_id: request_id,
           requestId: request_id,
-          error: message
+          error: wire_text(message)
         }
       }
-      writeln(JSON.generate(error_response))
+      line = begin
+        JSON.generate(error_response)
+      rescue JSON::GeneratorError
+        error_response[:response][:error] = 'Control request failed; its error message could not be encoded as JSON'
+        JSON.generate(error_response)
+      end
+      writeln(line)
     rescue CLIConnectionError
       # EOF/close can invalidate a callback after the peer has gone away.
       # Only this best-effort reply is discarded; read errors still reach
       # the message queue through read_messages.
       nil
+    end
+
+    # Error text as JSON.generate accepts it. An exception message can hold
+    # anything: a multibyte character cut by byteslice, the raw bytes of a
+    # subprocess or an HTTP body, a driver's own encoding. Valid UTF-8
+    # passes through. A UTF-8, BINARY or US-ASCII string is read as UTF-8,
+    # with U+FFFD in place of each byte that is not valid there. Any other
+    # encoding is transcoded, so valid text in it survives, with U+FFFD for
+    # what cannot be converted.
+    def wire_text(text)
+      text = text.to_s
+      return text if text.encoding == Encoding::UTF_8 && text.valid_encoding?
+
+      if [Encoding::UTF_8, Encoding::BINARY, Encoding::US_ASCII].include?(text.encoding)
+        text.dup.force_encoding(Encoding::UTF_8).scrub
+      else
+        text.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+      end
+    rescue EncodingError
+      # No converter for the declared encoding (a dummy one such as UTF-7).
+      text.dup.force_encoding(Encoding::UTF_8).scrub
     end
 
     def handle_permission_request(request_data, request_id: nil) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- permission round-trip: input, callback, result conversion

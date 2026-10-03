@@ -11,6 +11,10 @@ require 'json'
 # so the parent can check it went out BEFORE the process died. Plain Ruby
 # with no RSpec dependency; it is loaded by spec_helper too, which only
 # defines the module.
+#
+# spec/unit/callback_failure_containment_spec.rb reuses the callbacks and
+# requests IN-PROCESS for the failures the SDK contains instead
+# (FAILURE_KINDS): nothing there ends the process.
 module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-contained child-process fixture
   # Every control-request path whose user callback answers the CLI.
   # :hook_timeout takes the HookMatcher#timeout variants (Async with_timeout
@@ -32,6 +36,37 @@ module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-co
     sigint: { message: 'Interrupt', termsig: 'INT' },
     sigterm: { message: 'SignalException: SIGTERM', termsig: 'TERM' }
   }.freeze
+
+  # What a failing callback can raise that is neither a StandardError nor a
+  # process exit: the exception class, and the message the CLI is told. The
+  # SDK answers the request as for any other callback failure and carries on.
+  FAILURE_KINDS = {
+    not_implemented: [NotImplementedError, 'refunds are not supported yet'],
+    load_error: [LoadError, 'cannot load such file -- callback_exit_harness/missing_gem'],
+    stack_overflow: [SystemStackError, 'stack level too deep'],
+    security_error: [SecurityError, 'unsigned payload refused']
+  }.freeze
+  # The failure the SDK has always answered, to compare the above against.
+  ORDINARY_FAILURE = 'ordinary failure'
+
+  # A process exit whose message is not valid UTF-8: text cut inside a
+  # multibyte character, as `byteslice` leaves it. The CLI is told the
+  # message with the stray byte replaced, and the exit still ends the
+  # process (spec/unit/control_error_encoding_spec.rb).
+  INVALID_UTF8_EXIT = {
+    text: 'no such order: 注文'.byteslice(0, 16), message: "SystemExit: no such order: \uFFFD", exitstatus: 3
+  }.freeze
+
+  # A process exit whose message is valid text in an encoding that is not
+  # ASCII-compatible (UTF-16): it cannot be joined to the UTF-8 class name as
+  # it is. The CLI is told the same text in UTF-8, and the exit still ends
+  # the process.
+  UTF16_EXIT = {
+    text: 'no such order: 注文'.encode(Encoding::UTF_16LE), message: 'SystemExit: no such order: 注文', exitstatus: 3
+  }.freeze
+
+  # The kinds that raise the two exits above.
+  ENCODED_EXITS = { exit_invalid_utf8: INVALID_UTF8_EXIT, exit_utf16: UTF16_EXIT }.freeze
 
   RESPONSE = 'RESPONSE '
   SURVIVED = 'CALLBACK_EXIT_HARNESS_SURVIVED'
@@ -61,8 +96,20 @@ module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-co
     when :interrupt then raise Interrupt
     when :signal then raise SignalException, 'TERM'
     when :sigint, :sigterm then busy_until_signalled(kind == :sigint ? 'INT' : 'TERM')
+    when *ENCODED_EXITS.keys then raise SystemExit.new(*ENCODED_EXITS.fetch(kind).values_at(:exitstatus, :text))
+    when :none then nil # the callback succeeds
+    when :standard_error then raise ORDINARY_FAILURE
+    when :not_implemented, :security_error then raise(*FAILURE_KINDS.fetch(kind))
+    when :load_error then require 'callback_exit_harness/missing_gem' # a lazy require of a gem that is not installed
+    when :stack_overflow then overflow_stack
     else raise ArgumentError, "unknown kind #{kind.inspect}"
     end
+  end
+
+  # Runaway recursion: a real SystemStackError, on whichever stack runs the
+  # callback (the worker thread's, or the handler task's fiber when inline).
+  def overflow_stack(depth = 0)
+    overflow_stack(depth + 1) + 1
   end
 
   # CPU-bound (scheduler-opaque) work on the callback's own thread — for an
@@ -78,7 +125,7 @@ module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-co
     nil while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
   end
 
-  def build_query(path, mode, kind, transport)
+  def build_query(path, mode, kind, transport, wrapper: nil)
     can_use_tool = lambda do |_tool_name, _input, _context|
       trigger(kind)
       ClaudeAgentSDK::PermissionResultAllow.new
@@ -93,7 +140,7 @@ module CallbackExitHarness # rubocop:disable Metrics/ModuleLength -- one self-co
     end
     ClaudeAgentSDK::Query.new(
       transport: transport, is_streaming_mode: true, can_use_tool: can_use_tool,
-      sdk_mcp_servers: { 'srv' => mcp_server(kind) }, callback_scheduling: mode
+      sdk_mcp_servers: { 'srv' => mcp_server(kind) }, callback_scheduling: mode, callback_wrapper: wrapper
     ).tap do |query|
       query.instance_variable_set(:@hook_callbacks, { 'hook' => hook })
       timeout = { hook_timeout: 5, hook_timeout_abandoned: 0.05 }[path]
