@@ -599,9 +599,11 @@ module ClaudeAgentSDK
       # freshly renamed file, taking the previous working install with it.)
       #
       # Across a power loss, a rename only orders metadata. So the downloaded
-      # bytes (Http.download_to) and the VERSION bytes (Metadata.write) are
+      # bytes (Http.download_to), the binary's executable mode (after its
+      # chmod, #fetch_verified) and the VERSION bytes (Metadata.write) are
       # fsynced before their renames: each name then holds a complete file,
-      # the old one or the new one, never an empty or partial one. The
+      # the old one or the new one, never an empty, partial or
+      # non-executable one. The
       # directory is synced after the rename so that an install that returned
       # is still there afterwards; that sync is best-effort and cannot fail
       # the install, which keeps the rename the last step that can.
@@ -639,6 +641,12 @@ module ClaudeAgentSDK
         raise CLIInstallError, "Checksum mismatch for #{url}: expected #{expected}, got #{actual}" if actual != expected
 
         File.chmod(0o755, tmp)
+        # The mode is metadata of the file itself: the data fsync in
+        # Http.download_to came before it, and the directory sync after the
+        # rename does not cover it. Without this sync a power loss could bring
+        # the published binary back without its executable bit, and
+        # installed_path would skip it.
+        File.open(tmp, File::RDONLY, &:fsync)
       end
     end
   end

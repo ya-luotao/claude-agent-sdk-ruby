@@ -10,7 +10,8 @@ require 'tmpdir'
 # metadata: unless the bytes were fsynced first, the published name can come
 # back pointing at an empty or partial file — a zero-length executable
 # `claude` beside a VERSION that names it, which lock-free discovery then
-# hands out. Nothing was fsynced before.
+# hands out. Nothing was fsynced before. The binary's executable mode is set
+# after its bytes were synced, so it is synced again after the chmod.
 #
 # A power cut cannot be staged in a spec, so these examples spy on fsync and
 # rename and check that the syncs happen, and where in the sequence.
@@ -21,8 +22,9 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller, 'durability of the publish step' do
   let(:dir) { @dir }
   let(:binary_path) { File.join(dir, 'claude') }
   # [:fsync, name, size at that moment], [:fsync_failed, name],
-  # [:rename, from, to] and [:rename_failed, from, to], in order; the random
-  # part of a temp name is replaced by <hex>.
+  # [:rename, from, to], [:rename_failed, from, to] and, where an example
+  # spies on it, [:chmod, name, octal mode], in order; the random part of a
+  # temp name is replaced by <hex>.
   let(:events) { [] }
 
   around do |example|
@@ -60,6 +62,14 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller, 'durability of the publish step' do
     end
   end
 
+  def spy_on_chmod
+    log = events
+    labeller = method(:label)
+    allow(File).to receive(:chmod).and_wrap_original do |original, mode, *paths|
+      original.call(mode, *paths).tap { paths.each { |path| log << [:chmod, labeller.call(path), mode.to_s(8)] } }
+    end
+  end
+
   def spy_on_fsync(failing)
     log = events
     labeller = method(:label)
@@ -89,16 +99,19 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller, 'durability of the publish step' do
     allow(http).to receive(:with_response) { |_url, &handler| handler.call(response) }
   end
 
-  it 'syncs the download and the metadata before their renames, and the directory after the last one' do
+  it 'syncs the download (bytes, then mode) and the metadata before their renames, and the directory after the last one' do
     body = 'not-really-280MB-of-claude'
     stub_release(version: '2.1.220', body: body)
     spy_on_syncs_and_renames
+    spy_on_chmod
 
     expect(described_class.install(version: '2.1.220', dir: dir)).to eq(binary_path)
 
     metadata_size = "2.1.220\n#{Digest::SHA256.hexdigest(body)}\nlinux-x64\n".bytesize
     expect(events).to eq(
       [
+        [:fsync, 'claude.download.<hex>', body.bytesize],
+        [:chmod, 'claude.download.<hex>', '755'],
         [:fsync, 'claude.download.<hex>', body.bytesize],
         [:fsync, 'VERSION.<hex>.tmp', metadata_size],
         [:rename, 'VERSION.<hex>.tmp', 'VERSION'],
@@ -176,7 +189,7 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller, 'durability of the publish step' do
 
       expect(described_class.install(version: '2.1.220', dir: dir)).to eq(binary_path)
 
-      expect(events.map(&:first)).to eq(%i[fsync fsync rename rename fsync])
+      expect(events.map(&:first)).to eq(%i[fsync fsync fsync rename rename fsync])
       expect(File.binread(binary_path)).to eq(body)
       expect(Dir.children(dir)).to contain_exactly('.install.lock', 'VERSION', 'claude')
     end
@@ -223,6 +236,7 @@ RSpec.describe ClaudeAgentSDK::CLIInstaller, 'durability of the publish step' do
         .to raise_error(ClaudeAgentSDK::CLIInstallError, /Errno::EIO/)
 
       expect(events).to eq([[:fsync, 'claude.download.<hex>', 'a newer build'.bytesize],
+                            [:fsync, 'claude.download.<hex>', 'a newer build'.bytesize],
                             [:fsync_failed, 'VERSION.<hex>.tmp']])
       expect_previous_install_intact
     end

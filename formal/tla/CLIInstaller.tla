@@ -189,8 +189,9 @@ Fail(i) ==
 \*
 \* UNCHANGED is exact for a dead process: the files are what the completed
 \* steps left. For a power loss it holds for the two files the properties
-\* read, because of what the code fsyncs: the downloaded bytes before Rename
-\* and the VERSION bytes before Record's rename. A name that survives the
+\* read, because of what the code fsyncs: the downloaded bytes, and the
+\* binary's mode after its chmod, before Rename, and the VERSION bytes before
+\* Record's rename. A name that survives the
 \* outage therefore holds a complete file -- `binary` and `vfile` are each the
 \* old value or the new one, never an empty or partial file. (Before those
 \* fsyncs a first install could come back as an empty executable `claude`
