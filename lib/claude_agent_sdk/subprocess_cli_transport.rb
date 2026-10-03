@@ -445,7 +445,8 @@ module ClaudeAgentSDK
           # ring buffer, which is what ProcessError surfaces on non-zero exit.
         end
 
-        # Write to debug_stderr file/IO if provided, also isolated.
+        # Write to debug_stderr file/IO if provided, also isolated — from the
+        # same exceptions as the callback, for the same reason.
         begin
           if @options.debug_stderr
             if @options.debug_stderr.respond_to?(:puts)
@@ -454,7 +455,7 @@ module ClaudeAgentSDK
               File.open(@options.debug_stderr, 'a') { |f| f.puts(line_str) }
             end
           end
-        rescue StandardError
+        rescue StandardError, ScriptError, SystemStackError
           # Drop debug_stderr write errors so they never interrupt the loop.
         end
       end
@@ -1256,8 +1257,11 @@ module ClaudeAgentSDK
     # and only when this session's own options asked for the sandbox.
     #
     # Called for every stderr line, on the drain thread. Best-effort like
-    # OptionWarnings#emit: a closed or broken $stderr must not raise out of
-    # here and end the drain (the CLI would stall on a full stderr pipe).
+    # OptionWarnings#emit: a closed or broken $stderr — or a custom
+    # Warning.warn / $stderr sink raising NotImplementedError, LoadError or
+    # SystemStackError, the exceptions the stderr callback is contained from
+    # — must not raise out of here and end the drain (the CLI would stall on
+    # a full stderr pipe).
     def warn_if_sandbox_unavailable(line)
       return if @sandbox_warning_emitted || !line.include?(SANDBOX_DISABLED_MARKER)
       return unless sandbox_requested?
@@ -1267,7 +1271,7 @@ module ClaudeAgentSDK
         warn '[claude-agent-sdk] The sandbox this session requested is not active: the CLI is running ' \
              "commands WITHOUT sandboxing. It reported: \"#{line.strip}\". To make this an error instead, " \
              'set fail_if_unavailable: true on SandboxSettings (failIfUnavailable: true in a Hash).'
-      rescue StandardError
+      rescue StandardError, ScriptError, SystemStackError
         nil
       end
     end

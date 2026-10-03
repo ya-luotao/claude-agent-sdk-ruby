@@ -63,7 +63,9 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'unavailable sandbox warn
     $stderr = stderr
     begin
       transport.connect
-      transport.instance_variable_get(:@stderr_task).join
+      # Bounded: a drain that died or stalls fails the example instead of hanging the suite.
+      raise 'the stderr drain did not finish' unless transport.instance_variable_get(:@stderr_task).join(15)
+
       transport.read_messages { |_frame| nil }
     ensure
       $stderr = original
@@ -133,20 +135,28 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'unavailable sandbox warn
     expect(captured.string).to be_empty
   end
 
-  # A host's $stderr can be a pipe nobody reads any more. The warning is
-  # advisory: failing to print it must not end the drain, or the CLI stalls
-  # on a full stderr pipe.
-  it 'keeps draining when $stderr is broken' do
-    broken = Object.new
-    def broken.write(*) = raise(Errno::EPIPE)
-    # spawn flushes $stderr before it forks
-    def broken.flush = self
-    failing_cli = install_fake_cli("#{cli_notice}a later stderr line\n", exit_status: 1)
-    transport = transport_with(cli_path: failing_cli, sandbox: { enabled: true })
+  # A host's $stderr can be a pipe nobody reads any more, or a custom sink
+  # that fails in a way that is not a StandardError. The warning is advisory:
+  # failing to print it must not end the drain, or the CLI stalls on a full
+  # stderr pipe.
+  {
+    Errno::EPIPE => 'a pipe nobody reads any more',
+    NotImplementedError => 'an abstract sink',
+    LoadError => 'a sink that cannot load its code',
+    SystemStackError => 'a sink that recurses'
+  }.each do |error_class, what|
+    it "keeps draining when $stderr raises #{error_class} (#{what})" do
+      broken = Object.new
+      broken.define_singleton_method(:write) { |*| raise error_class }
+      # spawn flushes $stderr before it forks
+      def broken.flush = self
+      failing_cli = install_fake_cli("#{cli_notice}a later stderr line\n", exit_status: 1)
+      transport = transport_with(cli_path: failing_cli, sandbox: { enabled: true })
 
-    expect { stderr_during_session(transport, stderr: broken) }
-      .to raise_error(ClaudeAgentSDK::ProcessError) { |error|
-        expect(error.stderr.lines.last).to eq('a later stderr line')
-      }
+      expect { stderr_during_session(transport, stderr: broken) }
+        .to raise_error(ClaudeAgentSDK::ProcessError) { |error|
+          expect(error.stderr.lines.last).to eq('a later stderr line')
+        }
+    end
   end
 end

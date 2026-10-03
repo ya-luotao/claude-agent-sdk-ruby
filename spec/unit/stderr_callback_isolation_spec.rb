@@ -83,4 +83,37 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'stderr callback isolatio
       expect(seen.last).to eq(last_stderr_line)
     end
   end
+
+  # A `debug_stderr:` sink is written on the same thread, so the same
+  # exceptions must not end it either.
+  {
+    NotImplementedError => 'IO#puts is abstract here',
+    LoadError => 'cannot load such file -- some_sink',
+    SystemStackError => 'stack level too deep'
+  }.each do |error_class, message|
+    it "keeps draining after a debug_stderr sink raises #{error_class} on the first line" do
+      seen = []
+      sink = Object.new
+      sink.define_singleton_method(:puts) do |*lines|
+        seen.concat(lines)
+        raise error_class, message if seen.size == 1
+      end
+      transport = described_class.new(ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: fake_cli, debug_stderr: sink))
+
+      begin
+        transport.connect
+        transport.instance_variable_get(:@stderr_task).join
+
+        expect { transport.read_messages { |_frame| nil } }
+          .to raise_error(ClaudeAgentSDK::ProcessError) { |error|
+            expect(error.stderr.lines.last).to eq(last_stderr_line)
+          }
+      ensure
+        transport.close
+      end
+
+      expect(seen.size).to eq(stderr_line_count)
+      expect(seen.last).to eq(last_stderr_line)
+    end
+  end
 end
