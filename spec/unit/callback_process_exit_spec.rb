@@ -107,6 +107,13 @@ RSpec.describe 'process-termination exceptions raised by user callbacks' do
     end
   end
 
+  # The answer a stopped handler task writes (Query#handle_control_request's
+  # Async::Stop branch): an error control response on every path, SDK MCP
+  # requests included.
+  def cancelled_response?(response)
+    response.fetch('response').values_at('subtype', 'error') == %w[error Cancelled]
+  end
+
   harness::PATHS.each do |path|
     harness::MODES.each do |mode|
       context "#{path} with #{mode} callback scheduling" do
@@ -128,12 +135,17 @@ RSpec.describe 'process-termination exceptions raised by user callbacks' do
     # the main thread, where MRI delivers OS signals. A real Ctrl-C / SIGTERM
     # landing in CPU-bound callback code must still end the process.
     #
-    # WHEN the signal interrupts is the async gem's business, not ours: newer
-    # releases (2.46) defer SIGTERM until the running task yields, so the
-    # callback completes and its normal answer goes out first; older ones
-    # (2.36) interrupt the callback mid-flight, which then gets the error
-    # answer. The invariant either way: exactly one answer, then the process
-    # ends by that signal — never swallowed, never left running.
+    # WHEN and HOW the signal interrupts is the business of Ruby and the
+    # async gem, not ours. Three answers have been observed for a SIGTERM:
+    # async 2.46 on Ruby 3.4 defers it until the running task yields, so the
+    # callback completes and its normal answer goes out first; async 2.36
+    # interrupts the callback mid-flight, which then gets the error answer
+    # naming the signal; on Ruby 4.0 (async 2.46) the handler task is stopped
+    # instead and answers 'Cancelled'. The invariant in every case: exactly
+    # one answer, for this request, then the process ends by that signal —
+    # never swallowed, never left running. Only this example accepts
+    # 'Cancelled': an exception the callback raises itself (above) must
+    # still be reported by name.
     %i[sigint sigterm].each do |kind|
       it "lets a real #{kind.upcase} delivered during an inline #{path} callback terminate the process" do
         out, err, status = CallbackExitChildren.result([path, :inline, kind])
@@ -142,7 +154,9 @@ RSpec.describe 'process-termination exceptions raised by user callbacks' do
         expect_terminated_like_ruby(status, err, kind)
         written = responses(out)
         expect(written.length).to eq(1), "expected exactly one response, got #{written.inspect}"
-        if failure_response?(path, written.first)
+        if cancelled_response?(written.first)
+          expect(written.first.dig('response', 'request_id')).to eq('req_fail')
+        elsif failure_response?(path, written.first)
           expect_failure_response(path, written.first, CallbackExitHarness::KINDS.fetch(kind)[:message])
         else
           expect(written.first.dig('response', 'subtype')).to eq('success')

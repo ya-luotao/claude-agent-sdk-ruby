@@ -11,6 +11,23 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
   # (and other specs) from observing leaked test doubles.
   after { described_class.active_processes.clear }
 
+  # SIGKILL cannot be refused, but how soon the kernel has reaped the child
+  # afterwards is the scheduler's business. Makes Process.kill return from a
+  # KILL of +waiter+'s process only once that process has been reaped, so an
+  # example can keep a short grace for the wait that has to lapse (its child
+  # ignores TERM) without racing the wait that follows the KILL. The signals
+  # are still sent for real. Returns the [signal, pid] pairs, in order.
+  def reap_before_kill_returns(waiter)
+    sent = []
+    allow(Process).to receive(:kill).and_wrap_original do |original, signal, pid|
+      sent << [signal, pid]
+      result = original.call(signal, pid)
+      waiter.join(30) if signal == 'KILL' && pid == waiter.pid
+      result
+    end
+    sent
+  end
+
   describe '#build_command' do
     it 'passes a string system_prompt via --system-prompt' do
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
@@ -1458,6 +1475,15 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       writer
     end
 
+    # What the parked thread writer ended with. Bounded: a shutdown that
+    # never interrupts the writer leaves the queue empty forever, and that
+    # must fail the example, not hang the suite.
+    def writer_outcome(outcome)
+      result = outcome.pop(timeout: 10)
+      expect(result).not_to be_nil, 'the writer parked in IO#write was never interrupted'
+      result
+    end
+
     def expect_woken_with_connection_error(writer, caught)
       expect(writer).to be_finished
       expect(caught.size).to eq(1)
@@ -1514,7 +1540,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         expect(second).not_to be_finished
 
         task.with_timeout(5, hang) { transport.end_input }
-        second.wait
+        task.with_timeout(10) { second.wait } # bounded: a writer left parked must fail here, not hang
 
         expect(first).to be_finished
         expect(caught.size).to eq(2)
@@ -1542,7 +1568,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         task.with_timeout(5, hang) { transport.close }
       end.wait
 
-      expect(outcome.pop).to be_a(ClaudeAgentSDK::CLIConnectionError)
+      expect(writer_outcome(outcome)).to be_a(ClaudeAgentSDK::CLIConnectionError)
       expect(w).to be_closed
     ensure
       writer&.join(5)
@@ -1558,7 +1584,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         task.with_timeout(5, hang) { transport.end_input }
       end.wait
 
-      expect(outcome.pop).to be_a(ClaudeAgentSDK::CLIConnectionError)
+      expect(writer_outcome(outcome)).to be_a(ClaudeAgentSDK::CLIConnectionError)
       expect(w).to be_closed
       expect(transport.instance_variable_get(:@stdin)).to be_nil
     ensure
@@ -1621,7 +1647,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         end.wait
 
         # The detached helper's close interrupts the writer.
-        expect(outcome.pop).to be_a(ClaudeAgentSDK::CLIConnectionError)
+        expect(writer_outcome(outcome)).to be_a(ClaudeAgentSDK::CLIConnectionError)
       ensure
         writer&.join(5)
         [r, w].each { |io| io&.close unless io&.closed? }
@@ -1633,6 +1659,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     let(:options) { ClaudeAgentSDK::ClaudeAgentOptions.new(cli_path: '/usr/bin/claude') }
     let(:transport) { described_class.new('hi', options) }
 
+    # Short graces, for the waits that have to lapse: a child that never
+    # exits on its own, or ignores TERM. An example whose child is expected
+    # to act INSIDE a grace (die on TERM, exit by itself) gives that grace a
+    # generous value instead, so a slow machine cannot change the outcome.
     before do
       stub_const("#{described_class}::EOF_EXIT_GRACE_SECONDS", 0.2)
       stub_const("#{described_class}::EOF_TERM_GRACE_SECONDS", 0.2)
@@ -1664,7 +1694,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
       rescue StandardError => e
         e
       end
-      expect(@runner.join(10)).not_to be_nil, 'read_messages never returned after stdout EOF'
+      expect(@runner.join(60)).not_to be_nil, 'read_messages never returned after stdout EOF'
       @runner.value
     end
 
@@ -1683,8 +1713,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
 
     it 'escalates TERM then KILL for a child that ignores TERM, surfacing a ProcessError like the signal path' do
       stdout, stderr, waiter = spawn_child('sleep', prelude: 'trap("TERM") {}; ')
+      sent = reap_before_kill_returns(waiter)
 
       error = read_to_end(transport)
+      expect(sent.first(2)).to eq([['TERM', waiter.pid], ['KILL', waiter.pid]])
       expect(error).to be_a(ClaudeAgentSDK::ProcessError)
       expect(error.exit_code).to eq(-9)
       expect(error.message).to include('did not exit within 0.2s of closing stdout')
@@ -1695,6 +1727,9 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
 
     it 'TERMs a child that keeps running after stdout EOF and reports the signal' do
+      # A healthy child dies on TERM in milliseconds; the generous grace only
+      # keeps a slow machine from escalating to KILL.
+      stub_const("#{described_class}::EOF_TERM_GRACE_SECONDS", 30)
       stdout, stderr, waiter = spawn_child('sleep')
 
       error = read_to_end(transport)
@@ -1706,6 +1741,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     end
 
     it 'waits without blocking the reactor when the read loop runs in a task' do
+      stub_const("#{described_class}::EOF_TERM_GRACE_SECONDS", 30) # as above: TERM is expected to work
       stdout, stderr, waiter = spawn_child('sleep')
       ticks = 0
 
@@ -1757,7 +1793,7 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
     it 'does not signal a child that exits on its own within the grace period' do
       # A generous grace here: interpreter exit + reap must fit inside it even
       # on a slow CI runner, or the example would signal a healthy child.
-      stub_const("#{described_class}::EOF_EXIT_GRACE_SECONDS", 5)
+      stub_const("#{described_class}::EOF_EXIT_GRACE_SECONDS", 30)
       expect(Process).not_to receive(:kill)
       stdout, stderr, waiter = spawn_child('exit 0')
 
@@ -1950,9 +1986,17 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport do
         expect(stdout.gets).to eq("ready\n")
         described_class.register_active_process(waiter)
 
-        worker = bare_transport.force_terminate_in_background(waiter, grace_seconds: 0.05)
-        expect(worker.join(2)).not_to be_nil
-        expect(waiter.join(1)).not_to be_nil
+        # The worker waits grace_seconds twice: for TERM to work, then for the
+        # KILLed child to be reaped. A child that dies on TERM gets a generous
+        # grace (it is gone in milliseconds, so this stays fast). One that
+        # ignores TERM keeps the short grace, which has to lapse anyway, and
+        # the KILL only returns once the child is reaped.
+        sent = reap_before_kill_returns(waiter) if ignore_term
+        worker = bare_transport.force_terminate_in_background(waiter, grace_seconds: ignore_term ? 0.05 : 30)
+        # Worker finished and child reaped, before the registry is read.
+        expect(worker.join(60)).not_to be_nil
+        expect(sent).to eq([['TERM', waiter.pid], ['KILL', waiter.pid]]) if ignore_term
+        expect(waiter.join(60)).not_to be_nil
         expect(waiter.value.termsig).to eq(Signal.list.fetch(ignore_term ? 'KILL' : 'TERM'))
         expect(described_class.active_processes).not_to include(waiter)
       ensure

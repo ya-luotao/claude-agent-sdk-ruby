@@ -1,16 +1,24 @@
-# Real-CLI integration run: installs the CLI pinned by
-# CLIInstaller::PINNED_CLI_VERSION and runs spec/integration against it with
-# live, budget-capped API calls (each example sets max_budget_usd).
+# Real-CLI checks. Each job installs the CLI pinned by
+# CLIInstaller::PINNED_CLI_VERSION (rake claude_agent_sdk:install_cli) and
+# drives it from the SDK:
+#
+# - keyless-smoke needs no secret and runs on every trigger: the initialize
+#   handshake, and a prompt the CLI cannot send for lack of credentials,
+#   which must come back as a typed ResultError rather than a hang
+#   (spec/integration/keyless_smoke_spec.rb). It checks the installer, the
+#   transport, the control protocol, the message parser and the error path
+#   against the real binary. It reaches no model.
+# - real-cli runs spec/integration with live, budget-capped API calls (each
+#   example sets max_budget_usd). It needs an ANTHROPIC_API_KEY repository
+#   secret: the gate job checks for it, and without one real-cli shows as
+#   skipped, not as passed. Fork and Dependabot PRs never receive secrets,
+#   so for them it is always skipped.
 #
 # Triggers: weekly, on demand, and on PRs that touch the installer (which is
-# where cli-pin-bump.yml moves the pin), so a CLI bump is checked against the
-# real binary before it merges.
-#
-# Requires an ANTHROPIC_API_KEY repository secret. Without it the job skips
-# with a notice instead of failing. Fork and Dependabot PRs never receive
-# secrets, so they always take the skip path; so do pin-bump PRs opened with
-# the default GITHUB_TOKEN, which don't trigger workflows at all (see
-# cli-pin-bump.yml; dispatch this workflow on that branch instead).
+# where cli-pin-bump.yml moves the pin), the transport, Query or the message
+# parser, so a CLI bump or a wire-protocol change meets the real binary
+# before it merges. A pin-bump PR opened with the default GITHUB_TOKEN gets
+# its runs only once someone approves them (see cli-pin-bump.yml).
 name: Integration (real CLI)
 
 on:
@@ -23,6 +31,9 @@ on:
     branches: [main]
     paths:
       - lib/claude_agent_sdk/cli_installer.rb
+      - lib/claude_agent_sdk/subprocess_cli_transport.rb
+      - lib/claude_agent_sdk/query.rb
+      - lib/claude_agent_sdk/message_parser.rb
       - spec/integration/**
       - .github/workflows/integration.yml
 
@@ -34,31 +45,76 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  real-cli:
-    name: real CLI (pinned version, Ruby 3.4)
+  keyless-smoke:
+    name: keyless smoke (pinned CLI, no credentials, Ruby 3.4)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
 
     steps:
-      # secrets.* can't appear in an `if:`, so a step checks for the key and
-      # the rest of the job keys off its output.
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby 3.4
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+
+      # As in real-cli below: the vendored binary, put on PATH.
+      - name: Install pinned Claude Code CLI
+        run: |
+          bundle exec rake claude_agent_sdk:install_cli
+          echo "$GITHUB_WORKSPACE/vendor/claude" >> "$GITHUB_PATH"
+
+      - name: Show CLI version
+        run: claude --version
+
+      - name: Run the keyless smoke
+        env:
+          RUN_KEYLESS_SMOKE: '1'
+        run: bundle exec rspec spec/integration/keyless_smoke_spec.rb --format json --out "$RUNNER_TEMP/keyless-smoke.json"
+
+      # Without RUN_KEYLESS_SMOKE the spec filters its examples out, and rspec
+      # passes a run that executed none. Make sure this one ran them.
+      - name: Check that the smoke ran
+        run: >-
+          ruby -rjson -e 'summary = JSON.parse(File.read(ARGV[0])).fetch("summary");
+          abort("the keyless smoke did not run its examples: #{summary}") unless
+          summary["example_count"] >= 2 && summary["pending_count"].zero? && summary["failure_count"].zero?'
+          "$RUNNER_TEMP/keyless-smoke.json"
+
+  # secrets.* can't appear in an `if:`, so this job checks for the key and
+  # real-cli keys off its output.
+  gate:
+    name: ANTHROPIC_API_KEY available
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+
+    steps:
       - name: Check for ANTHROPIC_API_KEY
-        id: gate
+        id: check
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           if [ -z "$ANTHROPIC_API_KEY" ]; then
-            echo "::notice title=Integration run skipped::The ANTHROPIC_API_KEY secret is not available (not configured, or a fork/Dependabot PR). Add it as a repository secret to enable this run."
+            echo "::notice title=Keyed integration run skipped::The ANTHROPIC_API_KEY secret is not available (not configured, or a fork/Dependabot PR), so the real-cli job is skipped. Add it as a repository secret to enable that run; keyless-smoke runs either way."
             echo "run=false" >> "$GITHUB_OUTPUT"
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
+  real-cli:
+    name: real CLI (pinned version, Ruby 3.4)
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
       - uses: actions/checkout@v4
-        if: steps.gate.outputs.run == 'true'
 
       - name: Set up Ruby 3.4
-        if: steps.gate.outputs.run == 'true'
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'
@@ -69,17 +125,14 @@ jobs:
       # the CLI up on PATH and skip without it, so put it there and fail
       # loudly here if it doesn't run.
       - name: Install pinned Claude Code CLI
-        if: steps.gate.outputs.run == 'true'
         run: |
           bundle exec rake claude_agent_sdk:install_cli
           echo "$GITHUB_WORKSPACE/vendor/claude" >> "$GITHUB_PATH"
 
       - name: Show CLI version
-        if: steps.gate.outputs.run == 'true'
         run: claude --version
 
       - name: Run integration specs
-        if: steps.gate.outputs.run == 'true'
         env:
           RUN_INTEGRATION: '1'
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

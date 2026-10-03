@@ -220,9 +220,13 @@ RSpec.describe ClaudeAgentSDK::Query do
         expect(ended).to be_empty
 
         queue.enqueue(:crash)
-        waiter.wait
+        # Bounded, and the waiter is stopped below: the regression leaves it
+        # parked forever, which must fail this example rather than hang the
+        # suite (a parked task keeps the reactor alive).
+        task.with_timeout(10) { waiter.wait }
         expect(ended).not_to be_empty
       ensure
+        waiter&.stop
         query.close
       end.wait
     end
