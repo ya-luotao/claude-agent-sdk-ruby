@@ -19,6 +19,7 @@ require_relative 'claude_agent_sdk/transcript_mirror_batcher'
 require_relative 'claude_agent_sdk/session_resume'
 require_relative 'claude_agent_sdk/session_mutations'
 require_relative 'claude_agent_sdk/fiber_boundary'
+require_relative 'claude_agent_sdk/session_assembly'
 require_relative 'claude_agent_sdk/option_warnings'
 require_relative 'claude_agent_sdk/deprecation'
 # Rails apps only: Bundler.require runs after `require 'rails'`, so the
@@ -719,14 +720,14 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # Fail fast on invalid session_store combinations before spawning the CLI.
     SessionStores.validate_session_store_options(configured_options)
 
-    # Resolve callable observers into fresh instances (thread-safe for global defaults)
-    resolved_observers = ClaudeAgentSDK.resolve_observers(configured_options.observers)
-
-    # Where user callbacks run (see ClaudeAgentOptions#callback_scheduling)
-    # and the middleware wrapped around them (#callback_wrapper).
-    callback_scheduling = configured_options.callback_scheduling || :thread
-    callback_wrapper = configured_options.callback_wrapper
-    ClaudeAgentSDK.check_inline_isolation(callback_scheduling)
+    # Resolve callable observers into fresh instances (thread-safe for global
+    # defaults), bound to where user callbacks run (see
+    # ClaudeAgentOptions#callback_scheduling) and the middleware wrapped
+    # around them (#callback_wrapper).
+    dispatch = Dispatch.new(ClaudeAgentSDK.resolve_observers(configured_options.observers),
+                            scheduling: configured_options.callback_scheduling || :thread,
+                            wrapper: configured_options.callback_wrapper)
+    ClaudeAgentSDK.check_inline_isolation(dispatch.scheduling)
 
     if transport && !transport.respond_to?(:connect)
       raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)'
@@ -784,8 +785,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
           skills: configured_options.skills,
           forward_subagent_text: configured_options.forward_subagent_text?,
           agent_progress_summaries: configured_options.agent_progress_summaries,
-          callback_scheduling: callback_scheduling,
-          callback_wrapper: callback_wrapper,
+          callback_scheduling: dispatch.scheduling,
+          callback_wrapper: dispatch.wrapper,
           verbatim_prompts: configured_options.verbatim_prompts?,
           run_end_ceiling_ms: Query.run_end_ceiling_ms(configured_options.env)
         )
@@ -799,7 +800,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
               env: configured_options.env,
               on_error: ->(key, message) { query_handler.report_mirror_error(key, message) },
               eager: configured_options.session_store_flush.to_s == 'eager',
-              callback_wrapper: callback_wrapper
+              callback_wrapper: dispatch.wrapper
             )
           )
         end
@@ -812,8 +813,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
 
         # Send prompt(s) as user messages, then close stdin
         if prompt.is_a?(String)
-          ClaudeAgentSDK.notify_observers(resolved_observers, :on_user_prompt, prompt,
-                                          scheduling: callback_scheduling, wrapper: callback_wrapper)
+          dispatch.notify(:on_user_prompt, prompt)
           message = {
             type: 'user',
             message: { role: 'user', content: prompt },
@@ -831,9 +831,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
           # here kept the root reactor alive forever when the read loop died
           # while the user enumerator was still blocked (matches Python's
           # query.spawn_task(query.stream_input(prompt))).
-          observed_prompt = ClaudeAgentSDK.observing_prompt_stream(
-            prompt, resolved_observers, scheduling: callback_scheduling, wrapper: callback_wrapper
-          )
+          observed_prompt = dispatch.observing_stream(prompt)
           query_handler.spawn_task { query_handler.stream_input(observed_prompt) }
         end
 
@@ -845,10 +843,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
           message = MessageParser.parse(data)
           next unless message
 
-          ClaudeAgentSDK.notify_observers(resolved_observers, :on_message, message,
-                                          scheduling: callback_scheduling, wrapper: callback_wrapper)
-          signal = FiberBoundary.invoke_iteration(block, message, scheduling: callback_scheduling,
-                                                                  wrapper: callback_wrapper)
+          dispatch.notify(:on_message, message)
+          signal = dispatch.invoke_iteration(block, message)
           break signal.value if signal.is_a?(FiberBoundary::Break)
         end
       rescue StandardError => e
@@ -857,12 +853,10 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         # parse errors, and user-block errors. StandardError only: Async::Stop
         # is cancellation, not an error. Bare raise preserves the backtrace;
         # the ensure below still fires on_close after on_error.
-        ClaudeAgentSDK.notify_observers(resolved_observers, :on_error, e,
-                                        scheduling: callback_scheduling, wrapper: callback_wrapper)
+        dispatch.notify(:on_error, e)
         raise
       ensure
-        ClaudeAgentSDK.notify_observers(resolved_observers, :on_close,
-                                        scheduling: callback_scheduling, wrapper: callback_wrapper)
+        dispatch.notify(:on_close)
         # query_handler.close stops the background read task and closes the
         # transport (flushing the mirror batcher first). Fall back to a bare
         # transport close when the handler was never built.
@@ -977,8 +971,10 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # @param transport_args [Hash] Additional keyword arguments passed to transport_class.new(options, **transport_args)
     def initialize(options: nil, transport_class: SubprocessCLITransport, transport_args: {})
       @options = options || ClaudeAgentOptions.new
-      @callback_scheduling = @options.callback_scheduling || :thread
-      @callback_wrapper = @options.callback_wrapper
+      # Scheduling and wrapper are captured here; the observers are resolved
+      # on each #connect.
+      @dispatch = Dispatch.new([], scheduling: @options.callback_scheduling || :thread,
+                                   wrapper: @options.callback_wrapper)
       @transport_class = transport_class
       @transport_args = transport_args
       @transport = nil
@@ -1053,9 +1049,9 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       # Resolve observers before the first failable runtime step so
       # connect-phase failures (including resume materialization) can be
       # notified via on_error.
-      @resolved_observers = ClaudeAgentSDK.resolve_observers(@options.observers)
+      @dispatch = @dispatch.with_observers(ClaudeAgentSDK.resolve_observers(@options.observers))
 
-      ClaudeAgentSDK.check_inline_isolation(@callback_scheduling)
+      ClaudeAgentSDK.check_inline_isolation(@dispatch.scheduling)
 
       # If anything from materialization onward fails, tear down (closes the
       # subprocess and removes the materialized temp config dir) before
@@ -1116,8 +1112,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
 
       begin
         if prompt.is_a?(String)
-          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, prompt,
-                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+          @dispatch.notify(:on_user_prompt, prompt)
           message = {
             type: 'user',
             message: { role: 'user', content: prompt },
@@ -1158,10 +1153,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
           message = MessageParser.parse(data)
           next unless message
 
-          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message,
-                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-          signal = FiberBoundary.invoke_iteration(block, message, scheduling: @callback_scheduling,
-                                                                  wrapper: @callback_wrapper)
+          @dispatch.notify(:on_message, message)
+          signal = @dispatch.invoke_iteration(block, message)
           break signal.value if signal.is_a?(FiberBoundary::Break)
         end
       rescue StandardError => e
@@ -1186,10 +1179,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
           message = MessageParser.parse(data)
           next unless message
 
-          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message,
-                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-          signal = FiberBoundary.invoke_iteration(block, message, scheduling: @callback_scheduling,
-                                                                  wrapper: @callback_wrapper)
+          @dispatch.notify(:on_message, message)
+          signal = @dispatch.invoke_iteration(block, message)
           break signal.value if signal.is_a?(FiberBoundary::Break)
           break if message.is_a?(ResultMessage)
         end
@@ -1376,10 +1367,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         # Notified inside the begin: an exception raised into this fiber while
         # it waits for an observer (a caller's deadline) propagates, and must
         # not skip the teardown below.
-        if @connected
-          ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close,
-                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-        end
+        @dispatch.notify(:on_close) if @connected
       ensure
         begin
           @query_handler&.close
@@ -1461,8 +1449,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         skills: configured_options.skills,
         forward_subagent_text: configured_options.forward_subagent_text?,
         agent_progress_summaries: configured_options.agent_progress_summaries,
-        callback_scheduling: @callback_scheduling,
-        callback_wrapper: @callback_wrapper,
+        callback_scheduling: @dispatch.scheduling,
+        callback_wrapper: @dispatch.wrapper,
         verbatim_prompts: @verbatim_prompts,
         run_end_ceiling_ms: Query.run_end_ceiling_ms(configured_options.env)
       )
@@ -1495,8 +1483,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         # Observer#on_error contract; notifying a swallowed error would mark
         # a still-live OTel trace as failed). Same behavior as query()'s
         # streaming path.
-        observed = ClaudeAgentSDK.observing_prompt_stream(prompt, @resolved_observers,
-                                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+        observed = @dispatch.observing_stream(prompt)
         @query_handler.spawn_task { @query_handler.stream_input(observed) }
       end
     end
@@ -1515,14 +1502,12 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         when Hash
           msg = msg.merge(session_id: session_id) unless msg.key?(:session_id) || msg.key?('session_id')
           if (text = ClaudeAgentSDK.extract_user_prompt_text(msg))
-            ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text,
-                                            scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+            @dispatch.notify(:on_user_prompt, text)
           end
           writeln(Query.serialize_user_message(msg, @verbatim_prompts))
         when String
           if (text = ClaudeAgentSDK.extract_user_prompt_text(msg))
-            ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text,
-                                            scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+            @dispatch.notify(:on_user_prompt, text)
           end
           writeln(Query.serialize_user_message(msg, @verbatim_prompts))
         else
@@ -1533,11 +1518,10 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       end
     end
 
-    # Notify observers of an error surfacing to the consumer. `|| []` keeps a
-    # mis-scoped call before connect harmless instead of NoMethodError on nil.
+    # Notify observers of an error surfacing to the consumer. Before the
+    # first connect there are none to notify.
     def notify_error(error)
-      ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_error, error,
-                                      scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+      @dispatch.notify(:on_error, error)
     end
 
     # Build and install the transcript-mirror batcher on the query handler when
@@ -1551,7 +1535,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         env: options.env,
         on_error: ->(key, message) { @query_handler.report_mirror_error(key, message) },
         eager: options.session_store_flush.to_s == 'eager',
-        callback_wrapper: @callback_wrapper
+        callback_wrapper: @dispatch.wrapper
       )
       @query_handler.set_transcript_mirror_batcher(batcher)
     end
