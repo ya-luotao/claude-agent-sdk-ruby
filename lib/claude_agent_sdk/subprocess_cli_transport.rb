@@ -1296,12 +1296,7 @@ module ClaudeAgentSDK
     # SandboxSettings with `enabled` true, or a Hash with an `enabled` /
     # 'enabled' key that is true (Hashes are forwarded to the CLI verbatim).
     def sandbox_requested?
-      sandbox = @options.sandbox
-      case sandbox
-      when SandboxSettings then sandbox.enabled == true
-      when Hash then sandbox[:enabled] == true || sandbox['enabled'] == true
-      else sandbox == true
-      end
+      OptionForms.sandbox_requested?(@options.sandbox)
     end
 
     # The (parent's) home directory for the well-known install probes, or nil
