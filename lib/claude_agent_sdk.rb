@@ -894,8 +894,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # @param transport_args [Hash] Additional keyword arguments passed to transport_class.new(options, **transport_args)
     def initialize(options: nil, transport_class: SubprocessCLITransport, transport_args: {})
       @options = options || ClaudeAgentOptions.new
-      # Scheduling and wrapper are captured here; the observers are resolved
-      # on each #connect.
+      # One for the life of the client. Scheduling and wrapper are captured
+      # here; the observers are resolved, and put in, on each #connect.
       @dispatch = Dispatch.new([], scheduling: @options.callback_scheduling || :thread,
                                    wrapper: @options.callback_wrapper)
       @transport_class = transport_class
@@ -973,7 +973,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       # Resolve observers before the first failable runtime step so
       # connect-phase failures (including resume materialization) can be
       # notified via on_error.
-      @dispatch = @dispatch.with_observers(ClaudeAgentSDK.resolve_observers(@options.observers))
+      @dispatch.observers = ClaudeAgentSDK.resolve_observers(@options.observers)
 
       ClaudeAgentSDK.check_inline_isolation(@dispatch.scheduling)
 

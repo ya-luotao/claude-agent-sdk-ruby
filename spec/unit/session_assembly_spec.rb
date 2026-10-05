@@ -614,6 +614,16 @@ RSpec.describe ClaudeAgentSDK::SessionAssembly do
       expect(returned).to be_nil
     end
 
+    it 'notifies the observers its dispatch holds when each message arrives, not the ones it started with' do
+      later = EntryPointHarness::RecordingObserver.new
+      session = delivering(frames)
+
+      session.deliver(proc { |message| dispatch.observers = [later] if message.is_a?(ClaudeAgentSDK::ResultMessage) })
+
+      expect(observer.payloads(:on_message).map(&:class)).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+      expect(later.payloads(:on_message).map(&:class)).to eq([ClaudeAgentSDK::AssistantMessage])
+    end
+
     it 'stops after the ResultMessage with until_result: true' do
       seen = []
 

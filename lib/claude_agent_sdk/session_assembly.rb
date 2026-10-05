@@ -9,9 +9,16 @@ require_relative 'subprocess_cli_transport'
 module ClaudeAgentSDK
   # The three things every dispatch of a session's user code needs — its
   # resolved observers, where callbacks run (callback_scheduling) and the
-  # middleware around them (callback_wrapper) — bound once, so that no call
-  # site threads them by hand. A context holder, nothing deeper: each method
-  # is the module function it names, called with the triple.
+  # middleware around them (callback_wrapper) — held in one place, so that
+  # no call site threads them by hand. A context holder, nothing deeper: each
+  # method is the module function it names, called with the triple.
+  #
+  # Scheduling and wrapper are fixed for the life of the object. The
+  # observers can be replaced, and each call below reads the ones there are
+  # at that moment: query() never replaces them; Client keeps one Dispatch
+  # for its lifetime and puts in the observers it resolves on each connect,
+  # so a receive loop still running from before a reconnect notifies the
+  # current ones.
   #
   # @api private
   class Dispatch
@@ -19,17 +26,14 @@ module ClaudeAgentSDK
     # mirror batcher).
     attr_reader :scheduling, :wrapper
 
+    # Replace the observers, with a new Array: the one being replaced may be
+    # in the middle of a notification, and is never changed in place.
+    attr_writer :observers
+
     def initialize(observers, scheduling:, wrapper:)
       @observers = observers
       @scheduling = scheduling
       @wrapper = wrapper
-    end
-
-    # The same scheduling and wrapper around other observers. Client captures
-    # the pair when it is constructed and resolves its observers on each
-    # connect.
-    def with_observers(observers)
-      self.class.new(observers, scheduling: @scheduling, wrapper: @wrapper)
     end
 
     # See ClaudeAgentSDK.notify_observers.

@@ -7,17 +7,18 @@ require 'securerandom'
 require 'timeout'
 require 'tmpdir'
 
-# What other callers of a Client see while one of its teardowns is under way,
-# or after one was cut short. All of it through the public API, with a real
-# Query over an in-memory CLI and a really materialized store-backed resume;
-# the only thing stubbed is the removal of the materialized directory, to
-# park it or to make it fail.
+# What a Client does when a teardown interleaves with its other calls: calls
+# made while a disconnect is under way, a disconnect after one that was cut
+# short, a receive still running across a disconnect and a reconnect. All of
+# it through the public API, with a real Query over an in-memory CLI and a
+# really materialized store-backed resume; the only thing stubbed is the
+# removal of the materialized directory, to park it or to make it fail.
 #
 # Client#disconnect closes the query handler and the transport, and then
 # removes the materialized resume dir. That removal can take a while (it
 # retries, sleeping, when the directory is busy), and the reactor runs other
 # tasks meanwhile.
-RSpec.describe ClaudeAgentSDK::Client, 'while a teardown is under way, or after one was cut short' do
+RSpec.describe ClaudeAgentSDK::Client, 'when a teardown interleaves with its other calls' do
   let(:created) { [] }
   let(:cwd) { Dir.mktmpdir('client-interleavings-cwd-') }
   let(:user_config_dir) { Dir.mktmpdir('client-interleavings-config-') } # keeps the developer's own config out of it
@@ -161,6 +162,50 @@ RSpec.describe ClaudeAgentSDK::Client, 'while a teardown is under way, or after 
               end
             end
           end
+        end
+      end
+
+      # Observers are resolved on each connect, and a receive loop asks the
+      # client for them message by message: one that is still running from
+      # before a reconnect tells the observers of the connection there is
+      # now, not the ones it started with.
+      describe 'a receive still running across a disconnect and a reconnect' do
+        it 'notifies the observers of the current connection of what it delivers from then on' do
+          resolved = []
+          factory = -> { EntryPointHarness::RecordingObserver.new.tap { |built| resolved << built } }
+          options = ClaudeAgentSDK::ClaudeAgentOptions.new(observers: [factory], callback_scheduling: scheduling,
+                                                           callback_wrapper: wrapper)
+          client = described_class.new(options: options,
+                                       transport_class: EntryPointHarness::FakeCLI.foreign_class(created, hang_up_after: 1))
+          entered = Thread::Queue.new
+          release = Thread::Queue.new
+          delivered = []
+
+          Sync do |task|
+            client.connect
+            client.query('first session')
+            receiving = task.async do
+              client.receive_messages do |message|
+                delivered << message.class
+                next unless delivered.length == 1
+
+                entered << true
+                release.pop # parked in the block, with the result already read
+              end
+            end
+            entered.pop
+            client.disconnect
+            client.connect
+            release << true
+            receiving.wait
+            client.disconnect
+          ensure
+            release.close
+          end
+
+          expect(delivered).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+          expect(resolved.map(&:names)).to eq([%i[on_user_prompt on_message on_close], %i[on_message on_close]])
+          expect(created.map(&:closed?)).to eq([true, true])
         end
       end
     end
