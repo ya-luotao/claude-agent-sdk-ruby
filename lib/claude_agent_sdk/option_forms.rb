@@ -3,10 +3,12 @@
 require_relative 'types'
 
 module ClaudeAgentSDK
-  # Every rule the SDK applies to a Hash that stands for an option value, in
-  # one place. Several options take a typed value "or the equivalent Hash";
-  # each function here reads one such option in both forms and answers what
-  # its caller needs: a small record, or the value as it was given.
+  # How the SDK reads a Hash that stands for an option value, behind one set
+  # of functions. Several options take a typed value "or the equivalent
+  # Hash"; each function here reads one such option in both forms and answers
+  # what its caller needs: a small frozen record (Prompt, Thinking, Plugin),
+  # a plain value, the value as it was given, or a new Hash made from it.
+  # Only the records are frozen, never a value the caller owns.
   #
   # The functions are stateless. They keep nothing, they do not change the
   # value they are given, and they check nothing: a caller that raises on a
@@ -27,10 +29,15 @@ module ClaudeAgentSDK
   #   presence  hash.fetch(:key) { hash['key'] }: a Symbol key that is there
   #             is the one read, whatever it holds
   #
-  # and HashForm, the one place a key of an option Hash is read, says for each
-  # key which of them applies. spec/unit/option_forms_characterization_spec.rb
-  # pins every one at the command line and the initialize request; a change
-  # of rule is a change of behaviour, not a cleanup.
+  # and HashForm, which holds the field lookups that used to sit in the
+  # consumers of these options, says for each key which of them applies.
+  # Two kinds of Hash are not read there but handed whole to the code that
+  # read them before, with rules of its own: a sandbox Hash to
+  # SandboxKeys.normalize (types/option_values.rb), by .sandbox, and an agent
+  # Hash to AgentDefinition.new and the Type attribute machinery, by
+  # .agent_definition. spec/unit/option_forms_characterization_spec.rb pins
+  # the rules at the command line and the initialize request; a change of
+  # rule is a change of behaviour, not a cleanup.
   #
   # @api private
   module OptionForms
@@ -95,10 +102,19 @@ module ClaudeAgentSDK
       end
     end
 
-    # Every read of a key of an option Hash, each under the rule its option
-    # has always had (truthy or presence, see OptionForms). The functions of
-    # OptionForms tell the forms of an option apart by class and come here
-    # for the Hash one; nothing else in the SDK reads these keys.
+    # The direct field lookups on an option Hash that were moved out of its
+    # consumers (CommandBuilder, the root extractors, the transport's sandbox
+    # warning), each under the rule its option has always had (truthy or
+    # presence, see OptionForms). The functions of OptionForms tell the forms
+    # of an option apart by class and come here for the Hash one.
+    #
+    # This is not every read of an option Hash in the SDK. The fields of a
+    # sandbox Hash are read and renamed by SandboxKeys.normalize
+    # (types/option_values.rb), which OptionForms.sandbox delegates to; only
+    # the `enabled` of the warning predicate is looked up here. The
+    # attributes of an agent Hash are assigned by the strict
+    # AgentDefinition.new, through the Type machinery, which
+    # OptionForms.agent_definition delegates to.
     module HashForm
       # The type tag, as a String: `type: :preset` is the natural Ruby
       # spelling of `type: 'preset'`. Truthy, so a nil Symbol-keyed tag falls
