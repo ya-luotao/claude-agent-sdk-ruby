@@ -165,6 +165,56 @@ RSpec.describe ClaudeAgentSDK::Client, 'when a teardown interleaves with its oth
         end
       end
 
+      # The client is disconnected from the moment the directory's removal
+      # starts, so it can be connected again while that removal is still
+      # going. The disconnect that then finishes owns the old session only:
+      # it must not let go of the new one, whose own resume dir would
+      # otherwise be out of reach of the disconnect that ends it.
+      describe 'a reconnect while the old materialized resume dir is still being removed' do
+        it 'leaves the new session usable, and its own disconnect removes its own resume dir' do
+          delivered = []
+
+          Sync do |task|
+            client, old_cli = connected_client(scheduling)
+            entered = Thread::Queue.new
+            release = Thread::Queue.new
+            on_removal_of(old_cli.config_dir) do |attempt|
+              next unless attempt == 1
+
+              entered << true
+              release.pop
+            end
+
+            disconnecting = task.async { client.disconnect }
+            entered.pop # the old session is closed; the removal of its dir is parked
+            client.connect
+            new_cli = created.fetch(1)
+            release << true
+            disconnecting.wait # the old disconnect finishes after the reconnect
+
+            aggregate_failures do
+              expect(File.exist?(old_cli.config_dir)).to be(false)
+              expect(new_cli.config_dir).not_to eq(old_cli.config_dir)
+              expect(File.directory?(new_cli.config_dir)).to be(true)
+              expect(client.query_handler).not_to be_nil
+
+              client.query('on the new connection')
+              client.receive_response { |message| delivered << message.class }
+              client.disconnect
+
+              expect(delivered).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+              expect(new_cli.user_writes.map { |frame| frame.dig(:message, :content) }).to eq(['on the new connection'])
+              expect(File.exist?(new_cli.config_dir)).to be(false)
+              expect(created.map(&:closed?)).to eq([true, true])
+              expect(client.query_handler).to be_nil
+              expect(observer.names).to eq(%i[on_close on_user_prompt on_message on_message on_close])
+            end
+          ensure
+            release&.close
+          end
+        end
+      end
+
       # Observers are resolved on each connect, and a receive loop asks the
       # client for them message by message: one that is still running from
       # before a reconnect tells the observers of the connection there is
