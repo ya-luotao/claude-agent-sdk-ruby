@@ -461,6 +461,8 @@ module ClaudeAgentSDK
         plugin = OptionForms.plugin(entry)
 
         unless %w[local plugin].include?(plugin.type_tag)
+          # raw_type looks the type up again, as it was written; asked for
+          # only here, so an accepted plugin has its type read once.
           raise ArgumentError, "Unsupported plugin type: #{plugin.raw_type.inspect}"
         end
         next unless plugin.path

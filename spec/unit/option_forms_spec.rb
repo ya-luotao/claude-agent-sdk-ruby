@@ -272,6 +272,29 @@ RSpec.describe ClaudeAgentSDK::OptionForms do
       it("reads #{form}") { expect(fields(value)).to eq(expected) }
     end
 
+    # CommandBuilder asks for raw_type only when it refuses the plugin; a
+    # Hash that computes its values sees each reading.
+    it 'reads the type once for the tag, and anew each time raw_type is asked for' do
+      readings = 0
+      entry = Hash.new { |_hash, key| key == :type ? "remote-#{readings += 1}" : nil }
+      entry[:path] = '/p'
+
+      result = described_class.plugin(entry)
+
+      expect([result.type_tag, result.path, readings]).to eq(['remote-1', '/p', 1])
+      expect([result.raw_type, result.raw_type, readings]).to eq(['remote-2', 'remote-3', 3])
+    end
+
+    it 'takes the #to_h of a SdkPluginConfig once, for the tag and for raw_type alike' do
+      config = ClaudeAgentSDK::SdkPluginConfig.new(path: '/p')
+      calls = 0
+      config.define_singleton_method(:to_h) { { type: "local-#{calls += 1}", path: '/p' } }
+
+      result = described_class.plugin(config)
+
+      expect([result.type_tag, result.raw_type, calls]).to eq(['local-1', 'local-1', 1])
+    end
+
     it 'hands a Pathname on as it is and answers a frozen record' do
       path = Pathname.new('/srv/plugins/review')
       result = described_class.plugin({ type: 'local', path: path })

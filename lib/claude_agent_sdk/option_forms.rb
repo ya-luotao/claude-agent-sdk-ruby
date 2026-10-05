@@ -74,16 +74,24 @@ module ClaudeAgentSDK
       end
     end
 
-    # What .plugin answers. +type_tag+ is the type as a String, to compare;
-    # +raw_type+ is the type as it was written, for an error message.
+    # What .plugin answers. +type_tag+ is the type as a String, to compare.
     class Plugin
-      attr_reader :type_tag, :path, :raw_type
+      attr_reader :type_tag, :path
 
-      def initialize(type_tag:, path:, raw_type:)
+      def initialize(type_tag:, path:, config:)
         @type_tag = type_tag
         @path = path
-        @raw_type = raw_type
+        @config = config
         freeze
+      end
+
+      # The type as it was written, for the message of the caller that
+      # refuses the plugin. Read from the entry anew each time it is asked
+      # for, and not when the record is made: the reader this replaces looked
+      # the type up a second time for its message, and only once it had
+      # refused the plugin, which a Hash that computes its values can tell.
+      def raw_type
+        HashForm.plugin_type(@config)
       end
     end
 
@@ -151,11 +159,15 @@ module ClaudeAgentSDK
         hash[:total] || hash['total']
       end
 
-      # One plugin: +path+ and the type are truthy.
+      # One plugin: +path+ is truthy and read first, then the tag, once.
       def self.plugin(hash)
         path = hash[:path] || hash['path']
-        raw_type = hash[:type] || hash['type']
-        Plugin.new(type_tag: raw_type.to_s, path: path, raw_type: raw_type)
+        Plugin.new(type_tag: tag(hash), path: path, config: hash)
+      end
+
+      # The type of a plugin as it was written (truthy), for Plugin#raw_type.
+      def self.plugin_type(hash)
+        hash[:type] || hash['type']
       end
 
       # sandbox, for the warning alone (.sandbox_requested?): either key
@@ -262,8 +274,9 @@ module ClaudeAgentSDK
     end
 
     # One entry of +plugins+ (see Plugin); a typed SdkPluginConfig is read
-    # through its #to_h. The caller refuses a type that is no plugin type and
-    # skips an entry without a path.
+    # through its #to_h, taken once. The caller refuses a type that is no
+    # plugin type, asking for Plugin#raw_type only then, and skips an entry
+    # without a path.
     def self.plugin(value)
       HashForm.plugin(value.is_a?(SdkPluginConfig) ? value.to_h : value)
     end

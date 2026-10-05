@@ -479,6 +479,55 @@ RSpec.describe 'an option given as a Hash, as the SDK reads it' do
       'an unknown type without a path' => [[{ type: 'remote' }], 'Unsupported plugin type: "remote"'],
       'an unknown type after a valid plugin' => [[{ type: 'local', path: '/a' }, { type: 'remote' }], 'Unsupported plugin type: "remote"']
     }
+
+    # How often a plugin Hash is read, and in which order, shows in a Hash
+    # that computes its values (a default proc): the path first, then the
+    # type, once, to recognize the plugin. A plugin that is refused has its
+    # type read once more, and that second reading is the one the message
+    # names.
+    describe 'as a Hash that computes its values' do
+      # A plugin Hash answering every key from +values+, the keys it was
+      # asked for (in order), and a counter of the times its type was read.
+      def computed_plugin(values)
+        lookups = []
+        plugin = Hash.new do |_hash, key|
+          lookups << key
+          value = values[key]
+          value.respond_to?(:call) ? value.call(lookups.count(:type)) : value
+        end
+        [plugin, lookups]
+      end
+
+      it 'reads the type of a refused plugin a second time, for the message' do
+        plugin, lookups = computed_plugin(path: '/srv/plugins/review', type: ->(reading) { "remote-#{reading}" })
+        error = build_error(plugins: [plugin])
+
+        expect(error).to be_a(ArgumentError).and have_attributes(message: 'Unsupported plugin type: "remote-2"')
+        expect(lookups).to eq(%i[path type type])
+      end
+
+      it 'falls back to the String key in both readings of a refused plugin' do
+        plugin, lookups = computed_plugin('type' => :remote)
+        error = build_error(plugins: [plugin])
+
+        expect(error).to be_a(ArgumentError).and have_attributes(message: 'Unsupported plugin type: :remote')
+        expect(lookups).to eq([:path, 'path', :type, 'type', :type, 'type'])
+      end
+
+      it 'reads the type of an accepted plugin once' do
+        plugin, lookups = computed_plugin(path: '/srv/plugins/review', type: ->(reading) { reading == 1 ? 'local' : "remote-#{reading}" })
+
+        expect(argv(plugins: [plugin])).to eq(command_line(:plugins, ['--plugin-dir', '/srv/plugins/review']))
+        expect(lookups).to eq(%i[path type])
+      end
+
+      it 'reads the type of an accepted plugin without a path once, and sends nothing for it' do
+        plugin, lookups = computed_plugin('type' => 'plugin')
+
+        expect(argv(plugins: [plugin])).to eq(command_line(:plugins, []))
+        expect(lookups).to eq([:path, 'path', :type, 'type'])
+      end
+    end
   end
 
   # The four errors a build raises for an option form are raised by
@@ -493,7 +542,8 @@ RSpec.describe 'an option given as a Hash, as the SDK reads it' do
       'an enabled thinking Hash without a budget' => { thinking: { type: 'enabled' } },
       'a ThinkingConfigEnabled without a budget' => { thinking: ClaudeAgentSDK::ThinkingConfigEnabled.new },
       'a thinking Hash with an unknown type' => { thinking: { type: 'bogus' } },
-      'a plugin Hash with an unknown type' => { plugins: [{ type: 'remote', path: '/x' }] }
+      'a plugin Hash with an unknown type' => { plugins: [{ type: 'remote', path: '/x' }] },
+      'a plugin Hash that computes an unknown type' => { plugins: [Hash.new { |_hash, key| key == :type ? 'remote' : nil }] }
     }.each do |form, options|
       it "is command_builder.rb for #{form}" do
         error = build_error(**options)
