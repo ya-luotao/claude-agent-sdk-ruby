@@ -787,6 +787,23 @@ RSpec.describe ClaudeAgentSDK::SessionAssembly do
       end
     end
 
+    it 'keeps a materialized dir whose removal was cut short, for the next call to remove' do
+      session = connected
+      attempts = 0
+      allow(materialized).to receive(:cleanup) do
+        attempts += 1
+        raise Async::TimeoutError, 'execution expired' if attempts == 1
+      end
+
+      expect { session.close_resources(always_close_transport: true) }.to raise_error(Async::TimeoutError)
+      session.close_resources(always_close_transport: true)
+      session.close_resources(always_close_transport: true)
+
+      expect(attempts).to eq(2)
+      expect(handler).to have_received(:close).once
+      expect(transport).to have_received(:close).once
+    end
+
     # The block is where the caller marks itself disconnected: after both
     # closes, before the directory removal, which can take a while.
     describe 'the block it is given' do

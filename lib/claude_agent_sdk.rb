@@ -901,7 +901,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       @transport_class = transport_class
       @transport_args = transport_args
       # Owns the transport, the query handler and the materialized resume dir
-      # of the current connection; nil while there is none.
+      # of the current connection; nil while there is none. Kept after a
+      # disconnect that raised, until one completes (see #disconnect).
       @session = nil
       @connected = false
     end
@@ -1268,22 +1269,27 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       # handler was built, and a handler whose #close raised) and decides
       # what happens to the materialized temp dir, which holds a redacted
       # .credentials.json copy. Whatever one of those raises, the others
-      # still run — so disconnect can never leave the client half-open or
-      # leak the temp dir. The original error still propagates.
+      # still run — so disconnect can never leave the client half-open. The
+      # original error still propagates.
       #
       # The client is disconnected as soon as both closes are behind, before
       # the temp dir is dealt with: its removal can take a while and lets
       # other tasks run, and what they call meanwhile has to be refused as
       # "Not connected" (and a disconnect of theirs must not notify on_close
       # again) rather than reach a session whose resources are gone.
-      begin
-        if @session
-          @session.close_resources(always_close_transport: true) { @connected = false }
-        else
-          @connected = false
-        end
-      ensure
-        @session = nil
+      #
+      # The session is let go of only once all of it was disposed of. When
+      # the teardown raises — a close failed, or the removal of the temp dir
+      # was cut short by the caller's deadline or a stop — the session stays,
+      # holding whatever it could not dispose of, so that the next disconnect
+      # finishes the job (what was already closed is not closed again). It
+      # is not the client's session any more once a reconnect replaced it.
+      session = @session
+      if session
+        session.close_resources(always_close_transport: true) { @connected = false }
+        @session = nil if @session.equal?(session)
+      else
+        @connected = false
       end
     end
 

@@ -115,6 +115,54 @@ RSpec.describe ClaudeAgentSDK::Client, 'while a teardown is under way, or after 
           expect(wrapped).not_to be_empty
         end
       end
+
+      # The directory holds a copy of the credentials and the settings. A
+      # removal that was cut short (the directory was busy, and the caller's
+      # deadline expired or its task was stopped during the wait before the
+      # retry) must stay within reach of the next disconnect.
+      describe 'a disconnect interrupted while it removes the materialized resume dir' do
+        {
+          'an expired deadline' => Async::TimeoutError,
+          'a cancellation that is not a StandardError' => Class.new(ClaudeAgentSDK::FiberBoundary::InlineCancellation)
+        }.each do |label, cancellation|
+          it "raises the interruption and leaves the dir to the next disconnect, which removes it (#{label})" do
+            attempts = []
+
+            Sync do |task|
+              client, cli = connected_client(scheduling)
+              entered = Thread::Queue.new
+              on_removal_of(cli.config_dir) do |attempt|
+                attempts << attempt
+                next unless attempt == 1
+
+                entered << true
+                raise Errno::EBUSY, cli.config_dir # retried after a sleep, which is where the interruption lands
+              end
+
+              disconnecting = task.async { expect { client.disconnect }.to raise_error(cancellation) }
+              entered.pop
+              EntryPointHarness.expire_deadline_on(disconnecting, cancellation)
+              disconnecting.wait
+
+              aggregate_failures do
+                expect(attempts).to eq([1])
+                expect(File.directory?(cli.config_dir)).to be(true)
+                expect(cli).to be_closed # the rest of the teardown was done
+                expect(client.query_handler).to be_nil
+                expect { client.query('again') }.to not_connected
+
+                expect { client.disconnect }.not_to raise_error
+                expect(attempts).to eq([1, 2])
+                expect(File.exist?(cli.config_dir)).to be(false)
+
+                client.disconnect # nothing is left to do
+                expect(attempts).to eq([1, 2])
+                expect(observer.names).to eq(%i[on_close])
+              end
+            end
+          end
+        end
+      end
     end
   end
 end
