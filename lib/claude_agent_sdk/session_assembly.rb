@@ -182,8 +182,16 @@ module ClaudeAgentSDK
     #                                   Query was built (query())
     #
     # Transport#close is idempotent, so the second close is harmless. The
-    # nested ensures run every later step when an earlier one raises; the
-    # first error still propagates.
+    # nested ensures run every later step when an earlier one raises, and the
+    # last error raised is the one that propagates.
+    #
+    # A block, when given, is called once both closes are behind and before
+    # the materialized dir is dealt with — also when a close raised. From
+    # there on nothing of the session can be used any more, while removing
+    # the directory can still take a while (it retries, sleeping, when the
+    # directory is busy) and lets other tasks run meanwhile: the caller marks
+    # itself disconnected in the block, so that calls made in that window are
+    # refused instead of reaching a session that is half gone.
     def close_resources(always_close_transport:)
       # Kept past the nil-out below: whether the mirror dropped batches is
       # final only after #close ran its last flush.
@@ -196,6 +204,7 @@ module ClaudeAgentSDK
           @transport&.close if always_close_transport || handler.nil?
         ensure
           @transport = nil
+          yield if block_given?
           dispose_of_materialized_resume(handler)
         end
       end

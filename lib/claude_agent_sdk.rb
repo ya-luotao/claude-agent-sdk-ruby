@@ -1268,14 +1268,22 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       # handler was built, and a handler whose #close raised) and decides
       # what happens to the materialized temp dir, which holds a redacted
       # .credentials.json copy. Whatever one of those raises, the others
-      # still run and the state below is reset — so disconnect can never
-      # leave the client half-open or leak the temp dir. The original error
-      # still propagates.
+      # still run — so disconnect can never leave the client half-open or
+      # leak the temp dir. The original error still propagates.
+      #
+      # The client is disconnected as soon as both closes are behind, before
+      # the temp dir is dealt with: its removal can take a while and lets
+      # other tasks run, and what they call meanwhile has to be refused as
+      # "Not connected" (and a disconnect of theirs must not notify on_close
+      # again) rather than reach a session whose resources are gone.
       begin
-        @session&.close_resources(always_close_transport: true)
+        if @session
+          @session.close_resources(always_close_transport: true) { @connected = false }
+        else
+          @connected = false
+        end
       ensure
         @session = nil
-        @connected = false
       end
     end
 

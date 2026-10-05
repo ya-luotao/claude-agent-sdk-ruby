@@ -787,6 +787,42 @@ RSpec.describe ClaudeAgentSDK::SessionAssembly do
       end
     end
 
+    # The block is where the caller marks itself disconnected: after both
+    # closes, before the directory removal, which can take a while.
+    describe 'the block it is given' do
+      it 'is called once both closes are behind and before the materialized dir is dealt with' do
+        steps = []
+        session = connected
+        allow(handler).to receive(:close) { steps << :query_close }
+        allow(transport).to receive(:close) { steps << :transport_close }
+        allow(materialized).to receive(:cleanup) { steps << :cleanup }
+
+        session.close_resources(always_close_transport: true) { steps << [:block, session.query_handler] }
+
+        expect(steps).to eq([:query_close, :transport_close, [:block, nil], :cleanup])
+      end
+
+      it 'is called when closing the Query raises, and when closing the transport raises' do
+        calls = 0
+        session = connected
+        allow(handler).to receive(:close).and_raise(IOError, 'reap failed')
+        allow(transport).to receive(:close).and_raise(ArgumentError, 'pipe')
+
+        expect { session.close_resources(always_close_transport: true) { calls += 1 } }
+          .to raise_error(ArgumentError, 'pipe')
+        expect(calls).to eq(1)
+        expect(materialized).to have_received(:cleanup)
+      end
+
+      it 'is called when there is nothing to close and no materialized dir' do
+        calls = 0
+
+        assembly.close_resources(always_close_transport: false) { calls += 1 }
+
+        expect(calls).to eq(1)
+      end
+    end
+
     # A dropped mirror batch means the store copy is incomplete: the dir
     # holds the only copy of those turns.
     [true, false].each do |always|
