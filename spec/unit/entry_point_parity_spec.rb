@@ -76,10 +76,12 @@ RSpec.describe 'entry point parity' do
     EntryPointHarness::RESULT_FRAME.merge(num_turns: turns)
   end
 
-  # What the caller got from the call: [:returned, value], or the exception.
+  # What the caller got from the call: [:returned, value], or the error it
+  # raised (every scenario here fails with a StandardError, the deadline's
+  # Async::TimeoutError included).
   def outcome_of
     [:returned, yield]
-  rescue Exception => e # rubocop:disable Lint/RescueException -- a deadline may be a bare Exception
+  rescue StandardError => e
     e
   end
 
