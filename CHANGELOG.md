@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Internal: `ClaudeAgentSDK.query` and `Client` now share one implementation of session setup, prompt writes, message delivery and teardown (`SessionAssembly`, `@api private`) instead of each carrying its own copy, and the observers / `callback_scheduling` / `callback_wrapper` of a session are bound once (`Dispatch`, `@api private`) instead of being passed at every call site. No public API, signature or behavior change: the documented differences between the two entry points (what observers are told when a session cannot be opened, the `session_id` on the wire, when stdin is closed, which error wins when a close raises) are kept as they were and are now pinned by specs that run both side by side.
+
 ## [1.2.0] - 2026-10-03
 
 Fixes from a review of the whole SDK, a reference for every option (`docs/options.md`), and Claude Code 2.1.288 as the pinned CLI. Settings the SDK used to drop without an error now take effect — hook outputs and `sandbox:` Hashes in Ruby spelling, a `tools:` String, option Hashes with a Symbol `type` — so read the entries in bold before upgrading: they say what changes for code that relied on the old behavior.
