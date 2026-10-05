@@ -294,6 +294,14 @@ RSpec.describe 'Query#close from inside a user callback (issue #81)' do
       end.wait
     end
 
+    # The client let go of its session: no query handler any more (its
+    # transport is the recording one, asserted closed by each example), and
+    # the public API reports it as not connected.
+    def expect_disconnected(client)
+      expect(client.query_handler).to be_nil
+      expect { client.query('again') }.to raise_error(ClaudeAgentSDK::CLIConnectionError, /Not connected/)
+    end
+
     it 'in :inline mode completes the query teardown before the callback unwinds and leaves nothing running' do
       created = []
       klass = transport_class
@@ -308,7 +316,7 @@ RSpec.describe 'Query#close from inside a user callback (issue #81)' do
       observed = nil
       done = Thread::Queue.new
       can_use_tool = lambda do |_tool, _input, _context|
-        query = client.instance_variable_get(:@query_handler)
+        query = client.query_handler
         begin
           client.disconnect
           observed = snapshot(query, created.first, nil)
@@ -329,8 +337,7 @@ RSpec.describe 'Query#close from inside a user callback (issue #81)' do
       expect(observed[:raised]).to be_a(Async::Stop)
       expect(observed[:transport_closed]).to be(true)
       expect(observed[:close_requests_closed]).to be(true)
-      expect(client.instance_variable_get(:@connected)).to be(false)
-      expect(client.instance_variable_get(:@transport)).to be_nil
+      expect_disconnected(client)
     end
 
     # Same bug from the other side of the tree: a streaming-input enumerator
@@ -358,7 +365,7 @@ RSpec.describe 'Query#close from inside a user callback (issue #81)' do
       stream = Enumerator.new do |y|
         y << { type: 'user', message: { role: 'user', content: 'hi' }, session_id: 'default' }
         gate.pop # scheduler-aware: parks the stream task, connect returns and registers it
-        query = client.instance_variable_get(:@query_handler)
+        query = client.query_handler
         begin
           client.disconnect
           observed = snapshot(query, created.first, nil)
@@ -374,7 +381,7 @@ RSpec.describe 'Query#close from inside a user callback (issue #81)' do
 
       Async do
         client.connect(stream)
-        expect(client.instance_variable_get(:@query_handler).instance_variable_get(:@child_tasks).size).to eq(1)
+        expect(client.query_handler.instance_variable_get(:@child_tasks).size).to eq(1)
         gate << true
       end.wait # exits only when the read task, the stream task and the watcher are all done
       await_callback(done)
@@ -383,7 +390,7 @@ RSpec.describe 'Query#close from inside a user callback (issue #81)' do
       expect(observed[:raised]).to be_a(Async::Stop)
       expect(observed[:transport_closed]).to be(true)
       expect(observed[:close_requests_closed]).to be(true)
-      expect(client.instance_variable_get(:@connected)).to be(false)
+      expect_disconnected(client)
       sent = created.first.writes.select { |w| w[:type] == 'user' }.map { |w| w.dig(:message, :content) }
       expect(sent).to eq(['hi'])
     end
@@ -402,7 +409,7 @@ RSpec.describe 'Query#close from inside a user callback (issue #81)' do
       observed = nil
       done = Thread::Queue.new
       can_use_tool = lambda do |_tool, _input, _context|
-        query = client.instance_variable_get(:@query_handler)
+        query = client.query_handler
         begin
           client.disconnect
           observed = snapshot(query, created.first, nil)
@@ -423,7 +430,7 @@ RSpec.describe 'Query#close from inside a user callback (issue #81)' do
       expect(observed[:raised]).to be_nil
       expect(observed[:transport_closed]).to be(true)
       expect(observed[:close_requests_closed]).to be(true)
-      expect(client.instance_variable_get(:@connected)).to be(false)
+      expect_disconnected(client)
     end
   end
 end

@@ -686,9 +686,25 @@ RSpec.describe ClaudeAgentSDK::Client do
       end
     end
 
+    # The options a Client runs on are the ones it hands the transport it
+    # constructs.
+    def options_handed_to_transport(client)
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+
+      received_options = nil
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |options|
+        received_options = options
+        transport
+      end
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      client.connect
+      received_options
+    end
+
     it 'uses configured defaults when no options provided' do
-      client = described_class.new
-      options = client.instance_variable_get(:@options)
+      options = options_handed_to_transport(described_class.new)
 
       expect(options.model).to eq('sonnet')
       expect(options.permission_mode).to eq('bypassPermissions')
@@ -700,31 +716,12 @@ RSpec.describe ClaudeAgentSDK::Client do
         model: 'opus',
         env: { 'OVERRIDE_KEY' => 'override_value' }
       )
-      client = described_class.new(options: override_options)
-      options = client.instance_variable_get(:@options)
+      options = options_handed_to_transport(described_class.new(options: override_options))
 
       expect(options.model).to eq('opus') # override
       expect(options.permission_mode).to eq('bypassPermissions') # from default
       expect(options.env['API_KEY']).to eq('configured_key') # from default
       expect(options.env['OVERRIDE_KEY']).to eq('override_value') # from provided
-    end
-
-    it 'passes merged options to transport' do
-      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
-      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
-
-      received_options = nil
-      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |options|
-        received_options = options
-        transport
-      end
-      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
-
-      client = described_class.new
-      client.connect
-
-      expect(received_options.model).to eq('sonnet')
-      expect(received_options.permission_mode).to eq('bypassPermissions')
     end
   end
   describe 'Client#query with an iterable (F7)' do
@@ -1015,32 +1012,53 @@ RSpec.describe ClaudeAgentSDK::Client do
   # materialized temp dir holds the only copy of those turns — disconnect must
   # preserve it (scrubbed of credentials) instead of deleting it.
   describe '#disconnect with a materialized resume' do
-    def client_with(handler, materialized)
-      client = described_class.new
-      client.instance_variable_set(:@query_handler, handler)
-      client.instance_variable_set(:@materialized, materialized)
-      client
+    let(:materialized) do
+      instance_double(ClaudeAgentSDK::MaterializedResume, cleanup: nil, preserve_transcripts: nil,
+                                                          config_dir: '/nonexistent/claude-resume-x',
+                                                          resume_session_id: SecureRandom.uuid)
+    end
+    let(:transport) { instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil) }
+
+    # A client that connected with a store-backed resume: the session was
+    # materialized, and the query handler reports +dropped+ for its mirror.
+    def connected_client(dropped:)
+      handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil,
+                                                       set_transcript_mirror_batcher: nil,
+                                                       mirror_batches_dropped?: dropped)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(handler)
+      allow(ClaudeAgentSDK::SessionResume).to receive(:materialize_resume_session).and_return(materialized)
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: ClaudeAgentSDK::InMemorySessionStore.new,
+                                                       resume: materialized.resume_session_id)
+      [described_class.new(options: options).tap(&:connect), handler]
     end
 
     it 'preserves the temp dir when the mirror dropped batches' do
-      handler = instance_double(ClaudeAgentSDK::Query, close: nil, mirror_batches_dropped?: true)
-      materialized = instance_double(ClaudeAgentSDK::MaterializedResume, cleanup: nil, preserve_transcripts: nil)
+      client, handler = connected_client(dropped: true)
 
-      client_with(handler, materialized).disconnect
+      client.disconnect
 
-      expect(handler).to have_received(:close)
-      expect(materialized).to have_received(:preserve_transcripts)
+      expect(handler).to have_received(:close).ordered
+      expect(transport).to have_received(:close).ordered
+      expect(materialized).to have_received(:preserve_transcripts).ordered
       expect(materialized).not_to have_received(:cleanup)
     end
 
     it 'cleans up the temp dir when no batches were dropped' do
-      handler = instance_double(ClaudeAgentSDK::Query, close: nil, mirror_batches_dropped?: false)
-      materialized = instance_double(ClaudeAgentSDK::MaterializedResume, cleanup: nil, preserve_transcripts: nil)
+      client, = connected_client(dropped: false)
 
-      client_with(handler, materialized).disconnect
+      client.disconnect
 
       expect(materialized).to have_received(:cleanup)
       expect(materialized).not_to have_received(:preserve_transcripts)
+    end
+
+    it 'decides once: a second disconnect leaves the temp dir alone' do
+      client, = connected_client(dropped: false)
+
+      2.times { client.disconnect }
+
+      expect(materialized).to have_received(:cleanup).once
     end
   end
 end
