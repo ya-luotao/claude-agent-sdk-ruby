@@ -3,6 +3,7 @@
 require 'json'
 require_relative 'errors'
 require_relative 'types'
+require_relative 'option_forms'
 
 module ClaudeAgentSDK
   # Builds the CLI argv array from a ClaudeAgentOptions instance.
