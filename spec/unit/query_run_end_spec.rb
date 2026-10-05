@@ -304,26 +304,29 @@ RSpec.describe ClaudeAgentSDK::Query do
   end
 
   describe 'run-end ceiling' do
-    # The ceiling is a sleeper task that calls end_run_at_ceiling(generation)
-    # when its sleep is over. These examples leave the default ceiling of ten
-    # minutes in place, so the real sleeper never wakes, and make that call
-    # themselves: what is under test is which sleeper is armed when, and what
-    # one that wakes is allowed to do — not how long the sleep takes. The one
-    # example that sleeps through a real ceiling is the first.
+    # The ceiling is a sleeper that ends the run when its sleep is over. The
+    # examples that need one to wake hand the Query a FakeSleeper (`sleeper:`),
+    # which never wakes by itself, and wake it by hand: what is under test is
+    # which sleeper is armed when, and what one that wakes is allowed to do —
+    # not how long the sleep takes. The others leave the default ceiling of ten
+    # minutes in place, so the real sleeper never wakes. The one example that
+    # sleeps through a real ceiling is the first.
+    let(:sleeper) { FakeSleeper.new }
+
     def ceiling_armed?(query)
-      !query.instance_variable_get(:@run_end_ceiling_task).nil?
+      query.run_lifecycle.ceiling_armed?
     end
 
-    # The generation the armed sleeper holds (it stands down when it wakes
-    # with a stale one).
-    def ceiling_generation(query)
-      query.instance_variable_get(:@run_end_ceiling_generation)
+    # The sleep of the armed sleeper is over; +feed+ then lets what that woke
+    # run.
+    def ceiling_passes(feed)
+      sleeper.fire
+      feed.call
     end
 
-    # What the sleeper armed at +generation+ does when its sleep is over;
-    # +feed+ then lets what that woke run.
-    def ceiling_passes(query, generation, feed)
-      query.send(:end_run_at_ceiling, generation)
+    # A sleeper that has been stopped wakes anyway: it was already waking up.
+    def stale_ceiling_passes(feed)
+      sleeper.fire_stale
       feed.call
     end
 
@@ -349,53 +352,50 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
 
     it 'is stopped by a main-thread turn and re-armed by its result' do
-      with_query do |query, feed, ended, task|
+      with_query(sleeper: sleeper) do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(state('running'), result)
-        stopped = ceiling_generation(query)
         feed.call(main_assistant)
         expect(ceiling_armed?(query)).to be(false)
 
-        ceiling_passes(query, stopped, feed) # the stopped sleeper was already waking up
+        stale_ceiling_passes(feed) # the stopped sleeper was already waking up
         expect(ended).to be_empty
 
         feed.call(result)
         expect(ceiling_armed?(query)).to be(true)
-        ceiling_passes(query, ceiling_generation(query), feed)
+        ceiling_passes(feed)
         finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
 
     it 'is not stopped by subagent messages' do
-      with_query do |query, feed, ended, task|
+      with_query(sleeper: sleeper) do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(state('running'), result)
-        armed = ceiling_generation(query)
         feed.call(main_assistant.merge(parent_tool_use_id: 'toolu_1'))
         expect(ceiling_armed?(query)).to be(true)
-        expect(ceiling_generation(query)).to eq(armed) # the same sleeper, not a new one
+        expect([sleeper.arms.length, sleeper.stops]).to eq([1, 0]) # the same sleeper, not a new one
 
-        ceiling_passes(query, armed, feed)
+        ceiling_passes(feed)
         finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
 
     it 'is stopped by requires_action and re-armed by the running that follows' do
-      with_query do |query, feed, ended, task|
+      with_query(sleeper: sleeper) do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(state('running'), result)
-        stopped = ceiling_generation(query)
         feed.call(state('requires_action'))
         expect(ceiling_armed?(query)).to be(false)
 
-        ceiling_passes(query, stopped, feed)
+        stale_ceiling_passes(feed)
         expect(ended).to be_empty
 
         feed.call(state('running'))
         expect(ceiling_armed?(query)).to be(true)
-        ceiling_passes(query, ceiling_generation(query), feed)
+        ceiling_passes(feed)
         finish(task, waiter)
         expect(ended).not_to be_empty
       end
@@ -425,7 +425,7 @@ RSpec.describe ClaudeAgentSDK::Query do
     end
 
     it 'is not armed by a result that arrives while the SDK is answering a request' do
-      with_query do |query, feed, ended, task|
+      with_query(sleeper: sleeper) do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(state('requires_action'), result)
         expect(ceiling_armed?(query)).to be(false)
@@ -433,24 +433,24 @@ RSpec.describe ClaudeAgentSDK::Query do
 
         feed.call(state('running'))
         expect(ceiling_armed?(query)).to be(true)
-        ceiling_passes(query, ceiling_generation(query), feed)
+        ceiling_passes(feed)
         finish(task, waiter)
         expect(ended).not_to be_empty
       end
     end
 
     it 'leaves a tracked agent alone and starts over once it settles' do
-      with_query do |query, feed, ended, task|
+      with_query(sleeper: sleeper) do |query, feed, ended, task|
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(state('running'), task_started('bg-1'), result)
 
-        ceiling_passes(query, ceiling_generation(query), feed) # with bg-1 still running
+        ceiling_passes(feed) # with bg-1 still running
         expect(ended).to be_empty
         expect(ceiling_armed?(query)).to be(false)
 
         feed.call(task_done('bg-1'))
         expect(ceiling_armed?(query)).to be(true)
-        ceiling_passes(query, ceiling_generation(query), feed)
+        ceiling_passes(feed)
         finish(task, waiter)
         expect(ended).not_to be_empty
       end
@@ -469,13 +469,13 @@ RSpec.describe ClaudeAgentSDK::Query do
                                   input: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {},
                                            session_id: 's', cwd: '/tmp' } } }
 
-      with_query do |query, feed, ended, task, written|
+      with_query(sleeper: sleeper) do |query, feed, ended, task, written|
         query.instance_variable_set(:@hook_callbacks, { 'hook_0' => parked_hook })
         waiter = task.async { query.wait_for_result_and_end_input }
         feed.call(state('running'), result, hook_request)
         expect(entered.pop(timeout: 10)).to be(true)
 
-        ceiling_passes(query, ceiling_generation(query), feed) # while the hook is still running
+        ceiling_passes(feed) # while the hook is still running
         expect(ended).to be_empty
         expect(ceiling_armed?(query)).to be(true) # the clock starts over instead
 
@@ -484,7 +484,7 @@ RSpec.describe ClaudeAgentSDK::Query do
         expect(ended).to be_empty # on a stdin that was still open
         feed.call
 
-        ceiling_passes(query, ceiling_generation(query), feed)
+        ceiling_passes(feed)
         finish(task, waiter)
         expect(ended).not_to be_empty
       ensure
@@ -527,10 +527,10 @@ RSpec.describe ClaudeAgentSDK::Query do
         gate.dequeue
       end
 
-      with_query do |query, feed, ended, task|
+      with_query(sleeper: sleeper) do |query, feed, ended, task|
         streamer = task.async { query.stream_input(prompts) }
         feed.call(state('running'), result)
-        ceiling_passes(query, ceiling_generation(query), feed) # ends the run while the stream is still open
+        ceiling_passes(feed) # ends the run while the stream is still open
         feed.call(main_assistant)
         gate.enqueue(:go)
         feed.call # the stream is exhausted: the streamer waits for the reopened run
