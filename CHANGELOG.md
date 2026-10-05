@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+- The decision of when `query()` may close stdin moved out of `Query` into one private class, `Query::RunLifecycle` (`lib/claude_agent_sdk/query/run_lifecycle.rb`): the per-run end, the task ledger, the session state and the ceiling timer, with the orderings between them. `Query` hands it frames and five events and supplies the timer. No behavior change; nothing public moved. Its specs now go through that interface (`spec/unit/query/run_lifecycle_spec.rb`) instead of reaching into `Query`'s instance variables.
+
 ## [1.2.0] - 2026-10-03
 
 Fixes from a review of the whole SDK, a reference for every option (`docs/options.md`), and Claude Code 2.1.288 as the pinned CLI. Settings the SDK used to drop without an error now take effect — hook outputs and `sandbox:` Hashes in Ruby spelling, a `tools:` String, option Hashes with a Symbol `type` — so read the entries in bold before upgrading: they say what changes for code that relied on the old behavior.
