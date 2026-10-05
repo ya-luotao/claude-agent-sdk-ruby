@@ -733,6 +733,17 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)'
     end
 
+    # Acquires nothing yet. An injected transport is used as it is: it was
+    # built before a store-backed resume could be materialized for it, so
+    # none is (Python parity: client.py skips materialization when a
+    # transport is supplied). Without one the session constructs the
+    # subprocess transport itself, after materialization.
+    session = SessionAssembly.new(
+      configured_options,
+      dispatch: dispatch,
+      transport_source: transport ? { instance: transport } : { class: SubprocessCLITransport, args: {} }
+    )
+
     # finished: false tells Async that a waiter handles this task's failure
     # (the .wait at the end re-raises it), as Kernel#Sync does for its own
     # task. Without it a task that fails before anyone waits for it — always
@@ -740,144 +751,54 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # returns — is also logged as "Task may have ended with unhandled
     # exception", message and backtrace included, although the caller gets
     # the same error raised and may well rescue it.
-    Async(finished: false, &FiberBoundary.capture_otel_context do # rubocop:disable Metrics/BlockLength -- the reactor task body of query()
-      materialized = nil
-      query_handler = nil
-      begin
-        if transport.nil?
-          # Resume-from-store: when a session_store is set and resume/continue
-          # is requested, load the session into a temp CLAUDE_CONFIG_DIR and
-          # repoint options at it (env + --resume) BEFORE spawning. Returns
-          # options unchanged when no materialization applies. Skipped
-          # entirely for an injected transport — the materialized
-          # env/--resume only apply to the CLI subprocess (Python parity:
-          # client.py skips materialization when a transport is supplied).
-          materialized = SessionResume.materialize_resume_session(configured_options)
-          if materialized
-            configured_options = SessionResume.apply_materialized_options(configured_options, materialized)
-          end
+    Async(finished: false, &FiberBoundary.capture_otel_context do
+      # Resume materialization, the transport's connect and the handshake
+      # all happen in here: inside the notified region.
+      session.connect
 
-          # Always use streaming mode with control protocol (matches Python
-          # SDK). This sends agents via initialize request instead of CLI
-          # args, avoiding OS ARG_MAX limits.
-          transport = SubprocessCLITransport.new(configured_options)
-        end
-        # Deliberate deviation from Python: the ensure below also closes an
-        # injected transport whose #connect raised (Python leaves it
-        # unclosed); Transport#close must be idempotent.
-        transport.connect
-
-        # Extract SDK MCP servers
-        sdk_mcp_servers = extract_sdk_mcp_servers(configured_options.mcp_servers)
-
-        hooks = convert_hooks_to_internal_format(configured_options.hooks)
-
-        # Create Query handler for control protocol
-        query_handler = Query.new(
-          transport: transport,
-          is_streaming_mode: true,
-          can_use_tool: configured_options.can_use_tool,
-          hooks: hooks,
-          agents: configured_options.agents,
-          sdk_mcp_servers: sdk_mcp_servers,
-          exclude_dynamic_sections: ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt),
-          system_prompt_snapshot: ClaudeAgentSDK.extract_system_prompt_snapshot(configured_options.system_prompt),
-          skills: configured_options.skills,
-          forward_subagent_text: configured_options.forward_subagent_text?,
-          agent_progress_summaries: configured_options.agent_progress_summaries,
-          callback_scheduling: dispatch.scheduling,
-          callback_wrapper: dispatch.wrapper,
-          verbatim_prompts: configured_options.verbatim_prompts?,
-          run_end_ceiling_ms: Query.run_end_ceiling_ms(configured_options.env)
-        )
-
-        # Mirror transcripts to the session_store, if configured. Installed
-        # before #start so the read loop captures transcript_mirror frames.
-        if configured_options.session_store
-          query_handler.set_transcript_mirror_batcher(
-            SessionResume.build_mirror_batcher(
-              store: configured_options.session_store,
-              env: configured_options.env,
-              on_error: ->(key, message) { query_handler.report_mirror_error(key, message) },
-              eager: configured_options.session_store_flush.to_s == 'eager',
-              callback_wrapper: dispatch.wrapper
-            )
-          )
-        end
-
-        # Start reading messages in background
-        query_handler.start
-
-        # Initialize the control protocol (sends agents)
-        query_handler.initialize_protocol
-
-        # Send prompt(s) as user messages, then close stdin
-        if prompt.is_a?(String)
-          dispatch.notify(:on_user_prompt, prompt)
-          message = {
-            type: 'user',
-            message: { role: 'user', content: prompt },
-            parent_tool_use_id: nil,
-            session_id: ''
-          }
-          transport.write("#{Query.serialize_user_message(message, configured_options.verbatim_prompts?)}\n")
-          # Background-spawn so messages stream to the user block while stdin
-          # close waits (without timeout) for the first result; a synchronous
-          # call would defer all delivery until the turn completes (mirrors
-          # Python's query.spawn_task(query.wait_for_result_and_end_input())).
-          query_handler.spawn_task { query_handler.wait_for_result_and_end_input }
-        elsif prompt.is_a?(Enumerator) || prompt.respond_to?(:each)
-          # Tracked on the Query so close() stops it; an untracked Async task
-          # here kept the root reactor alive forever when the read loop died
-          # while the user enumerator was still blocked (matches Python's
-          # query.spawn_task(query.stream_input(prompt))).
-          observed_prompt = dispatch.observing_stream(prompt)
-          query_handler.spawn_task { query_handler.stream_input(observed_prompt) }
-        end
-
-        # Read and yield messages from the query handler (filters out control messages).
-        # User block is invoked through FiberBoundary so ActiveRecord / PG calls
-        # inside it don't see the async gem's Fiber scheduler (default :thread
-        # mode; :inline runs it in place on the reactor fiber).
-        query_handler.receive_messages do |data|
-          message = MessageParser.parse(data)
-          next unless message
-
-          dispatch.notify(:on_message, message)
-          signal = dispatch.invoke_iteration(block, message)
-          break signal.value if signal.is_a?(FiberBoundary::Break)
-        end
-      rescue StandardError => e
-        # One notify point for every error surfacing from query() — transport
-        # connect, initialize, stream errors re-raised from the message queue,
-        # parse errors, and user-block errors. StandardError only: Async::Stop
-        # is cancellation, not an error. Bare raise preserves the backtrace;
-        # the ensure below still fires on_close after on_error.
-        dispatch.notify(:on_error, e)
-        raise
-      ensure
-        dispatch.notify(:on_close)
-        # query_handler.close stops the background read task and closes the
-        # transport (flushing the mirror batcher first). Fall back to a bare
-        # transport close when the handler was never built.
-        begin
-          if query_handler
-            query_handler.close
-          elsif transport
-            transport.close
-          end
-        ensure
-          # Remove the materialized resume temp dir (which holds a redacted
-          # .credentials.json copy) AFTER the subprocess has exited, even when
-          # close itself raises — unless the mirror dropped batches: the store
-          # copy is then incomplete and the temp dir holds the only copy of
-          # the dropped turns, so it is preserved (scrubbed of credentials)
-          # with a warning instead of deleted.
-          if materialized
-            query_handler&.mirror_batches_dropped? ? materialized.preserve_transcripts : materialized.cleanup
-          end
-        end
+      # Send prompt(s) as user messages, then close stdin
+      if prompt.is_a?(String)
+        dispatch.notify(:on_user_prompt, prompt)
+        # verbatim_prompts is read now, after the notification, from the
+        # options the session runs on.
+        session.write_prompt(prompt, session_id: '', verbatim: :current)
+        # Background-spawn so messages stream to the user block while stdin
+        # close waits (without timeout) for the first result; a synchronous
+        # call would defer all delivery until the turn completes (mirrors
+        # Python's query.spawn_task(query.wait_for_result_and_end_input())).
+        query_handler = session.query_handler
+        query_handler.spawn_task { query_handler.wait_for_result_and_end_input }
+      elsif prompt.is_a?(Enumerator) || prompt.respond_to?(:each)
+        # Tracked on the Query so close() stops it; an untracked Async task
+        # here kept the root reactor alive forever when the read loop died
+        # while the user enumerator was still blocked (matches Python's
+        # query.spawn_task(query.stream_input(prompt))).
+        session.stream_prompt_in_background(prompt)
       end
+
+      # Read and yield messages from the query handler (filters out control messages).
+      # User block is invoked through FiberBoundary so ActiveRecord / PG calls
+      # inside it don't see the async gem's Fiber scheduler (default :thread
+      # mode; :inline runs it in place on the reactor fiber).
+      session.deliver(block)
+    rescue StandardError => e
+      # One notify point for every error surfacing from query() — transport
+      # connect, initialize, stream errors re-raised from the message queue,
+      # parse errors, and user-block errors. StandardError only: Async::Stop
+      # is cancellation, not an error. Bare raise preserves the backtrace;
+      # the ensure below still fires on_close after on_error.
+      dispatch.notify(:on_error, e)
+      raise
+    ensure
+      dispatch.notify(:on_close)
+      # Closing the query handler stops the background read task and closes
+      # the transport (flushing the mirror batcher first); a transport
+      # without a handler — its #connect raised, or the handshake never got
+      # that far — is closed on its own. That includes an injected one: a
+      # deliberate deviation from Python, which leaves it unclosed
+      # (Transport#close must be idempotent). The materialized resume temp
+      # dir is dealt with after that, even when the close raised.
+      session.close_resources(always_close_transport: false)
     end).wait
   end
 
