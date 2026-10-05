@@ -52,9 +52,11 @@ RSpec.describe ClaudeAgentSDK::Query::RunLifecycle do
                         control_requests_in_flight: -> { facts[:control_requests_in_flight] })
   end
 
-  # The lifecycle holds a sleeper exactly when one is still sleeping: it
-  # never loses track of one, and never keeps one that woke or was stopped.
-  after { expect(lifecycle.ceiling_armed?).to eq(sleeper.armed?) }
+  # Once an event is over, the lifecycle holds a sleeper exactly when one is
+  # still sleeping, and no other sleeps: it never loses track of one (an arm
+  # replaced without being stopped stays pending), and never keeps one that
+  # woke or was stopped.
+  after { expect(sleeper.pending_arms.length).to eq(lifecycle.ceiling_armed? ? 1 : 0) }
 
   def state(value)
     { type: 'system', subtype: 'session_state_changed', state: value, session_id: 's', sdk_host_only: true }

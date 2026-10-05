@@ -12,7 +12,10 @@
 #   sleeper.fire_stale  # an arm that was stopped or replaced wakes anyway: it was already waking up
 #
 # What the lifecycle believes is read from the lifecycle (#ceiling_armed?);
-# what it did to its sleeper is read here (#arms, #stops, #armed?).
+# what it did to its sleeper is read here (#arms, #stops, #pending_arms).
+# A lifecycle that keeps track of its sleeper has at most one arm pending,
+# the one it holds: an earlier arm it replaced without stopping stays in
+# #pending_arms, where an example can see it, and makes #fire refuse.
 class FakeSleeper
   # One call of the sleeper: the handle the lifecycle holds.
   class Arm
@@ -66,17 +69,23 @@ class FakeSleeper
     @on_stop&.call
   end
 
-  # The latest arm is still sleeping.
+  # Every arm that is still sleeping, oldest first: one at most, unless a
+  # sleeper was replaced without being stopped.
+  def pending_arms
+    @arms.select(&:pending?)
+  end
+
+  # Some arm is still sleeping.
   def armed?
-    !pending.nil?
+    !pending_arms.empty?
   end
 
   # The pending arm's sleep is over.
   def fire
-    arm = pending
-    raise 'FakeSleeper#fire: no arm is pending' unless arm
+    pending = pending_arms
+    raise "FakeSleeper#fire: #{pending.length} arms are pending, not one" unless pending.length == 1
 
-    arm.wake
+    pending.first.wake
   end
 
   # The latest arm that is no longer pending (stopped, or already woken)
@@ -87,12 +96,5 @@ class FakeSleeper
     raise 'FakeSleeper#fire_stale: every arm is still pending' unless arm
 
     arm.wake
-  end
-
-  private
-
-  def pending
-    arm = @arms.last
-    arm if arm&.pending?
   end
 end

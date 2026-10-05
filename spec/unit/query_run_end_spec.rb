@@ -476,20 +476,59 @@ RSpec.describe ClaudeAgentSDK::Query do
       end
     end
 
-    # A frame the read loop already held when the Query was closed (a result
-    # parked in the mirror flush) must not leave a sleeper behind: the
-    # lifecycle asks the Query whether it is closed each time it would arm. A
-    # closed Query reads no further frame, so the frames are handed to its
-    # lifecycle directly; it was never started, so nothing but that answer
-    # stands in the way (the run is neither ended nor final).
-    it 'arms no ceiling once the Query is closed' do
-      query = build_query(mock_transport, sleeper: sleeper)
-      query.close
+    # A result the read loop already holds when the Query is closed must not
+    # leave a sleeper behind. Query#close marks the Query closed, closes the
+    # mirror batcher and only then stops the reader, so the reader's own flush
+    # for that result can return in between, with the run neither ended nor
+    # final: all that keeps the lifecycle from arming is that it asks the
+    # Query whether it is closed each time it would.
+    #
+    # Staged with two gates and no clock. The read loop parks in the flush for
+    # the result; the batcher's close, which Query#close calls once the Query
+    # is marked closed, releases that flush and parks in turn. The reader then
+    # finishes the result while the close has not yet stopped it.
+    {
+      'a task of the reactor' => ->(query, task) { task.async { query.close } },
+      'another thread' => ->(query, _task) { Thread.new { query.close } }
+    }.each do |origin, start_close|
+      it "arms no ceiling for a result that resumes after a close from #{origin} has begun" do
+        queue = Async::Queue.new
+        transport, = queue_fed_transport(queue)
+        query = build_query(transport, sleeper: sleeper)
+        flush_gate = Async::Queue.new
+        close_gate = Async::Queue.new
+        flushes = 0
+        batcher = instance_double(ClaudeAgentSDK::TranscriptMirrorBatcher, enqueue: nil)
+        allow(batcher).to receive(:flush) do
+          flushes += 1
+          flush_gate.dequeue if flushes == 1 # the flush for the result; the one at the end of the read loop passes
+        end
+        allow(batcher).to receive(:close) do
+          flush_gate.enqueue(:closed) # the Query is marked closed and its reader still runs
+          close_gate.dequeue
+        end
+        query.set_transcript_mirror_batcher(batcher)
 
-      [state('running'), result].each { |frame| query.run_lifecycle.frame(frame) }
+        Async do |task|
+          query.start
+          handled = Thread::Queue.new # a barrier: answered once the read loop is done with the result
+          [state('running'), result, handled].each { |frame| queue.enqueue(frame) }
+          task.with_timeout(10) { task.yield until flushes == 1 }
 
-      expect([query.run_lifecycle.ended?, query.run_lifecycle.final?, ceiling_armed?(query)]).to eq([false, false, false])
-      expect(sleeper.arms).to be_empty
+          closing = start_close.call(query, task)
+          expect(handled.pop(timeout: 10)).to eq(:reached)
+          lifecycle = query.run_lifecycle
+          expect([lifecycle.ended?, lifecycle.final?, lifecycle.ceiling_armed?, sleeper.arms.length]).to eq([false, false, false, 0])
+
+          close_gate.enqueue(:stop_the_reader)
+          task.with_timeout(10) { task.yield while closing.alive? }
+          expect([lifecycle.ended?, lifecycle.final?, sleeper.arms.length]).to eq([true, true, 0])
+        ensure
+          close_gate.enqueue(:stop_the_reader) # never leave a close parked
+          query.close
+          release_parked_tasks(task)
+        end.wait
+      end
     end
 
     # A pending ceiling sleeper is a child task; if an exit path forgot to
