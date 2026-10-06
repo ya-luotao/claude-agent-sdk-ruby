@@ -86,6 +86,10 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'unavailable sandbox warn
     'a SandboxSettings with enabled: true' => -> { ClaudeAgentSDK::SandboxSettings.new(enabled: true) },
     'a Hash with enabled: true' => -> { { enabled: true } },
     'a Hash with a String "enabled" key' => -> { { 'enabled' => true } },
+    # Either key saying true is a request, whatever the other one says (the
+    # command line carries the later of the two).
+    'a Hash whose Symbol key says true and whose String key says false' => -> { { enabled: true, 'enabled' => false } },
+    'a Hash whose String key says true and whose Symbol key says false' => -> { { enabled: false, 'enabled' => true } },
     'sandbox: true' => -> { true }
   }.each do |description, sandbox|
     it "warns once when the sandbox was requested by #{description}" do
@@ -111,6 +115,8 @@ RSpec.describe ClaudeAgentSDK::SubprocessCLITransport, 'unavailable sandbox warn
     'sandbox: false' => -> { false },
     'a Hash with enabled: false' => -> { { enabled: false } },
     'an empty Hash' => -> { {} },
+    # Only true is a request.
+    'a Hash whose enabled is truthy but not true' => -> { { enabled: 'true', 'enabled' => 1 } },
     'a SandboxSettings with enabled: false' => -> { ClaudeAgentSDK::SandboxSettings.new(enabled: false) },
     'a SandboxSettings that leaves enabled unset' => -> { ClaudeAgentSDK::SandboxSettings.new }
   }.each do |description, sandbox|

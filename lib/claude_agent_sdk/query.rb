@@ -294,7 +294,7 @@ module ClaudeAgentSDK
           # A Hash stands for the AgentDefinition with the same attributes
           # (the options signature allows either). Built through .new: the
           # user wrote it, so a misspelled key raises as on the typed class.
-          agent_def = AgentDefinition.new(agent_def) if agent_def.is_a?(Hash)
+          agent_def = OptionForms.agent_definition(agent_def)
           {
             description: agent_def.description,
             prompt: agent_def.prompt,
