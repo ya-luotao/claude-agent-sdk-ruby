@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- `CLIInstaller::PINNED_CLI_VERSION` moves from 2.1.288 to **2.1.289**, following the CLI the Python SDK bundles. `CLIInstaller.install_pinned` installs it. See the [Claude Code changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md).
+- `CLIInstaller::PINNED_CLI_VERSION` moves from 2.1.288 to **2.1.291**, following the CLI the Python SDK bundles. `CLIInstaller.install_pinned` installs it. See the [Claude Code changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md).
 
 ## [1.2.1] - 2026-10-06
 
