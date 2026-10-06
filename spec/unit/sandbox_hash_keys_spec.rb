@@ -12,7 +12,9 @@ require 'json'
 # applied: the session ran with a weaker sandbox than the one written.
 #
 # The examples assert on the --settings argument the CLI is started with (and
-# on SandboxSettings#to_h, the public form of the same section).
+# on SandboxSettings#to_h, the public form of the same section). The one
+# group that walks every field in every spelling asserts on the section
+# OptionForms.sandbox hands CommandBuilder for that argument instead.
 RSpec.describe 'sandbox settings written as a Hash' do
   # The --settings argument built for this `sandbox:` option.
   def settings_argument(sandbox, **options)
@@ -128,7 +130,6 @@ RSpec.describe 'sandbox settings written as a Hash' do
     'camelCase String keys' => ->(fields) { fields.to_h { |_name, (wire, value)| [wire, value] } }
   }.freeze
   attributes_of = spellings.fetch('snake_case Symbol keys')
-  wire_form_of = spellings.fetch('camelCase String keys')
 
   # The top-level fields around one network and one filesystem section.
   around_sections = lambda do |network, filesystem|
@@ -194,11 +195,20 @@ RSpec.describe 'sandbox settings written as a Hash' do
     'SandboxFilesystemConfig' => ->(fields) { { enabled: true, filesystem: fields } }
   }.freeze
 
+  # Asserted where the section is made, not on the command line: OptionForms
+  # is the one reader of a sandbox given either way, and CommandBuilder puts
+  # what it answers under "sandbox" in --settings as it is (the groups above
+  # and below follow it there).
   describe 'every field of every sandbox class' do
-    # The section the CLI must receive, whichever way it was written.
-    wire = wire_form_of.call(
-      around_sections.call(wire_form_of.call(network_fields), wire_form_of.call(filesystem_fields))
-    )
+    # The section the CLI must receive, whichever way it was written, under
+    # the Symbol keys the typed classes write.
+    wire_keys = spellings.fetch('camelCase Symbol keys')
+    wire = wire_keys.call(around_sections.call(wire_keys.call(network_fields), wire_keys.call(filesystem_fields)))
+
+    # The sandbox section read out of this `sandbox:` option.
+    def section_read_from(sandbox)
+      ClaudeAgentSDK::OptionForms.sandbox(sandbox)
+    end
 
     it 'has a field for every attribute' do
       expect(
@@ -222,7 +232,7 @@ RSpec.describe 'sandbox settings written as a Hash' do
         )
       )
 
-      expect(sandbox_section(typed)).to eq(wire)
+      expect(section_read_from(typed)).to eq(wire)
     end
 
     spellings.each do |inner_spelling, inner|
@@ -231,14 +241,14 @@ RSpec.describe 'sandbox settings written as a Hash' do
           attributes_of.call(around_sections.call(inner.call(network_fields), inner.call(filesystem_fields)))
         )
 
-        expect(sandbox_section(sandbox)).to eq(wire)
+        expect(section_read_from(sandbox)).to eq(wire)
       end
 
       spellings.each do |outer_spelling, outer|
         it "is written the same way from a Hash with #{outer_spelling} holding Hashes with #{inner_spelling}" do
           sandbox = outer.call(around_sections.call(inner.call(network_fields), inner.call(filesystem_fields)))
 
-          expect(sandbox_section(sandbox)).to eq(wire)
+          expect(section_read_from(sandbox)).to eq(wire)
         end
       end
     end
