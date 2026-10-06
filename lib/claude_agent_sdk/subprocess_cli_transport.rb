@@ -1292,16 +1292,17 @@ module ClaudeAgentSDK
       end
     end
 
-    # True when ClaudeAgentOptions#sandbox enables the sandbox: `true`, a
-    # SandboxSettings with `enabled` true, or a Hash with an `enabled` /
-    # 'enabled' key that is true (Hashes are forwarded to the CLI verbatim).
+    # True when ClaudeAgentOptions#sandbox enables the sandbox, as
+    # OptionForms.sandbox_requested? reads it: `true`, a SandboxSettings with
+    # `enabled` true, or a Hash whose :enabled or 'enabled' key is true,
+    # either one, whatever the other holds. A shallow read, made for this
+    # warning alone. It is not what the CLI is sent: that is
+    # OptionForms.sandbox, which writes a Hash under the CLI's keys
+    # (SandboxKeys). There, of two `enabled` keys, the later one that is not
+    # nil is sent and a nil one is left out: true then false sends false,
+    # while this predicate still says true.
     def sandbox_requested?
-      sandbox = @options.sandbox
-      case sandbox
-      when SandboxSettings then sandbox.enabled == true
-      when Hash then sandbox[:enabled] == true || sandbox['enabled'] == true
-      else sandbox == true
-      end
+      OptionForms.sandbox_requested?(@options.sandbox)
     end
 
     # The (parent's) home directory for the well-known install probes, or nil

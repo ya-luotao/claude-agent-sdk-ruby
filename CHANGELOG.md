@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Internal: `ClaudeAgentSDK.query` and `Client` now share one implementation of session setup, prompt writes, message delivery and teardown (`SessionAssembly`, `@api private`) instead of each carrying its own copy, and a session's observers, `callback_scheduling` and `callback_wrapper` are held in one object (`Dispatch`, `@api private`) instead of being passed at every call site; `Client` still captures scheduling and wrapper when it is constructed and resolves its observers on each `connect`. Public signatures and the documented differences between the two entry points (what observers are told when a session cannot be opened, the `session_id` on the wire, when stdin is closed, which error wins when a close raises) are preserved, and are now pinned by specs that run both side by side. One cleanup difference: when a `Client` is reconnected while its previous `disconnect` is still removing the materialized directory of a store-backed resume, that `disconnect`, once it finishes, no longer clears the new session, so the new session's resume directory is removed by its own `disconnect` (it used to be left behind).
+### Internal
+- Hash-form option interpretation moved into one private module (`OptionForms`); no behaviour change.
 
 ## [1.2.0] - 2026-10-03
 

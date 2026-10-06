@@ -20,6 +20,7 @@ require_relative 'claude_agent_sdk/session_resume'
 require_relative 'claude_agent_sdk/session_mutations'
 require_relative 'claude_agent_sdk/fiber_boundary'
 require_relative 'claude_agent_sdk/session_assembly'
+require_relative 'claude_agent_sdk/option_forms'
 require_relative 'claude_agent_sdk/option_warnings'
 require_relative 'claude_agent_sdk/deprecation'
 # Rails apps only: Bundler.require runs after `require 'rails'`, so the
@@ -67,16 +68,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   # strips the instance from exactly these entries.
   # @api private
   def self.extract_sdk_mcp_servers(mcp_servers)
-    return {} unless mcp_servers.is_a?(Hash)
-
-    servers = {}
-    mcp_servers.each do |name, config|
-      config = config.to_h if config.is_a?(Type)
-      next unless config.is_a?(Hash) && (config[:type] || config['type']).to_s == 'sdk'
-
-      servers[name] = config.key?(:instance) ? config[:instance] : config['instance']
-    end
-    servers
+    OptionForms.sdk_mcp_servers(mcp_servers)
   end
 
   # Internal: normalize hook lists for the control protocol. An absent or
@@ -139,18 +131,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   # Shared by Client#connect and the one-shot query() path.
   # @api private
   def self.extract_exclude_dynamic_sections(system_prompt)
-    if system_prompt.is_a?(SystemPromptPreset)
-      eds = system_prompt.exclude_dynamic_sections
-      return eds if [true, false].include?(eds)
-    elsif system_prompt.is_a?(Hash)
-      # The tag may be a Symbol (type: :preset), as CommandBuilder reads it.
-      type = (system_prompt[:type] || system_prompt['type']).to_s
-      if type == 'preset'
-        eds = system_prompt.fetch(:exclude_dynamic_sections) { system_prompt['exclude_dynamic_sections'] }
-        return eds if [true, false].include?(eds)
-      end
-    end
-    nil
+    OptionForms.exclude_dynamic_sections(system_prompt)
   end
 
   # Internal: pull snapshot out of a preset or custom system prompt for the
@@ -160,18 +141,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   # must not collapse it to nil. Shared by Client#connect and query().
   # @api private
   def self.extract_system_prompt_snapshot(system_prompt)
-    case system_prompt
-    when SystemPromptPreset, SystemPromptCustom
-      snapshot = system_prompt.snapshot
-      return snapshot if [true, false].include?(snapshot)
-    when Hash
-      type = (system_prompt[:type] || system_prompt['type']).to_s
-      if %w[preset custom].include?(type)
-        snapshot = system_prompt.fetch(:snapshot) { system_prompt['snapshot'] }
-        return snapshot if [true, false].include?(snapshot)
-      end
-    end
-    nil
+    OptionForms.system_prompt_snapshot(system_prompt)
   end
 
   # Safely call a method on each observer, suppressing any errors.
