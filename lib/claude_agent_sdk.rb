@@ -19,6 +19,8 @@ require_relative 'claude_agent_sdk/transcript_mirror_batcher'
 require_relative 'claude_agent_sdk/session_resume'
 require_relative 'claude_agent_sdk/session_mutations'
 require_relative 'claude_agent_sdk/fiber_boundary'
+require_relative 'claude_agent_sdk/session_assembly'
+require_relative 'claude_agent_sdk/option_forms'
 require_relative 'claude_agent_sdk/option_warnings'
 require_relative 'claude_agent_sdk/deprecation'
 # Rails apps only: Bundler.require runs after `require 'rails'`, so the
@@ -66,16 +68,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   # strips the instance from exactly these entries.
   # @api private
   def self.extract_sdk_mcp_servers(mcp_servers)
-    return {} unless mcp_servers.is_a?(Hash)
-
-    servers = {}
-    mcp_servers.each do |name, config|
-      config = config.to_h if config.is_a?(Type)
-      next unless config.is_a?(Hash) && (config[:type] || config['type']).to_s == 'sdk'
-
-      servers[name] = config.key?(:instance) ? config[:instance] : config['instance']
-    end
-    servers
+    OptionForms.sdk_mcp_servers(mcp_servers)
   end
 
   # Internal: normalize hook lists for the control protocol. An absent or
@@ -138,18 +131,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   # Shared by Client#connect and the one-shot query() path.
   # @api private
   def self.extract_exclude_dynamic_sections(system_prompt)
-    if system_prompt.is_a?(SystemPromptPreset)
-      eds = system_prompt.exclude_dynamic_sections
-      return eds if [true, false].include?(eds)
-    elsif system_prompt.is_a?(Hash)
-      # The tag may be a Symbol (type: :preset), as CommandBuilder reads it.
-      type = (system_prompt[:type] || system_prompt['type']).to_s
-      if type == 'preset'
-        eds = system_prompt.fetch(:exclude_dynamic_sections) { system_prompt['exclude_dynamic_sections'] }
-        return eds if [true, false].include?(eds)
-      end
-    end
-    nil
+    OptionForms.exclude_dynamic_sections(system_prompt)
   end
 
   # Internal: pull snapshot out of a preset or custom system prompt for the
@@ -159,18 +141,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   # must not collapse it to nil. Shared by Client#connect and query().
   # @api private
   def self.extract_system_prompt_snapshot(system_prompt)
-    case system_prompt
-    when SystemPromptPreset, SystemPromptCustom
-      snapshot = system_prompt.snapshot
-      return snapshot if [true, false].include?(snapshot)
-    when Hash
-      type = (system_prompt[:type] || system_prompt['type']).to_s
-      if %w[preset custom].include?(type)
-        snapshot = system_prompt.fetch(:snapshot) { system_prompt['snapshot'] }
-        return snapshot if [true, false].include?(snapshot)
-      end
-    end
-    nil
+    OptionForms.system_prompt_snapshot(system_prompt)
   end
 
   # Safely call a method on each observer, suppressing any errors.
@@ -719,18 +690,29 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # Fail fast on invalid session_store combinations before spawning the CLI.
     SessionStores.validate_session_store_options(configured_options)
 
-    # Resolve callable observers into fresh instances (thread-safe for global defaults)
-    resolved_observers = ClaudeAgentSDK.resolve_observers(configured_options.observers)
-
-    # Where user callbacks run (see ClaudeAgentOptions#callback_scheduling)
-    # and the middleware wrapped around them (#callback_wrapper).
-    callback_scheduling = configured_options.callback_scheduling || :thread
-    callback_wrapper = configured_options.callback_wrapper
-    ClaudeAgentSDK.check_inline_isolation(callback_scheduling)
+    # Resolve callable observers into fresh instances (thread-safe for global
+    # defaults), bound to where user callbacks run (see
+    # ClaudeAgentOptions#callback_scheduling) and the middleware wrapped
+    # around them (#callback_wrapper).
+    dispatch = Dispatch.new(ClaudeAgentSDK.resolve_observers(configured_options.observers),
+                            scheduling: configured_options.callback_scheduling || :thread,
+                            wrapper: configured_options.callback_wrapper)
+    ClaudeAgentSDK.check_inline_isolation(dispatch.scheduling)
 
     if transport && !transport.respond_to?(:connect)
       raise ArgumentError, 'transport must respond to #connect (see ClaudeAgentSDK::Transport)'
     end
+
+    # Acquires nothing yet. An injected transport is used as it is: it was
+    # built before a store-backed resume could be materialized for it, so
+    # none is (Python parity: client.py skips materialization when a
+    # transport is supplied). Without one the session constructs the
+    # subprocess transport itself, after materialization.
+    session = SessionAssembly.new(
+      configured_options,
+      dispatch: dispatch,
+      transport_source: transport ? { instance: transport } : { class: SubprocessCLITransport, args: {} }
+    )
 
     # finished: false tells Async that a waiter handles this task's failure
     # (the .wait at the end re-raises it), as Kernel#Sync does for its own
@@ -739,151 +721,54 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # returns — is also logged as "Task may have ended with unhandled
     # exception", message and backtrace included, although the caller gets
     # the same error raised and may well rescue it.
-    Async(finished: false, &FiberBoundary.capture_otel_context do # rubocop:disable Metrics/BlockLength -- the reactor task body of query()
-      materialized = nil
-      query_handler = nil
-      begin
-        if transport.nil?
-          # Resume-from-store: when a session_store is set and resume/continue
-          # is requested, load the session into a temp CLAUDE_CONFIG_DIR and
-          # repoint options at it (env + --resume) BEFORE spawning. Returns
-          # options unchanged when no materialization applies. Skipped
-          # entirely for an injected transport — the materialized
-          # env/--resume only apply to the CLI subprocess (Python parity:
-          # client.py skips materialization when a transport is supplied).
-          materialized = SessionResume.materialize_resume_session(configured_options)
-          if materialized
-            configured_options = SessionResume.apply_materialized_options(configured_options, materialized)
-          end
+    Async(finished: false, &FiberBoundary.capture_otel_context do
+      # Resume materialization, the transport's connect and the handshake
+      # all happen in here: inside the notified region.
+      session.connect
 
-          # Always use streaming mode with control protocol (matches Python
-          # SDK). This sends agents via initialize request instead of CLI
-          # args, avoiding OS ARG_MAX limits.
-          transport = SubprocessCLITransport.new(configured_options)
-        end
-        # Deliberate deviation from Python: the ensure below also closes an
-        # injected transport whose #connect raised (Python leaves it
-        # unclosed); Transport#close must be idempotent.
-        transport.connect
-
-        # Extract SDK MCP servers
-        sdk_mcp_servers = extract_sdk_mcp_servers(configured_options.mcp_servers)
-
-        hooks = convert_hooks_to_internal_format(configured_options.hooks)
-
-        # Create Query handler for control protocol
-        query_handler = Query.new(
-          transport: transport,
-          is_streaming_mode: true,
-          can_use_tool: configured_options.can_use_tool,
-          hooks: hooks,
-          agents: configured_options.agents,
-          sdk_mcp_servers: sdk_mcp_servers,
-          exclude_dynamic_sections: ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt),
-          system_prompt_snapshot: ClaudeAgentSDK.extract_system_prompt_snapshot(configured_options.system_prompt),
-          skills: configured_options.skills,
-          forward_subagent_text: configured_options.forward_subagent_text?,
-          agent_progress_summaries: configured_options.agent_progress_summaries,
-          callback_scheduling: callback_scheduling,
-          callback_wrapper: callback_wrapper,
-          verbatim_prompts: configured_options.verbatim_prompts?,
-          run_end_ceiling_ms: Query.run_end_ceiling_ms(configured_options.env)
-        )
-
-        # Mirror transcripts to the session_store, if configured. Installed
-        # before #start so the read loop captures transcript_mirror frames.
-        if configured_options.session_store
-          query_handler.set_transcript_mirror_batcher(
-            SessionResume.build_mirror_batcher(
-              store: configured_options.session_store,
-              env: configured_options.env,
-              on_error: ->(key, message) { query_handler.report_mirror_error(key, message) },
-              eager: configured_options.session_store_flush.to_s == 'eager',
-              callback_wrapper: callback_wrapper
-            )
-          )
-        end
-
-        # Start reading messages in background
-        query_handler.start
-
-        # Initialize the control protocol (sends agents)
-        query_handler.initialize_protocol
-
-        # Send prompt(s) as user messages, then close stdin
-        if prompt.is_a?(String)
-          ClaudeAgentSDK.notify_observers(resolved_observers, :on_user_prompt, prompt,
-                                          scheduling: callback_scheduling, wrapper: callback_wrapper)
-          message = {
-            type: 'user',
-            message: { role: 'user', content: prompt },
-            parent_tool_use_id: nil,
-            session_id: ''
-          }
-          transport.write("#{Query.serialize_user_message(message, configured_options.verbatim_prompts?)}\n")
-          # Background-spawn so messages stream to the user block while stdin
-          # close waits (without timeout) for the first result; a synchronous
-          # call would defer all delivery until the turn completes (mirrors
-          # Python's query.spawn_task(query.wait_for_result_and_end_input())).
-          query_handler.spawn_task { query_handler.wait_for_result_and_end_input }
-        elsif prompt.is_a?(Enumerator) || prompt.respond_to?(:each)
-          # Tracked on the Query so close() stops it; an untracked Async task
-          # here kept the root reactor alive forever when the read loop died
-          # while the user enumerator was still blocked (matches Python's
-          # query.spawn_task(query.stream_input(prompt))).
-          observed_prompt = ClaudeAgentSDK.observing_prompt_stream(
-            prompt, resolved_observers, scheduling: callback_scheduling, wrapper: callback_wrapper
-          )
-          query_handler.spawn_task { query_handler.stream_input(observed_prompt) }
-        end
-
-        # Read and yield messages from the query handler (filters out control messages).
-        # User block is invoked through FiberBoundary so ActiveRecord / PG calls
-        # inside it don't see the async gem's Fiber scheduler (default :thread
-        # mode; :inline runs it in place on the reactor fiber).
-        query_handler.receive_messages do |data|
-          message = MessageParser.parse(data)
-          next unless message
-
-          ClaudeAgentSDK.notify_observers(resolved_observers, :on_message, message,
-                                          scheduling: callback_scheduling, wrapper: callback_wrapper)
-          signal = FiberBoundary.invoke_iteration(block, message, scheduling: callback_scheduling,
-                                                                  wrapper: callback_wrapper)
-          break signal.value if signal.is_a?(FiberBoundary::Break)
-        end
-      rescue StandardError => e
-        # One notify point for every error surfacing from query() — transport
-        # connect, initialize, stream errors re-raised from the message queue,
-        # parse errors, and user-block errors. StandardError only: Async::Stop
-        # is cancellation, not an error. Bare raise preserves the backtrace;
-        # the ensure below still fires on_close after on_error.
-        ClaudeAgentSDK.notify_observers(resolved_observers, :on_error, e,
-                                        scheduling: callback_scheduling, wrapper: callback_wrapper)
-        raise
-      ensure
-        ClaudeAgentSDK.notify_observers(resolved_observers, :on_close,
-                                        scheduling: callback_scheduling, wrapper: callback_wrapper)
-        # query_handler.close stops the background read task and closes the
-        # transport (flushing the mirror batcher first). Fall back to a bare
-        # transport close when the handler was never built.
-        begin
-          if query_handler
-            query_handler.close
-          elsif transport
-            transport.close
-          end
-        ensure
-          # Remove the materialized resume temp dir (which holds a redacted
-          # .credentials.json copy) AFTER the subprocess has exited, even when
-          # close itself raises — unless the mirror dropped batches: the store
-          # copy is then incomplete and the temp dir holds the only copy of
-          # the dropped turns, so it is preserved (scrubbed of credentials)
-          # with a warning instead of deleted.
-          if materialized
-            query_handler&.mirror_batches_dropped? ? materialized.preserve_transcripts : materialized.cleanup
-          end
-        end
+      # Send prompt(s) as user messages, then close stdin
+      if prompt.is_a?(String)
+        dispatch.notify(:on_user_prompt, prompt)
+        # verbatim_prompts is read now, after the notification, from the
+        # options the session runs on.
+        session.write_prompt(prompt, session_id: '', verbatim: :current)
+        # Background-spawn so messages stream to the user block while stdin
+        # close waits (without timeout) for the first result; a synchronous
+        # call would defer all delivery until the turn completes (mirrors
+        # Python's query.spawn_task(query.wait_for_result_and_end_input())).
+        query_handler = session.query_handler
+        query_handler.spawn_task { query_handler.wait_for_result_and_end_input }
+      elsif prompt.is_a?(Enumerator) || prompt.respond_to?(:each)
+        # Tracked on the Query so close() stops it; an untracked Async task
+        # here kept the root reactor alive forever when the read loop died
+        # while the user enumerator was still blocked (matches Python's
+        # query.spawn_task(query.stream_input(prompt))).
+        session.stream_prompt_in_background(prompt)
       end
+
+      # Read and yield messages from the query handler (filters out control messages).
+      # User block is invoked through FiberBoundary so ActiveRecord / PG calls
+      # inside it don't see the async gem's Fiber scheduler (default :thread
+      # mode; :inline runs it in place on the reactor fiber).
+      session.deliver(block)
+    rescue StandardError => e
+      # One notify point for every error surfacing from query() — transport
+      # connect, initialize, stream errors re-raised from the message queue,
+      # parse errors, and user-block errors. StandardError only: Async::Stop
+      # is cancellation, not an error. Bare raise preserves the backtrace;
+      # the ensure below still fires on_close after on_error.
+      dispatch.notify(:on_error, e)
+      raise
+    ensure
+      dispatch.notify(:on_close)
+      # Closing the query handler stops the background read task and closes
+      # the transport (flushing the mirror batcher first); a transport
+      # without a handler — its #connect raised, or the handshake never got
+      # that far — is closed on its own. That includes an injected one: a
+      # deliberate deviation from Python, which leaves it unclosed
+      # (Transport#close must be idempotent). The materialized resume temp
+      # dir is dealt with after that, even when the close raised.
+      session.close_resources(always_close_transport: false)
     end).wait
   end
 
@@ -965,11 +850,13 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
   #     }
   #   )
   #   client = ClaudeAgentSDK::Client.new(options: options)
-  class Client # rubocop:disable Metrics/ClassLength -- public session API: lifecycle, control methods and their Ruby aliases
+  class Client
     # The session's control-protocol handler (nil until #connect).
     #
     # @api private
-    attr_reader :query_handler
+    def query_handler
+      @session&.query_handler
+    end
 
     # @param options [ClaudeAgentOptions, nil] Configuration options
     # @param transport_class [Class] Transport class to use (must implement Transport interface).
@@ -977,14 +864,17 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # @param transport_args [Hash] Additional keyword arguments passed to transport_class.new(options, **transport_args)
     def initialize(options: nil, transport_class: SubprocessCLITransport, transport_args: {})
       @options = options || ClaudeAgentOptions.new
-      @callback_scheduling = @options.callback_scheduling || :thread
-      @callback_wrapper = @options.callback_wrapper
+      # One for the life of the client. Scheduling and wrapper are captured
+      # here; the observers are resolved, and put in, on each #connect.
+      @dispatch = Dispatch.new([], scheduling: @options.callback_scheduling || :thread,
+                                   wrapper: @options.callback_wrapper)
       @transport_class = transport_class
       @transport_args = transport_args
-      @transport = nil
-      @query_handler = nil
+      # Owns the transport, the query handler and the materialized resume dir
+      # of the current connection; nil while there is none. Kept after a
+      # disconnect that raised, until one completes (see #disconnect).
+      @session = nil
       @connected = false
-      @materialized = nil
     end
 
     # Block-scoped Client lifecycle, mirroring Python's
@@ -1053,22 +943,29 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       # Resolve observers before the first failable runtime step so
       # connect-phase failures (including resume materialization) can be
       # notified via on_error.
-      @resolved_observers = ClaudeAgentSDK.resolve_observers(@options.observers)
+      @dispatch.observers = ClaudeAgentSDK.resolve_observers(@options.observers)
 
-      ClaudeAgentSDK.check_inline_isolation(@callback_scheduling)
+      ClaudeAgentSDK.check_inline_isolation(@dispatch.scheduling)
+
+      # Acquires nothing yet. Assigned before the begin, so the disconnect in
+      # the rescue below finds whatever the session went on to acquire. The
+      # transport is constructed by the session, after materialization.
+      @session = SessionAssembly.new(configured_options, dispatch: @dispatch,
+                                                         transport_source: { class: @transport_class,
+                                                                             args: @transport_args })
 
       # If anything from materialization onward fails, tear down (closes the
       # subprocess and removes the materialized temp config dir) before
       # surfacing the error, so a partial connect never leaks a temp dir
       # holding a credential copy.
       begin
-        # Resume-from-store: materialize the session from the store into a
-        # temp CLAUDE_CONFIG_DIR BEFORE spawn, then repoint options at it.
-        # Inside the instrumented begin so store IO failures fire on_error
-        # (matching the one-shot query() path) and disconnect cleans up.
-        configured_options = materialize_resume(configured_options)
+        # Resume materialization (store IO) happens in here too: inside the
+        # instrumented begin, so its failures fire on_error (matching the
+        # one-shot query() path) and disconnect cleans up.
+        @session.connect
+        @connected = true
 
-        connect_inner(configured_options, prompt)
+        send_initial_prompt(prompt)
       rescue Exception => e # rubocop:disable Lint/RescueException
         # Pre-handshake failures (@connected still false) are notified here;
         # post-handshake String-prompt send failures were already notified by
@@ -1077,14 +974,14 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         # out of connect.) No on_close follows for pre-handshake failures
         # (disconnect gates it on @connected): the session never opened.
         begin
-          notify_error(e) if e.is_a?(StandardError) && !@connected
+          @dispatch.notify(:on_error, e) if e.is_a?(StandardError) && !@connected
         ensure
           # Tear down the partial connect, but never let a cleanup failure (e.g. a
           # custom transport whose #close raises) mask the original connect error.
           # Rescue Exception (not StandardError) so reactor cancellation
-          # (Async::Stop < Exception) after materialize_resume set @materialized
-          # still runs disconnect -> @materialized.cleanup, never leaking the temp
-          # CLAUDE_CONFIG_DIR that holds the redacted .credentials.json copy.
+          # (Async::Stop < Exception) after the resume was materialized still
+          # runs disconnect, which removes the temp CLAUDE_CONFIG_DIR holding
+          # the redacted .credentials.json copy.
           # In an ensure: an exception raised into this fiber while it waits
           # for the on_error observer (a caller's deadline) must not skip it.
           begin
@@ -1116,15 +1013,8 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
 
       begin
         if prompt.is_a?(String)
-          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, prompt,
-                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-          message = {
-            type: 'user',
-            message: { role: 'user', content: prompt },
-            parent_tool_use_id: nil,
-            session_id: session_id
-          }
-          writeln(Query.serialize_user_message(message, @verbatim_prompts))
+          @dispatch.notify(:on_user_prompt, prompt)
+          @session.write_prompt(prompt, session_id: session_id)
         elsif prompt.respond_to?(:each)
           # Inline iteration on the caller, Python client.py parity — NOT
           # Query#stream_input, whose ensure always ends input after
@@ -1136,7 +1026,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
           raise ArgumentError, "prompt must be a String or respond to #each (got #{prompt.class})"
         end
       rescue StandardError => e
-        notify_error(e)
+        @dispatch.notify(:on_error, e)
         raise
       end
     end
@@ -1154,18 +1044,9 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
       begin
-        @query_handler.receive_messages do |data|
-          message = MessageParser.parse(data)
-          next unless message
-
-          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message,
-                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-          signal = FiberBoundary.invoke_iteration(block, message, scheduling: @callback_scheduling,
-                                                                  wrapper: @callback_wrapper)
-          break signal.value if signal.is_a?(FiberBoundary::Break)
-        end
+        @session.deliver(block)
       rescue StandardError => e
-        notify_error(e)
+        @dispatch.notify(:on_error, e)
         raise
       end
     end
@@ -1177,24 +1058,10 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
 
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      # Keep loop control on the same fiber as the underlying dequeue: both
-      # the SDK's ResultMessage break and the user's translated break happen
-      # here, never inside the FiberBoundary hop (break in a proc on a
-      # foreign thread raises LocalJumpError).
       begin
-        @query_handler.receive_messages do |data|
-          message = MessageParser.parse(data)
-          next unless message
-
-          ClaudeAgentSDK.notify_observers(@resolved_observers, :on_message, message,
-                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-          signal = FiberBoundary.invoke_iteration(block, message, scheduling: @callback_scheduling,
-                                                                  wrapper: @callback_wrapper)
-          break signal.value if signal.is_a?(FiberBoundary::Break)
-          break if message.is_a?(ResultMessage)
-        end
+        @session.deliver(block, until_result: true)
       rescue StandardError => e
-        notify_error(e)
+        @dispatch.notify(:on_error, e)
         raise
       end
     end
@@ -1203,7 +1070,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     def interrupt
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.interrupt
+      query_handler.interrupt
     end
 
     # Change permission mode during conversation
@@ -1211,7 +1078,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     def set_permission_mode(mode)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.set_permission_mode(mode)
+      query_handler.set_permission_mode(mode)
     end
 
     # Ruby-style spelling of #set_permission_mode: `client.permission_mode = 'plan'`.
@@ -1225,7 +1092,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     def set_model(model)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.set_model(model)
+      query_handler.set_model(model)
     end
 
     # Ruby-style spelling of #set_model: `client.model = 'claude-opus-5'`.
@@ -1238,7 +1105,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     def reconnect_mcp_server(server_name)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.reconnect_mcp_server(server_name)
+      query_handler.reconnect_mcp_server(server_name)
     end
 
     # Enable or disable an MCP server
@@ -1247,7 +1114,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     def toggle_mcp_server(server_name, enabled)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.toggle_mcp_server(server_name, enabled)
+      query_handler.toggle_mcp_server(server_name, enabled)
     end
 
     # Stop a running background task
@@ -1255,7 +1122,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     def stop_task(task_id)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.stop_task(task_id)
+      query_handler.stop_task(task_id)
     end
 
     # Background in-flight foreground tasks (Bash commands and subagents) — the
@@ -1281,7 +1148,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     def background_tasks(tool_use_id: nil)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.background_tasks(tool_use_id: tool_use_id)
+      query_handler.background_tasks(tool_use_id: tool_use_id)
     end
 
     # Rewind files to a previous checkpoint (v0.1.15+)
@@ -1291,13 +1158,13 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     def rewind_files(user_message_uuid)
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.rewind_files(user_message_uuid)
+      query_handler.rewind_files(user_message_uuid)
     end
 
     # Get server initialization info
     # @return [Hash, nil] Server info or nil
     def server_info
-      @query_handler&.initialization_result
+      query_handler&.initialization_result
     end
 
     # Get a breakdown of current context window usage by category.
@@ -1307,7 +1174,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     def get_context_usage
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.get_context_usage
+      query_handler.get_context_usage
     end
 
     # Ruby-style spelling of #get_context_usage.
@@ -1321,7 +1188,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     def get_mcp_status
       raise CLIConnectionError, 'Not connected. Call connect() first' unless @connected
 
-      @query_handler.get_mcp_status
+      query_handler.get_mcp_status
     end
 
     # Ruby-style spelling of #get_mcp_status.
@@ -1358,125 +1225,48 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # teardown, then lets the interruption propagate.
     def disconnect
       # Tear down whatever exists — robust to a partial/failed connect, where
-      # @connected is still false but a transport and/or materialized temp dir
-      # were already created. #close on the query handler also closes the
-      # transport (flushing the mirror batcher first); the extra @transport
-      # close covers a failure before the query handler was built (idempotent).
+      # @connected is still false but the session already holds a transport
+      # and/or a materialized temp dir.
       #
-      # The nested ensures guarantee that even a raising close (e.g. a custom
-      # transport whose #close raises) still runs the transport close, resets
-      # state, and removes the materialized temp dir (which holds a redacted
-      # .credentials.json copy) — so disconnect can never leave the client
-      # half-open or leak the temp dir. The original error still propagates.
-      # Keep a handle on the query handler past the nil-out below: whether the
-      # mirror dropped batches is only final AFTER #close ran its last flush,
-      # and the materialized-dir decision at the bottom needs to ask it.
-      query_handler = @query_handler
-      begin
-        # Notified inside the begin: an exception raised into this fiber while
-        # it waits for an observer (a caller's deadline) propagates, and must
-        # not skip the teardown below.
-        if @connected
-          ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_close,
-                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-        end
-      ensure
-        begin
-          @query_handler&.close
-        ensure
-          @query_handler = nil
-          begin
-            @transport&.close
-          ensure
-            @transport = nil
-            @connected = false
-            # Remove the materialized resume temp dir AFTER the subprocess
-            # exited — unless the mirror dropped batches: the store copy is then
-            # incomplete and the temp dir holds the only copy of the dropped
-            # turns, so it is preserved (scrubbed of credentials) with a warning
-            # instead of deleted.
-            if @materialized
-              if query_handler&.mirror_batches_dropped?
-                @materialized.preserve_transcripts
-              else
-                @materialized.cleanup
-              end
-              @materialized = nil
-            end
-          end
-        end
+      # Notified inside the method body, with the teardown in its ensure: an
+      # exception raised into this fiber while it waits for an observer (a
+      # caller's deadline) propagates, and must not skip the teardown.
+      @dispatch.notify(:on_close) if @connected
+    ensure
+      # SessionAssembly#close_resources closes the query handler (which
+      # closes the transport, flushing the mirror batcher first), closes the
+      # transport in an ensure of its own (it covers a failure before the
+      # handler was built, and a handler whose #close raised) and decides
+      # what happens to the materialized temp dir, which holds a redacted
+      # .credentials.json copy. Whatever one of those raises, the others
+      # still run — so disconnect can never leave the client half-open. The
+      # original error still propagates.
+      #
+      # The client is disconnected as soon as both closes are behind, before
+      # the temp dir is dealt with: its removal can take a while and lets
+      # other tasks run, and what they call meanwhile has to be refused as
+      # "Not connected" (and a disconnect of theirs must not notify on_close
+      # again) rather than reach a session whose resources are gone.
+      #
+      # The session is let go of only once all of it was disposed of. When
+      # the teardown raises — a close failed, or the removal of the temp dir
+      # was cut short by the caller's deadline or a stop — the session stays,
+      # holding whatever it could not dispose of, so that the next disconnect
+      # finishes the job (what was already closed is not closed again). It
+      # is not the client's session any more once a reconnect replaced it.
+      session = @session
+      if session
+        session.close_resources(always_close_transport: true) { @connected = false }
+        @session = nil if @session.equal?(session)
+      else
+        @connected = false
       end
     end
 
     private
 
-    # Resume-from-store: when a session_store is set (and a subprocess transport
-    # is in use), materialize the session into a temp CLAUDE_CONFIG_DIR and
-    # return options repointed at it (env + --resume). Returns the options
-    # unchanged when no materialization applies. Skipped for non-subprocess
-    # transports — the materialized env/--resume only affect the CLI subprocess.
-    # Ancestry (<=), not identity: a SubprocessCLITransport subclass spawns the
-    # CLI with the same env/--resume semantics, and the transport is constructed
-    # AFTER materialization, so the repointed options do reach it.
-    def materialize_resume(options)
-      subprocess_transport = @transport_class.is_a?(Class) && @transport_class <= SubprocessCLITransport
-      return options unless options.session_store && subprocess_transport
-
-      @materialized = SessionResume.materialize_resume_session(options)
-      @materialized ? SessionResume.apply_materialized_options(options, @materialized) : options
-    end
-
-    # The connect body, wrapped by #connect so a failure triggers cleanup.
-    def connect_inner(configured_options, prompt) # rubocop:disable Metrics/MethodLength -- connect sequence kept in order; #connect wraps it for cleanup
-      # Client always uses streaming mode; keep stdin open for bidirectional
-      # communication. Observers were already resolved by #connect.
-      @transport = @transport_class.new(configured_options, **@transport_args)
-      @transport.connect
-
-      # Extract SDK MCP servers
-      sdk_mcp_servers = ClaudeAgentSDK.extract_sdk_mcp_servers(configured_options.mcp_servers)
-
-      # Convert hooks to internal format
-      hooks = ClaudeAgentSDK.convert_hooks_to_internal_format(configured_options.hooks)
-
-      # Extract exclude_dynamic_sections and snapshot from the system prompt
-      # for the initialize request (older CLIs ignore unknown initialize fields)
-      exclude_dynamic_sections = ClaudeAgentSDK.extract_exclude_dynamic_sections(configured_options.system_prompt)
-      system_prompt_snapshot = ClaudeAgentSDK.extract_system_prompt_snapshot(configured_options.system_prompt)
-
-      # Captured once, so String and streamed prompts in one session are
-      # stamped alike (the Query stamps the streamed ones with this value).
-      @verbatim_prompts = configured_options.verbatim_prompts?
-
-      # Create Query handler
-      @query_handler = Query.new(
-        transport: @transport,
-        is_streaming_mode: true,
-        can_use_tool: configured_options.can_use_tool,
-        hooks: hooks,
-        sdk_mcp_servers: sdk_mcp_servers,
-        agents: configured_options.agents,
-        exclude_dynamic_sections: exclude_dynamic_sections,
-        system_prompt_snapshot: system_prompt_snapshot,
-        skills: configured_options.skills,
-        forward_subagent_text: configured_options.forward_subagent_text?,
-        agent_progress_summaries: configured_options.agent_progress_summaries,
-        callback_scheduling: @callback_scheduling,
-        callback_wrapper: @callback_wrapper,
-        verbatim_prompts: @verbatim_prompts,
-        run_end_ceiling_ms: Query.run_end_ceiling_ms(configured_options.env)
-      )
-
-      # Mirror transcripts to the session_store, if configured.
-      install_transcript_mirror(configured_options)
-
-      # Start query handler and initialize
-      @query_handler.start
-      @query_handler.initialize_protocol
-
-      @connected = true
-
-      # Optionally send initial prompt/messages after connection is ready.
+    # Optionally send the initial prompt/messages once the connection is ready.
+    def send_initial_prompt(prompt)
       case prompt
       when nil
         nil
@@ -1495,9 +1285,7 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
         # Observer#on_error contract; notifying a swallowed error would mark
         # a still-live OTel trace as failed). Same behavior as query()'s
         # streaming path.
-        observed = ClaudeAgentSDK.observing_prompt_stream(prompt, @resolved_observers,
-                                                          scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-        @query_handler.spawn_task { @query_handler.stream_input(observed) }
+        @session.stream_prompt_in_background(prompt)
       end
     end
 
@@ -1509,59 +1297,28 @@ module ClaudeAgentSDK # rubocop:disable Metrics/ModuleLength -- the public entry
     # parse-stamp-regenerate, which would block the reactor on huge frames),
     # except that verbatim_prompts must mark them `client_composed`, so with
     # that option on they are parsed and re-serialized (Query.stamp_user_message).
+    # Every message is stamped with the value captured at connect, like the
+    # String prompts of the same session.
     def stream_query_messages(prompt, session_id)
       prompt.each do |msg|
         case msg
         when Hash
           msg = msg.merge(session_id: session_id) unless msg.key?(:session_id) || msg.key?('session_id')
           if (text = ClaudeAgentSDK.extract_user_prompt_text(msg))
-            ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text,
-                                            scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+            @dispatch.notify(:on_user_prompt, text)
           end
-          writeln(Query.serialize_user_message(msg, @verbatim_prompts))
+          @session.write_message(msg)
         when String
           if (text = ClaudeAgentSDK.extract_user_prompt_text(msg))
-            ClaudeAgentSDK.notify_observers(@resolved_observers, :on_user_prompt, text,
-                                            scheduling: @callback_scheduling, wrapper: @callback_wrapper)
+            @dispatch.notify(:on_user_prompt, text)
           end
-          writeln(Query.serialize_user_message(msg, @verbatim_prompts))
+          @session.write_message(msg)
         else
           # No to_s fallback — silently serializing arbitrary objects is the
           # exact inspect-garbage bug class this method exists to prevent.
           raise ArgumentError, "stream items must be Hashes or JSONL Strings (got #{msg.class})"
         end
       end
-    end
-
-    # Notify observers of an error surfacing to the consumer. `|| []` keeps a
-    # mis-scoped call before connect harmless instead of NoMethodError on nil.
-    def notify_error(error)
-      ClaudeAgentSDK.notify_observers(@resolved_observers || [], :on_error, error,
-                                      scheduling: @callback_scheduling, wrapper: @callback_wrapper)
-    end
-
-    # Build and install the transcript-mirror batcher on the query handler when
-    # a session_store is configured, via the shared SessionResume helper (also
-    # used by the one-shot query() path).
-    def install_transcript_mirror(options)
-      return unless options.session_store
-
-      batcher = SessionResume.build_mirror_batcher(
-        store: options.session_store,
-        env: options.env,
-        on_error: ->(key, message) { @query_handler.report_mirror_error(key, message) },
-        eager: options.session_store_flush.to_s == 'eager',
-        callback_wrapper: @callback_wrapper
-      )
-      @query_handler.set_transcript_mirror_batcher(batcher)
-    end
-
-    def writeln(string)
-      write string.end_with?("\n") ? string : "#{string}\n"
-    end
-
-    def write(string)
-      @transport.write(string)
     end
   end
 end

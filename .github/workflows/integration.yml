@@ -33,6 +33,7 @@ on:
       - lib/claude_agent_sdk/cli_installer.rb
       - lib/claude_agent_sdk/subprocess_cli_transport.rb
       - lib/claude_agent_sdk/query.rb
+      - lib/claude_agent_sdk/query/**
       - lib/claude_agent_sdk/message_parser.rb
       - spec/integration/**
       - .github/workflows/integration.yml

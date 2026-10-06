@@ -3,6 +3,7 @@
 require 'json'
 require_relative 'errors'
 require_relative 'types'
+require_relative 'option_forms'
 
 module ClaudeAgentSDK
   # Builds the CLI argv array from a ClaudeAgentOptions instance.
@@ -68,55 +69,32 @@ module ClaudeAgentSDK
 
     private
 
+    # What the option stands for, typed or as a Hash, is OptionForms' to say;
+    # a kind that is none of these (a preset without an append, a Hash the
+    # SDK does not recognize, ...) sends no prompt flag at all.
     def append_system_prompt(cmd)
-      case @options.system_prompt
-      when nil
+      prompt = OptionForms.system_prompt(@options.system_prompt)
+      case prompt.kind
+      when :empty
         # When nil, pass empty string to ensure predictable behavior without default Claude Code system prompt
         cmd.push('--system-prompt', '')
-      when String
-        cmd.push('--system-prompt', @options.system_prompt)
-      when SystemPromptFile
-        cmd.push('--system-prompt-file', path_string(@options.system_prompt.path))
-      when SystemPromptCustom
-        # The object form of a String prompt; snapshot travels on the
+      when :text
+        # A String, or its object form (custom); snapshot travels on the
         # initialize request, not as a CLI flag.
-        cmd.push('--system-prompt', custom_prompt_text(@options.system_prompt.prompt))
-      when SystemPromptPreset
+        cmd.push('--system-prompt', custom_prompt_text(prompt.value))
+      when :file
+        cmd.push('--system-prompt-file', path_string(prompt.value))
+      when :append
         # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
         # Only --append-system-prompt is passed if append text is provided
-        cmd.push('--append-system-prompt', @options.system_prompt.append) if @options.system_prompt.append
-      when Hash
-        append_hash_system_prompt(cmd, @options.system_prompt)
+        cmd.push('--append-system-prompt', prompt.value)
       end
-    end
-
-    # The type tag of a Hash option, as a String: `type: :preset` is the
-    # natural Ruby spelling of `type: 'preset'`, and thinking and the MCP
-    # server configs already read it that way. A missing tag is '', which
-    # matches no branch, like any other tag the SDK does not know.
-    def hash_type(hash)
-      (hash[:type] || hash['type']).to_s
     end
 
     # A path as the String the command line takes. A Pathname (anything that
     # answers #to_path) is converted; every other value is returned as it is.
     def path_string(path)
       path.respond_to?(:to_path) ? path.to_path : path
-    end
-
-    def append_hash_system_prompt(cmd, prompt_hash)
-      case hash_type(prompt_hash)
-      when 'file'
-        prompt_path = prompt_hash[:path] || prompt_hash['path']
-        cmd.push('--system-prompt-file', path_string(prompt_path)) if prompt_path
-      when 'custom'
-        prompt = prompt_hash.fetch(:prompt) { prompt_hash['prompt'] }
-        cmd.push('--system-prompt', custom_prompt_text(prompt))
-      when 'preset'
-        append = prompt_hash[:append] || prompt_hash['append']
-        # Preset activates the default Claude Code system prompt by not passing --system-prompt ""
-        cmd.push('--append-system-prompt', append) if append
-      end
     end
 
     # A custom prompt is always forwarded, even when empty (an empty String
@@ -338,7 +316,7 @@ module ClaudeAgentSDK
         # read from JSON spell that key as a String; left next to the Symbol
         # key below it would be written twice (json 3.x raises on that).
         settings_hash = settings_hash.reject { |key, _| key.to_s == 'sandbox' }
-        settings_hash[:sandbox] = sandbox_section(@options.sandbox)
+        settings_hash[:sandbox] = OptionForms.sandbox(@options.sandbox)
       end
 
       cmd.push('--settings', JSON.generate(settings_hash)) if !settings_is_path && !settings_hash.empty?
@@ -355,29 +333,10 @@ module ClaudeAgentSDK
       [{}, true]
     end
 
-    # The sandbox section as the CLI reads it. A Hash stands for the
-    # SandboxSettings with the same fields: the CLI only knows the camelCase
-    # keys that class writes, and it ignores the others without an error, so
-    # a Hash in Ruby spelling (deny_read, denied_domains) is renamed like the
-    # typed value would be (SandboxKeys). Booleans go out as they are.
-    def sandbox_section(sandbox)
-      case sandbox
-      when SandboxSettings then sandbox.to_h
-      when Hash then SandboxKeys.normalize(sandbox)
-      else sandbox
-      end
-    end
-
     def append_budget(cmd)
       cmd.push('--max-budget-usd', @options.max_budget_usd.to_s) if @options.max_budget_usd
 
-      return unless @options.task_budget
-
-      total = if @options.task_budget.is_a?(TaskBudget)
-                @options.task_budget.total
-              else
-                @options.task_budget[:total] || @options.task_budget['total']
-              end
+      total = OptionForms.task_budget_total(@options.task_budget)
       cmd.push('--task-budget', total.to_s) if total
     end
 
@@ -389,16 +348,16 @@ module ClaudeAgentSDK
     # max_thinking_tokens fallback.
     def append_thinking(cmd)
       if @options.thinking
-        type, budget, display = thinking_fields(@options.thinking)
-        case type
+        thinking = OptionForms.thinking(@options.thinking)
+        case thinking.type
         when 'adaptive'
           cmd.push('--thinking', 'adaptive')
-          append_thinking_display(cmd, display)
+          append_thinking_display(cmd, thinking.display)
         when 'enabled'
-          raise ArgumentError, "thinking type 'enabled' requires budget_tokens" if budget.nil?
+          raise ArgumentError, "thinking type 'enabled' requires budget_tokens" if thinking.budget_tokens.nil?
 
-          cmd.push('--max-thinking-tokens', budget.to_s)
-          append_thinking_display(cmd, display)
+          cmd.push('--max-thinking-tokens', thinking.budget_tokens.to_s)
+          append_thinking_display(cmd, thinking.display)
         when 'disabled'
           cmd.push('--thinking', 'disabled')
         else
@@ -406,20 +365,6 @@ module ClaudeAgentSDK
         end
       elsif @options.max_thinking_tokens
         cmd.push('--max-thinking-tokens', @options.max_thinking_tokens.to_s)
-      end
-    end
-
-    # Explicit class dispatch — never respond_to? probes (Kernel#display
-    # exists on every object and PRINTS the receiver to $stdout).
-    def thinking_fields(thinking)
-      case thinking
-      when Hash
-        type = (thinking[:type] || thinking['type'])&.to_s
-        [type, thinking[:budget_tokens] || thinking['budget_tokens'], thinking[:display] || thinking['display']]
-      when ThinkingConfigAdaptive then [thinking.type, nil, thinking.display]
-      when ThinkingConfigEnabled then [thinking.type, thinking.budget_tokens, thinking.display]
-      when ThinkingConfigDisabled then [thinking.type, nil, nil]
-      else [nil, nil, nil] # falls into append_thinking's else -> ArgumentError
       end
     end
 
@@ -448,28 +393,27 @@ module ClaudeAgentSDK
     def append_tools(cmd)
       return if @options.tools.nil?
 
-      case @options.tools
+      # The preset, typed or as a Hash, is OptionForms' to recognize; every
+      # other value comes back as it was given and is only encoded here.
+      tools = OptionForms.tools(@options.tools)
+      case tools
+      when OptionForms::DEFAULT_TOOLS
+        cmd.push('--tools', 'default')
       when Array
-        tools_value = @options.tools.empty? ? '' : @options.tools.join(',')
+        tools_value = tools.empty? ? '' : tools.join(',')
         cmd.push('--tools', tools_value)
       when String
         # The CLI's own syntax ("Read,Grep", "default", ""): passed as written.
-        cmd.push('--tools', @options.tools)
-      when ToolsPreset
-        cmd.push('--tools', 'default')
+        cmd.push('--tools', tools)
       when Hash
-        if hash_type(@options.tools) == 'preset'
-          cmd.push('--tools', 'default')
-        else
-          cmd.push('--tools', JSON.generate(@options.tools))
-        end
+        cmd.push('--tools', JSON.generate(tools))
       end
     end
 
     def append_output_format(cmd)
       return unless @options.output_format
 
-      schema = output_schema(@options.output_format)
+      schema = OptionForms.output_schema(@options.output_format)
       # A json_schema output_format with a nil/absent schema must skip the
       # flag — `--json-schema null` is rejected by the CLI (Python guards
       # `schema is not None`).
@@ -479,22 +423,6 @@ module ClaudeAgentSDK
       cmd.push('--json-schema', schema_json)
     end
 
-    # The schema of a { type: 'json_schema', schema: ... } output format; any
-    # other value is the schema itself. The tag may be a Symbol, and `schema`
-    # is read under the key style `type` was written in, or under the other
-    # one when that key is absent ({ 'type' => 'json_schema', schema: {...} }).
-    def output_schema(format)
-      return format unless format.is_a?(Hash)
-
-      if format[:type].to_s == 'json_schema'
-        format.fetch(:schema) { format['schema'] }
-      elsif format['type'].to_s == 'json_schema'
-        format.fetch('schema') { format[:schema] }
-      else
-        format
-      end
-    end
-
     def append_additional_dirs(cmd)
       (@options.add_dirs || []).each { |dir| cmd.push('--add-dir', dir.to_s) }
     end
@@ -502,25 +430,15 @@ module ClaudeAgentSDK
     def append_mcp_servers(cmd)
       return unless @options.mcp_servers && !@options.mcp_servers.empty?
 
-      if @options.mcp_servers.is_a?(Hash)
-        servers_for_cli = {}
-        @options.mcp_servers.each do |name, config|
-          # Typed Mcp*ServerConfig objects serialize via their wire hash —
-          # without this they'd JSON-stringify as "#<...>" via to_s.
-          config = config.to_h if config.is_a?(Type)
-          # Same recognition rule as ClaudeAgentSDK.extract_sdk_mcp_servers:
-          # either key style (and a Symbol :sdk type). The live instance is
-          # never serialized — JSON.generate would raise on it or leak its
-          # #to_s onto the command line.
-          servers_for_cli[name] = if config.is_a?(Hash) && (config[:type] || config['type']).to_s == 'sdk'
-                                    config.except(:instance, 'instance')
-                                  else
-                                    config
-                                  end
-        end
-        cmd.push('--mcp-config', JSON.generate({ mcpServers: servers_for_cli })) unless servers_for_cli.empty?
+      # A Hash of servers comes back with typed configs as their wire Hashes
+      # and without the live instance of an SDK server, which is never
+      # serialized: JSON.generate would raise on it or leak its #to_s onto
+      # the command line. Any other value is a path or JSON text.
+      servers = OptionForms.mcp_servers(@options.mcp_servers)
+      if servers.is_a?(Hash)
+        cmd.push('--mcp-config', JSON.generate({ mcpServers: servers })) unless servers.empty?
       else
-        cmd.push('--mcp-config', @options.mcp_servers.to_s)
+        cmd.push('--mcp-config', servers.to_s)
       end
     end
 
@@ -539,17 +457,17 @@ module ClaudeAgentSDK
     def append_plugins(cmd)
       return unless @options.plugins && !@options.plugins.empty?
 
-      @options.plugins.each do |plugin|
-        plugin_config = plugin.is_a?(SdkPluginConfig) ? plugin.to_h : plugin
-        plugin_path = plugin_config[:path] || plugin_config['path']
+      @options.plugins.each do |entry|
+        plugin = OptionForms.plugin(entry)
 
-        unless %w[local plugin].include?(hash_type(plugin_config))
-          plugin_type = plugin_config[:type] || plugin_config['type']
-          raise ArgumentError, "Unsupported plugin type: #{plugin_type.inspect}"
+        unless %w[local plugin].include?(plugin.type_tag)
+          # raw_type looks the type up again, as it was written; asked for
+          # only here, so an accepted plugin has its type read once.
+          raise ArgumentError, "Unsupported plugin type: #{plugin.raw_type.inspect}"
         end
-        next unless plugin_path
+        next unless plugin.path
 
-        cmd.push('--plugin-dir', path_string(plugin_path))
+        cmd.push('--plugin-dir', path_string(plugin.path))
       end
     end
 

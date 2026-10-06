@@ -4,13 +4,14 @@ require 'spec_helper'
 require 'async'
 require 'async/queue'
 
-# Query#end_run has one suspension point: stopping the ceiling sleeper hands
-# the reactor to whatever else is ready. A stream_input task that is ready at
-# that moment writes its next message, and the run that message belongs to is
-# decided by what it sees: an ended run is reopened as a fresh one, a run
-# that is still open is joined. So the run must already count as ended when
-# end_run reaches that suspension point, or the message joins the run that is
-# about to end and stdin closes before its own run produced a frame.
+# Ending a run (Query::RunLifecycle#end_run) hands the reactor over: stopping
+# the ceiling sleeper lets whatever else is ready run. A stream_input task
+# that is ready at that moment writes its next message, and the run that
+# message belongs to is decided by what it sees: an ended run is reopened as
+# a fresh one, a run that is still open is joined. So the run must already
+# count as ended when end_run reaches that point, or the message joins the
+# run that is about to end and stdin closes before its own run produced a
+# frame.
 #
 # No clock takes part in the ordering below: two enqueues make the read loop
 # and the stream task ready, in that order, and the example then only yields
@@ -95,7 +96,7 @@ RSpec.describe ClaudeAgentSDK::Query, 'ending a run while the next streamed mess
       reactor_settles(task) { transport.frames_handled == 2 }
       # The precondition of the whole example: the result armed the ceiling
       # sleeper, so ending the run has a task to stop — the suspension point.
-      expect(query.instance_variable_get(:@run_end_ceiling_task)).not_to be_nil
+      expect(query.run_lifecycle.ceiling_armed?).to be(true)
 
       transport.frames.enqueue(session_state('idle')) # the read loop becomes ready first ...
       gate.enqueue(:go)                               # ... and the stream task second

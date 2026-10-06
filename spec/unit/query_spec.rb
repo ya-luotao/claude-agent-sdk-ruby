@@ -268,7 +268,7 @@ RSpec.describe ClaudeAgentSDK::Query do
 
     # background_tasks_changed is typed for consumers (BackgroundTasksChangedMessage)
     # but must stay invisible to the stdin-close bookkeeping, in both
-    # directions — see the comment above Query#track_task_lifecycle.
+    # directions — see the comment above Query::RunLifecycle#track_task_lifecycle.
     it 'does not narrow the in-flight set from an empty background_tasks_changed snapshot' do
       queue = Async::Queue.new
       transport, ended = queue_fed_transport(queue)
@@ -283,7 +283,7 @@ RSpec.describe ClaudeAgentSDK::Query do
         queue.enqueue({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
         queue.enqueue(sample_result_message)
         task.sleep 0.05
-        expect(query.instance_variable_get(:@inflight_tasks).to_a).to eq(%w[fg-1])
+        expect(query.run_lifecycle.inflight?('fg-1')).to be(true)
         expect(ended).to be_empty # fg-1 still in flight despite the empty snapshot
 
         queue.enqueue({ type: 'system', subtype: 'task_notification', task_id: 'fg-1', status: 'completed' })
@@ -308,7 +308,7 @@ RSpec.describe ClaudeAgentSDK::Query do
                         tasks: [{ task_id: 'bg-9', task_type: 'local_agent', description: 'observer' }] })
         queue.enqueue(sample_result_message)
         task.with_timeout(2.0) { waiter.wait }
-        expect(query.instance_variable_get(:@inflight_tasks)).to be_empty
+        expect(query.run_lifecycle.inflight?('bg-9')).to be(false)
         expect(ended).not_to be_empty # first result still closes stdin
       ensure
         query.close
@@ -394,70 +394,6 @@ RSpec.describe ClaudeAgentSDK::Query do
       ensure
         query.close
       end.wait
-    end
-  end
-
-  describe '#track_task_lifecycle' do
-    let(:query) { described_class.new(transport: mock_transport, is_streaming_mode: true) }
-
-    def inflight
-      query.instance_variable_get(:@inflight_tasks)
-    end
-
-    def track(message)
-      query.send(:track_task_lifecycle, message)
-    end
-
-    it 'adds task_started only for deferring task types' do
-      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
-      track({ type: 'system', subtype: 'task_started', task_id: 'w', task_type: 'local_workflow' })
-      track({ type: 'system', subtype: 'task_started', task_id: 's', task_type: 'local_shell' })
-      track({ type: 'system', subtype: 'task_started', task_id: 'n' })
-      expect(inflight.to_a.sort).to eq(%w[a w])
-    end
-
-    it 'ignores frames with a missing or empty task_id' do
-      track({ type: 'system', subtype: 'task_started', task_type: 'local_agent' })
-      track({ type: 'system', subtype: 'task_started', task_id: '', task_type: 'local_agent' })
-      expect(inflight).to be_empty
-    end
-
-    it 'clears on task_notification regardless of status' do
-      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
-      track({ type: 'system', subtype: 'task_notification', task_id: 'a', status: 'failed' })
-      expect(inflight).to be_empty
-    end
-
-    it 'clears on terminal task_updated statuses only' do
-      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
-      track({ type: 'system', subtype: 'task_updated', task_id: 'a', patch: { status: 'running' } })
-      expect(inflight.to_a).to eq(%w[a])
-
-      track({ type: 'system', subtype: 'task_updated', task_id: 'a', patch: { status: 'killed' } })
-      expect(inflight).to be_empty
-    end
-
-    it 'tolerates a non-Hash or absent patch on task_updated' do
-      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
-      track({ type: 'system', subtype: 'task_updated', task_id: 'a', patch: 'completed' })
-      track({ type: 'system', subtype: 'task_updated', task_id: 'a' })
-      expect(inflight.to_a).to eq(%w[a])
-    end
-
-    it 'ignores background_tasks_changed in both directions' do
-      track({ type: 'system', subtype: 'task_started', task_id: 'a', task_type: 'local_agent' })
-      track({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
-      expect(inflight.to_a).to eq(%w[a])
-
-      track({ type: 'system', subtype: 'background_tasks_changed',
-              tasks: [{ task_id: 'b', task_type: 'local_agent', description: 'other' }] })
-      expect(inflight.to_a).to eq(%w[a])
-    end
-
-    it 'is a no-op for terminal frames about unknown task ids' do
-      track({ type: 'system', subtype: 'task_notification', task_id: 'ghost', status: 'completed' })
-      track({ type: 'system', subtype: 'task_updated', task_id: 'ghost', patch: { status: 'failed' } })
-      expect(inflight).to be_empty
     end
   end
 

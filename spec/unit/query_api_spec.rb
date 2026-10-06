@@ -55,120 +55,35 @@ RSpec.describe ClaudeAgentSDK, '.query' do
     end
   end
 
-  it 'passes hooks into the control protocol for one-shot queries' do
+  # The one example here that runs a real Query: what query() is given
+  # reaches the control protocol and the wire, and the run is torn down.
+  # Which option becomes which Query keyword is spelled out once, for both
+  # entry points, in session_assembly_spec.rb.
+  it 'hands its options to the control protocol, writes the prompt and tears the session down' do
     hook_fn = ->(_input, _tool_use_id, _context) { {} }
-    matcher = ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash', hooks: [hook_fn], timeout: 30)
     options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-      hooks: { 'PostToolUse' => nil, 'Stop' => [], PreToolUse: [matcher] }
+      hooks: { 'PostToolUse' => nil, 'Stop' => [],
+               PreToolUse: [ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash', hooks: [hook_fn], timeout: 30)] },
+      agents: { 'reviewer' => ClaudeAgentSDK::AgentDefinition.new(description: 'Reviews', prompt: 'Review it') },
+      system_prompt: { type: 'preset', preset: 'claude_code', exclude_dynamic_sections: true, snapshot: false },
+      skills: %w[pdf], forward_subagent_text: true, agent_progress_summaries: false
     )
+    cli = EntryPointHarness::FakeCLI.new
+    messages = []
 
-    writes = []
-    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
-    allow(transport).to receive(:write) { |payload| writes << JSON.parse(payload, symbolize_names: true) }
+    described_class.query(prompt: 'hello', options: options, transport: cli) { |message| messages << message }
 
-    captured_query_args = nil
-    query_handler = instance_double(
-      ClaudeAgentSDK::Query,
-      start: true,
-      initialize_protocol: nil,
-      wait_for_result_and_end_input: nil,
-      close: nil
+    expect(cli.writes.first[:request]).to eq(
+      subtype: 'initialize',
+      hooks: { PreToolUse: [{ matcher: 'Bash', hookCallbackIds: ['hook_0'], timeout: 30 }] },
+      agents: { reviewer: { description: 'Reviews', prompt: 'Review it' } },
+      excludeDynamicSections: true, systemPromptSnapshot: false, skills: ['pdf'], forwardSubagentText: true,
+      agentProgressSummaries: false
     )
-    allow(query_handler).to receive(:receive_messages)
-    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
-
-    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
-    allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-      captured_query_args = kwargs
-      query_handler
-    end
-
-    Async do
-      described_class.query(prompt: 'hello', options: options) { |_message| nil }
-    end.wait
-
-    expect(captured_query_args[:hooks]).to eq(
-      'PreToolUse' => [
-        {
-          matcher: 'Bash',
-          hooks: [hook_fn],
-          timeout: 30
-        }
-      ]
-    )
-    expect(query_handler).to have_received(:wait_for_result_and_end_input)
-    expect(writes.first[:session_id]).to eq('')
-  end
-
-  it 'passes nil hooks when all matcher lists are empty' do
-    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-      hooks: { 'PreToolUse' => [], 'PostToolUse' => nil }
-    )
-
-    captured_query_args = nil
-    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
-    allow(transport).to receive(:write)
-
-    query_handler = instance_double(
-      ClaudeAgentSDK::Query,
-      start: true,
-      initialize_protocol: nil,
-      wait_for_result_and_end_input: nil,
-      close: nil
-    )
-    allow(query_handler).to receive(:receive_messages)
-    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
-
-    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
-    allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-      captured_query_args = kwargs
-      query_handler
-    end
-
-    Async do
-      described_class.query(prompt: 'hello', options: options) { |_message| nil }
-    end.wait
-
-    expect(captured_query_args[:hooks]).to be_nil
-  end
-
-  it 'configures can_use_tool for streaming one-shot queries' do
-    callback = ->(_tool_name, _input, _context) { ClaudeAgentSDK::PermissionResultAllow.new }
-    options = ClaudeAgentSDK::ClaudeAgentOptions.new(can_use_tool: callback)
-    prompt = [ClaudeAgentSDK::Streaming.user_message('hello')].to_enum
-
-    captured_options = nil
-    captured_query_args = nil
-
-    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
-    allow(transport).to receive(:write)
-
-    query_handler = instance_double(
-      ClaudeAgentSDK::Query,
-      start: true,
-      initialize_protocol: nil,
-      stream_input: nil,
-      close: nil
-    )
-    allow(query_handler).to receive(:receive_messages)
-    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
-
-    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |opts|
-      captured_options = opts
-      transport
-    end
-    allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-      captured_query_args = kwargs
-      query_handler
-    end
-
-    Async do
-      described_class.query(prompt: prompt, options: options) { |_message| nil }
-    end.wait
-
-    expect(captured_options.permission_prompt_tool_name).to eq('stdio')
-    expect(captured_query_args[:can_use_tool]).to eq(callback)
-    expect(query_handler).to have_received(:stream_input).with(prompt)
+    prompt = { type: 'user', message: { role: 'user', content: 'hello' }, parent_tool_use_id: nil, session_id: '' }
+    expect(cli.lines.last).to eq("#{JSON.generate(prompt)}\n")
+    expect(messages.map(&:class)).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+    expect(cli).to be_input_ended.and(be_closed)
   end
 
   it 'propagates a read-loop failure instead of hanging when streaming input is still blocked' do
@@ -251,63 +166,18 @@ RSpec.describe ClaudeAgentSDK, '.query' do
   end
 
   context 'with a custom transport' do
-    def fake_streaming_transport(writes)
-      Class.new do
-        define_method(:initialize) do
-          @incoming = Async::Queue.new
-          @writes = writes
-        end
-        def connect; end
-        def end_input; end
-
-        def close
-          @closed = true
-        end
-
-        def closed?
-          !!@closed
-        end
-
-        def write(data)
-          @writes << data
-          msg = JSON.parse(data, symbolize_names: true)
-          return unless msg[:type] == 'control_request' && msg.dig(:request, :subtype) == 'initialize'
-
-          @incoming.enqueue(
-            type: 'control_response',
-            response: { subtype: 'success', request_id: msg[:request_id], response: {} }
-          )
-          @incoming.enqueue(type: 'result', subtype: 'success', is_error: false, duration_ms: 1,
-                            duration_api_ms: 1, num_turns: 1, session_id: 's', total_cost_usd: 0)
-          @incoming.enqueue(:end)
-        end
-
-        def read_messages
-          loop do
-            msg = @incoming.dequeue
-            break if msg == :end
-
-            yield msg
-          end
-        end
-      end.new
-    end
-
     it 'uses the injected transport and never constructs SubprocessCLITransport' do
-      writes = []
-      fake = fake_streaming_transport(writes)
+      fake = EntryPointHarness::FakeCLI.new
       expect(ClaudeAgentSDK::SubprocessCLITransport).not_to receive(:new)
 
       described_class.query(prompt: 'hello', transport: fake) { |_m| nil }
 
       expect(fake.closed?).to be(true)
-      user_frame = writes.map { |w| JSON.parse(w, symbolize_names: true) }.find { |m| m[:type] == 'user' }
-      expect(user_frame.dig(:message, :content)).to eq('hello')
+      expect(fake.user_writes.map { |frame| frame.dig(:message, :content) }).to eq(['hello'])
     end
 
     it 'skips resume materialization when a transport is injected' do
-      writes = []
-      fake = fake_streaming_transport(writes)
+      fake = EntryPointHarness::FakeCLI.new
       expect(ClaudeAgentSDK::SessionResume).not_to receive(:materialize_resume_session)
 
       options = ClaudeAgentSDK::ClaudeAgentOptions.new(
@@ -503,144 +373,6 @@ RSpec.describe ClaudeAgentSDK, '.query' do
        rbs_incompatible: 'passes out-of-signature input to test its rejection' do
       expect { described_class.query(prompt: nil) }
         .to raise_error(ArgumentError, /got NilClass/)
-    end
-  end
-
-  # Regression (M7): query() built its Query handler without the
-  # exclude_dynamic_sections kwarg, so excludeDynamicSections never reached
-  # the initialize request — Client and Python both send it.
-  it 'passes exclude_dynamic_sections from a preset system prompt to the control protocol' do
-    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-      system_prompt: { type: 'preset', preset: 'claude_code', exclude_dynamic_sections: true }
-    )
-
-    captured_query_args = nil
-    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
-    allow(transport).to receive(:write)
-
-    query_handler = instance_double(
-      ClaudeAgentSDK::Query,
-      start: true,
-      initialize_protocol: nil,
-      wait_for_result_and_end_input: nil,
-      close: nil
-    )
-    allow(query_handler).to receive(:receive_messages)
-    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
-
-    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
-    allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-      captured_query_args = kwargs
-      query_handler
-    end
-
-    Async do
-      described_class.query(prompt: 'hello', options: options) { |_message| nil }
-    end.wait
-
-    expect(captured_query_args[:exclude_dynamic_sections]).to be(true)
-  end
-
-  # Python #1268: query() hands snapshot to Query only for the preset and
-  # custom forms, and a false value survives the trip.
-  {
-    [{ type: 'custom', prompt: 'Be helpful', snapshot: false }] => false,
-    [{ type: 'preset', preset: 'claude_code', snapshot: true }] => true,
-    [{ type: 'preset', preset: 'claude_code' }] => nil,
-    [{ type: 'file', path: '/p.md', snapshot: false }] => nil,
-    ['Be helpful'] => nil
-  }.each do |(system_prompt), expected|
-    it "passes system_prompt_snapshot #{expected.inspect} for #{system_prompt.inspect} to the control protocol" do
-      options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: system_prompt)
-
-      captured_query_args = nil
-      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
-      allow(transport).to receive(:write)
-
-      query_handler = instance_double(
-        ClaudeAgentSDK::Query,
-        start: true,
-        initialize_protocol: nil,
-        wait_for_result_and_end_input: nil,
-        close: nil
-      )
-      allow(query_handler).to receive(:receive_messages)
-      allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
-
-      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
-      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-        captured_query_args = kwargs
-        query_handler
-      end
-
-      Async do
-        described_class.query(prompt: 'hello', options: options) { |_message| nil }
-      end.wait
-
-      expect(captured_query_args.fetch(:system_prompt_snapshot)).to be(expected)
-    end
-  end
-
-  it 'passes forward_subagent_text from the options to the control protocol' do
-    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
-    allow(transport).to receive(:write)
-
-    query_handler = instance_double(
-      ClaudeAgentSDK::Query,
-      start: true,
-      initialize_protocol: nil,
-      wait_for_result_and_end_input: nil,
-      close: nil
-    )
-    allow(query_handler).to receive(:receive_messages)
-    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
-    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
-
-    [true, false].each do |enabled|
-      captured_query_args = nil
-      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-        captured_query_args = kwargs
-        query_handler
-      end
-
-      options = ClaudeAgentSDK::ClaudeAgentOptions.new(forward_subagent_text: enabled)
-      Async do
-        described_class.query(prompt: 'hello', options: options) { |_message| nil }
-      end.wait
-
-      expect(captured_query_args[:forward_subagent_text]).to be(enabled)
-    end
-  end
-
-  it 'passes agent_progress_summaries from the options to the control protocol, preserving nil vs false' do
-    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil, end_input: nil)
-    allow(transport).to receive(:write)
-
-    query_handler = instance_double(
-      ClaudeAgentSDK::Query,
-      start: true,
-      initialize_protocol: nil,
-      wait_for_result_and_end_input: nil,
-      close: nil
-    )
-    allow(query_handler).to receive(:receive_messages)
-    allow(query_handler).to receive(:spawn_task) { |&blk| blk.call }
-    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
-
-    [true, false, nil].each do |value|
-      captured_query_args = nil
-      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-        captured_query_args = kwargs
-        query_handler
-      end
-
-      options = ClaudeAgentSDK::ClaudeAgentOptions.new(agent_progress_summaries: value)
-      Async do
-        described_class.query(prompt: 'hello', options: options) { |_message| nil }
-      end.wait
-
-      expect(captured_query_args).to have_key(:agent_progress_summaries)
-      expect(captured_query_args[:agent_progress_summaries]).to be(value)
     end
   end
 end

@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `CLIInstaller::PINNED_CLI_VERSION` moves from 2.1.288 to **2.1.289**, following the CLI the Python SDK bundles. `CLIInstaller.install_pinned` installs it. See the [Claude Code changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md).
 
+## [1.2.1] - 2026-10-06
+
+An internal release: three refactors that move duplicated or scattered logic into one private module each. No public API, signature (`sig/`) or documented behavior changes; one cleanup difference is noted below.
+
+### Changed
+- `ClaudeAgentSDK.query` and `Client` share one implementation of session setup, prompt writes, message delivery and teardown (`SessionAssembly`, `@api private`); a session's observers, `callback_scheduling` and `callback_wrapper` travel in one object (`Dispatch`, `@api private`) instead of being passed at every call site. The documented differences between the two entry points (what observers are told when a session cannot be opened, the `session_id` on the wire, when stdin is closed, which error wins when a close raises) are preserved and now pinned by specs that run both side by side. One cleanup difference: when a `Client` is reconnected while its previous `disconnect` is still removing the materialized directory of a store-backed resume, the finishing `disconnect` no longer clears the new session, so the new session's resume directory is removed by its own `disconnect` (it used to be left behind). (#169)
+- The decision of when `query()` may close stdin lives in one private class, `Query::RunLifecycle` (the per-run end, the task ledger, the session state and the ceiling timer, with the orderings between them); `Query` feeds it events and supplies the timer. Its specs go through that interface instead of `Query`'s instance variables. (#168)
+- Hash-form option interpretation (`system_prompt`, `thinking`, `tools`, `output_format`, `task_budget`, `plugins`, `sandbox`, `mcp_servers`, `agents`) lives in one private module, `OptionForms`; every existing per-option spelling and key policy is preserved as it was. (#167)
+
 ## [1.2.0] - 2026-10-03
 
 Fixes from a review of the whole SDK, a reference for every option (`docs/options.md`), and Claude Code 2.1.288 as the pinned CLI. Settings the SDK used to drop without an error now take effect — hook outputs and `sandbox:` Hashes in Ruby spelling, a `tools:` String, option Hashes with a Symbol `type` — so read the entries in bold before upgrading: they say what changes for code that relied on the old behavior.
