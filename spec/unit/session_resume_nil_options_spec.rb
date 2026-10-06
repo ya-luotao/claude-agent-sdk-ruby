@@ -75,12 +75,22 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
 
   it 'gets Client past materialization with both set back to nil' do
     cleared = options.dup_with(env: nil, load_timeout_ms: nil)
-    client = ClaudeAgentSDK::Client.new(options: cleared)
+    created = []
+    client = ClaudeAgentSDK::Client.new(options: cleared,
+                                        transport_class: EntryPointHarness::FakeCLI.subprocess_class(created))
 
-    applied = client.send(:materialize_resume, cleared)
-    materializations << client.instance_variable_get(:@materialized)
+    Sync do
+      client.connect
+      applied = created.fetch(0).options # what the transport was constructed with
+      materialized_dir = applied.env.fetch('CLAUDE_CONFIG_DIR')
 
-    expect(applied.env).to eq('CLAUDE_CONFIG_DIR' => materializations.first.config_dir)
-    expect(applied.resume).to eq(sid)
+      expect(applied.env).to eq('CLAUDE_CONFIG_DIR' => materialized_dir)
+      expect(materialized_dir).not_to eq(caller_config_dir)
+      expect(Dir.glob(File.join(materialized_dir, 'projects', '*', "#{sid}.jsonl")).length).to eq(1)
+      expect(applied.resume).to eq(sid)
+      expect(cleared.env).to be_nil # the caller's options are left as they were
+    ensure
+      client.disconnect # removes the materialized dir
+    end
   end
 end

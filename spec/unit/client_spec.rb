@@ -23,24 +23,40 @@ RSpec.describe ClaudeAgentSDK::Client do
     expect(received_options.env).not_to have_key('CLAUDE_CODE_ENTRYPOINT')
   end
 
-  it 'passes forward_subagent_text through to the Query handler' do
-    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
-    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
-    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+  # The one example here that runs a real Query: what Client is given
+  # reaches the control protocol and the wire, and disconnect tears the
+  # session down. Which option becomes which Query keyword is spelled out
+  # once, for both entry points, in session_assembly_spec.rb.
+  it 'hands its options to the control protocol, writes the prompt and tears the session down' do
+    hook_fn = ->(_input, _tool_use_id, _context) { {} }
+    options = ClaudeAgentSDK::ClaudeAgentOptions.new(
+      hooks: { 'PostToolUse' => nil, 'Stop' => [],
+               PreToolUse: [ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash', hooks: [hook_fn], timeout: 30)] },
+      agents: { 'reviewer' => ClaudeAgentSDK::AgentDefinition.new(description: 'Reviews', prompt: 'Review it') },
+      system_prompt: { type: 'preset', preset: 'claude_code', exclude_dynamic_sections: true, snapshot: false },
+      skills: %w[pdf], forward_subagent_text: true, agent_progress_summaries: false
+    )
+    created = []
+    messages = []
 
-    [true, false].each do |enabled|
-      captured = nil
-      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-        captured = kwargs
-        query_handler
-      end
-
-      described_class.new(
-        options: ClaudeAgentSDK::ClaudeAgentOptions.new(forward_subagent_text: enabled)
-      ).connect
-
-      expect(captured[:forward_subagent_text]).to be(enabled)
+    described_class.open(options: options, transport_class: EntryPointHarness::FakeCLI.foreign_class(created)) do |client|
+      client.query('hello')
+      client.receive_response { |message| messages << message }
     end
+
+    cli = created.fetch(0)
+    expect(cli.writes.first[:request]).to eq(
+      subtype: 'initialize',
+      hooks: { PreToolUse: [{ matcher: 'Bash', hookCallbackIds: ['hook_0'], timeout: 30 }] },
+      agents: { reviewer: { description: 'Reviews', prompt: 'Review it' } },
+      excludeDynamicSections: true, systemPromptSnapshot: false, skills: ['pdf'], forwardSubagentText: true,
+      agentProgressSummaries: false
+    )
+    prompt = { type: 'user', message: { role: 'user', content: 'hello' }, parent_tool_use_id: nil, session_id: 'default' }
+    expect(cli.lines.last).to eq("#{JSON.generate(prompt)}\n")
+    expect(messages.map(&:class)).to eq([ClaudeAgentSDK::AssistantMessage, ClaudeAgentSDK::ResultMessage])
+    expect(cli).to be_closed
+    expect(cli).not_to be_input_ended
   end
 
   it 'sends an initial String prompt as a user message after connecting' do
@@ -69,36 +85,6 @@ RSpec.describe ClaudeAgentSDK::Client do
 
     expect { client.connect({ type: 'user', message: { content: 'hello' } }) }
       .to raise_error(ArgumentError, /got Hash/)
-  end
-
-  describe 'hook normalization on connect' do
-    let(:query_handler) { instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true) }
-
-    before do
-      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil)
-      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
-      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
-    end
-
-    it 'omits nil and empty lists while preserving active matcher callbacks and timeouts' do
-      callback = ->(*) { {} }
-      matcher = ClaudeAgentSDK::HookMatcher.new(matcher: 'Bash', hooks: [callback], timeout: 7)
-      hooks = { 'PostToolUse' => nil, 'Stop' => [], PreToolUse: [matcher] }
-      described_class.new(options: ClaudeAgentSDK::ClaudeAgentOptions.new(hooks: hooks)).connect
-
-      expect(ClaudeAgentSDK::Query).to have_received(:new).with(hash_including(
-                                                                  hooks: { 'PreToolUse' => [{ matcher: 'Bash', hooks: [callback], timeout: 7 }] }
-                                                                ))
-      expect(hooks).to eq('PostToolUse' => nil, 'Stop' => [], PreToolUse: [matcher])
-    end
-
-    it 'passes nil when no active hook lists remain' do
-      described_class.new(options: ClaudeAgentSDK::ClaudeAgentOptions.new(
-        hooks: { 'PreToolUse' => nil, 'PostToolUse' => [] }
-      )).connect
-
-      expect(ClaudeAgentSDK::Query).to have_received(:new).with(hash_including(hooks: nil))
-    end
   end
 
   it 'streams an initial Enumerator prompt in the background via Query#stream_input' do
@@ -247,27 +233,6 @@ RSpec.describe ClaudeAgentSDK::Client do
     client.connect
     client.toggle_mcp_server('my-server', false)
     expect(query_handler).to have_received(:toggle_mcp_server).with('my-server', false)
-  end
-
-  it 'passes agent_progress_summaries through to the Query handler, preserving nil vs false' do
-    transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
-    query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
-    allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
-
-    [true, false, nil].each do |value|
-      captured = nil
-      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-        captured = kwargs
-        query_handler
-      end
-
-      described_class.new(
-        options: ClaudeAgentSDK::ClaudeAgentOptions.new(agent_progress_summaries: value)
-      ).connect
-
-      expect(captured).to have_key(:agent_progress_summaries)
-      expect(captured[:agent_progress_summaries]).to be(value)
-    end
   end
 
   it 'raises when backgrounding tasks while not connected' do
@@ -553,126 +518,6 @@ RSpec.describe ClaudeAgentSDK::Client do
     end
   end
 
-  context 'with exclude_dynamic_sections' do
-    let(:transport) { instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil) }
-    let(:query_handler) { instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true) }
-
-    before do
-      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
-    end
-
-    it 'passes exclude_dynamic_sections from SystemPromptPreset to Query' do
-      received_kwargs = nil
-      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-        received_kwargs = kwargs
-        query_handler
-      end
-
-      preset = ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', exclude_dynamic_sections: true)
-      options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: preset)
-      client = described_class.new(options: options)
-      client.connect
-
-      expect(received_kwargs[:exclude_dynamic_sections]).to eq(true)
-    end
-
-    it 'passes exclude_dynamic_sections from Hash with symbol keys to Query' do
-      received_kwargs = nil
-      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-        received_kwargs = kwargs
-        query_handler
-      end
-
-      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-        system_prompt: { type: 'preset', preset: 'claude_code', exclude_dynamic_sections: true }
-      )
-      client = described_class.new(options: options)
-      client.connect
-
-      expect(received_kwargs[:exclude_dynamic_sections]).to eq(true)
-    end
-
-    it 'handles false correctly from Hash with symbol keys' do
-      received_kwargs = nil
-      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-        received_kwargs = kwargs
-        query_handler
-      end
-
-      options = ClaudeAgentSDK::ClaudeAgentOptions.new(
-        system_prompt: { type: 'preset', preset: 'claude_code', exclude_dynamic_sections: false }
-      )
-      client = described_class.new(options: options)
-      client.connect
-
-      expect(received_kwargs[:exclude_dynamic_sections]).to eq(false)
-    end
-
-    it 'passes nil when system_prompt is a plain string' do
-      received_kwargs = nil
-      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-        received_kwargs = kwargs
-        query_handler
-      end
-
-      options = ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: 'You are a helper')
-      client = described_class.new(options: options)
-      client.connect
-
-      expect(received_kwargs[:exclude_dynamic_sections]).to be_nil
-    end
-  end
-
-  # Python #1268: connect() hands the system prompt's snapshot to Query only
-  # for the preset and custom forms; String and file prompts have none.
-  context 'with system prompt snapshot' do
-    let(:transport) { instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil) }
-    let(:query_handler) { instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true) }
-
-    before do
-      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
-    end
-
-    def snapshot_passed_to_query(system_prompt)
-      received_kwargs = nil
-      allow(ClaudeAgentSDK::Query).to receive(:new) do |**kwargs|
-        received_kwargs = kwargs
-        query_handler
-      end
-
-      client = described_class.new(options: ClaudeAgentSDK::ClaudeAgentOptions.new(system_prompt: system_prompt))
-      client.connect
-      received_kwargs.fetch(:system_prompt_snapshot)
-    end
-
-    {
-      'custom Hash with snapshot false' => [{ type: 'custom', prompt: 'Be helpful', snapshot: false }, false],
-      'preset Hash with snapshot true' => [{ type: 'preset', preset: 'claude_code', snapshot: true }, true],
-      'preset Hash with string keys and snapshot false' =>
-        [{ 'type' => 'preset', 'preset' => 'claude_code', 'snapshot' => false }, false],
-      'preset Hash without snapshot' => [{ type: 'preset', preset: 'claude_code' }, nil],
-      'file Hash (snapshot ignored)' => [{ type: 'file', path: '/p.md', snapshot: false }, nil],
-      'plain String' => ['Be helpful', nil],
-      'nil system_prompt' => [nil, nil]
-    }.each do |label, (system_prompt, expected)|
-      it "passes #{expected.inspect} for a #{label}" do
-        expect(snapshot_passed_to_query(system_prompt)).to be(expected)
-      end
-    end
-
-    it 'passes snapshot from SystemPromptCustom and SystemPromptPreset objects' do
-      custom = ClaudeAgentSDK::SystemPromptCustom.new(prompt: 'Be helpful', snapshot: false)
-      preset = ClaudeAgentSDK::SystemPromptPreset.new(preset: 'claude_code', snapshot: true)
-
-      expect(snapshot_passed_to_query(custom)).to be(false)
-      expect(snapshot_passed_to_query(preset)).to be(true)
-    end
-
-    it 'ignores a non-boolean snapshot' do
-      expect(snapshot_passed_to_query({ type: 'custom', prompt: 'x', snapshot: 'yes' })).to be_nil
-    end
-  end
-
   context 'with default configuration' do
     after { ClaudeAgentSDK.reset_configuration }
 
@@ -686,9 +531,25 @@ RSpec.describe ClaudeAgentSDK::Client do
       end
     end
 
+    # The options a Client runs on are the ones it hands the transport it
+    # constructs.
+    def options_handed_to_transport(client)
+      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
+      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
+
+      received_options = nil
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |options|
+        received_options = options
+        transport
+      end
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
+
+      client.connect
+      received_options
+    end
+
     it 'uses configured defaults when no options provided' do
-      client = described_class.new
-      options = client.instance_variable_get(:@options)
+      options = options_handed_to_transport(described_class.new)
 
       expect(options.model).to eq('sonnet')
       expect(options.permission_mode).to eq('bypassPermissions')
@@ -700,31 +561,12 @@ RSpec.describe ClaudeAgentSDK::Client do
         model: 'opus',
         env: { 'OVERRIDE_KEY' => 'override_value' }
       )
-      client = described_class.new(options: override_options)
-      options = client.instance_variable_get(:@options)
+      options = options_handed_to_transport(described_class.new(options: override_options))
 
       expect(options.model).to eq('opus') # override
       expect(options.permission_mode).to eq('bypassPermissions') # from default
       expect(options.env['API_KEY']).to eq('configured_key') # from default
       expect(options.env['OVERRIDE_KEY']).to eq('override_value') # from provided
-    end
-
-    it 'passes merged options to transport' do
-      transport = instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, write: nil)
-      query_handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true)
-
-      received_options = nil
-      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |options|
-        received_options = options
-        transport
-      end
-      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(query_handler)
-
-      client = described_class.new
-      client.connect
-
-      expect(received_options.model).to eq('sonnet')
-      expect(received_options.permission_mode).to eq('bypassPermissions')
     end
   end
   describe 'Client#query with an iterable (F7)' do
@@ -1015,32 +857,53 @@ RSpec.describe ClaudeAgentSDK::Client do
   # materialized temp dir holds the only copy of those turns — disconnect must
   # preserve it (scrubbed of credentials) instead of deleting it.
   describe '#disconnect with a materialized resume' do
-    def client_with(handler, materialized)
-      client = described_class.new
-      client.instance_variable_set(:@query_handler, handler)
-      client.instance_variable_set(:@materialized, materialized)
-      client
+    let(:materialized) do
+      instance_double(ClaudeAgentSDK::MaterializedResume, cleanup: nil, preserve_transcripts: nil,
+                                                          config_dir: '/nonexistent/claude-resume-x',
+                                                          resume_session_id: SecureRandom.uuid)
+    end
+    let(:transport) { instance_double(ClaudeAgentSDK::SubprocessCLITransport, connect: true, close: nil) }
+
+    # A client that connected with a store-backed resume: the session was
+    # materialized, and the query handler reports +dropped+ for its mirror.
+    def connected_client(dropped:)
+      handler = instance_double(ClaudeAgentSDK::Query, start: true, initialize_protocol: true, close: nil,
+                                                       set_transcript_mirror_batcher: nil,
+                                                       mirror_batches_dropped?: dropped)
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new).and_return(transport)
+      allow(ClaudeAgentSDK::Query).to receive(:new).and_return(handler)
+      allow(ClaudeAgentSDK::SessionResume).to receive(:materialize_resume_session).and_return(materialized)
+      options = ClaudeAgentSDK::ClaudeAgentOptions.new(session_store: ClaudeAgentSDK::InMemorySessionStore.new,
+                                                       resume: materialized.resume_session_id)
+      [described_class.new(options: options).tap(&:connect), handler]
     end
 
     it 'preserves the temp dir when the mirror dropped batches' do
-      handler = instance_double(ClaudeAgentSDK::Query, close: nil, mirror_batches_dropped?: true)
-      materialized = instance_double(ClaudeAgentSDK::MaterializedResume, cleanup: nil, preserve_transcripts: nil)
+      client, handler = connected_client(dropped: true)
 
-      client_with(handler, materialized).disconnect
+      client.disconnect
 
-      expect(handler).to have_received(:close)
-      expect(materialized).to have_received(:preserve_transcripts)
+      expect(handler).to have_received(:close).ordered
+      expect(transport).to have_received(:close).ordered
+      expect(materialized).to have_received(:preserve_transcripts).ordered
       expect(materialized).not_to have_received(:cleanup)
     end
 
     it 'cleans up the temp dir when no batches were dropped' do
-      handler = instance_double(ClaudeAgentSDK::Query, close: nil, mirror_batches_dropped?: false)
-      materialized = instance_double(ClaudeAgentSDK::MaterializedResume, cleanup: nil, preserve_transcripts: nil)
+      client, = connected_client(dropped: false)
 
-      client_with(handler, materialized).disconnect
+      client.disconnect
 
       expect(materialized).to have_received(:cleanup)
       expect(materialized).not_to have_received(:preserve_transcripts)
+    end
+
+    it 'decides once: a second disconnect leaves the temp dir alone' do
+      client, = connected_client(dropped: false)
+
+      2.times { client.disconnect }
+
+      expect(materialized).to have_received(:cleanup).once
     end
   end
 end

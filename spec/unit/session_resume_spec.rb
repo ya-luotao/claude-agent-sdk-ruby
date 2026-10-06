@@ -766,42 +766,67 @@ RSpec.describe ClaudeAgentSDK::SessionResume do
       store.append({ 'project_key' => project_key, 'session_id' => sid }, [entry('hi')])
     end
 
+    # The transport Client constructs is the witness: the options it is
+    # handed are the repointed ones when the resume was materialized, the
+    # caller's own otherwise.
+    let(:created) { [] }
+
+    def materialized_dirs
+      Dir.glob(File.join(Dir.tmpdir, 'claude-resume-*'))
+    end
+
     it 'materializes for the default subprocess transport' do
-      client = ClaudeAgentSDK::Client.new(options: options)
-      result = client.send(:materialize_resume, options)
-      materialized = client.instance_variable_get(:@materialized)
-      begin
-        expect(materialized).to be_a(ClaudeAgentSDK::MaterializedResume)
-        expect(result.resume).to eq(sid)
-        expect(result.env['CLAUDE_CONFIG_DIR']).to eq(materialized.config_dir.to_s)
-      ensure
-        materialized&.cleanup
+      allow(ClaudeAgentSDK::SubprocessCLITransport).to receive(:new) do |transport_options|
+        EntryPointHarness::FakeCLI.new(transport_options).tap { |cli| created << cli }
       end
+      client = ClaudeAgentSDK::Client.new(options: options)
+      before = materialized_dirs
+
+      Sync do
+        client.connect
+        handed = created.fetch(0).options
+
+        expect(handed.resume).to eq(sid)
+        expect(materialized_dirs - before).to eq([handed.env['CLAUDE_CONFIG_DIR']])
+        expect(File.file?(File.join(handed.env['CLAUDE_CONFIG_DIR'], 'projects', project_key, "#{sid}.jsonl"))).to be(true)
+      ensure
+        client.disconnect
+      end
+      expect(materialized_dirs - before).to eq([]) # removed by disconnect
     end
 
     it 'skips materialization for a custom transport class' do
-      custom = Class.new(ClaudeAgentSDK::Transport)
-      client = ClaudeAgentSDK::Client.new(options: options, transport_class: custom)
-      result = client.send(:materialize_resume, options)
-      expect(result).to be(options) # unchanged
-      expect(client.instance_variable_get(:@materialized)).to be_nil
+      client = ClaudeAgentSDK::Client.new(options: options,
+                                          transport_class: EntryPointHarness::FakeCLI.foreign_class(created))
+      before = materialized_dirs
+
+      Sync do
+        client.connect
+        expect(created.fetch(0).options).to be(options) # unchanged
+        expect(materialized_dirs - before).to eq([])
+      ensure
+        client.disconnect
+      end
     end
 
     it 'cleans up the materialized temp dir when connect fails with a non-StandardError' do
       # Async::Stop (reactor cancellation) is an Exception, NOT a StandardError.
       # `rescue StandardError` would let it skip disconnect and leak the temp dir
       # (with its .credentials.json copy); `rescue Exception` cleans it up.
-      client = ClaudeAgentSDK::Client.new(options: options)
+      #
       # Intentionally NOT a StandardError: this is what reactor cancellation
       # (Async::Stop) looks like, the exact case `rescue StandardError` misses.
+      # It is raised by the transport's #connect, after materialization.
       cancellation = Class.new(Exception) # rubocop:disable Lint/InheritException
-      allow(client).to receive(:connect_inner).and_raise(cancellation)
+      transport_class = EntryPointHarness::FakeCLI.subprocess_class(created, connect_error: cancellation.new)
+      client = ClaudeAgentSDK::Client.new(options: options, transport_class: transport_class)
 
-      before = Dir.glob(File.join(Dir.tmpdir, 'claude-resume-*'))
+      before = materialized_dirs
       expect { client.connect }.to raise_error(cancellation)
-      leaked = Dir.glob(File.join(Dir.tmpdir, 'claude-resume-*')) - before
+      expect(created.fetch(0).options.env['CLAUDE_CONFIG_DIR']).to start_with(File.join(Dir.tmpdir, 'claude-resume-'))
+      leaked = materialized_dirs - before
       expect(leaked).to eq([]) # materialized temp dir removed despite the non-StandardError
-      expect(client.instance_variable_get(:@materialized)).to be_nil
+      expect(client.query_handler).to be_nil
     end
   end
 

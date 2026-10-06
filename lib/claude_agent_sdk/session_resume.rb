@@ -240,10 +240,10 @@ module ClaudeAgentSDK
       )
     end
 
-    # Build a TranscriptMirrorBatcher for a configured session_store. Shared by
-    # both entry points (Client#install_transcript_mirror and the one-shot
-    # query()) so projects_dir resolution and the eager/batched threshold choice
-    # live in one place. +env+ supplies the CLAUDE_CONFIG_DIR / HOME overrides
+    # Build a TranscriptMirrorBatcher for a configured session_store. Called
+    # wherever a session is assembled (Client and the one-shot query()), so
+    # projects_dir resolution and the eager/batched threshold choice live in
+    # one place. +env+ supplies the CLAUDE_CONFIG_DIR / HOME overrides
     # used to locate the projects dir (already repointed at the temp dir when
     # resuming from a store). Eager flush mode zeroes the buffer thresholds so every
     # transcript_mirror frame triggers a background flush.

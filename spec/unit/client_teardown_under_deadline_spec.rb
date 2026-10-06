@@ -23,9 +23,12 @@ require 'tmpdir'
 #
 # The observers block on a queue until the example releases them, so the
 # deadlines can only expire while they wait. disconnect reaches its observer
-# without suspending. connect suspends before it reaches on_error (resume
-# materialization, the handshake), so there the real task.with_timeout is
-# armed only around the observer notification: no slow setup can use it up.
+# without suspending, so a task.with_timeout around it is enough. connect
+# suspends before it reaches on_error (resume materialization, the handshake),
+# and a timeout around all of it could be used up by slow setup; so there the
+# deadline is delivered once the observer has signalled that it is running
+# with the handshake rejection, the way an expired task.with_timeout delivers
+# it (EntryPointHarness.expire_deadline_on).
 RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted during an observer' do
   # In-memory stand-in for the CLI process. It answers `initialize` the way
   # CLI 2.1.286 answers control requests (payload trimmed), or rejects it
@@ -241,12 +244,18 @@ RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted 
   end
 
   describe 'a failing Client#connect while on_error runs' do
-    # Arms a real task.with_timeout on the connecting fiber for exactly the
-    # time Client spends notifying on_error.
-    def arm_deadline_around_on_error(client, seconds, *exception_class)
-      allow(client).to receive(:notify_error).and_wrap_original do |notify, error|
-        Async::Task.current.with_timeout(seconds, *exception_class) { notify.call(error) }
-      end
+    # Runs connect on a task of its own and expires the caller's deadline on
+    # it once on_error is running with the handshake rejection (the observer
+    # signals it; handed anything else it never does, and this fails). Returns
+    # what connect did.
+    def connect_interrupted_during_on_error(task, client, exception_class = Async::TimeoutError)
+      outcome = nil
+      caller_task = task.async { outcome = outcome_of { client.connect } }
+      raise 'on_error was never entered with the handshake rejection' unless entered.pop(timeout: 5)
+
+      EntryPointHarness.expire_deadline_on(caller_task, exception_class)
+      caller_task.wait
+      outcome
     end
 
     # The gate of every example here: on_error ran, with the handshake rejection.
@@ -255,10 +264,9 @@ RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted 
     end
 
     it 'tears the partial session down, then raises the expired deadline (:thread)' do
-      Sync do
+      Sync do |task|
         client, created = client_for(:on_error, scheduling: :thread, reject_initialize: true)
-        arm_deadline_around_on_error(client, 0.05)
-        outcome = outcome_of { client.connect }
+        outcome = connect_interrupted_during_on_error(task, client)
 
         expect_on_error_reached
         expect(outcome).to be_a(Async::TimeoutError)
@@ -270,11 +278,10 @@ RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted 
     end
 
     it 'tears the partial session down, then raises an inline cooperative cancellation (:inline)' do
-      Sync do
+      Sync do |task|
         client, created = client_for(:on_error, scheduling: :inline, reject_initialize: true)
         cancellation = inline_cancellation
-        arm_deadline_around_on_error(client, 0.05, cancellation)
-        outcome = outcome_of { client.connect }
+        outcome = connect_interrupted_during_on_error(task, client, cancellation)
 
         expect_on_error_reached
         expect(outcome).to be_a(cancellation)
@@ -303,10 +310,9 @@ RSpec.describe ClaudeAgentSDK::Client, 'teardown when the caller is interrupted 
 
     it 'tears the partial session down and raises the connect error while the observer contains a deadline ' \
        '(:inline, residue)' do
-      Sync do
+      Sync do |task|
         client, created = client_for(:on_error, scheduling: :inline, reject_initialize: true)
-        arm_deadline_around_on_error(client, 0.05)
-        outcome = outcome_of { client.connect }
+        outcome = connect_interrupted_during_on_error(task, client)
 
         expect_on_error_reached
         expect(outcome).to be_a(StandardError).and(have_attributes(message: 'Invalid initialize request'))
