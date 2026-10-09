@@ -7,7 +7,7 @@ Thanks for helping out. This is a community-maintained Ruby SDK for the Claude C
 You need Ruby 3.2 or newer.
 
 ```bash
-git clone https://github.com/ya-luotao/claude-agent-sdk-ruby.git
+git clone https://github.com/rubycatco/claude-agent-sdk-ruby.git
 cd claude-agent-sdk-ruby
 bundle install
 bundle exec rake          # unit suite + RuboCop, the same checks as CI's main leg

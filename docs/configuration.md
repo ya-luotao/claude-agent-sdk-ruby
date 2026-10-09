@@ -37,7 +37,7 @@ end
 
 In the `output_format` Hash, `type` may be a String or a Symbol (`type: :json_schema`), and the keys Symbols or Strings.
 
-See [examples/structured_output_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/structured_output_example.rb).
+See [examples/structured_output_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/structured_output_example.rb).
 
 ## Thinking Configuration
 
@@ -117,7 +117,7 @@ ClaudeAgentSDK.query(prompt: "Explain recursion", options: options) do |message|
 end
 ```
 
-See [examples/budget_control_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/budget_control_example.rb).
+See [examples/budget_control_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/budget_control_example.rb).
 
 ## Fallback Model
 
@@ -128,7 +128,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 )
 ```
 
-See [examples/fallback_model_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/fallback_model_example.rb).
+See [examples/fallback_model_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/fallback_model_example.rb).
 
 ## Advisor Model
 
@@ -162,7 +162,7 @@ Notes:
 - `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` (settable via `options.env`) disables
   the advisor tool entirely; a configured `advisor_model` is then ignored.
 
-See [examples/advisor_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/advisor_example.rb) and the
+See [examples/advisor_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/advisor_example.rb) and the
 [advisor documentation](https://code.claude.com/docs/en/advisor).
 
 ## Beta Features
@@ -260,7 +260,7 @@ sandbox = ClaudeAgentSDK::SandboxSettings.new(enabled: true, fail_if_unavailable
 
 Without it, the sign is the CLI's warning on stderr ("Sandbox disabled: ... Commands will run WITHOUT sandboxing. Network and filesystem restrictions will NOT be enforced."), and stderr reaches your code only through the `stderr` (or `debug_stderr`) option. This is the CLI's own description of its behavior: the fallback has not been reproduced in this SDK's testing, where the sandbox was always available.
 
-See [examples/sandbox_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/sandbox_example.rb).
+See [examples/sandbox_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/sandbox_example.rb).
 
 When the `sandbox:` option enabled the sandbox and the CLI reports `Sandbox disabled: …` on its stderr, the SDK repeats that line as a Ruby warning prefixed `[claude-agent-sdk]`, once per session, whether or not you set `stderr:`.
 
@@ -293,7 +293,7 @@ options = ClaudeAgentSDK::ClaudeAgentOptions.new(
 
 **What still works:** skills (via `/skill-name`), explicit `--add-dir` CLAUDE.md, `--settings`, `--mcp-config`, `--agents`, `--plugin-dir`, API key from `ANTHROPIC_API_KEY` env var.
 
-See [examples/bare_mode_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/bare_mode_example.rb).
+See [examples/bare_mode_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/bare_mode_example.rb).
 
 ## Verbatim Prompts
 

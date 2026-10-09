@@ -21,7 +21,7 @@ All hook input objects include common fields like `session_id`, `transcript_path
 
 `tool_input` (and the `input` a [permission callback](#permission-callbacks) receives) is the CLI's Hash passed through unchanged, so its keys are Symbols spelled as on the wire: `tool_input[:command]`, `input[:file_path]`. See [Hash keys](types.md#hash-keys).
 
-All 27 hook events have typed input classes. See [`ClaudeAgentSDK::HOOK_EVENTS`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types/hooks.rb) and [examples/lifecycle_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
+All 27 hook events have typed input classes. See [`ClaudeAgentSDK::HOOK_EVENTS`](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types/hooks.rb) and [examples/lifecycle_hooks_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
 
 `background_tasks` and `session_crons` are optional arrays of raw CLI hashes.
 `nil` means the CLI did not provide a snapshot; `[]` means it provided an empty
@@ -76,7 +76,7 @@ Async do
 end.wait
 ```
 
-See [examples/hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/hooks_example.rb), [examples/advanced_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/advanced_hooks_example.rb), and [examples/lifecycle_hooks_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
+See [examples/hooks_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/hooks_example.rb), [examples/advanced_hooks_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/advanced_hooks_example.rb), and [examples/lifecycle_hooks_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
 
 ### Hook output
 
@@ -148,7 +148,7 @@ Async do
 end.wait
 ```
 
-See [examples/permission_callback_example.rb](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/permission_callback_example.rb).
+See [examples/permission_callback_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/permission_callback_example.rb).
 
 ### Permission request cancellation
 

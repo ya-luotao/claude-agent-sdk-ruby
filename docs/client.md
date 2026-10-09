@@ -158,7 +158,7 @@ Resuming from a `session_store` is not available over a custom transport, throug
 
 ### Reference: running `claude` inside an E2B sandbox
 
-[`examples/e2b_transport_example.rb`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/e2b_transport_example.rb) is a working transport that runs the Claude Code CLI inside an [E2B](https://e2b.dev) Firecracker microVM instead of on your host. The wire protocol stays identical — only the I/O layer changes:
+[`examples/e2b_transport_example.rb`](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/e2b_transport_example.rb) is a working transport that runs the Claude Code CLI inside an [E2B](https://e2b.dev) Firecracker microVM instead of on your host. The wire protocol stays identical — only the I/O layer changes:
 
 ```
 ClaudeAgentSDK::Client (host)

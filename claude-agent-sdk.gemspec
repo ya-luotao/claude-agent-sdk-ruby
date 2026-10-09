@@ -14,13 +14,13 @@ Gem::Specification.new do |spec|
                      'integration (Railtie, install generator, CLI-vendoring rake task, executor-aware callback ' \
                      'wrapper), a pinned CLI installer, OpenTelemetry tracing, and session transcript mirroring. ' \
                      'Not affiliated with or officially maintained by Anthropic.'
-  spec.homepage = 'https://github.com/ya-luotao/claude-agent-sdk-ruby'
+  spec.homepage = 'https://github.com/rubycatco/claude-agent-sdk-ruby'
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 3.2.0'
 
   spec.metadata['homepage_uri'] = spec.homepage
-  spec.metadata['source_code_uri'] = 'https://github.com/ya-luotao/claude-agent-sdk-ruby'
-  spec.metadata['changelog_uri'] = 'https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/CHANGELOG.md'
+  spec.metadata['source_code_uri'] = 'https://github.com/rubycatco/claude-agent-sdk-ruby'
+  spec.metadata['changelog_uri'] = 'https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/CHANGELOG.md'
   spec.metadata['documentation_uri'] = 'https://rubydoc.info/gems/claude-agent-sdk'
   spec.metadata['allowed_push_host'] = 'https://rubygems.org'
 

@@ -1,6 +1,6 @@
 # Types Reference
 
-See [lib/claude_agent_sdk/types/](https://github.com/ya-luotao/claude-agent-sdk-ruby/tree/main/lib/claude_agent_sdk/types) for complete type definitions (one file per area; `types.rb` loads them all).
+See [lib/claude_agent_sdk/types/](https://github.com/rubycatco/claude-agent-sdk-ruby/tree/main/lib/claude_agent_sdk/types) for complete type definitions (one file per area; `types.rb` loads them all).
 
 ## Hash keys
 

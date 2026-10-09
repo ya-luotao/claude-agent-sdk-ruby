@@ -131,7 +131,7 @@ Draft the release body from the new CHANGELOG section. Prior releases use this s
 ### What's changed
 - #NN <title> — @author
 
-**Full Changelog**: https://github.com/ya-luotao/claude-agent-sdk-ruby/compare/v<prev>...vX.Y.Z
+**Full Changelog**: https://github.com/rubycatco/claude-agent-sdk-ruby/compare/v<prev>...vX.Y.Z
 
 ---
 
@@ -143,7 +143,7 @@ gem install claude-agent-sdk -v X.Y.Z
 Generate the "What's changed" list from merged PRs since the last tag:
 
 ```
-gh pr list --repo ya-luotao/claude-agent-sdk-ruby \
+gh pr list --repo rubycatco/claude-agent-sdk-ruby \
   --state merged --search "merged:>=<last-tag-date>" \
   --json number,title,author
 ```
@@ -151,7 +151,7 @@ gh pr list --repo ya-luotao/claude-agent-sdk-ruby \
 Create the release. Default: publish immediately (this is what fires `publish.yml`). If the user passed `--draft`, append `--draft` so they can eyeball the notes in GitHub UI and click "Publish release" manually:
 
 ```
-gh release create vX.Y.Z --repo ya-luotao/claude-agent-sdk-ruby \
+gh release create vX.Y.Z --repo rubycatco/claude-agent-sdk-ruby \
   --title "vX.Y.Z" --notes-file <tmpfile>
 # add --draft if --draft was passed
 ```
