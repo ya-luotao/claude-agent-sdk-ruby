@@ -158,7 +158,7 @@ See [hook fields and permission cancellation](hooks-and-permissions.md).
 
 ## Minimal example
 
-[`examples/subagent_status_example.rb`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/subagent_status_example.rb)
+[`examples/subagent_status_example.rb`](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/subagent_status_example.rb)
 defines a tool-free reviewer, registers lifecycle hooks, reads metadata, and
 prints task events and forwarded child text without building a status model:
 

@@ -46,7 +46,7 @@ module ClaudeAgentSDK
             2. Provide credentials to the CLI, e.g. ANTHROPIC_API_KEY in the environment.
             3. Review config/initializers/claude_agent_sdk.rb.
 
-          Rails guide: https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/rails.md
+          Rails guide: https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/docs/rails.md
         MSG
       end
 

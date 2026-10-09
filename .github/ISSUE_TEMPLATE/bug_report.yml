@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. For a security vulnerability, **don't open an issue**; see [SECURITY.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/SECURITY.md).
+        Thanks for the report. For a security vulnerability, **don't open an issue**; see [SECURITY.md](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/SECURITY.md).
         If the Claude Code CLI itself misbehaves in the same way when you run `claude` directly, report it to [anthropics/claude-code](https://github.com/anthropics/claude-code/issues) instead.
 
   - type: textarea

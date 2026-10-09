@@ -398,7 +398,7 @@ end
 `InMemorySessionStore#append` is a working reference.
 
 Copy-in reference adapters for **S3, Redis, and Postgres** live in
-[`examples/session_stores/`](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/examples/session_stores/README.md), each with a
+[`examples/session_stores/`](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/session_stores/README.md), each with a
 production checklist.
 
 #### Fiber-native adapters

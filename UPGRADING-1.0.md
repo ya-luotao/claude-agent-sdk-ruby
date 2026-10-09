@@ -114,7 +114,7 @@ No breaking changes within 1.x to the public API: everything documented in
 YARD docs that is not tagged `@api private`. `@api private` objects (`Query`,
 `MessageParser`, `FiberBoundary`, the `Sessions*` modules, ...) stay callable
 but can change in any release. See
-[CONTRIBUTING.md](https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/CONTRIBUTING.md#what-is-public-api).
+[CONTRIBUTING.md](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/CONTRIBUTING.md#what-is-public-api).
 
 A removal is first deprecated in a minor release with a one-time warning that
 names the replacement, and happens in the next major.

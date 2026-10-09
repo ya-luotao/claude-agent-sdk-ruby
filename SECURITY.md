@@ -4,7 +4,7 @@
 
 Please report vulnerabilities privately. Don't open a public issue or PR.
 
-Use [GitHub's private vulnerability reporting](https://github.com/ya-luotao/claude-agent-sdk-ruby/security/advisories/new) for this repository (Security tab → "Report a vulnerability"). If that form is unavailable, email the maintainer at the address in the gemspec (`luotao@hey.com`).
+Use [GitHub's private vulnerability reporting](https://github.com/rubycatco/claude-agent-sdk-ruby/security/advisories/new) for this repository (Security tab → "Report a vulnerability"). If that form is unavailable, email the maintainer at the address in the gemspec (`luotao@hey.com`).
 
 Please include the affected gem version, a description of the issue and its impact, and a proof of concept or steps to reproduce if you have them. Follow-up happens on the private advisory thread. Fixes ship in a patch release, and the advisory is published once that release is out.
 

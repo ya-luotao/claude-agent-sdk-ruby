@@ -2,7 +2,7 @@
 
 # Claude Agent SDK defaults, merged into every ClaudeAgentSDK.query and
 # ClaudeAgentSDK::Client session; per-call ClaudeAgentOptions override them.
-# Guide: https://github.com/ya-luotao/claude-agent-sdk-ruby/blob/main/docs/rails.md
+# Guide: https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/docs/rails.md
 
 # Uncomment together with `observers:` below (needs the opentelemetry-sdk gem).
 # require 'claude_agent_sdk/instrumentation'
