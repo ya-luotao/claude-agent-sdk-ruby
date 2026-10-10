@@ -106,6 +106,10 @@ module ClaudeAgentSDK
 
     attr_accessor slash_commands: Array[String]?
 
+    # The entries of slash_commands bound to the local terminal (e.g. "exit");
+    # sent only when there are some.
+    attr_accessor terminal_slash_commands: Array[String]?
+
     attr_accessor output_style: String?
 
     attr_accessor skills: Array[String]?
@@ -113,8 +117,19 @@ module ClaudeAgentSDK
     # { name:, path: } wire_hashes.
     attr_accessor plugins: Array[wire_hash]?
 
+    # Plugins that failed to load: { plugin:, type:, message:, path: }
+    # wire_hashes. Omitted when none failed (and by older CLIs).
+    attr_accessor plugin_errors: Array[wire_hash]?
+
     # "off", "cooldown" or "on".
     attr_accessor fast_mode_state: String?
+
+    # The check that keeps fast mode off (e.g. "not_first_party"); an open set.
+    attr_accessor fast_mode_disabled_reason: String?
+
+    # Protocol features the CLI supports (e.g. "interrupt_receipt_v1"); an
+    # open set, absent before CLI 2.1.205.
+    attr_accessor capabilities: Array[String]?
   end
 
   # Emitted after context compaction completes.

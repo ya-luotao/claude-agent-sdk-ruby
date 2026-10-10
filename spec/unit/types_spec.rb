@@ -2520,6 +2520,13 @@ RSpec.describe ClaudeAgentSDK do
         expect(hash[:hookEventName]).to eq('PermissionDenied')
         expect(hash[:retry]).to eq(true)
       end
+
+      # The CLI reads a missing retry as false; Python leaves it out too.
+      it 'sends no retry unless one is set, and an explicit false as false' do
+        expect(described_class.new.retry).to be_nil
+        expect(described_class.new.to_h).to eq(hookEventName: 'PermissionDenied')
+        expect(described_class.new(retry: false).to_h).to eq(hookEventName: 'PermissionDenied', retry: false)
+      end
     end
 
     describe ClaudeAgentSDK::CwdChangedHookSpecificOutput do

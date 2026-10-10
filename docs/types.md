@@ -214,7 +214,7 @@ message types of their own.
 
 | Class | Wire type | Attributes | Notes |
 |-------|-----------|------------|-------|
-| `InitMessage` | `system` / `init` | `uuid`, `session_id`, `model`, `cwd`, `tools`, `mcp_servers`, `agents`, `skills`, `plugins`, `slash_commands`, `permission_mode`, `claude_code_version`, `api_key_source`, `betas`, `output_style`, `fast_mode_state` | Start of every turn, with the session as the CLI sees it (so a multi-query `Client` session receives one per query) |
+| `InitMessage` | `system` / `init` | `uuid`, `session_id`, `model`, `cwd`, `tools`, `mcp_servers`, `agents`, `skills`, `plugins`, `plugin_errors`, `slash_commands`, `terminal_slash_commands`, `permission_mode`, `claude_code_version`, `api_key_source`, `betas`, `output_style`, `fast_mode_state`, `fast_mode_disabled_reason`, `capabilities` (protocol features such as `"interrupt_receipt_v1"`: test it instead of `claude_code_version`) | Start of every turn, with the session as the CLI sees it (so a multi-query `Client` session receives one per query) |
 | `CompactBoundaryMessage` | `system` / `compact_boundary` | `uuid`, `session_id`, `compact_metadata` (a `CompactMetadata`: `pre_tokens`, `post_tokens`, `trigger`, `preserved_segment`, `custom_instructions`) | Context compaction completed |
 | `StatusMessage` | `system` / `status` | `uuid`, `session_id`, `status`, `permission_mode` | Compacting status, permission mode changes |
 | `APIRetryMessage` | `system` / `api_retry` | `uuid`, `session_id`, `attempt`, `max_retries`, `retry_delay_ms`, `error_status`, `error` | The CLI is retrying an API request |

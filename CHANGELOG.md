@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Every hook input carries `raw_input`**, the payload exactly as the CLI sent it. It used to be on `UnknownHookInput` only; a typed input copied the fields its class names and dropped the rest, so a field a newer CLI added was out of reach until the SDK learned it. Hook inputs are now built from the whole payload (every field the class declares, read from the same key as before).
+- Hook input fields the CLI already sends (Python SDK #1331, plus the schemas of Claude Code 2.1.295): `prompt_id` and `effort` on every hook input; `duration_ms` on `PostToolUseHookInput` and `PostToolUseFailureHookInput`; `session_title` and `source` on `UserPromptSubmitHookInput`; `session_title`, `seconds_since_last_response`, `prompt_cache_likely_expired`, `context_tokens` and `estimated_cache_write_usd` on `SessionStartHookInput`; `parent_file_path` on `InstructionsLoadedHookInput`.
+- Typed inputs for the hook events `PostToolBatch`, `UserPromptExpansion`, `PreModelSwitch`, `PostModelSwitch`, `DirectoryAdded` and `MessageDisplay` (`PostToolBatchHookInput`, ...), which used to arrive as `UnknownHookInput`. `HOOK_EVENTS` lists them, so it now has the CLI's 33 events.
+- Hook-specific outputs from Python SDK #1331: `PostToolBatchHookSpecificOutput`, `UserPromptExpansionHookSpecificOutput`, `StopHookSpecificOutput`, `SubagentStopHookSpecificOutput`, `PreModelSwitchHookSpecificOutput`, `PostModelSwitchHookSpecificOutput`, `ElicitationHookSpecificOutput`, `ElicitationResultHookSpecificOutput`, `WorktreeCreateHookSpecificOutput` and `MessageDisplayHookSpecificOutput`; `session_title` and `suppress_original_prompt` on `UserPromptSubmitHookSpecificOutput`; `initial_user_message`, `session_title`, `watch_paths` and `reload_skills` on `SessionStartHookSpecificOutput`. A Hash return value could already send these keys; the typed classes rejected them with `ArgumentError`. `docs/hooks-and-permissions.md` now lists every output class and its fields.
+- `InitMessage#capabilities`, `#plugin_errors`, `#terminal_slash_commands` and `#fast_mode_disabled_reason`, the init fields of Python SDK #1332 (`SystemInitData`) that `InitMessage` did not read. Test `capabilities` (for example for `"interrupt_receipt_v1"`) instead of comparing `claude_code_version`.
+
 ### Changed
 - The repository moves to the **rubycatco** GitHub organization: `github.com/rubycatco/claude-agent-sdk-ruby`. The old `ya-luotao/...` URL redirects, and the gem on rubygems.org is unaffected; gem metadata, docs, templates and issue links now point at the new home.
+- **`PermissionDeniedHookSpecificOutput#retry` defaults to `nil`** and is then left out of the output, as in Python; it used to default to `false` and always send `retry: false`, which the CLI reads the same way. Code that reads `#retry` back from a fresh instance gets `nil`.
+- The `*HookSpecificOutput` classes are declared from one table of wire keys (`HookOutputKeys::HOOK_SPECIFIC`) instead of each writing its own `#to_h`. Each class still sends the same keys, except that a field set to `false` is now sent (only `nil` is left out); before, most fields also dropped `false`.
 - `CLIInstaller::PINNED_CLI_VERSION` moves from 2.1.288 to **2.1.295**, following the CLI the Python SDK bundles. `CLIInstaller.install_pinned` installs it. See the [Claude Code changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md).
 
 ## [1.2.1] - 2026-10-06
