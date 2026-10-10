@@ -155,9 +155,20 @@ RSpec.describe 'hook output normalization' do
       hook_event_name: %w[hookEventName PostToolUseFailure],
       additional_context: ['additionalContext', 'The registry is down; do not retry.']
     },
+    'PostToolBatchHookSpecificOutput' => {
+      hook_event_name: %w[hookEventName PostToolBatch],
+      additional_context: ['additionalContext', 'Two of the three writes touched generated files.']
+    },
     'UserPromptSubmitHookSpecificOutput' => {
       hook_event_name: %w[hookEventName UserPromptSubmit],
-      additional_context: ['additionalContext', 'The user is on the staging cluster.']
+      additional_context: ['additionalContext', 'The user is on the staging cluster.'],
+      session_title: ['sessionTitle', 'Staging rollout'],
+      suppress_original_prompt: ['suppressOriginalPrompt', true]
+    },
+    'UserPromptExpansionHookSpecificOutput' => {
+      hook_event_name: %w[hookEventName UserPromptExpansion],
+      additional_context: ['additionalContext', '/deploy targets staging by default.'],
+      suppress_original_prompt: ['suppressOriginalPrompt', false]
     },
     'NotificationHookSpecificOutput' => {
       hook_event_name: %w[hookEventName Notification],
@@ -173,7 +184,46 @@ RSpec.describe 'hook output normalization' do
     },
     'SessionStartHookSpecificOutput' => {
       hook_event_name: %w[hookEventName SessionStart],
-      additional_context: ['additionalContext', 'Branch: main, clean tree.']
+      additional_context: ['additionalContext', 'Branch: main, clean tree.'],
+      initial_user_message: ['initialUserMessage', 'Summarize the open pull requests.'],
+      session_title: ['sessionTitle', 'PR triage'],
+      watch_paths: ['watchPaths', %w[/work/app/Gemfile.lock]],
+      reload_skills: ['reloadSkills', true]
+    },
+    'StopHookSpecificOutput' => {
+      hook_event_name: %w[hookEventName Stop],
+      additional_context: ['additionalContext', 'The changelog entry is still missing.']
+    },
+    'SubagentStopHookSpecificOutput' => {
+      hook_event_name: %w[hookEventName SubagentStop],
+      additional_context: ['additionalContext', 'Also list the files you skipped.']
+    },
+    'PreModelSwitchHookSpecificOutput' => {
+      hook_event_name: %w[hookEventName PreModelSwitch],
+      permission_decision: %w[permissionDecision deny],
+      permission_decision_reason: ['permissionDecisionReason', 'The prompt cache is warm.']
+    },
+    'PostModelSwitchHookSpecificOutput' => {
+      hook_event_name: %w[hookEventName PostModelSwitch],
+      additional_context: ['additionalContext', 'Keep answers short from here on.']
+    },
+    'ElicitationHookSpecificOutput' => {
+      hook_event_name: %w[hookEventName Elicitation],
+      action: %w[action accept],
+      content: ['content', { environment: 'staging', confirm: true }]
+    },
+    'ElicitationResultHookSpecificOutput' => {
+      hook_event_name: %w[hookEventName ElicitationResult],
+      action: %w[action decline],
+      content: ['content', { reason: 'outside business hours' }]
+    },
+    'WorktreeCreateHookSpecificOutput' => {
+      hook_event_name: %w[hookEventName WorktreeCreate],
+      worktree_path: ['worktreePath', '/work/worktrees/fix-login']
+    },
+    'MessageDisplayHookSpecificOutput' => {
+      hook_event_name: %w[hookEventName MessageDisplay],
+      display_content: ['displayContent', 'Deploying to [redacted]...']
     },
     'PermissionDeniedHookSpecificOutput' => {
       hook_event_name: %w[hookEventName PermissionDenied],

@@ -8,8 +8,10 @@ module ClaudeAgentSDK
     PreToolUse
     PostToolUse
     PostToolUseFailure
+    PostToolBatch
     Notification
     UserPromptSubmit
+    UserPromptExpansion
     SessionStart
     SessionEnd
     Stop
@@ -18,6 +20,8 @@ module ClaudeAgentSDK
     SubagentStop
     PreCompact
     PostCompact
+    PreModelSwitch
+    PostModelSwitch
     PermissionRequest
     PermissionDenied
     Setup
@@ -32,6 +36,8 @@ module ClaudeAgentSDK
     InstructionsLoaded
     CwdChanged
     FileChanged
+    DirectoryAdded
+    MessageDisplay
   ].freeze
 
   # Hook matcher configuration
@@ -54,9 +60,17 @@ module ClaudeAgentSDK
     attr_accessor :signal, :request_id
   end
 
-  # Base hook input with common fields
+  # Base hook input with common fields.
+  #
+  # `prompt_id` is the UUID of the user prompt being processed (the
+  # `prompt.id` of the CLI's OpenTelemetry events; absent before the first
+  # prompt). `effort` is the reasoning effort in effect for the turn, a Hash
+  # such as `{ level: "high" }`, sent on models that support effort.
+  # `raw_input` is the payload exactly as the CLI sent it (Symbol keys), so a
+  # field this SDK does not model yet can still be read.
   class BaseHookInput < Type
-    attr_accessor :session_id, :transcript_path, :cwd, :permission_mode
+    attr_accessor :session_id, :transcript_path, :cwd, :permission_mode,
+                  :prompt_id, :effort, :raw_input
     attr_reader :hook_event_name
   end
 
@@ -70,9 +84,11 @@ module ClaudeAgentSDK
     end
   end
 
-  # PostToolUse hook input
+  # PostToolUse hook input. `duration_ms` is the tool's execution time,
+  # without permission prompts and hooks.
   class PostToolUseHookInput < BaseHookInput
-    attr_accessor :tool_name, :tool_input, :tool_response, :tool_use_id, :agent_id, :agent_type
+    attr_accessor :tool_name, :tool_input, :tool_response, :tool_use_id, :agent_id, :agent_type,
+                  :duration_ms
 
     def initialize(attributes = {})
       super
@@ -82,7 +98,7 @@ module ClaudeAgentSDK
 
   # UserPromptSubmit hook input
   class UserPromptSubmitHookInput < BaseHookInput
-    attr_accessor :prompt
+    attr_accessor :prompt, :session_title, :source
 
     def initialize(attributes = {})
       super
@@ -116,10 +132,10 @@ module ClaudeAgentSDK
     end
   end
 
-  # PostToolUseFailure hook input
+  # PostToolUseFailure hook input. `duration_ms` as on PostToolUseHookInput.
   class PostToolUseFailureHookInput < BaseHookInput
     attr_accessor :tool_name, :tool_input, :tool_use_id, :error, :is_interrupt,
-                  :agent_id, :agent_type
+                  :agent_id, :agent_type, :duration_ms
 
     def initialize(attributes = {})
       super
@@ -167,9 +183,14 @@ module ClaudeAgentSDK
     end
   end
 
-  # SessionStart hook input
+  # SessionStart hook input. On "resume" and "fork",
+  # `seconds_since_last_response` is the time since the transcript's last
+  # assistant response and `prompt_cache_likely_expired` says whether that
+  # exceeds the prompt-cache TTL; `context_tokens` and
+  # `estimated_cache_write_usd` size the prompt the next request re-sends.
   class SessionStartHookInput < BaseHookInput
-    attr_accessor :source, :agent_type, :model
+    attr_accessor :source, :agent_type, :model, :session_title, :seconds_since_last_response,
+                  :prompt_cache_likely_expired, :context_tokens, :estimated_cache_write_usd
 
     def initialize(attributes = {})
       super
@@ -310,7 +331,7 @@ module ClaudeAgentSDK
 
   # InstructionsLoaded hook input
   class InstructionsLoadedHookInput < BaseHookInput
-    attr_accessor :file_path, :memory_type, :load_reason, :globs, :trigger_file_path
+    attr_accessor :file_path, :memory_type, :load_reason, :globs, :trigger_file_path, :parent_file_path
 
     def initialize(attributes = {})
       super
@@ -338,13 +359,82 @@ module ClaudeAgentSDK
     end
   end
 
-  # Fallback for hook events the SDK does not yet model. Carries the wire
-  # event name and the complete raw payload so no fields are lost (Python
-  # passes hook input through as a raw dict, so unknown events lose
-  # nothing there).
-  class UnknownHookInput < BaseHookInput
-    attr_accessor :raw_input
+  # PostToolBatch hook input: fired once every tool call of a batch has
+  # resolved, before the next model request. `tool_calls` is an Array of
+  # `{ tool_name:, tool_input:, tool_use_id:, tool_response: }` Hashes.
+  class PostToolBatchHookInput < BaseHookInput
+    attr_accessor :tool_calls
 
+    def initialize(attributes = {})
+      super
+      @hook_event_name = 'PostToolBatch'
+    end
+  end
+
+  # UserPromptExpansion hook input: a slash command or MCP prompt is about
+  # to be expanded. `expansion_type` is "slash_command" or "mcp_prompt".
+  class UserPromptExpansionHookInput < BaseHookInput
+    attr_accessor :expansion_type, :command_name, :command_args, :command_source, :prompt
+
+    def initialize(attributes = {})
+      super
+      @hook_event_name = 'UserPromptExpansion'
+    end
+  end
+
+  # PreModelSwitch hook input. `requested_model` is what was asked for (an
+  # alias, a full id, or nil for the default); `from_model` and `to_model`
+  # are resolved ids. `context_tokens`, `prompt_cache_warm` and
+  # `estimated_cache_write_usd` describe what switching costs.
+  class PreModelSwitchHookInput < BaseHookInput
+    attr_accessor :from_model, :to_model, :requested_model, :source,
+                  :context_tokens, :prompt_cache_warm, :estimated_cache_write_usd
+
+    def initialize(attributes = {})
+      super
+      @hook_event_name = 'PreModelSwitch'
+    end
+  end
+
+  # PostModelSwitch hook input (the fields of PreModelSwitchHookInput)
+  class PostModelSwitchHookInput < BaseHookInput
+    attr_accessor :from_model, :to_model, :requested_model, :source,
+                  :context_tokens, :prompt_cache_warm, :estimated_cache_write_usd
+
+    def initialize(attributes = {})
+      super
+      @hook_event_name = 'PostModelSwitch'
+    end
+  end
+
+  # DirectoryAdded hook input. `directory` is absolute; `source` is
+  # "slash_command" (/add-dir) or "register_repo_root".
+  class DirectoryAddedHookInput < BaseHookInput
+    attr_accessor :directory, :source
+
+    def initialize(attributes = {})
+      super
+      @hook_event_name = 'DirectoryAdded'
+    end
+  end
+
+  # MessageDisplay hook input: one flush of an assistant message on its way
+  # to the screen. `delta` holds the lines completed since the previous
+  # flush; `index` counts flushes from 0 and `final` marks the last one.
+  class MessageDisplayHookInput < BaseHookInput
+    attr_accessor :turn_id, :message_id, :index, :final, :delta
+
+    def initialize(attributes = {})
+      super
+      @hook_event_name = 'MessageDisplay'
+    end
+  end
+
+  # Fallback for hook events the SDK does not yet model. Carries the wire
+  # event name; the complete payload is in #raw_input, as on every hook
+  # input, so no field is lost (Python passes hook input through as a raw
+  # dict, so unknown events lose nothing there).
+  class UnknownHookInput < BaseHookInput
     def initialize(attributes = {})
       super
       # Direct assignment: BaseHookInput exposes hook_event_name as
@@ -354,46 +444,125 @@ module ClaudeAgentSDK
     end
   end
 
+  # The spellings a hook callback's return value may use for a field of the
+  # typed output classes below, mapped to the key the CLI reads. A Hash a
+  # callback returns stands for the typed output with the same fields: its
+  # keys may be Symbols or Strings, the attribute names (snake_case) or what
+  # #to_h emits (camelCase), at the top level and inside hook_specific_output.
+  #
+  # Only names that differ from their wire key are listed. A key that is not
+  # listed is sent as written, so a field of a newer CLI that the typed
+  # classes do not model still gets through, in the CLI's own spelling.
+  # spec/unit/hook_output_normalization_spec.rb walks every typed output
+  # class and fails when an attribute and these tables disagree.
+  #
+  # @api private
+  module HookOutputKeys
+    # SyncHookJSONOutput and AsyncHookJSONOutput attributes, plus the
+    # Ruby-safe spellings of the two keywords.
+    TOP_LEVEL = {
+      'continue_' => 'continue',
+      'async_' => 'async',
+      'suppress_output' => 'suppressOutput',
+      'stop_reason' => 'stopReason',
+      'system_message' => 'systemMessage',
+      'hook_specific_output' => 'hookSpecificOutput',
+      'async_timeout' => 'asyncTimeout'
+    }.freeze
+
+    # Attributes of the *HookSpecificOutput classes, which take their wire
+    # keys from this table (HookSpecificOutputFields).
+    HOOK_SPECIFIC = {
+      'hook_event_name' => 'hookEventName',
+      'permission_decision' => 'permissionDecision',
+      'permission_decision_reason' => 'permissionDecisionReason',
+      'updated_input' => 'updatedInput',
+      'additional_context' => 'additionalContext',
+      'updated_tool_output' => 'updatedToolOutput',
+      'updated_mcp_tool_output' => 'updatedMCPToolOutput',
+      'watch_paths' => 'watchPaths',
+      'session_title' => 'sessionTitle',
+      'suppress_original_prompt' => 'suppressOriginalPrompt',
+      'initial_user_message' => 'initialUserMessage',
+      'reload_skills' => 'reloadSkills',
+      'worktree_path' => 'worktreePath',
+      'display_content' => 'displayContent'
+    }.freeze
+
+    # The hook output Hash as the CLI reads it: String keys in wire
+    # spelling, at the top level and one level down, inside
+    # hookSpecificOutput. Values are never rewritten: updatedInput and the
+    # tool outputs are the tool's own payloads, and a PermissionRequest
+    # decision goes out as the caller wrote it.
+    def self.normalize(output)
+      normalized = rename(output, TOP_LEVEL)
+      specific = normalized['hookSpecificOutput']
+      normalized['hookSpecificOutput'] = rename(specific, HOOK_SPECIFIC) if specific.is_a?(Hash)
+      normalized
+    end
+
+    # Every key ends up as one String, so a Symbol and a String spelling the
+    # same field cannot both reach JSON.generate (json 3.x raises on that;
+    # 2.x emits the key twice). When a Hash carries both spellings of one
+    # field the wire spelling wins, whichever comes first; between two keys
+    # in the same spelling the later one does.
+    def self.rename(hash, table)
+      renamed = {}
+      wire_spelled = {}
+      hash.each do |key, value|
+        name = key.to_s
+        wire = table.fetch(name, name)
+        if wire == name
+          wire_spelled[wire] = true
+        elsif wire_spelled.key?(wire)
+          next
+        end
+        renamed[wire] = value
+      end
+      renamed
+    end
+    private_class_method :rename
+  end
+
+  # Declares a *HookSpecificOutput class: the event it answers and its
+  # fields. Each field is an attribute; #to_h writes hookEventName and every
+  # field that is not nil, under the key HookOutputKeys::HOOK_SPECIFIC
+  # gives it (the attribute name when the table has no entry).
+  #
+  # @api private
+  module HookSpecificOutputFields
+    def hook_specific_output(event, *fields)
+      strict_attributes
+      attr_accessor(*fields)
+      attr_reader :hook_event_name
+
+      wire_keys = fields.to_h { |field| [:"@#{field}", HookOutputKeys::HOOK_SPECIFIC.fetch(field.to_s, field.to_s).to_sym] }
+      define_method(:initialize) do |attributes = {}|
+        super(attributes)
+        @hook_event_name = event
+      end
+      define_method(:to_h) do
+        wire_keys.each_with_object({ hookEventName: @hook_event_name }) do |(ivar, key), result|
+          value = instance_variable_get(ivar)
+          result[key] = value unless value.nil?
+        end
+      end
+    end
+  end
+
   # Setup hook specific output
   class SetupHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :additional_context
-    attr_reader :hook_event_name
-
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'Setup'
-    end
-
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:additionalContext] = @additional_context if @additional_context
-      result
-    end
+    hook_specific_output 'Setup', :additional_context
   end
 
   # PreToolUse hook specific output
   class PreToolUseHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :permission_decision, :permission_decision_reason,
-                  :updated_input, :additional_context
-    attr_reader :hook_event_name
-
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'PreToolUse'
-    end
-
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:permissionDecision] = @permission_decision if @permission_decision
-      result[:permissionDecisionReason] = @permission_decision_reason if @permission_decision_reason
-      result[:updatedInput] = @updated_input if @updated_input
-      result[:additionalContext] = @additional_context if @additional_context
-      result
-    end
+    hook_specific_output 'PreToolUse',
+                         :permission_decision, :permission_decision_reason, :updated_input, :additional_context
   end
 
   # PostToolUse hook specific output.
@@ -404,195 +573,165 @@ module ClaudeAgentSDK
   # honors it, so both are emitted when set. Mirrors Python's
   # `PostToolUseHookSpecificOutput`.
   class PostToolUseHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :additional_context, :updated_mcp_tool_output, :updated_tool_output
-    attr_reader :hook_event_name
-
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'PostToolUse'
-    end
-
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:additionalContext] = @additional_context if @additional_context
-      result[:updatedToolOutput] = @updated_tool_output unless @updated_tool_output.nil?
-      result[:updatedMCPToolOutput] = @updated_mcp_tool_output if @updated_mcp_tool_output
-      result
-    end
+    hook_specific_output 'PostToolUse', :additional_context, :updated_tool_output, :updated_mcp_tool_output
   end
 
   # PostToolUseFailure hook specific output
   class PostToolUseFailureHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :additional_context
-    attr_reader :hook_event_name
-
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'PostToolUseFailure'
-    end
-
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:additionalContext] = @additional_context if @additional_context
-      result
-    end
+    hook_specific_output 'PostToolUseFailure', :additional_context
   end
 
-  # UserPromptSubmit hook specific output
+  # PostToolBatch hook specific output
+  class PostToolBatchHookSpecificOutput < Type
+    extend HookSpecificOutputFields
+
+    hook_specific_output 'PostToolBatch', :additional_context
+  end
+
+  # UserPromptSubmit hook specific output. `session_title` sets the session
+  # title; `suppress_original_prompt` leaves the prompt out of the block
+  # message when the hook's decision is "block".
   class UserPromptSubmitHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :additional_context
-    attr_reader :hook_event_name
+    hook_specific_output 'UserPromptSubmit', :additional_context, :session_title, :suppress_original_prompt
+  end
 
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'UserPromptSubmit'
-    end
+  # UserPromptExpansion hook specific output (`suppress_original_prompt` as
+  # on UserPromptSubmitHookSpecificOutput)
+  class UserPromptExpansionHookSpecificOutput < Type
+    extend HookSpecificOutputFields
 
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:additionalContext] = @additional_context if @additional_context
-      result
-    end
+    hook_specific_output 'UserPromptExpansion', :additional_context, :suppress_original_prompt
   end
 
   # Notification hook specific output
   class NotificationHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :additional_context
-    attr_reader :hook_event_name
-
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'Notification'
-    end
-
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:additionalContext] = @additional_context if @additional_context
-      result
-    end
+    hook_specific_output 'Notification', :additional_context
   end
 
   # SubagentStart hook specific output
   class SubagentStartHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :additional_context
-    attr_reader :hook_event_name
+    hook_specific_output 'SubagentStart', :additional_context
+  end
 
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'SubagentStart'
-    end
+  # Stop hook specific output. `additional_context` is feedback for the
+  # model, not an error: the conversation continues so it can act on it.
+  class StopHookSpecificOutput < Type
+    extend HookSpecificOutputFields
 
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:additionalContext] = @additional_context if @additional_context
-      result
-    end
+    hook_specific_output 'Stop', :additional_context
+  end
+
+  # SubagentStop hook specific output (`additional_context` as on
+  # StopHookSpecificOutput, delivered to the subagent)
+  class SubagentStopHookSpecificOutput < Type
+    extend HookSpecificOutputFields
+
+    hook_specific_output 'SubagentStop', :additional_context
   end
 
   # PermissionRequest hook specific output
   class PermissionRequestHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :decision
-    attr_reader :hook_event_name
-
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'PermissionRequest'
-    end
-
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:decision] = @decision if @decision
-      result
-    end
+    hook_specific_output 'PermissionRequest', :decision
   end
 
-  # SessionStart hook specific output
+  # SessionStart hook specific output. `initial_user_message` becomes the
+  # session's first user message; `session_title` sets its title (ignored
+  # when the session starts from "clear" or "compact"); `watch_paths` are
+  # absolute paths to watch for FileChanged; `reload_skills` re-scans skill
+  # and command directories once SessionStart hooks finish.
   class SessionStartHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :additional_context
-    attr_reader :hook_event_name
-
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'SessionStart'
-    end
-
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:additionalContext] = @additional_context if @additional_context
-      result
-    end
+    hook_specific_output 'SessionStart',
+                         :additional_context, :initial_user_message, :session_title, :watch_paths, :reload_skills
   end
 
-  # PermissionDenied hook specific output
+  # PermissionDenied hook specific output. `retry: true` tells the model it
+  # may retry the denied call (ignored for denials without a classifier
+  # verdict); left nil, the key is not sent, which the CLI reads as false.
   class PermissionDeniedHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :retry
-    attr_reader :hook_event_name
-
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'PermissionDenied'
-      @retry = false if @retry.nil?
-    end
-
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:retry] = @retry unless @retry.nil?
-      result
-    end
+    hook_specific_output 'PermissionDenied', :retry
   end
 
-  # CwdChanged hook specific output
+  # PreModelSwitch hook specific output. `permission_decision` "allow"
+  # proceeds and "deny" cancels the switch; "ask" is a refusal outside an
+  # interactive session.
+  class PreModelSwitchHookSpecificOutput < Type
+    extend HookSpecificOutputFields
+
+    hook_specific_output 'PreModelSwitch', :permission_decision, :permission_decision_reason
+  end
+
+  # PostModelSwitch hook specific output (`additional_context` reaches the
+  # model with the next request the new model serves)
+  class PostModelSwitchHookSpecificOutput < Type
+    extend HookSpecificOutputFields
+
+    hook_specific_output 'PostModelSwitch', :additional_context
+  end
+
+  # Elicitation hook specific output: answers an MCP elicitation request.
+  # `action` is "accept", "decline" or "cancel"; `content` holds the form
+  # values to submit with "accept".
+  class ElicitationHookSpecificOutput < Type
+    extend HookSpecificOutputFields
+
+    hook_specific_output 'Elicitation', :action, :content
+  end
+
+  # ElicitationResult hook specific output: overrides the action or content
+  # before the response reaches the MCP server.
+  class ElicitationResultHookSpecificOutput < Type
+    extend HookSpecificOutputFields
+
+    hook_specific_output 'ElicitationResult', :action, :content
+  end
+
+  # CwdChanged hook specific output (`watch_paths` replaces the dynamic
+  # FileChanged watch list)
   class CwdChangedHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :watch_paths
-    attr_reader :hook_event_name
-
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'CwdChanged'
-    end
-
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:watchPaths] = @watch_paths if @watch_paths
-      result
-    end
+    hook_specific_output 'CwdChanged', :watch_paths
   end
 
-  # FileChanged hook specific output
+  # FileChanged hook specific output (`watch_paths` as on
+  # CwdChangedHookSpecificOutput)
   class FileChangedHookSpecificOutput < Type
-    strict_attributes
+    extend HookSpecificOutputFields
 
-    attr_accessor :watch_paths
-    attr_reader :hook_event_name
+    hook_specific_output 'FileChanged', :watch_paths
+  end
 
-    def initialize(attributes = {})
-      super
-      @hook_event_name = 'FileChanged'
-    end
+  # WorktreeCreate hook specific output (`worktree_path`: the absolute path
+  # of the created worktree)
+  class WorktreeCreateHookSpecificOutput < Type
+    extend HookSpecificOutputFields
 
-    def to_h
-      result = { hookEventName: @hook_event_name }
-      result[:watchPaths] = @watch_paths if @watch_paths
-      result
-    end
+    hook_specific_output 'WorktreeCreate', :worktree_path
+  end
+
+  # MessageDisplay hook specific output. `display_content` replaces the text
+  # on screen only: the stored message and what the model sees are
+  # unchanged. Left nil, the original is displayed.
+  class MessageDisplayHookSpecificOutput < Type
+    extend HookSpecificOutputFields
+
+    hook_specific_output 'MessageDisplay', :display_content
   end
 
   # Async hook JSON output
@@ -636,78 +775,5 @@ module ClaudeAgentSDK
       result[:hookSpecificOutput] = @hook_specific_output.to_h if @hook_specific_output
       result
     end
-  end
-
-  # The spellings a hook callback's return value may use for a field of the
-  # typed output classes above, mapped to the key the CLI reads. A Hash a
-  # callback returns stands for the typed output with the same fields: its
-  # keys may be Symbols or Strings, the attribute names (snake_case) or what
-  # #to_h emits (camelCase), at the top level and inside hook_specific_output.
-  #
-  # Only names that differ from their wire key are listed. A key that is not
-  # listed is sent as written, so a field of a newer CLI that the typed
-  # classes do not model still gets through, in the CLI's own spelling.
-  # spec/unit/hook_output_normalization_spec.rb walks every typed output
-  # class and fails when an attribute and these tables disagree.
-  #
-  # @api private
-  module HookOutputKeys
-    # SyncHookJSONOutput and AsyncHookJSONOutput attributes, plus the
-    # Ruby-safe spellings of the two keywords.
-    TOP_LEVEL = {
-      'continue_' => 'continue',
-      'async_' => 'async',
-      'suppress_output' => 'suppressOutput',
-      'stop_reason' => 'stopReason',
-      'system_message' => 'systemMessage',
-      'hook_specific_output' => 'hookSpecificOutput',
-      'async_timeout' => 'asyncTimeout'
-    }.freeze
-
-    # Attributes of the *HookSpecificOutput classes.
-    HOOK_SPECIFIC = {
-      'hook_event_name' => 'hookEventName',
-      'permission_decision' => 'permissionDecision',
-      'permission_decision_reason' => 'permissionDecisionReason',
-      'updated_input' => 'updatedInput',
-      'additional_context' => 'additionalContext',
-      'updated_tool_output' => 'updatedToolOutput',
-      'updated_mcp_tool_output' => 'updatedMCPToolOutput',
-      'watch_paths' => 'watchPaths'
-    }.freeze
-
-    # The hook output Hash as the CLI reads it: String keys in wire
-    # spelling, at the top level and one level down, inside
-    # hookSpecificOutput. Values are never rewritten: updatedInput and the
-    # tool outputs are the tool's own payloads, and a PermissionRequest
-    # decision goes out as the caller wrote it.
-    def self.normalize(output)
-      normalized = rename(output, TOP_LEVEL)
-      specific = normalized['hookSpecificOutput']
-      normalized['hookSpecificOutput'] = rename(specific, HOOK_SPECIFIC) if specific.is_a?(Hash)
-      normalized
-    end
-
-    # Every key ends up as one String, so a Symbol and a String spelling the
-    # same field cannot both reach JSON.generate (json 3.x raises on that;
-    # 2.x emits the key twice). When a Hash carries both spellings of one
-    # field the wire spelling wins, whichever comes first; between two keys
-    # in the same spelling the later one does.
-    def self.rename(hash, table)
-      renamed = {}
-      wire_spelled = {}
-      hash.each do |key, value|
-        name = key.to_s
-        wire = table.fetch(name, name)
-        if wire == name
-          wire_spelled[wire] = true
-        elsif wire_spelled.key?(wire)
-          next
-        end
-        renamed[wire] = value
-      end
-      renamed
-    end
-    private_class_method :rename
   end
 end

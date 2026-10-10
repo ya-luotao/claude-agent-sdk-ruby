@@ -128,12 +128,23 @@ module ClaudeAgentSDK
     end
   end
 
-  # Init system message (emitted at session start and after /clear)
+  # Init system message (emitted at session start and after /clear).
+  #
+  # `capabilities` lists the protocol features the CLI supports (e.g.
+  # "interrupt_receipt_v1"; an open set, absent before CLI 2.1.205): test it
+  # for a feature instead of comparing `claude_code_version`.
+  # `plugin_errors` lists plugins that failed to load (`{ plugin:, type:,
+  # message:, path: }`; the CLI omits it when none failed, and older CLIs never
+  # send it). `terminal_slash_commands` are the entries of `slash_commands`
+  # bound to the local terminal (e.g. "exit"), sent only when there are some.
+  # `fast_mode_disabled_reason` names the check that keeps fast mode off.
   class InitMessage < SystemMessage
     attr_accessor :uuid, :session_id, :agents, :api_key_source, :betas,
                   :claude_code_version, :cwd, :tools, :mcp_servers, :model,
-                  :permission_mode, :slash_commands, :output_style, :skills, :plugins,
-                  :fast_mode_state # "off", "cooldown", or "on"
+                  :permission_mode, :slash_commands, :terminal_slash_commands,
+                  :output_style, :skills, :plugins, :plugin_errors,
+                  :fast_mode_state, # "off", "cooldown", or "on"
+                  :fast_mode_disabled_reason, :capabilities
   end
 
   # Compact boundary system message (emitted after context compaction completes)

@@ -6,12 +6,14 @@ A **hook** is a Ruby proc/lambda that the Claude Code *application* (*not* Claud
 
 ### Supported Events
 
-All hook input objects include common fields like `session_id`, `transcript_path`, `cwd`, and `permission_mode`.
+All hook input objects include the common fields `session_id`, `transcript_path`, `cwd`, `permission_mode`, `prompt_id` (the UUID of the prompt being processed, also the `prompt.id` of the CLI's OpenTelemetry events) and `effort` (the turn's reasoning effort, e.g. `{ level: "high" }`, on models that support it), plus `raw_input`: the payload exactly as the CLI sent it, Symbol keys included. A field the CLI sends that this SDK version has no reader for is still in `raw_input`.
 
 - `PreToolUse` → `PreToolUseHookInput` (`tool_name`, `tool_input`, `tool_use_id`)
-- `PostToolUse` → `PostToolUseHookInput` (`tool_name`, `tool_input`, `tool_response`, `tool_use_id`)
-- `PostToolUseFailure` → `PostToolUseFailureHookInput` (`tool_name`, `tool_input`, `tool_use_id`, `error`, `is_interrupt`)
-- `UserPromptSubmit` → `UserPromptSubmitHookInput` (`prompt`)
+- `PostToolUse` → `PostToolUseHookInput` (`tool_name`, `tool_input`, `tool_response`, `tool_use_id`, `duration_ms`)
+- `PostToolUseFailure` → `PostToolUseFailureHookInput` (`tool_name`, `tool_input`, `tool_use_id`, `error`, `is_interrupt`, `duration_ms`)
+- `PostToolBatch` → `PostToolBatchHookInput` (`tool_calls`)
+- `UserPromptSubmit` → `UserPromptSubmitHookInput` (`prompt`, `session_title`, `source`)
+- `UserPromptExpansion` → `UserPromptExpansionHookInput` (`expansion_type`, `command_name`, `command_args`, `command_source`, `prompt`)
 - `Stop` → `StopHookInput` (`stop_hook_active`, `last_assistant_message`, `background_tasks`, `session_crons`)
 - `SubagentStop` → `SubagentStopHookInput` (`stop_hook_active`, `agent_id`, `agent_transcript_path`, `agent_type`, `last_assistant_message`, `background_tasks`, `session_crons`)
 - `PreCompact` → `PreCompactHookInput` (`trigger`, `custom_instructions`)
@@ -21,7 +23,7 @@ All hook input objects include common fields like `session_id`, `transcript_path
 
 `tool_input` (and the `input` a [permission callback](#permission-callbacks) receives) is the CLI's Hash passed through unchanged, so its keys are Symbols spelled as on the wire: `tool_input[:command]`, `input[:file_path]`. See [Hash keys](types.md#hash-keys).
 
-All 27 hook events have typed input classes. See [`ClaudeAgentSDK::HOOK_EVENTS`](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types/hooks.rb) and [examples/lifecycle_hooks_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
+All 33 hook events have typed input classes (an event this SDK version does not know arrives as an `UnknownHookInput`, with its payload in `raw_input`). See [`ClaudeAgentSDK::HOOK_EVENTS`](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/lib/claude_agent_sdk/types/hooks.rb) and [examples/lifecycle_hooks_example.rb](https://github.com/rubycatco/claude-agent-sdk-ruby/blob/main/examples/lifecycle_hooks_example.rb).
 
 `background_tasks` and `session_crons` are optional arrays of raw CLI hashes.
 `nil` means the CLI did not provide a snapshot; `[]` means it provided an empty
@@ -96,6 +98,33 @@ A callback returns a typed output (`AsyncHookJSONOutput`, or `SyncHookJSONOutput
 - A key the typed classes do not have is sent as written, so a CLI field the SDK does not model has to be spelled the way the CLI spells it.
 - The keys inside `updated_input`, `updated_tool_output`, `updated_mcp_tool_output` and a `PermissionRequest` `decision` are not renamed: those are the tool's own payloads (for `decision`, the CLI's), so spell them as the tool or the CLI does.
 - If one Hash spells the same field both ways, the CLI's spelling is the one sent (`permissionDecision` over `permission_decision`, `continue` over `continue_`).
+
+The typed `hook_specific_output` classes, and the fields each one sends (a field left `nil` is not sent):
+
+| Class | Fields |
+|-------|--------|
+| `PreToolUseHookSpecificOutput` | `permission_decision`, `permission_decision_reason`, `updated_input`, `additional_context` |
+| `PostToolUseHookSpecificOutput` | `additional_context`, `updated_tool_output`, `updated_mcp_tool_output` |
+| `PostToolUseFailureHookSpecificOutput` | `additional_context` |
+| `PostToolBatchHookSpecificOutput` | `additional_context` |
+| `UserPromptSubmitHookSpecificOutput` | `additional_context`, `session_title`, `suppress_original_prompt` |
+| `UserPromptExpansionHookSpecificOutput` | `additional_context`, `suppress_original_prompt` |
+| `SessionStartHookSpecificOutput` | `additional_context`, `initial_user_message`, `session_title`, `watch_paths`, `reload_skills` |
+| `SetupHookSpecificOutput` | `additional_context` |
+| `NotificationHookSpecificOutput` | `additional_context` |
+| `SubagentStartHookSpecificOutput` | `additional_context` |
+| `StopHookSpecificOutput` | `additional_context` (feedback the model acts on; the conversation continues) |
+| `SubagentStopHookSpecificOutput` | `additional_context` (the same, for the subagent) |
+| `PermissionRequestHookSpecificOutput` | `decision` |
+| `PermissionDeniedHookSpecificOutput` | `retry` |
+| `PreModelSwitchHookSpecificOutput` | `permission_decision` (`"allow"` / `"deny"`), `permission_decision_reason` |
+| `PostModelSwitchHookSpecificOutput` | `additional_context` |
+| `ElicitationHookSpecificOutput` | `action` (`"accept"` / `"decline"` / `"cancel"`), `content` |
+| `ElicitationResultHookSpecificOutput` | `action`, `content` |
+| `CwdChangedHookSpecificOutput` | `watch_paths` |
+| `FileChangedHookSpecificOutput` | `watch_paths` |
+| `WorktreeCreateHookSpecificOutput` | `worktree_path` |
+| `MessageDisplayHookSpecificOutput` | `display_content` (changes the screen only, not the stored message) |
 
 ### Hook cancellation
 

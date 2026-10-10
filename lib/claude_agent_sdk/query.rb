@@ -868,227 +868,55 @@ module ClaudeAgentSDK
       @callback_request_signals.delete(request_id)
     end
 
-    def parse_hook_input(input_data) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength -- one branch per hook event type
+    # The typed input built for each hook event the SDK models; any other
+    # event becomes an UnknownHookInput.
+    HOOK_INPUT_CLASSES = {
+      'PreToolUse' => PreToolUseHookInput,
+      'PostToolUse' => PostToolUseHookInput,
+      'PostToolUseFailure' => PostToolUseFailureHookInput,
+      'UserPromptSubmit' => UserPromptSubmitHookInput,
+      'Stop' => StopHookInput,
+      'SubagentStop' => SubagentStopHookInput,
+      'Notification' => NotificationHookInput,
+      'SubagentStart' => SubagentStartHookInput,
+      'PermissionRequest' => PermissionRequestHookInput,
+      'PreCompact' => PreCompactHookInput,
+      'SessionStart' => SessionStartHookInput,
+      'SessionEnd' => SessionEndHookInput,
+      'Setup' => SetupHookInput,
+      'TeammateIdle' => TeammateIdleHookInput,
+      'TaskCompleted' => TaskCompletedHookInput,
+      'ConfigChange' => ConfigChangeHookInput,
+      'WorktreeCreate' => WorktreeCreateHookInput,
+      'WorktreeRemove' => WorktreeRemoveHookInput,
+      'StopFailure' => StopFailureHookInput,
+      'PostCompact' => PostCompactHookInput,
+      'PermissionDenied' => PermissionDeniedHookInput,
+      'TaskCreated' => TaskCreatedHookInput,
+      'Elicitation' => ElicitationHookInput,
+      'ElicitationResult' => ElicitationResultHookInput,
+      'InstructionsLoaded' => InstructionsLoadedHookInput,
+      'CwdChanged' => CwdChangedHookInput,
+      'FileChanged' => FileChangedHookInput,
+      'PostToolBatch' => PostToolBatchHookInput,
+      'UserPromptExpansion' => UserPromptExpansionHookInput,
+      'PreModelSwitch' => PreModelSwitchHookInput,
+      'PostModelSwitch' => PostModelSwitchHookInput,
+      'DirectoryAdded' => DirectoryAddedHookInput,
+      'MessageDisplay' => MessageDisplayHookInput
+    }.freeze
+    private_constant :HOOK_INPUT_CLASSES
+
+    # Every field of the payload that the class declares is assigned (the
+    # lenient parse path: other keys are skipped, not rejected), and the
+    # whole payload is kept as #raw_input, so a field the CLI added after this
+    # SDK version is still readable there.
+    def parse_hook_input(input_data)
+      input_data = {} unless input_data.is_a?(Hash)
       event_name = input_data[:hook_event_name] || input_data['hook_event_name']
-      fetch = lambda do |key|
-        if input_data.key?(key)
-          input_data[key]
-        elsif input_data.key?(key.to_s)
-          input_data[key.to_s]
-        end
-      end
-      base_args = {
-        session_id: fetch.call(:session_id),
-        transcript_path: fetch.call(:transcript_path),
-        cwd: fetch.call(:cwd),
-        permission_mode: fetch.call(:permission_mode)
-      }
-
-      # Subagent context fields shared by tool-lifecycle hooks
-      subagent_args = {
-        agent_id: fetch.call(:agent_id),
-        agent_type: fetch.call(:agent_type)
-      }
-
-      case event_name
-      when 'PreToolUse'
-        PreToolUseHookInput.new(
-          tool_name: fetch.call(:tool_name),
-          tool_input: fetch.call(:tool_input),
-          tool_use_id: fetch.call(:tool_use_id),
-          **subagent_args, **base_args
-        )
-      when 'PostToolUse'
-        PostToolUseHookInput.new(
-          tool_name: fetch.call(:tool_name),
-          tool_input: fetch.call(:tool_input),
-          tool_response: fetch.call(:tool_response),
-          tool_use_id: fetch.call(:tool_use_id),
-          **subagent_args, **base_args
-        )
-      when 'PostToolUseFailure'
-        PostToolUseFailureHookInput.new(
-          tool_name: fetch.call(:tool_name),
-          tool_input: fetch.call(:tool_input),
-          tool_use_id: fetch.call(:tool_use_id),
-          error: fetch.call(:error),
-          is_interrupt: fetch.call(:is_interrupt),
-          **subagent_args, **base_args
-        )
-      when 'UserPromptSubmit'
-        UserPromptSubmitHookInput.new(
-          prompt: fetch.call(:prompt),
-          **base_args
-        )
-      when 'Stop'
-        StopHookInput.new(
-          stop_hook_active: fetch.call(:stop_hook_active),
-          last_assistant_message: fetch.call(:last_assistant_message),
-          background_tasks: fetch.call(:background_tasks),
-          session_crons: fetch.call(:session_crons),
-          **base_args
-        )
-      when 'SubagentStop'
-        SubagentStopHookInput.new(
-          stop_hook_active: fetch.call(:stop_hook_active),
-          agent_id: fetch.call(:agent_id),
-          agent_transcript_path: fetch.call(:agent_transcript_path),
-          agent_type: fetch.call(:agent_type),
-          last_assistant_message: fetch.call(:last_assistant_message),
-          background_tasks: fetch.call(:background_tasks),
-          session_crons: fetch.call(:session_crons),
-          **base_args
-        )
-      when 'Notification'
-        NotificationHookInput.new(
-          message: fetch.call(:message),
-          title: fetch.call(:title),
-          notification_type: fetch.call(:notification_type),
-          **base_args
-        )
-      when 'SubagentStart'
-        SubagentStartHookInput.new(
-          agent_id: fetch.call(:agent_id),
-          agent_type: fetch.call(:agent_type),
-          **base_args
-        )
-      when 'PermissionRequest'
-        PermissionRequestHookInput.new(
-          tool_name: fetch.call(:tool_name),
-          tool_input: fetch.call(:tool_input),
-          permission_suggestions: fetch.call(:permission_suggestions),
-          **subagent_args, **base_args
-        )
-      when 'PreCompact'
-        PreCompactHookInput.new(
-          trigger: fetch.call(:trigger),
-          custom_instructions: fetch.call(:custom_instructions),
-          **base_args
-        )
-      when 'SessionStart'
-        SessionStartHookInput.new(
-          source: fetch.call(:source),
-          agent_type: fetch.call(:agent_type),
-          model: fetch.call(:model),
-          **base_args
-        )
-      when 'SessionEnd'
-        SessionEndHookInput.new(
-          reason: fetch.call(:reason),
-          **base_args
-        )
-      when 'Setup'
-        SetupHookInput.new(
-          trigger: fetch.call(:trigger),
-          **base_args
-        )
-      when 'TeammateIdle'
-        TeammateIdleHookInput.new(
-          teammate_name: fetch.call(:teammate_name),
-          team_name: fetch.call(:team_name),
-          **base_args
-        )
-      when 'TaskCompleted'
-        TaskCompletedHookInput.new(
-          task_id: fetch.call(:task_id),
-          task_subject: fetch.call(:task_subject),
-          task_description: fetch.call(:task_description),
-          teammate_name: fetch.call(:teammate_name),
-          team_name: fetch.call(:team_name),
-          **base_args
-        )
-      when 'ConfigChange'
-        ConfigChangeHookInput.new(
-          source: fetch.call(:source),
-          file_path: fetch.call(:file_path),
-          **base_args
-        )
-      when 'WorktreeCreate'
-        WorktreeCreateHookInput.new(
-          name: fetch.call(:name),
-          **base_args
-        )
-      when 'WorktreeRemove'
-        WorktreeRemoveHookInput.new(
-          worktree_path: fetch.call(:worktree_path),
-          **base_args
-        )
-      when 'StopFailure'
-        StopFailureHookInput.new(
-          error: fetch.call(:error),
-          error_details: fetch.call(:error_details),
-          last_assistant_message: fetch.call(:last_assistant_message),
-          **base_args
-        )
-      when 'PostCompact'
-        PostCompactHookInput.new(
-          trigger: fetch.call(:trigger),
-          compact_summary: fetch.call(:compact_summary),
-          **base_args
-        )
-      when 'PermissionDenied'
-        PermissionDeniedHookInput.new(
-          tool_name: fetch.call(:tool_name),
-          tool_input: fetch.call(:tool_input),
-          tool_use_id: fetch.call(:tool_use_id),
-          reason: fetch.call(:reason),
-          **subagent_args, **base_args
-        )
-      when 'TaskCreated'
-        TaskCreatedHookInput.new(
-          task_id: fetch.call(:task_id),
-          task_subject: fetch.call(:task_subject),
-          task_description: fetch.call(:task_description),
-          teammate_name: fetch.call(:teammate_name),
-          team_name: fetch.call(:team_name),
-          **base_args
-        )
-      when 'Elicitation'
-        ElicitationHookInput.new(
-          mcp_server_name: fetch.call(:mcp_server_name),
-          message: fetch.call(:message),
-          mode: fetch.call(:mode),
-          url: fetch.call(:url),
-          elicitation_id: fetch.call(:elicitation_id),
-          requested_schema: fetch.call(:requested_schema),
-          **base_args
-        )
-      when 'ElicitationResult'
-        ElicitationResultHookInput.new(
-          mcp_server_name: fetch.call(:mcp_server_name),
-          elicitation_id: fetch.call(:elicitation_id),
-          mode: fetch.call(:mode),
-          action: fetch.call(:action),
-          content: fetch.call(:content),
-          **base_args
-        )
-      when 'InstructionsLoaded'
-        InstructionsLoadedHookInput.new(
-          file_path: fetch.call(:file_path),
-          memory_type: fetch.call(:memory_type),
-          load_reason: fetch.call(:load_reason),
-          globs: fetch.call(:globs),
-          trigger_file_path: fetch.call(:trigger_file_path),
-          **base_args
-        )
-      when 'CwdChanged'
-        CwdChangedHookInput.new(
-          old_cwd: fetch.call(:old_cwd),
-          new_cwd: fetch.call(:new_cwd),
-          **base_args
-        )
-      when 'FileChanged'
-        FileChangedHookInput.new(
-          file_path: fetch.call(:file_path),
-          event: fetch.call(:event),
-          **base_args
-        )
-      else
-        # Unknown event: preserve the wire event name and full raw payload
-        # rather than dropping event-specific fields (Python passes the raw
-        # dict through, so nothing is lost there).
-        UnknownHookInput.new(hook_event_name: event_name, raw_input: input_data, **base_args)
-      end
+      hook_input = HOOK_INPUT_CLASSES.fetch(event_name, UnknownHookInput).from_hash(input_data)
+      hook_input.raw_input = input_data
+      hook_input
     end
 
     def handle_mcp_message(request_data)

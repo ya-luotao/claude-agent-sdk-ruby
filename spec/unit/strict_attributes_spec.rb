@@ -36,6 +36,10 @@ RSpec.describe 'strict attributes on user-constructed types' do
     PostToolUseFailureHookSpecificOutput UserPromptSubmitHookSpecificOutput NotificationHookSpecificOutput
     SubagentStartHookSpecificOutput PermissionRequestHookSpecificOutput SessionStartHookSpecificOutput
     PermissionDeniedHookSpecificOutput CwdChangedHookSpecificOutput FileChangedHookSpecificOutput
+    PostToolBatchHookSpecificOutput UserPromptExpansionHookSpecificOutput StopHookSpecificOutput
+    SubagentStopHookSpecificOutput PreModelSwitchHookSpecificOutput PostModelSwitchHookSpecificOutput
+    ElicitationHookSpecificOutput ElicitationResultHookSpecificOutput WorktreeCreateHookSpecificOutput
+    MessageDisplayHookSpecificOutput
     AsyncHookJSONOutput SyncHookJSONOutput
     PermissionRuleValue PermissionUpdate PermissionResultAllow PermissionResultDeny
   ].freeze
@@ -91,14 +95,29 @@ RSpec.describe 'strict attributes on user-constructed types' do
       additional_context: 'ctx', updated_mcp_tool_output: { ok: true }, updated_tool_output: 'out'
     },
     'PostToolUseFailureHookSpecificOutput' => { additional_context: 'ctx' },
-    'UserPromptSubmitHookSpecificOutput' => { additional_context: 'ctx' },
+    'UserPromptSubmitHookSpecificOutput' => {
+      additional_context: 'ctx', session_title: 'title', suppress_original_prompt: true
+    },
     'NotificationHookSpecificOutput' => { additional_context: 'ctx' },
     'SubagentStartHookSpecificOutput' => { additional_context: 'ctx' },
     'PermissionRequestHookSpecificOutput' => { decision: { behavior: 'allow' } },
-    'SessionStartHookSpecificOutput' => { additional_context: 'ctx' },
+    'SessionStartHookSpecificOutput' => {
+      additional_context: 'ctx', initial_user_message: 'hi', session_title: 'title', watch_paths: %w[/src],
+      reload_skills: true
+    },
     'PermissionDeniedHookSpecificOutput' => { retry: true },
     'CwdChangedHookSpecificOutput' => { watch_paths: %w[/src] },
     'FileChangedHookSpecificOutput' => { watch_paths: %w[/src] },
+    'PostToolBatchHookSpecificOutput' => { additional_context: 'ctx' },
+    'UserPromptExpansionHookSpecificOutput' => { additional_context: 'ctx', suppress_original_prompt: true },
+    'StopHookSpecificOutput' => { additional_context: 'ctx' },
+    'SubagentStopHookSpecificOutput' => { additional_context: 'ctx' },
+    'PreModelSwitchHookSpecificOutput' => { permission_decision: 'deny', permission_decision_reason: 'why' },
+    'PostModelSwitchHookSpecificOutput' => { additional_context: 'ctx' },
+    'ElicitationHookSpecificOutput' => { action: 'accept', content: { name: 'x' } },
+    'ElicitationResultHookSpecificOutput' => { action: 'decline', content: { name: 'x' } },
+    'WorktreeCreateHookSpecificOutput' => { worktree_path: '/tmp/wt' },
+    'MessageDisplayHookSpecificOutput' => { display_content: 'shown' },
     'AsyncHookJSONOutput' => { async: true, async_timeout: 1000 },
     'SyncHookJSONOutput' => {
       continue: false, suppress_output: true, stop_reason: 'done', decision: 'block', system_message: 'msg',

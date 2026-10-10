@@ -31,6 +31,12 @@ module ClaudeAgentSDK
                   | InstructionsLoadedHookInput
                   | CwdChangedHookInput
                   | FileChangedHookInput
+                  | PostToolBatchHookInput
+                  | UserPromptExpansionHookInput
+                  | PreModelSwitchHookInput
+                  | PostModelSwitchHookInput
+                  | DirectoryAddedHookInput
+                  | MessageDisplayHookInput
                   | UnknownHookInput
 
   # A *HookSpecificOutput (SyncHookJSONOutput#hook_specific_output).
@@ -46,6 +52,16 @@ module ClaudeAgentSDK
                             | PermissionDeniedHookSpecificOutput
                             | CwdChangedHookSpecificOutput
                             | FileChangedHookSpecificOutput
+                            | PostToolBatchHookSpecificOutput
+                            | UserPromptExpansionHookSpecificOutput
+                            | StopHookSpecificOutput
+                            | SubagentStopHookSpecificOutput
+                            | PreModelSwitchHookSpecificOutput
+                            | PostModelSwitchHookSpecificOutput
+                            | ElicitationHookSpecificOutput
+                            | ElicitationResultHookSpecificOutput
+                            | WorktreeCreateHookSpecificOutput
+                            | MessageDisplayHookSpecificOutput
 
   # What a hook callback returns: a Hash (Symbol or String keys, snake_case
   # or camelCase, also inside hook_specific_output), a typed output, or nil
@@ -91,6 +107,18 @@ module ClaudeAgentSDK
 
     attr_accessor permission_mode: String?
 
+    # UUID of the user prompt being processed (the prompt.id of the CLI's
+    # OpenTelemetry events); nil before the first prompt.
+    attr_accessor prompt_id: String?
+
+    # Reasoning effort in effect for the turn, e.g. { level: "high" }; sent
+    # on models that support effort.
+    attr_accessor effort: wire_hash?
+
+    # The payload exactly as the CLI sent it (Symbol keys), including fields
+    # this SDK does not model.
+    attr_accessor raw_input: Hash[Symbol | String, untyped]?
+
     # The event name, fixed by the subclass (read-only).
     attr_reader hook_event_name: String?
   end
@@ -119,10 +147,17 @@ module ClaudeAgentSDK
     attr_accessor agent_id: String?
 
     attr_accessor agent_type: String?
+
+    # Tool execution time, without permission prompts and hooks.
+    attr_accessor duration_ms: Integer?
   end
 
   class UserPromptSubmitHookInput < BaseHookInput
     attr_accessor prompt: String?
+
+    attr_accessor session_title: String?
+
+    attr_accessor source: String?
   end
 
   class StopHookInput < BaseHookInput
@@ -165,6 +200,9 @@ module ClaudeAgentSDK
     attr_accessor agent_id: String?
 
     attr_accessor agent_type: String?
+
+    # Tool execution time, without permission prompts and hooks.
+    attr_accessor duration_ms: Integer?
   end
 
   class NotificationHookInput < BaseHookInput
@@ -205,6 +243,18 @@ module ClaudeAgentSDK
     attr_accessor agent_type: String?
 
     attr_accessor model: String?
+
+    attr_accessor session_title: String?
+
+    # resume/fork: seconds since the transcript's last assistant response.
+    attr_accessor seconds_since_last_response: Numeric?
+
+    # resume/fork: whether that exceeds the prompt-cache TTL.
+    attr_accessor prompt_cache_likely_expired: bool?
+
+    attr_accessor context_tokens: Integer?
+
+    attr_accessor estimated_cache_write_usd: Numeric?
   end
 
   class SessionEndHookInput < BaseHookInput
@@ -325,6 +375,8 @@ module ClaudeAgentSDK
     attr_accessor globs: Array[String]?
 
     attr_accessor trigger_file_path: String?
+
+    attr_accessor parent_file_path: String?
   end
 
   class CwdChangedHookInput < BaseHookInput
@@ -339,8 +391,78 @@ module ClaudeAgentSDK
     attr_accessor event: String?
   end
 
+  class PostToolBatchHookInput < BaseHookInput
+    # { tool_name:, tool_input:, tool_use_id:, tool_response: } wire_hashes.
+    attr_accessor tool_calls: Array[wire_hash]?
+  end
+
+  class UserPromptExpansionHookInput < BaseHookInput
+    # "slash_command" or "mcp_prompt".
+    attr_accessor expansion_type: String?
+
+    attr_accessor command_name: String?
+
+    attr_accessor command_args: String?
+
+    attr_accessor command_source: String?
+
+    attr_accessor prompt: String?
+  end
+
+  class PreModelSwitchHookInput < BaseHookInput
+    attr_accessor from_model: String?
+
+    attr_accessor to_model: String?
+
+    # An alias, a full id, or nil for the default.
+    attr_accessor requested_model: String?
+
+    attr_accessor source: String?
+
+    attr_accessor context_tokens: Integer?
+
+    attr_accessor prompt_cache_warm: bool?
+
+    attr_accessor estimated_cache_write_usd: Numeric?
+  end
+
+  class PostModelSwitchHookInput < BaseHookInput
+    attr_accessor from_model: String?
+
+    attr_accessor to_model: String?
+
+    # An alias, a full id, or nil for the default.
+    attr_accessor requested_model: String?
+
+    attr_accessor source: String?
+
+    attr_accessor context_tokens: Integer?
+
+    attr_accessor prompt_cache_warm: bool?
+
+    attr_accessor estimated_cache_write_usd: Numeric?
+  end
+
+  class DirectoryAddedHookInput < BaseHookInput
+    attr_accessor directory: String?
+
+    # "slash_command" or "register_repo_root".
+    attr_accessor source: String?
+  end
+
+  class MessageDisplayHookInput < BaseHookInput
+    attr_accessor turn_id: String?
+
+    attr_accessor message_id: String?
+
+    attr_accessor index: Integer?
+
+    attr_accessor final: bool?
+
+    attr_accessor delta: String?
+  end
+
   class UnknownHookInput < BaseHookInput
-    attr_accessor raw_input: Hash[Symbol | String, untyped]?
   end
 
   # Hook outputs are built by the caller: keyword constructors (the Hash
@@ -402,10 +524,15 @@ module ClaudeAgentSDK
   end
 
   class UserPromptSubmitHookSpecificOutput < Type
-    def initialize: (?additional_context: String?) -> void
+    def initialize: (?additional_context: String?, ?session_title: String?, ?suppress_original_prompt: bool?) -> void
                   | (Hash[Symbol | String, untyped]? attributes) -> void
 
     attr_accessor additional_context: String?
+
+    attr_accessor session_title: String?
+
+    # With decision "block": leave the prompt out of the block message.
+    attr_accessor suppress_original_prompt: bool?
 
     attr_reader hook_event_name: String
 
@@ -446,10 +573,22 @@ module ClaudeAgentSDK
   end
 
   class SessionStartHookSpecificOutput < Type
-    def initialize: (?additional_context: String?) -> void
+    def initialize: (?additional_context: String?, ?initial_user_message: String?, ?session_title: String?, ?watch_paths: Array[String]?, ?reload_skills: bool?) -> void
                   | (Hash[Symbol | String, untyped]? attributes) -> void
 
     attr_accessor additional_context: String?
+
+    # Becomes the session's first user message.
+    attr_accessor initial_user_message: String?
+
+    # Ignored when the session starts from "clear" or "compact".
+    attr_accessor session_title: String?
+
+    # Absolute paths to watch for FileChanged events.
+    attr_accessor watch_paths: Array[String]?
+
+    # Re-scan skill and command directories once SessionStart hooks finish.
+    attr_accessor reload_skills: bool?
 
     attr_reader hook_event_name: String
 
@@ -460,6 +599,7 @@ module ClaudeAgentSDK
     def initialize: (?retry: bool?) -> void
                   | (Hash[Symbol | String, untyped]? attributes) -> void
 
+    # nil (the default) sends no key, which the CLI reads as false.
     attr_accessor retry: bool?
 
     attr_reader hook_event_name: String
@@ -483,6 +623,137 @@ module ClaudeAgentSDK
                   | (Hash[Symbol | String, untyped]? attributes) -> void
 
     attr_accessor watch_paths: Array[String]?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class PostToolBatchHookSpecificOutput < Type
+    def initialize: (?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class UserPromptExpansionHookSpecificOutput < Type
+    def initialize: (?additional_context: String?, ?suppress_original_prompt: bool?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    # With decision "block": leave the prompt out of the block message.
+    attr_accessor suppress_original_prompt: bool?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # additional_context is feedback for the model; the conversation continues.
+  class StopHookSpecificOutput < Type
+    def initialize: (?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # additional_context is feedback for the subagent; it continues.
+  class SubagentStopHookSpecificOutput < Type
+    def initialize: (?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class PreModelSwitchHookSpecificOutput < Type
+    def initialize: (?permission_decision: String?, ?permission_decision_reason: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # "allow" proceeds, "deny" cancels; "ask" refuses outside an interactive session.
+    attr_accessor permission_decision: String?
+
+    attr_accessor permission_decision_reason: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class PostModelSwitchHookSpecificOutput < Type
+    def initialize: (?additional_context: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # Reaches the model with the next request the new model serves.
+    attr_accessor additional_context: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # Answers an MCP elicitation request.
+  class ElicitationHookSpecificOutput < Type
+    def initialize: (?action: String?, ?content: Hash[Symbol | String, untyped]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # "accept", "decline" or "cancel".
+    attr_accessor action: String?
+
+    # Form values to submit with "accept".
+    attr_accessor content: Hash[Symbol | String, untyped]?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # Overrides the action or content before the response reaches the MCP server.
+  class ElicitationResultHookSpecificOutput < Type
+    def initialize: (?action: String?, ?content: Hash[Symbol | String, untyped]?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # "accept", "decline" or "cancel".
+    attr_accessor action: String?
+
+    attr_accessor content: Hash[Symbol | String, untyped]?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  class WorktreeCreateHookSpecificOutput < Type
+    def initialize: (?worktree_path: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # Absolute path of the created worktree.
+    attr_accessor worktree_path: String?
+
+    attr_reader hook_event_name: String
+
+    def to_h: () -> Hash[Symbol, untyped]
+  end
+
+  # Display only: the stored message and what the model sees are unchanged.
+  class MessageDisplayHookSpecificOutput < Type
+    def initialize: (?display_content: String?) -> void
+                  | (Hash[Symbol | String, untyped]? attributes) -> void
+
+    # Shown in place of the text; nil shows the original.
+    attr_accessor display_content: String?
 
     attr_reader hook_event_name: String
 

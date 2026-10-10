@@ -1342,6 +1342,28 @@ RSpec.describe ClaudeAgentSDK::MessageParser do
         expect(msg).to be_a(ClaudeAgentSDK::InitMessage)
         expect(msg.fast_mode_state).to eq('cooldown')
       end
+
+      # The init fields Python's SystemInitData (#1332) documents beyond the
+      # ones above, spelled as the CLI sends them.
+      it 'parses capabilities, plugin_errors, terminal_slash_commands and fast_mode_disabled_reason' do
+        plugin_error = { plugin: 'inline[0]', type: 'path-not-found', message: 'No such directory',
+                         path: '/work/plugins/missing' }
+        data = {
+          type: 'system', subtype: 'init', uuid: 'u1', session_id: 's1',
+          slash_commands: %w[compact exit], terminal_slash_commands: %w[exit],
+          plugin_errors: [plugin_error], fast_mode_state: 'off',
+          fast_mode_disabled_reason: 'not_first_party', capabilities: %w[interrupt_receipt_v1]
+        }
+
+        msg = described_class.parse(data)
+
+        expect(msg).to be_an_instance_of(ClaudeAgentSDK::InitMessage)
+        expect(msg.capabilities).to eq(%w[interrupt_receipt_v1])
+        expect(msg.plugin_errors).to eq([plugin_error])
+        expect(msg.terminal_slash_commands).to eq(%w[exit])
+        expect(msg.fast_mode_disabled_reason).to eq('not_first_party')
+        expect(msg.data).to eq(data)
+      end
     end
 
     context 'new top-level message types' do
